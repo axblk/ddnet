@@ -327,7 +327,12 @@ ddnet-editor button:focus,
 }
 
 /* Every text field, list and button of the editor is one of these, so what
-   they have in common is said once. */
+   they have in common is said once. The box is named beside the panels
+   because what floats over them - a dialogue, the palette - is content of the
+   box and stands beside them rather than in them. */
+ddnet-editor input,
+ddnet-editor select,
+ddnet-editor textarea,
 .editor-panels input,
 .editor-panels select,
 .editor-panels textarea {
@@ -341,6 +346,7 @@ ddnet-editor button:focus,
 	padding: 0 var(--space-1);
 }
 
+ddnet-editor input[type="checkbox"],
 .editor-panels input[type="checkbox"] {
 	/* The box a mouse has to hit, not the tick it draws in it: a native
 	   checkbox is thirteen pixels and that is under every rule there is. */
@@ -354,6 +360,7 @@ ddnet-editor button:focus,
 	accent-color: var(--accent);
 }
 
+ddnet-editor input[type="file"],
 .editor-panels input[type="file"] {
 	min-height: 0;
 	border: 0;
@@ -361,6 +368,9 @@ ddnet-editor button:focus,
 	padding: 0;
 }
 
+ddnet-editor input:disabled,
+ddnet-editor select:disabled,
+ddnet-editor button:disabled,
 .editor-panels input:disabled,
 .editor-panels select:disabled,
 .editor-panels button:disabled {
@@ -1098,4 +1108,272 @@ circle.editor-source-dot.editor-source-picked {
 .editor-type input {
 	flex: 1;
 	min-width: 0;
+}
+
+/* What floats over the whole editor: the palette, the menu, a menu of a
+   thing, a dialogue. The layer itself catches nothing, so that the map under
+   it keeps hearing the pointer; what is put into it catches everything. */
+.editor-over {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.editor-over > * {
+	pointer-events: auto;
+}
+
+/* Everything the editor can do, by its name. It sits high rather than in the
+   middle: what one is looking for is the list under the field, and a list
+   that grows downwards from a box in the middle would push itself off the
+   screen. */
+.editor-palette {
+	position: absolute;
+	left: 50%;
+	top: 10%;
+	transform: translateX(-50%);
+	z-index: 3;
+	display: flex;
+	flex-direction: column;
+	width: min(520px, calc(100% - 2 * var(--space-3)));
+	max-height: 70%;
+	padding: var(--space-2);
+	gap: var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-palette-find {
+	flex: none;
+	height: var(--toolbar);
+	padding: 0 var(--space-2);
+	font: var(--type-md);
+	color: var(--text-1);
+	background: var(--bg-2);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-1);
+}
+
+.editor-palette-list {
+	flex: 1;
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	overflow-y: auto;
+	list-style: none;
+}
+
+.editor-palette-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* The row Enter would take. It is marked by the fill rather than by the
+   focus ring, because the focus never leaves the field - the field is what
+   the typing goes to. */
+.editor-palette-row.editor-palette-at {
+	background: var(--sel);
+}
+
+.editor-palette-row:hover {
+	background: var(--bg-3);
+}
+
+.editor-palette-what {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.editor-palette-where {
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.editor-palette-key {
+	min-width: 3.5em;
+	padding: 2px var(--space-1);
+	color: var(--text-2);
+	font: var(--type-xs);
+	text-align: center;
+	background: var(--bg-2);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-1);
+}
+
+.editor-palette-key:empty {
+	border-color: transparent;
+	background: none;
+}
+
+/* A row that cannot be taken right now is still shown: knowing that the
+   editor can do a thing at all is most of what the palette is for. */
+.editor-palette-row.editor-palette-cannot {
+	color: var(--text-2);
+	cursor: default;
+}
+
+.editor-palette-none {
+	margin: 0;
+	padding: var(--space-2);
+	color: var(--text-2);
+	text-align: center;
+}
+
+/* The menu, and the menu of a thing. They are the same box; one hangs under
+   its button and the other at the pointer. */
+.editor-menu {
+	position: absolute;
+	z-index: 3;
+	min-width: 220px;
+	max-width: min(340px, 100%);
+	max-height: 80%;
+	padding: var(--space-1);
+	overflow-y: auto;
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-menu-part + .editor-menu-part {
+	margin-top: var(--space-1);
+	border-top: 1px solid var(--line);
+	padding-top: var(--space-1);
+}
+
+.editor-menu-head {
+	margin: 0;
+	padding: var(--space-1) var(--space-2) 2px;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.editor-menu-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	width: 100%;
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	color: inherit;
+	font: var(--type-sm);
+	text-align: left;
+	background: none;
+	border: 0;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+.editor-menu-row:hover:not(:disabled),
+.editor-menu-row:focus-visible {
+	background: var(--bg-3);
+}
+
+.editor-menu-row:disabled {
+	color: var(--text-2);
+	cursor: default;
+}
+
+.editor-menu-row[aria-checked="true"]::after {
+	content: "\2713";
+	color: var(--accent);
+}
+
+.editor-menu-key {
+	color: var(--text-2);
+	font: var(--type-xs);
+	white-space: nowrap;
+}
+
+.editor-menu-arrow {
+	color: var(--text-2);
+}
+
+.editor-menu-more[aria-expanded="true"] .editor-menu-arrow {
+	transform: rotate(90deg);
+}
+
+.editor-menu-under {
+	padding-left: var(--space-3);
+}
+
+/* What was asked before a thing can happen: how big a new map is, what the
+   map is to be called. Everything else the editor does needs no answer and
+   gets no dialogue. */
+.editor-dialog {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--overlay);
+}
+
+.editor-dialog-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+	width: min(360px, calc(100% - 2 * var(--space-3)));
+	padding: var(--space-3);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+/* The colour is named rather than inherited: a page around the editor that
+   says anything about `h2` at all beats an inherited value, whatever the
+   value is, and the page's own heading colour is for the page's own
+   background. */
+.editor-dialog-head {
+	margin: 0;
+	color: var(--text-1);
+	font: var(--type-md);
+}
+
+.editor-dialog-field {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+	min-height: var(--row);
+}
+
+.editor-dialog-field input {
+	width: 12ch;
+}
+
+.editor-dialog-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-2);
+	margin-top: var(--space-1);
+}
+
+/* The button that does the thing, said in the one colour the editor keeps for
+   that. It names its own hover, because the reset that keeps a page from
+   painting our buttons would otherwise take its fill away. */
+.editor-dialog-go,
+ddnet-editor .editor-dialog-go:hover,
+ddnet-editor .editor-dialog-go:focus,
+.editor-panels .editor-dialog-go:hover,
+.editor-panels .editor-dialog-go:focus {
+	color: var(--accent-ink);
+	background: var(--accent);
+	border-color: var(--accent);
 }

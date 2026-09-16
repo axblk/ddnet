@@ -82,6 +82,7 @@ function looking(id, label, icon, keys, read, write) {
 		id: id,
 		label: label,
 		group: "View",
+		menu: "View",
 		icon: icon,
 		bar: true,
 		keys: keys,
@@ -165,6 +166,7 @@ function layerKinds() {
 		id: `layer.add${name}`,
 		label: `Add a ${name.toLowerCase()} layer`,
 		group: "Layer",
+		menu: "Layer/Add a layer",
 		keys: [`Ctrl+Shift+${index + 1}`],
 		enabled: p => p.map !== null,
 		run: p => p.change(() => {
@@ -188,6 +190,7 @@ function structureTabs() {
 		id: `structure.${tab}`,
 		label: name,
 		group: "Areas",
+		menu: "View/The map's parts",
 		keys: [`Ctrl+Alt+${index + 1}`],
 		pressed: p => p.areaShown("left") && p.tab.left === tab,
 		run: p => {
@@ -197,6 +200,58 @@ function structureTabs() {
 	}));
 }
 
+// Everything that used to be a button in a panel and nowhere else.
+//
+// The button stays where it is - with the panel open it is the shortest way
+// there is - but the command is what the palette, the menus and the keyboard
+// see. Otherwise a thing the editor can do would be a thing only a visible
+// button can do, and half of what the editor can do would be unfindable.
+function panelButton(id, label, group, role, extra) {
+	return Object.assign({
+		id: id,
+		label: label,
+		group: group,
+		part: role,
+		enabled: p => {
+			const button = p.part(role);
+			return p.map !== null && button !== null && !button.disabled && !button.closest("[hidden]");
+		},
+		run: p => p.reveal(role).click(),
+	}, extra || {});
+}
+
+// The buttons of the panels, in the order their panels stand in.
+function panelButtons() {
+	return [
+		panelButton("art.tiles", "A picture as tiles\u2026", "Tools", "tile-art", { menu: "Tools" }),
+		panelButton("art.quads", "A picture as quads\u2026", "Tools", "quad-art", { menu: "Tools" }),
+		panelButton("tiles.write", "Write with the tiles", "Tools", "type-place", { menu: "Tools" }),
+		panelButton("tiles.automap", "Run the layer's rules", "Tools", "automap-run", { menu: "Tools" }),
+		panelButton("layer.construct", "Physics tiles under this layer", "Tools", "construct-run",
+			{ menu: "Tools" }),
+		panelButton("image.replace", "Other pixels for this picture", "Layer", "replace-image", { for: "image" }),
+		panelButton("image.unpack", "Take the picture's pixels out", "Layer", "unpack-image", { for: "image" }),
+		panelButton("image.delete", "Take the picture out of the map", "Layer", "delete-image", { for: "image" }),
+		panelButton("sound.play", "Listen to the sound", "Layer", "play-sound", { for: "sound" }),
+		panelButton("sound.replace", "Other bytes for this sound", "Layer", "replace-sound", { for: "sound" }),
+		panelButton("sound.unpack", "Take the sound's bytes out", "Layer", "unpack-sound", { for: "sound" }),
+		panelButton("sound.delete", "Take the sound out of the map", "Layer", "delete-sound", { for: "sound" }),
+		panelButton("quad.delete", "Take the quad away", "Quads", "delete-quad", { for: "quad" }),
+		panelButton("quad.square", "The rectangle the corners span", "Quads", "shape-square", { for: "quad" }),
+		panelButton("quad.aspect", "As tall as the picture asks", "Quads", "shape-aspect", { for: "quad" }),
+		panelButton("quad.pivot", "The pivot into the middle", "Quads", "shape-centerPivot", { for: "quad" }),
+		panelButton("quad.align", "Every corner onto a tile", "Quads", "shape-align", { for: "quad" }),
+		panelButton("source.delete", "Take the sound source away", "Quads", "delete-source", { for: "source" }),
+		panelButton("envelope.add", "Add a colour envelope", "Areas", "add-envelope"),
+		panelButton("envelope.delete", "Delete this envelope", "Areas", "delete-envelope", { for: "envelope" }),
+		panelButton("setting.add", "Add a server setting", "Areas", "add-setting"),
+		panelButton("setting.delete", "Take the server setting away", "Areas", "delete-setting", { for: "setting" }),
+		panelButton("rules.apply", "Read the rules as they stand", "Areas", "rules-apply"),
+		panelButton("rules.revert", "Fetch the rules file again", "Areas", "rules-revert"),
+		panelButton("rules.save", "Write the rules out", "Areas", "rules-save"),
+	];
+}
+
 /**
  * The list. Order is the order of the tool bar, and of the palette until
  * somebody types into it.
@@ -204,7 +259,7 @@ function structureTabs() {
 export const COMMANDS = [
 	...tools(),
 	{
-		id: "edit.undo", label: "Undo", group: "Edit", icon: "undo", bar: true,
+		id: "edit.undo", label: "Undo", group: "Edit", menu: "Edit", icon: "undo", bar: true,
 		keys: ["Ctrl+Z"],
 		enabled: p => {
 			const history = p.editor.history();
@@ -213,7 +268,7 @@ export const COMMANDS = [
 		run: p => p.stepHistory(() => p.editor.undo()),
 	},
 	{
-		id: "edit.redo", label: "Redo", group: "Edit", icon: "redo", bar: true,
+		id: "edit.redo", label: "Redo", group: "Edit", menu: "Edit", icon: "redo", bar: true,
 		keys: ["Ctrl+Y", "Ctrl+Shift+Z"],
 		enabled: p => {
 			const history = p.editor.history();
@@ -222,48 +277,51 @@ export const COMMANDS = [
 		run: p => p.stepHistory(() => p.editor.redo()),
 	},
 	{
-		id: "file.open", label: "Open a map…", group: "File", icon: "folder", bar: true,
+		id: "file.open", label: "Open a map…", group: "File", icon: "folder", menu: "File",
 		keys: ["Ctrl+O"],
 		run: p => p.openMap(),
 	},
 	{
-		id: "file.new", label: "New map", group: "File", icon: "add", bar: true,
+		id: "file.new", label: "New map…", group: "File", icon: "add", menu: "File",
 		// Ctrl+N belongs to the browser and cannot be taken from it.
 		keys: ["Ctrl+Alt+N"],
-		run: p => {
-			p.editor.create(100, 50, "untitled");
-			p.refresh();
-		},
+		run: p => p.askNewMap(),
 	},
 	{
-		id: "file.save", label: "Save", group: "File", icon: "save", bar: true,
+		id: "file.save", label: "Save", group: "File", icon: "save", bar: true, menu: "File",
 		keys: ["Ctrl+S"],
 		enabled: p => p.map !== null,
 		run: p => p.editor.save(),
 	},
 	{
-		id: "file.append", label: "Append a map…", group: "File",
+		id: "file.saveAs", label: "Save as…", group: "File", menu: "File",
+		keys: ["Ctrl+Shift+S"],
+		enabled: p => p.map !== null,
+		run: p => p.askSaveAs(),
+	},
+	{
+		id: "file.append", label: "Append a map…", group: "File", menu: "File",
 		keys: ["Ctrl+Shift+A"],
 		enabled: p => p.map !== null,
 		run: p => p.part("append-file").click(),
 	},
 	{
-		id: "view.fit", label: "The whole map", group: "View", icon: "fit", bar: true,
+		id: "view.fit", label: "The whole map", group: "View", menu: "View", icon: "fit", bar: true,
 		keys: ["Home"],
 		run: p => p.editor.fit(),
 	},
 	{
-		id: "view.zoomIn", label: "Closer", group: "View",
+		id: "view.zoomIn", label: "Closer", group: "View", menu: "View",
 		keys: ["NumpadAdd", "+"],
 		run: p => p.editor.zoom(p.editor.zoom() / ZOOM_STEP),
 	},
 	{
-		id: "view.zoomOut", label: "Further away", group: "View",
+		id: "view.zoomOut", label: "Further away", group: "View", menu: "View",
 		keys: ["NumpadSubtract", "-"],
 		run: p => p.editor.zoom(p.editor.zoom() * ZOOM_STEP),
 	},
 	{
-		id: "view.zoomReset", label: "Back to one to one", group: "View",
+		id: "view.zoomReset", label: "Back to one to one", group: "View", menu: "View",
 		keys: ["NumpadMultiply"],
 		run: p => p.editor.zoom(1),
 	},
@@ -276,7 +334,7 @@ export const COMMANDS = [
 	looking("view.grid", "A grid on the tiles", "grid", ["G", "Ctrl+G"],
 		p => p.editor.grid() > 0, (p, on) => p.editor.grid(on ? GRID_SPACING : 0)),
 	{
-		id: "view.proof", label: "What a player would see", group: "View", icon: "proof", bar: true,
+		id: "view.proof", label: "What a player would see", group: "View", menu: "View", icon: "proof", bar: true,
 		keys: ["P"],
 		pressed: p => p.proof !== "off",
 		run: p => {
@@ -286,7 +344,8 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "view.tileInfo", label: "What the tile under the pointer is", group: "View",
+		id: "view.tileInfo", label: "What the tile under the pointer is", group: "View", menu: "View",
+		icon: "info", bar: true,
 		keys: ["Ctrl+I"],
 		pressed: p => p.tileInfo !== "off",
 		run: p => {
@@ -296,7 +355,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.flipX", label: "Turn the brush over sideways", group: "Brush",
+		id: "brush.flipX", label: "Turn the brush over sideways", group: "Brush", menu: "Tools",
 		keys: ["X", "N"],
 		run: p => {
 			p.editor.flipBrushX();
@@ -304,7 +363,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.flipY", label: "Turn the brush over", group: "Brush",
+		id: "brush.flipY", label: "Turn the brush over", group: "Brush", menu: "Tools",
 		keys: ["Y", "M"],
 		run: p => {
 			p.editor.flipBrushY();
@@ -312,7 +371,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.rotate", label: "A quarter turn", group: "Brush",
+		id: "brush.rotate", label: "A quarter turn", group: "Brush", menu: "Tools",
 		keys: ["R"],
 		run: p => {
 			p.editor.rotateBrush();
@@ -320,7 +379,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.rotateBack", label: "A quarter turn the other way", group: "Brush",
+		id: "brush.rotateBack", label: "A quarter turn the other way", group: "Brush", menu: "Tools",
 		keys: ["Shift+R"],
 		run: p => {
 			// Three quarters one way is a quarter the other, and the program
@@ -332,7 +391,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "layer.addGroup", label: "Add a group", group: "Layer",
+		id: "layer.addGroup", label: "Add a group", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+G"],
 		enabled: p => p.map !== null,
 		run: p => p.change(() => p.editor.apply({ op: "group.add", name: "group" })),
@@ -349,17 +408,17 @@ export const COMMANDS = [
 		run: p => p.stepSelection(-1),
 	},
 	{
-		id: "layer.up", label: "Move it up", group: "Layer",
+		id: "layer.up", label: "Move it up", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+ArrowUp"],
 		run: p => p.moveSelected(-1),
 	},
 	{
-		id: "layer.down", label: "Move it down", group: "Layer",
+		id: "layer.down", label: "Move it down", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+ArrowDown"],
 		run: p => p.moveSelected(1),
 	},
 	{
-		id: "layer.hide", label: "Draw it, or do not", group: "Layer",
+		id: "layer.hide", label: "Draw it, or do not", group: "Layer", menu: "Layer", for: "layer",
 		keys: ["V"],
 		enabled: p => p.selection.layer >= 0,
 		run: p => {
@@ -369,18 +428,18 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "layer.delete", label: "Take the layer away", group: "Layer",
+		id: "layer.delete", label: "Take the layer away", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+Delete"],
 		enabled: p => p.map !== null,
 		run: p => p.deleteSelected(),
 	},
 	{
-		id: "edit.delete", label: "Take away what is picked", group: "Edit",
+		id: "edit.delete", label: "Take away what is picked", group: "Edit", menu: "Edit",
 		keys: ["Delete"],
 		run: p => p.deletePicked(),
 	},
 	{
-		id: "quad.add", label: "Add a quad", group: "Quads",
+		id: "quad.add", label: "Add a quad", group: "Quads", menu: "Layer",
 		keys: ["Q"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -389,7 +448,7 @@ export const COMMANDS = [
 		run: p => p.part("add-quad").click(),
 	},
 	{
-		id: "quad.knife", label: "Cut a piece out of a quad", group: "Quads",
+		id: "quad.knife", label: "Cut a piece out of a quad", group: "Quads", menu: "Tools",
 		keys: ["K"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -399,7 +458,7 @@ export const COMMANDS = [
 		run: p => p.knife(),
 	},
 	{
-		id: "tiles.numbers", label: "Into the numbers of the physics tile", group: "Brush",
+		id: "tiles.numbers", label: "Into the numbers of the physics tile", group: "Brush", menu: "Tools",
 		keys: ["T"],
 		enabled: p => p.parts("number-number").length > 0 || p.parts("number-force").length > 0,
 		run: p => {
@@ -411,49 +470,49 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "tiles.nextFree", label: "The next unused number", group: "Brush",
+		id: "tiles.nextFree", label: "The next unused number", group: "Brush", menu: "Tools",
 		keys: ["Ctrl+F"],
 		enabled: p => p.part("next-free") !== null && !p.part("next-free").disabled,
 		run: p => p.part("next-free").click(),
 	},
 	{
-		id: "dock.envelopes", label: "Envelopes", group: "Areas",
+		id: "dock.envelopes", label: "Envelopes", group: "Areas", menu: "View/Below the map",
 		keys: ["Ctrl+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "envelopes",
 		run: p => p.showTab("dock", "envelopes"),
 	},
 	{
-		id: "dock.history", label: "History", group: "Areas",
+		id: "dock.history", label: "History", group: "Areas", menu: "View/Below the map",
 		keys: ["Ctrl+Shift+H"],
 		pressed: p => p.dockOpen && p.tab.dock === "history",
 		run: p => p.showTab("dock", "history"),
 	},
 	{
-		id: "dock.settings", label: "Server settings", group: "Areas",
+		id: "dock.settings", label: "Server settings", group: "Areas", menu: "View/Below the map",
 		keys: ["Ctrl+Shift+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "settings",
 		run: p => p.showTab("dock", "settings"),
 	},
 	{
-		id: "dock.rules", label: "The rules file", group: "Areas",
+		id: "dock.rules", label: "The rules file", group: "Areas", menu: "View/Below the map",
 		keys: ["Ctrl+Shift+R"],
 		pressed: p => p.dockOpen && p.tab.dock === "rules",
 		run: p => p.showTab("dock", "rules"),
 	},
 	{
-		id: "area.left", label: "The map's parts", group: "Areas",
+		id: "area.left", label: "The map's parts", group: "Areas", menu: "View",
 		keys: ["["],
 		pressed: p => p.areaShown("left"),
 		run: p => p.showArea("left", !p.areaShown("left")),
 	},
 	{
-		id: "area.right", label: "The inspector", group: "Areas",
+		id: "area.right", label: "The inspector", group: "Areas", menu: "View",
 		keys: ["]"],
 		pressed: p => p.areaShown("right"),
 		run: p => p.showArea("right", !p.areaShown("right")),
 	},
 	{
-		id: "area.mapOnly", label: "Nothing but the map", group: "Areas",
+		id: "area.mapOnly", label: "Nothing but the map", group: "Areas", menu: "View",
 		keys: ["Tab"],
 		// Only from the map itself: everywhere else Tab is how somebody walks
 		// through the buttons, and taking that away would be worse than the
@@ -470,19 +529,19 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "image.add", label: "Add a picture\u2026", group: "Layer",
+		id: "image.add", label: "Add a picture\u2026", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+I"],
 		enabled: p => p.map !== null,
 		run: p => p.part("image-file").click(),
 	},
 	{
-		id: "sound.add", label: "Add a sound\u2026", group: "Layer",
+		id: "sound.add", label: "Add a sound\u2026", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+U"],
 		enabled: p => p.map !== null,
 		run: p => p.part("sound-file").click(),
 	},
 	{
-		id: "source.add", label: "Add a sound source", group: "Quads",
+		id: "source.add", label: "Add a sound source", group: "Quads", menu: "Layer",
 		keys: ["Ctrl+Shift+S"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -491,7 +550,7 @@ export const COMMANDS = [
 		run: p => p.part("add-source").click(),
 	},
 	{
-		id: "file.close", label: "Close the map", group: "File",
+		id: "file.close", label: "Close the map", group: "File", menu: "File",
 		// Ctrl+W and Ctrl+F4 belong to the browser.
 		keys: ["Ctrl+Alt+W"],
 		enabled: p => p.map !== null,
@@ -526,7 +585,27 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help",
+		id: "palette.open", label: "Everything, by its name", group: "Help",
+		icon: "search", bar: true, menu: "Help", palette: false,
+		keys: ["Ctrl+P"],
+		pressed: p => p.palette !== null && !p.palette.hidden,
+		run: p => p.showPalette(p.palette === null || p.palette.hidden),
+	},
+	{
+		id: "menu.open", label: "The menu", group: "Help",
+		icon: "menu", bar: true, palette: false,
+		keys: ["Alt+M"],
+		pressed: p => p.menu !== null && !p.menu.hidden,
+		run: p => p.showMenu(p.menu === null || p.menu.hidden),
+	},
+	{
+		id: "view.scheme", label: "The light scheme", group: "View", menu: "Settings",
+		keys: ["Ctrl+Alt+L"],
+		pressed: p => p.scheme() === "light",
+		run: p => p.scheme(p.scheme() === "light" ? "dark" : "light"),
+	},
+	{
+		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", menu: "Help",
 		keys: ["F1"],
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
 	},
@@ -536,6 +615,7 @@ export const COMMANDS = [
 		run: p => p.escape(),
 	},
 	...slots(),
+	...panelButtons(),
 ];
 
 /**

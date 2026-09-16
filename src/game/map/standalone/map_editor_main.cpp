@@ -199,6 +199,14 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorName(int Id)
 	return g_pEditor == nullptr ? "" : g_pEditor->Name(Id);
 }
 
+EMSCRIPTEN_KEEPALIVE int MapEditorRename(int Id, const char *pName)
+{
+	if(g_pEditor == nullptr || !g_pEditor->Rename(Id, pName))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
 // Writing the map out is one of the two calls that wait: the file is written,
 // closed and handed to the browser, and the page hears about it afterwards.
 // Writing the map out. `Handout` says whether it also goes to wherever the

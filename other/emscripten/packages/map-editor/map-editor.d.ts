@@ -215,6 +215,7 @@ export declare class MapEditor {
 	readonly maps: number[];
 
 	name(id?: MapId): string;
+	rename(id: MapId | undefined, name: string): boolean;
 	activate(id: number): boolean;
 	close(id?: MapId): boolean;
 	create(width: number, height: number, name?: string): number | null;
@@ -356,6 +357,14 @@ export interface EditorCommand {
 	bar?: boolean;
 	/** The icon on that button. */
 	icon?: string;
+	/** Where in the menu it hangs - `File`, or `Layer/Add a layer`. */
+	menu?: string;
+	/** Which kind of thing's own menu it belongs in. */
+	for?: string | string[];
+	/** The button in a panel that it presses, where it is one. */
+	part?: string;
+	/** `false` for the commands the palette does not list - the ten slots. */
+	palette?: boolean;
 	enabled?: (panels: EditorPanels) => boolean;
 	pressed?: (panels: EditorPanels) => boolean;
 	run: (panels: EditorPanels) => void;
@@ -389,6 +398,22 @@ export declare class EditorPanels {
 	parts(role: string): Element[];
 	/** Puts one of an area's panels in front, opening the area if it was shut. */
 	showTab(area: "left" | "dock", tab: string): void;
+	/** Brings whatever carries that name into view, and hands it back. */
+	reveal(role: string): Element | null;
+	/** Which of the two schemes the editor is drawn in. */
+	scheme(next?: "dark" | "light"): "dark" | "light";
+	/** Shows or hides the palette of everything the editor can do. */
+	showPalette(on: boolean): void;
+	/** Shows or hides the menu. */
+	showMenu(on: boolean): void;
+	/** The menu of one kind of thing, at a spot or under an element. */
+	showContext(kind: string, at: Element | { x: number; y: number }): void;
+	closeContext(): void;
+	/** Asks how big a new map is and what it is called, then makes it. */
+	askNewMap(): void;
+	/** Asks what the map is to be called from now on, then saves it. */
+	askSaveAs(): void;
+	closeDialog(): void;
 	refresh(): void;
 	destroy(): void;
 }

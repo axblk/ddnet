@@ -92,6 +92,41 @@ the map rather than beside it; it starts shut, and a press on the map shuts an
 open one without painting - the hand that reached past the drawer was reaching
 for its edge, not for the tile behind it.
 
+### With a finger
+
+One surface, not two: what changes is the *input*, read from
+`(pointer: coarse)` and from each event's `pointerType`, and it changes sizes
+and adds buttons - never what the editor can do.
+
+| Gesture | What it does |
+|---|---|
+| One finger | the layer's tool: paint, grab, fill, rub out, drag a handle |
+| Two fingers | pan and zoom about the middle of them; the angle is ignored |
+| Two-finger tap / three-finger tap | back / forward |
+| A press that stands still, with an empty brush | which layer is here? |
+| A press that stands still, with a full brush | nothing - a finger may rest while it paints |
+| A pen | paints always; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass |
+
+The second finger of a pan lands fifty to a hundred and fifty milliseconds
+after the first, and by then the first has already put down a tile. Within
+150 ms, and while the first finger has gone less than 8 pixels, the second one
+says the first was never a stroke: it is thrown away - no tile, no history
+entry - and the two of them are a pan. After that the stroke is settled and a
+late finger is ignored, because a hand resting on the glass beside a drawing
+one is not a gesture.
+
+Three of the tool bar's buttons exist only for a finger, because on a desk
+they are keys nobody can press without a keyboard: **nothing in hand** (which
+is Escape, and an empty brush is what grabs), **the big tile chooser** (which
+is holding space, and nothing can be held), and **which layer is here** (which
+is Ctrl and the right button, and a finger has neither). Every row that has a
+menu shows a `...` for it; at a desk that button waits for the pointer to come
+near.
+
+The tileset in the inspector is nineteen pixels a tile - a picture of what is
+in hand, not a thing a finger can hit - so with a finger a touch on it opens
+the big chooser, where a tile is forty-four pixels or more.
+
 ## One list of everything it can do
 
 The tool bar is not a row of buttons somebody wrote out; it is what the list of

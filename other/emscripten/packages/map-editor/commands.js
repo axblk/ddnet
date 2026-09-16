@@ -103,6 +103,10 @@ function slots() {
 			id: `brush.use${slot}`,
 			label: `Brush ${slot}`,
 			group: "Brush",
+			// In the menu but not in the palette: ten rows of "Brush 3" would
+			// drown the palette, and without a keyboard the menu is the way -
+			// the strip of slots under the tileset is the quick way.
+			menu: "Tools/Take a brush",
 			keys: [String(slot)],
 			palette: false,
 			run: p => {
@@ -114,6 +118,7 @@ function slots() {
 			id: `brush.store${slot}`,
 			label: `Put the brush away as ${slot}`,
 			group: "Brush",
+			menu: "Tools/Put the brush away",
 			keys: [`Shift+${slot}`],
 			palette: false,
 			run: p => {
@@ -568,7 +573,9 @@ export const COMMANDS = [
 	},
 	...structureTabs(),
 	{
-		id: "picker.show", label: "The big tile chooser", group: "Brush", safe: true,
+		id: "picker.show", label: "The big tile chooser", group: "Brush", safe: true, menu: "Tools",
+		// A key held on a desk; a button where nothing can be held.
+		icon: "paint", bar: true, touch: true, role: "tiles-big",
 		keys: ["Space"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -590,6 +597,26 @@ export const COMMANDS = [
 			p.showPicker(p.pickerPinned || (p.picker !== null && !p.picker.hidden));
 			p.pickerPinned = p.picker !== null && !p.picker.hidden ? p.pickerPinned : false;
 		},
+	},
+	{
+		id: "brush.clear", label: "Nothing in hand", group: "Brush", menu: "Tools",
+		// A key on a desk; a button where there is no Escape to press. An
+		// empty brush is what grabs, so this is also the way to a rectangle.
+		icon: "erase", bar: true, touch: true, role: "clear-brush",
+		enabled: p => p.map !== null,
+		run: p => {
+			p.editor.clearBrush();
+			p.refreshTiles();
+			p.say("Nothing in hand - drag to grab");
+		},
+	},
+	{
+		id: "layer.here", label: "Which layer is here?", group: "Layer", menu: "Layer",
+		// Ctrl and the right button, for a finger that has neither.
+		icon: "grab", bar: true, touch: true, safe: true, role: "layer-here",
+		enabled: p => p.map !== null,
+		pressed: p => p.askingLayer,
+		run: p => p.askHere(),
 	},
 	{
 		id: "palette.open", label: "Everything, by its name", group: "Help", safe: true, always: true,

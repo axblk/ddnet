@@ -895,6 +895,17 @@ class CMapEditor extends Program {
 		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
 	}
 
+	/** Whether there is nothing in hand. An empty brush is what grabs. */
+	brushEmpty() {
+		const size = this.brushSize();
+		return size === null || size.width === 0 || size.height === 0;
+	}
+
+	/** Puts the brush down. */
+	clearBrush() {
+		this.call("MapEditorClearBrush", null);
+	}
+
 	/**
 	 * Whether the tiles in hand are tele checkpoints, which count their
 	 * numbers apart from the teleporters. What a tile index means is the
@@ -964,6 +975,18 @@ let overCount = 0;
  * The widths are of the *box*, not of the window: an editor in an 800-pixel
  * hole in somebody's page is a narrow editor on a wide screen.
  */
+// Which lists have a menu of their own, and what each of their rows is. One
+// list, because two things read it: what a right-click opens, and where the
+// "..." buttons go.
+const CONTEXT_LISTS = [
+	["tree", null],
+	["image-list", "image"],
+	["sound-list", "sound"],
+	["quad-list", "quad"],
+	["source-list", "source"],
+	["setting-list", "setting"],
+];
+
 const BOX_WIDTHS = [
 	{ from: 2560, name: "huge", left: "column", right: "column", bar: "labels" },
 	{ from: 1600, name: "desk", left: "column", right: "column", bar: "labels" },
@@ -1405,6 +1428,7 @@ class CEditorPanels {
 		// there are no areas to reshape and the panels stand in one column.
 		this.shape = null;
 		this.readonly = false;
+		this.askingLayer = false;
 		this.drawer = { left: false, right: false };
 		// What floats over the whole box, and where it floats in.
 		this.over = null;
@@ -1515,6 +1539,17 @@ class CEditorPanels {
 	 */
 	wirePick(canvas) {
 		let from = null;
+		// Nineteen pixels a tile is a picture of what is in hand, not a thing
+		// a finger can hit. A touch on it opens the big one, where the tiles
+		// are forty-four.
+		canvas.addEventListener("pointerdown", event => {
+			if (canvas.dataset.role !== "tileset" || !matchMedia("(pointer: coarse)").matches) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			this.run("picker.show");
+		}, { capture: true, signal: this.stopping.signal });
 		// A refused capture must not take the pick with it.
 		const capture = (pointerId, hold) => {
 			try {
@@ -1647,10 +1682,21 @@ class CEditorPanels {
 			return;
 		}
 		const canvas = this.picker.querySelector('[data-role="picker-tiles"]');
-		const box = this.editor.canvas.getBoundingClientRect();
-		// As big as the map lets it be, and never smaller than the thirty-two
-		// pixels a tile needs to be told apart.
-		const side = Math.max(TILESET_SIDE * 32, Math.floor((Math.min(box.width, box.height) - 32) / TILESET_SIDE) * TILESET_SIDE);
+		// A finger needs a bigger tile than an eye does, and the whole box
+		// rather than the map: a tileset sized to fit a short map would be
+		// nineteen pixels a tile again. Wide enough is what counts, because
+		// the chooser may scroll downwards and a finger scrolls it.
+		const finger = matchMedia("(pointer: coarse)").matches;
+		const home = finger ? this.overlayHome() : null;
+		if (home !== null && this.picker.parentElement !== home) {
+			home.append(this.picker);
+		}
+		const box = (home === null ? this.editor.canvas : home).getBoundingClientRect();
+		// As big as there is room for, and never smaller than the thirty-two
+		// pixels a tile needs to be told apart - forty-four for a finger.
+		const least = finger ? 44 : 32;
+		const room = finger ? box.width : Math.min(box.width, box.height);
+		const side = Math.max(TILESET_SIDE * least, Math.floor((room - 32) / TILESET_SIDE) * TILESET_SIDE);
 		canvas.width = side;
 		canvas.height = side;
 		canvas.style.width = `${side}px`;
@@ -1767,6 +1813,13 @@ class CEditorPanels {
 		if (how === "none") {
 			return false;
 		}
+		// Three of the buttons are keys on a desk and have to be buttons for a
+		// finger: there is no Escape to empty the brush with, nothing to hold
+		// to keep the tile chooser open, and no Ctrl to hold while pressing
+		// the right button that a finger also does not have.
+		if (command.touch === true && !matchMedia("(pointer: coarse)").matches) {
+			return false;
+		}
 		if (how === "looking") {
 			return command.safe === true;
 		}
@@ -1799,6 +1852,35 @@ class CEditorPanels {
 			event.stopPropagation();
 			event.preventDefault();
 		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	/**
+	 * Makes the next tap on the map a question about the layer there.
+	 *
+	 * What Ctrl and the right button do on a desk. A finger has neither, and
+	 * the long press is taken by the layer chooser only while the brush is
+	 * empty - with a full brush a finger is allowed to stand still - so with a
+	 * full brush this button is the way.
+	 */
+	askHere() {
+		this.askingLayer = !this.askingLayer;
+		this.say(this.askingLayer ? "Touch the map: which layer is there?" : "");
+		this.refreshBar();
+	}
+
+	/** An answer to that question, or no answer because none was asked. */
+	answerHere(spot) {
+		if (!this.askingLayer) {
+			return false;
+		}
+		this.askingLayer = false;
+		this.say("");
+		this.refreshBar();
+		// After this press has finished being handled: the chooser shuts
+		// itself on a press anywhere but in it, and the press that asked for
+		// it is a press anywhere but in it.
+		setTimeout(() => this.showChooser({ clientX: spot.x, clientY: spot.y }), 0);
+		return true;
 	}
 
 	/** Which of the two schemes the editor is drawn in. */
@@ -2307,6 +2389,44 @@ class CEditorPanels {
 		return holder;
 	}
 
+	/**
+	 * A "..." on every row that has a menu of its own.
+	 *
+	 * The long press opens the same menu, but nobody finds a long press, and a
+	 * finger has no right button. Added after the lists have been built rather
+	 * than inside each of the six that build them, so that a new list is a
+	 * list with a menu without anybody having to remember.
+	 */
+	addMoreButtons() {
+		for (const [role, kind] of CONTEXT_LISTS) {
+			const list = this.part(role);
+			if (list === null) {
+				continue;
+			}
+			const rows = kind === null
+				? list.querySelectorAll('[data-role="layer"], [data-role="group"]')
+				: list.querySelectorAll("li");
+			for (const row of rows) {
+				if (row.querySelector('[data-role="more"]') !== null) {
+					continue;
+				}
+				const more = document.createElement("button");
+				more.type = "button";
+				more.className = "editor-more";
+				more.dataset.role = "more";
+				more.textContent = "\u22ef";
+				more.title = "What can be done with this";
+				more.setAttribute("aria-label", "What can be done with this");
+				more.addEventListener("click", event => {
+					event.stopPropagation();
+					row.click();
+					this.showContext(kind === null ? row.dataset.role : kind, more);
+				}, { signal: this.stopping.signal });
+				row.append(more);
+			}
+		}
+	}
+
 	closeContext() {
 		if (this.context === null) {
 			return;
@@ -2352,15 +2472,7 @@ class CEditorPanels {
 	 * what a plain click does, so a plain click is what it is told to do.
 	 */
 	wireContextMenus() {
-		const lists = [
-			["tree", null],
-			["image-list", "image"],
-			["sound-list", "sound"],
-			["quad-list", "quad"],
-			["source-list", "source"],
-			["setting-list", "setting"],
-		];
-		for (const [role, kind] of lists) {
+		for (const [role, kind] of CONTEXT_LISTS) {
 			const list = this.part(role);
 			if (list === null) {
 				continue;
@@ -3198,6 +3310,8 @@ class CEditorPanels {
 		// Which panel each tabbed area shows can only be answered once every
 		// panel has said whether it has anything to show.
 		this.applyTabs();
+		// And the rows exist now, so they can be given their menus.
+		this.addMoreButtons();
 	}
 
 	clampSelection() {
@@ -3348,6 +3462,7 @@ class CEditorPanels {
 			}
 			tree.append(item);
 		});
+		this.addMoreButtons();
 	}
 
 	refreshProps() {
@@ -5560,7 +5675,11 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({
+		canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null,
+		onClickInGroup: null, afterStroke: null, onLongPress: null, onFingerTap: null, onAsk: null,
+		signal: undefined,
+	}, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -5571,6 +5690,28 @@ function steerWithPointer(editor, options) {
 	// a second finger on a map being painted is a mistake, not a tool.
 	let doing = null;
 	let pointer = 0;
+	// Every pointer that is down on the canvas right now. A mouse has one; a
+	// hand has as many as it has fingers on the glass, and what the hand means
+	// depends on how many of them there are.
+	const down = new Map();
+	// When the first of them landed and where, so that a second one arriving
+	// straight after can be told from one arriving later.
+	let firstAt = 0;
+	let firstAtSpot = { x: 0, y: 0 };
+	// How many were down at once before they all came up, so that a tap can
+	// be counted after the fingers have gone.
+	let mostFingers = 0;
+	// Two fingers panning and zooming, or null while they are not.
+	let gesture = null;
+	// How far they went, kept apart from the gesture itself because the
+	// gesture ends when the second finger lifts and the question "was that a
+	// tap" is only asked when the last one does.
+	let gestureMoved = -1;
+	// The press that is waiting to become a question about this place.
+	let pressing = null;
+	// Whether a pen has been seen. A hand that holds a pen rests on the glass,
+	// so once one has been seen a finger stops painting and pans instead.
+	let sawPen = false;
 	let last = { x: 0, y: 0 };
 	let from = { x: 0, y: 0 };
 	// The tiles a stroke has been over, so that whatever wants to look at
@@ -5680,7 +5821,8 @@ function steerWithPointer(editor, options) {
 		if (world === null) {
 			return false;
 		}
-		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const wide = event.pointerType === "touch" ? HANDLE_REACH_FINGER : HANDLE_REACH_PIXELS;
+		const step = editor.groupWorldAt(where.group, spot.x + wide, spot.y);
 		const reach = step === null ? 32 : Math.abs(step.x - world.x);
 
 		let best = null;
@@ -5712,7 +5854,8 @@ function steerWithPointer(editor, options) {
 		}
 		// How near counts, in world units: a handful of pixels, turned into
 		// world units by what a pixel is worth right now.
-		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const wide = event.pointerType === "touch" ? HANDLE_REACH_FINGER : HANDLE_REACH_PIXELS;
+		const step = editor.groupWorldAt(where.group, spot.x + wide, spot.y);
 		const reach = step === null ? 32 : Math.abs(step.x - world.x);
 
 		let best = null;
@@ -5737,8 +5880,115 @@ function steerWithPointer(editor, options) {
 		return true;
 	};
 
+	/**
+	 * Throws away what the first finger had begun.
+	 *
+	 * Only what is not settled yet is thrown away: a stroke that has lasted
+	 * long enough, or gone far enough, was meant, and a finger that lands on
+	 * the glass beside it is a hand resting, not a gesture.
+	 */
+	const undoTheStart = () => {
+		if (doing === null) {
+			return;
+		}
+		if (doing === "paint" || doing === "quad" || doing === "source") {
+			editor.abort();
+			changed();
+		}
+		doing = null;
+		quadPoint = null;
+		sourceDrag = null;
+		editor.mark();
+	};
+
+	/**
+	 * Whether the stroke has gone on long enough, or far enough, to be meant.
+	 *
+	 * How far is about the *first* finger: how far it has travelled since it
+	 * landed. Where the second one comes down says nothing - two fingers of
+	 * one hand land a hundred pixels apart, which is not movement.
+	 */
+	const settled = event => {
+		const now = event.timeStamp || Date.now();
+		const first = down.get(pointer);
+		const went = first === undefined ? 0
+			: Math.hypot(first.x - firstAtSpot.x, first.y - firstAtSpot.y);
+		return now - firstAt > SECOND_FINGER_MS || went > SECOND_FINGER_PIXELS;
+	};
+
+	/** Where two fingers are, as one place and one distance apart. */
+	const twoFingers = () => {
+		const spots = [...down.values()].slice(0, 2);
+		if (spots.length < 2) {
+			return null;
+		}
+		return {
+			x: (spots[0].x + spots[1].x) / 2,
+			y: (spots[0].y + spots[1].y) / 2,
+			apart: Math.max(1, Math.hypot(spots[0].x - spots[1].x, spots[0].y - spots[1].y)),
+		};
+	};
+
+	const stopPressing = () => {
+		if (pressing !== null) {
+			clearTimeout(pressing.timer);
+			pressing = null;
+		}
+	};
+
 	canvas.addEventListener("contextmenu", event => event.preventDefault(), { signal: signal });
 	canvas.addEventListener("pointerdown", event => {
+		down.set(event.pointerId, { x: event.clientX, y: event.clientY, at: event.timeStamp || Date.now() });
+		mostFingers = Math.max(mostFingers, down.size);
+		if (event.pointerType === "pen") {
+			sawPen = true;
+		}
+		if (down.size === 1) {
+			firstAt = event.timeStamp || Date.now();
+			firstAtSpot = { x: event.clientX, y: event.clientY };
+			// Somebody asked a question with a button and this tap is the
+			// answer: it says where, and it does nothing else.
+			if (settings.onAsk !== null && settings.onAsk({ x: event.clientX, y: event.clientY }) === true) {
+				return;
+			}
+			// A press that stands still is a question about the place; it is
+			// what Ctrl and the right button are on a desk, and a finger has
+			// neither.
+			if (event.pointerType === "touch" && settings.onLongPress !== null) {
+				const where = { x: event.clientX, y: event.clientY };
+				pressing = { timer: setTimeout(() => {
+					pressing = null;
+					if (settings.onLongPress(where) === true) {
+						undoTheStart();
+					}
+				}, LONG_PRESS_MS) };
+			}
+		}
+		if (down.size === 2) {
+			stopPressing();
+			if (!settled(event)) {
+				undoTheStart();
+			}
+			const two = twoFingers();
+			if (two !== null && doing === null) {
+				gesture = { x: two.x, y: two.y, apart: two.apart };
+				gestureMoved = 0;
+			}
+			return;
+		}
+		if (down.size > 2) {
+			stopPressing();
+			return;
+		}
+		// A finger on a tablet where a pen has been seen holds the paper; the
+		// pen is what draws.
+		if (sawPen && event.pointerType === "touch") {
+			pointer = event.pointerId;
+			last = { x: event.clientX, y: event.clientY };
+			capture(pointer, true);
+			doing = "move";
+			return;
+		}
 		if (doing !== null) {
 			return;
 		}
@@ -5768,10 +6018,15 @@ function steerWithPointer(editor, options) {
 		// A held modifier says what this one stroke is; without one it is
 		// whatever the brush has been set to, which is painting until somebody
 		// says otherwise.
-		const chosen = event.altKey ? "fill"
+		const asked = event.altKey ? "fill"
 			: event.shiftKey ? "grab"
 				: (event.ctrlKey || event.metaKey) ? "erase"
 					: (settings.mode === null ? "paint" : settings.mode());
+		// Nothing in hand draws nothing, so an empty brush grabs instead.
+		// That is the rule the native editor has and mappers have in their
+		// fingers: Escape empties the brush, and then dragging picks out a
+		// rectangle.
+		const chosen = asked === "paint" && editor.brushEmpty() ? "grab" : asked;
 		if (chosen !== "paint") {
 			doing = chosen;
 		} else {
@@ -5795,6 +6050,34 @@ function steerWithPointer(editor, options) {
 		// the pointer, not about the stroke.
 		if (settings.onHover !== null) {
 			settings.onHover(tileAt(event));
+		}
+		const held = down.get(event.pointerId);
+		if (held !== undefined) {
+			held.x = event.clientX;
+			held.y = event.clientY;
+		}
+		if (pressing !== null && down.size === 1) {
+			const away = Math.hypot(event.clientX - firstAtSpot.x, event.clientY - firstAtSpot.y);
+			if (away > LONG_PRESS_PIXELS) {
+				stopPressing();
+			}
+		}
+		// Two fingers move the map and nothing in it: the middle of them is
+		// what pans, how far apart they are is what zooms, and what angle they
+		// stand at is nothing at all.
+		if (gesture !== null && down.size >= 2) {
+			const two = twoFingers();
+			if (two === null) {
+				return;
+			}
+			const factor = scale();
+			gestureMoved += Math.hypot(two.x - gesture.x, two.y - gesture.y) + Math.abs(two.apart - gesture.apart);
+			editor.moveByPixels(-(two.x - gesture.x) * factor, -(two.y - gesture.y) * factor);
+			const box = canvas.getBoundingClientRect();
+			editor.zoomAt((two.x - box.left) * factor, (two.y - box.top) * factor, gesture.apart / two.apart);
+			gesture = { x: two.x, y: two.y, apart: two.apart };
+			moved();
+			return;
 		}
 		if (doing === null || pointer !== event.pointerId) {
 			return;
@@ -5862,7 +6145,46 @@ function steerWithPointer(editor, options) {
 		}
 	}, { signal: signal });
 
+	/**
+	 * A finger leaving: what it leaves behind, and what all of them together
+	 * turn out to have meant.
+	 *
+	 * Counted when the last of them goes, because two fingers that went down
+	 * and came up again without going anywhere are a tap, and a tap is only a
+	 * tap once it is over.
+	 */
+	const fingerUp = event => {
+		down.delete(event.pointerId);
+		stopPressing();
+		if (down.size >= 2) {
+			return false;
+		}
+		const was = gesture;
+		if (down.size < 2) {
+			gesture = null;
+		}
+		if (down.size > 0) {
+			return was !== null;
+		}
+		const fingers = mostFingers;
+		const went = gestureMoved;
+		const lasted = (event.timeStamp || Date.now()) - firstAt;
+		mostFingers = 0;
+		gestureMoved = -1;
+		if (fingers >= 2 && went >= 0 && went < FINGER_TAP_PIXELS && lasted < FINGER_TAP_MS) {
+			if (settings.onFingerTap !== null) {
+				settings.onFingerTap(fingers);
+			}
+			return true;
+		}
+		return was !== null || went >= 0;
+	};
+
 	const release = event => {
+		if (fingerUp(event)) {
+			capture(event.pointerId, false);
+			return;
+		}
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
@@ -5924,6 +6246,15 @@ function steerWithPointer(editor, options) {
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
+		down.delete(event.pointerId);
+		stopPressing();
+		if (down.size < 2) {
+			gesture = null;
+		}
+		if (down.size === 0) {
+			mostFingers = 0;
+			gestureMoved = -1;
+		}
 		if (doing === "quad" || doing === "source") {
 			editor.commit();
 			changed();
@@ -5949,8 +6280,30 @@ function steerWithPointer(editor, options) {
 }
 
 // How near a pointer has to come to a quad's handle for it to be the one that
-// is taken hold of, in pixels of the canvas.
+// is taken hold of, in pixels of the canvas. A finger is fatter than a mouse
+// and cannot see what it covers, so it is allowed to be further off.
 const HANDLE_REACH_PIXELS = 10;
+const HANDLE_REACH_FINGER = 22;
+
+// The second finger of a pan lands fifty to a hundred and fifty milliseconds
+// after the first, and by then the first has already put down a tile. Within
+// this window, and within this many pixels, the second finger says the first
+// was never a stroke: it is thrown out, and the two of them are a pan.
+//
+// After it, a stroke is settled and a late finger is ignored - a hand resting
+// on the glass while the other draws is not a gesture.
+const SECOND_FINGER_MS = 150;
+const SECOND_FINGER_PIXELS = 8;
+
+// Two or three fingers down and up again without going anywhere: back, and
+// forward. Procreate's, and the only undo a tablet without a keyboard has.
+const FINGER_TAP_MS = 250;
+const FINGER_TAP_PIXELS = 12;
+
+// A finger that stands still this long, this near where it landed, is asking
+// about the place rather than drawing on it.
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_PIXELS = 8;
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
@@ -6363,6 +6716,35 @@ class CEditorElement extends ELEMENT_BASE {
 		}
 	}
 
+	/**
+	 * Keeps the field somebody is typing in above the keyboard.
+	 *
+	 * An on-screen keyboard does not make the window smaller; it covers the
+	 * bottom of it, and the only thing that says so is `visualViewport`. What
+	 * the editor does about it is the least that helps: the field that has the
+	 * focus is scrolled into view, and the box says that a keyboard is up for
+	 * whoever wants to draw differently for it.
+	 */
+	watchKeyboard() {
+		const port = window.visualViewport;
+		if (port === null || port === undefined) {
+			return;
+		}
+		const look = () => {
+			const covered = window.innerHeight - port.height;
+			this.dataset.keyboard = covered > 120 ? "yes" : "no";
+			if (covered <= 120) {
+				return;
+			}
+			const focused = document.activeElement;
+			if (focused !== null && focused !== this && this.contains(focused)) {
+				focused.scrollIntoView({ block: "nearest" });
+			}
+		};
+		port.addEventListener("resize", look, { signal: this.stopping.signal });
+		look();
+	}
+
 	// The box can change size without the window doing anything at all - a
 	// page that folds a sidebar away makes the editor wider - so the box is
 	// what is watched.
@@ -6401,6 +6783,7 @@ class CEditorElement extends ELEMENT_BASE {
 		}
 		this.watchAreas();
 		this.watchSize();
+		this.watchKeyboard();
 		this.ready = this.start();
 	}
 
@@ -6527,6 +6910,20 @@ class CEditorElement extends ELEMENT_BASE {
 			// the wrong place.
 			onView: () => panels.refreshOverlay(),
 			onHover: tile => panels.hoverAt(tile),
+			// A tap that answers a question the panels asked.
+			onAsk: spot => panels.answerHere(spot),
+			// A finger that stands still over an empty brush asks which layer
+			// is there; over a full one it is allowed to stand still.
+			onLongPress: spot => {
+				if (!instance.brushEmpty()) {
+					return false;
+				}
+				panels.showChooser({ clientX: spot.x, clientY: spot.y });
+				return true;
+			},
+			// Two fingers back, three forward. Procreate's, and the only undo
+			// a tablet without a keyboard has.
+			onFingerTap: fingers => panels.run(fingers >= 3 ? "edit.redo" : "edit.undo"),
 			// A tool that takes clicks - the knife so far - takes this one and
 			// the canvas does nothing else with it.
 			onClickInGroup: world => panels.carveAt(world),

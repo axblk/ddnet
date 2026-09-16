@@ -324,6 +324,10 @@ export declare class MapEditor {
 	rotateBrush(): void;
 	storeBrush(slot: number): boolean;
 	useBrush(slot: number): boolean;
+	/** Whether there is nothing in hand. An empty brush is what grabs. */
+	brushEmpty(): boolean;
+	/** Puts the brush down. */
+	clearBrush(): void;
 	brushSize(): { width: number; height: number } | null;
 	/** What goes beside a physics tile the brush puts down. */
 	numbers(): { number: number; delay: number; force: number; maxSpeed: number; angle: number };
@@ -402,6 +406,10 @@ export declare class EditorPanels {
 	reveal(role: string): Element | null;
 	/** Whether nothing may be changed - what `readonly` on the element sets. */
 	readonly readonly: boolean;
+	/** Whether the next touch on the map is a question about the layer there. */
+	readonly askingLayer: boolean;
+	/** Makes the next touch that question, or takes the question back. */
+	askHere(): void;
 	/** Takes the shape the box says it is in. */
 	applyShape(shape: EditorLayout): void;
 	/** Which of the two schemes the editor is drawn in. */

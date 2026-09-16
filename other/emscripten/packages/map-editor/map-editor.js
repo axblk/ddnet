@@ -1525,6 +1525,14 @@ class CEditorPanels {
 		// with a finger and points with the pen turns it off.
 		this.penHoldsPaper = true;
 		this.unusedSaidAt = -Infinity;
+		this.cannotSaidAt = -Infinity;
+		// Which layer the brush was last filled for, and whether somebody
+		// emptied it on purpose since - see `ensureBrush`.
+		this.brushFor = null;
+		this.brushCleared = false;
+		// The line over the map for the first stroke, while it is shown.
+		this.hint = null;
+		this.hinted = false;
 		// What a long press says, where a pointer would have hovered.
 		this.tip = null;
 		// Which shape the box is in, once something tells us. Without a box
@@ -2051,7 +2059,7 @@ class CEditorPanels {
 		this.lastMap = id;
 		const was = this.mapState.get(id);
 		if (was === undefined) {
-			this.selection = { group: 0, layer: 0 };
+			this.selection = this.defaultSelection();
 			this.collapsed = new Set();
 		} else {
 			this.selection = { group: was.selection.group, layer: was.selection.layer };
@@ -3638,7 +3646,7 @@ class CEditorPanels {
 		const bar = this.root.querySelector('[data-role="bar"]');
 		const status = bar.firstElementChild;
 		for (const command of this.commands) {
-			if (command.bar !== true) {
+			if (command.bar !== true && command.rail !== true) {
 				continue;
 			}
 			const button = document.createElement("button");
@@ -4108,10 +4116,41 @@ class CEditorPanels {
 		} else if (type === "error") {
 			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`, "error");
 		} else if (type === "loaded") {
-			this.selection = { group: 0, layer: -1 };
 			this.collapsed.clear();
+			this.selection = this.defaultSelection();
 		}
 		this.refresh();
+	}
+
+	/**
+	 * Where the work starts on a map nobody has touched yet: the game layer,
+	 * which every map has and every mapper knows; failing that the first tile
+	 * layer, failing that the first layer there is.
+	 *
+	 * The native editor does the same (`SelectGameLayer` after
+	 * `CreateDefault`). An editor that opens with nothing selected is an
+	 * editor whose first stroke does nothing, and that is the one thing a
+	 * first stroke must not do.
+	 */
+	defaultSelection() {
+		const map = this.editor.structure();
+		if (map === null || map.groups.length === 0) {
+			return { group: 0, layer: -1 };
+		}
+		let first = null;
+		let tiles = null;
+		let game = null;
+		map.groups.forEach((group, gi) => group.layers.forEach((layer, li) => {
+			const where = { group: gi, layer: li };
+			first = first || where;
+			if (layer.type === "tiles") {
+				tiles = tiles || where;
+				if (layer.kind === "game") {
+					game = game || where;
+				}
+			}
+		}));
+		return game || tiles || first || { group: 0, layer: -1 };
 	}
 
 	// The keyboard belongs to whoever has the focus: a name being typed into
@@ -4538,6 +4577,12 @@ class CEditorPanels {
 				this.rememberMap(this.lastMap);
 			}
 			this.lastMap = inFront;
+			// A map seen for the first time starts on its game layer, whether
+			// it came through `loaded` or was already open when the panels
+			// were made.
+			if (inFront >= 0 && !this.mapState.has(inFront) && this.selection.layer < 0) {
+				this.selection = this.defaultSelection();
+			}
 		}
 		const map = this.editor.structure();
 		this.map = map;
@@ -4554,6 +4599,13 @@ class CEditorPanels {
 		this.refreshInfo();
 		this.refreshHistory();
 		this.refreshStatus();
+		// The line for the first stroke: there until something was drawn.
+		const history = this.editor.history();
+		if (history !== null && history.entries.length > 1) {
+			this.hideHint();
+		} else if (map !== null && !this.hinted) {
+			this.showHint();
+		}
 		// Which panel each tabbed area shows can only be answered once every
 		// panel has said whether it has anything to show.
 		this.applyTabs();
@@ -4656,7 +4708,7 @@ class CEditorPanels {
 
 	refreshBar() {
 		for (const command of this.commands) {
-			if (command.bar !== true) {
+			if (command.bar !== true && command.rail !== true) {
 				continue;
 			}
 			// By the command's own name, not by the role its button carries:
@@ -4806,6 +4858,12 @@ class CEditorPanels {
 			stop.tabIndex = 0;
 			if (hadFocus) {
 				stop.focus();
+			}
+			// The row that is selected is the row one is working on; a list
+			// that has scrolled it out of sight is a list that hides the one
+			// thing it is for.
+			if (stop.getAttribute("aria-selected") === "true" && typeof stop.scrollIntoView === "function") {
+				stop.scrollIntoView({ block: "nearest" });
 			}
 		}
 		this.addMoreButtons();
@@ -5199,6 +5257,7 @@ class CEditorPanels {
 		if (!this.panelShown.get("tiles-panel")) {
 			return;
 		}
+		this.ensureBrush();
 		const size = this.editor.brushSize();
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
 		this.refreshNumbers(layer);
@@ -5591,6 +5650,160 @@ class CEditorPanels {
 			paint.strokeRect(this.picked.x * side + 1, this.picked.y * side + 1,
 				this.picked.width * side - 2, this.picked.height * side - 2);
 		}
+	}
+
+	/**
+	 * A brush that is never empty by accident.
+	 *
+	 * A tile layer that is selected while nothing is in hand gets tile 1 -
+	 * hookable on the game layer, the first tile of the picture elsewhere -
+	 * the way LDtk's tile tool starts on tile 0. An empty brush grabs instead
+	 * of painting, which mappers rely on and newcomers fall into; so it is
+	 * only empty once somebody emptied it on purpose, and only until the next
+	 * layer.
+	 */
+	ensureBrush() {
+		const where = this.selection;
+		const layer = this.selectedLayer();
+		if (layer === null || layer.type !== "tiles" || this.readonly) {
+			return;
+		}
+		const same = this.brushFor !== null && this.brushFor.group === where.group && this.brushFor.layer === where.layer;
+		if (!same) {
+			this.brushFor = { group: where.group, layer: where.layer };
+			this.brushCleared = false;
+		}
+		if (this.brushCleared || !this.editor.brushEmpty()) {
+			return;
+		}
+		this.picked = { x: 1, y: 0, width: 1, height: 1 };
+		this.editor.pickTiles(where.group, where.layer, 1, 0, 1, 1);
+	}
+
+	/**
+	 * Takes the tile under a spot on the map into the brush, and its layer
+	 * into the selection: the eyedropper of a paint program, for a map.
+	 *
+	 * The layer nearest the front with something other than air there is the
+	 * one meant. The tile is grabbed rather than picked out of the tileset so
+	 * that a physics tile brings its numbers along.
+	 */
+	pickAt(spot) {
+		if (this.map === null || this.readonly) {
+			return false;
+		}
+		const canvas = this.editor.canvas;
+		const box = canvas.getBoundingClientRect();
+		const factor = (canvas.width || 1) / (box.width || 1);
+		const found = this.layersAt((spot.x - box.left) * factor, (spot.y - box.top) * factor);
+		if (found.length === 0) {
+			this.say("Nothing but air here");
+			return false;
+		}
+		// The layer being worked on first, where it has something here - the
+		// way Tiled's and Ogmo's eyedroppers read the current layer - and the
+		// one nearest the front otherwise.
+		const where = this.selection;
+		const what = found.find(one => one.group === where.group && one.layer === where.layer) || found[0];
+		this.selection = { group: what.group, layer: what.layer };
+		this.brushFor = { group: what.group, layer: what.layer };
+		this.brushCleared = false;
+		this.editor.grab(what.group, what.layer, what.tile.x, what.tile.y, 1, 1);
+		this.picked = { x: what.index % TILESET_SIDE, y: Math.floor(what.index / TILESET_SIDE), width: 1, height: 1 };
+		this.refresh();
+		this.say(`Picked tile ${what.index} from ${what.name}`);
+		return true;
+	}
+
+	/**
+	 * A stroke that could not paint says why, once, where it was tried.
+	 *
+	 * A group is selected, or a quad layer with nothing under the pointer: the
+	 * map pans, which is right, and a newcomer sees nothing happen, which is
+	 * not. The layer list is nudged as well, so that the eye goes where the
+	 * fix is.
+	 */
+	cannotPaint(why) {
+		const now = performance.now();
+		if (now - this.cannotSaidAt < TOAST_MS) {
+			return;
+		}
+		this.cannotSaidAt = now;
+		const layer = this.selectedLayer();
+		if (layer !== null && layer.type === "quads") {
+			this.say("This is a quad layer: drag a corner or pivot, or select a tile layer to paint");
+		} else if (layer !== null && layer.type === "sounds") {
+			this.say("This is a sound layer: drag a source, or select a tile layer to paint");
+		} else {
+			this.say("Select a tile layer to paint - click one in Layers");
+		}
+		const panel = this.part("tree-panel");
+		if (panel !== null) {
+			panel.classList.remove("editor-nudge");
+			// Taken off and put back on in two frames, so that a second nudge
+			// runs the animation again rather than finding it already there.
+			requestAnimationFrame(() => panel.classList.add("editor-nudge"));
+			setTimeout(() => panel.classList.remove("editor-nudge"), 700);
+		}
+	}
+
+	/**
+	 * One line over the map for whoever has never used the editor: what a
+	 * drag does. It goes with the first stroke, or with its cross, and a page
+	 * that remembers things remembers that it went.
+	 */
+	showHint() {
+		const home = this.floatHome;
+		if (home === null || home === undefined || this.hint !== null || this.readonly) {
+			return;
+		}
+		try {
+			if (this.remembers() && localStorage.getItem(HINT_STORAGE) === "seen") {
+				return;
+			}
+		} catch (error) {
+			// A browser that keeps nothing shows the hint every time.
+		}
+		this.hint = document.createElement("div");
+		this.hint.className = "editor-hint";
+		this.hint.dataset.role = "hint";
+		this.hint.setAttribute("role", "status");
+		const text = document.createElement("span");
+		text.dataset.role = "hint-text";
+		text.textContent = this.finger()
+			? "Drag on the map to paint · two fingers pan and zoom"
+			: "Drag on the map to paint · right-drag pans · wheel zooms";
+		const away = document.createElement("button");
+		away.type = "button";
+		away.className = "editor-hint-close";
+		away.dataset.role = "hint-close";
+		away.textContent = "×";
+		away.setAttribute("aria-label", "Dismiss");
+		away.addEventListener("click", () => this.hideHint(), { signal: this.stopping.signal });
+		this.hint.append(text, away);
+		home.append(this.hint);
+	}
+
+	hideHint() {
+		if (this.hint === null) {
+			return;
+		}
+		this.hint.remove();
+		this.hint = null;
+		this.hinted = true;
+		try {
+			if (this.remembers()) {
+				localStorage.setItem(HINT_STORAGE, "seen");
+			}
+		} catch (error) {
+			// Nothing kept; the hint comes back next time, which is no harm.
+		}
+	}
+
+	/** Whether the page asked the editor to keep things between visits. */
+	remembers() {
+		return this.box !== null && this.box !== undefined && typeof this.box.hasAttribute === "function"
+			&& this.box.hasAttribute("remember");
 	}
 
 	/** The layer that is selected, or `null` when a group is. */
@@ -7264,7 +7477,7 @@ function steerWithPointer(editor, options) {
 	const settings = Object.assign({
 		canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null,
 		onClickInGroup: null, afterStroke: null, onLongPress: null, onFingerTap: null, onAsk: null,
-		penHoldsPaper: null, signal: undefined,
+		onPick: null, onCannotPaint: null, penHoldsPaper: null, signal: undefined,
 	}, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
@@ -7582,6 +7795,21 @@ function steerWithPointer(editor, options) {
 		last = { x: event.clientX, y: event.clientY };
 		capture(pointer, true);
 		const where = target();
+		const tool = settings.mode === null ? "paint" : settings.mode();
+		// The hand only moves the map, whatever is under it.
+		if (event.button === 0 && tool === "hand") {
+			doing = "move";
+			return;
+		}
+		// The eyedropper: what is here goes into the brush, and its layer
+		// into the selection. A click, not a drag.
+		if (event.button === 0 && tool === "pick") {
+			if (settings.onPick !== null) {
+				settings.onPick({ x: event.clientX, y: event.clientY });
+			}
+			doing = "tool";
+			return;
+		}
 		// A tool that takes clicks takes this one and nothing else happens
 		// with it - the knife is the one there is so far.
 		if (event.button === 0 && where !== null && settings.onClickInGroup !== null) {
@@ -7595,10 +7823,25 @@ function steerWithPointer(editor, options) {
 		if (event.button === 0 && where !== null && (takeQuadPoint(event, where) || takeSource(event, where))) {
 			return;
 		}
+		// A quad or sound layer with nothing under the pointer: there is no
+		// tile to paint, so the map pans - and says so.
+		if (where !== null && (editor.quads(where.group, where.layer) !== null || editor.sources(where.group, where.layer) !== null)) {
+			if (event.button === 0 && settings.onCannotPaint !== null) {
+				settings.onCannotPaint("tool");
+			}
+			doing = "move";
+			return;
+		}
 		const tile = tileAt(event);
 		// The other end of a pen is a rubber, and it comes as button 5.
 		const rubber = event.pointerType === "pen" && event.button === 5;
 		if ((event.button !== 0 && !rubber) || where === null || tile === null) {
+			// The left button with nothing to paint in pans, which is right,
+			// and says so, which is what a newcomer needs: a group is
+			// selected, or a quad layer with no handle under the pointer.
+			if ((event.button === 0 || rubber) && settings.onCannotPaint !== null) {
+				settings.onCannotPaint(where === null ? "layer" : "tool");
+			}
 			doing = "move";
 			return;
 		}
@@ -7887,8 +8130,10 @@ const HANDLE_REACH_FINGER = 22;
 // the edge of the map still starts on the map.
 const EDGE_SWIPE_ZONE = 20;
 
-// Where an element with `remember` keeps the keys somebody set.
+// Where an element with `remember` keeps the keys somebody set, and whether
+// the line over the map for the first stroke has been seen.
 const KEYS_STORAGE = "ddnet-editor-keys";
+const HINT_STORAGE = "ddnet-editor-hinted";
 // Each element's description of its map needs a name no other element has.
 let mapHelpCount = 0;
 const EDGE_SWIPE_REACH = 40;
@@ -8563,6 +8808,9 @@ class CEditorElement extends ELEMENT_BASE {
 			onHover: tile => panels.hoverAt(tile),
 			// A tap that answers a question the panels asked.
 			onAsk: spot => panels.answerHere(spot),
+			// The eyedropper, and the stroke that had nothing to paint in.
+			onPick: spot => panels.pickAt(spot),
+			onCannotPaint: why => panels.cannotPaint(why),
 			// A finger that stands still over an empty brush asks which layer
 			// is there; over a full one it is allowed to stand still.
 			onLongPress: spot => {

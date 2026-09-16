@@ -131,30 +131,33 @@ function slots() {
 	return out;
 }
 
-// Which of the four ways the pointer draws, as four commands that are one
-// choice - so each is "on" while it is the one chosen.
+// The six tools, as six commands that are one choice - so each is "on" while
+// it is the one chosen. The keys are the ones Tiled and Aseprite use.
 function tools() {
 	return [
-		["brush.paint", "Paint", "paint", "B"],
-		["brush.grab", "Grab", "grab", "S"],
-		["brush.fill", "Fill", "fill", "F"],
-		["brush.erase", "Erase", "erase", "E"],
-	].map(([id, label, mode, key]) => ({
+		["brush.paint", "Brush", "paint", "B", "Drag to paint with the brush"],
+		["brush.grab", "Select", "grab", "S", "Drag a rectangle to take tiles into the brush"],
+		["brush.fill", "Fill", "fill", "F", "Drag a rectangle to fill it with the brush"],
+		["brush.erase", "Eraser", "erase", "E", "Drag a rectangle to clear it"],
+		["tool.pick", "Pick", "pick", "I", "Click a tile to take it, and its layer, into the brush"],
+		["tool.hand", "Hand", "hand", "H", "Drag to pan"],
+	].map(([id, label, mode, key, hint]) => ({
 		id: id,
 		label: label,
-		group: "Brush",
+		hint: hint,
+		group: "Tools",
 		icon: mode,
-		bar: true,
-		text: true,
-		// Not `safe`: choosing a mode changes nothing by itself, but the four
-		// of them are the four ways of changing the map, and an editor that is
+		rail: true,
+		// The hand only looks; the rest change the map, and an editor that is
 		// only to be looked at has no use for a choice between them.
-		always: ["paint", "grab", "erase"].includes(mode),
+		safe: mode === "hand",
+		always: ["paint", "grab", "erase", "hand"].includes(mode),
 		keys: [key],
 		pressed: p => p.tool === mode,
 		run: p => {
 			p.tool = mode;
 			p.refreshBar();
+			p.refreshStatus();
 		},
 	}));
 }
@@ -644,8 +647,12 @@ export const COMMANDS = [
 		enabled: p => p.map !== null,
 		run: p => {
 			p.editor.clearBrush();
+			// On purpose, so the next refresh does not fill it again.
+			p.brushCleared = true;
+			p.picked = null;
 			p.refreshTiles();
-			p.say("Nothing in hand - drag to grab");
+			p.refreshStatus();
+			p.say("No brush - drag to select tiles, or click a tile on the right");
 		},
 	},
 	{

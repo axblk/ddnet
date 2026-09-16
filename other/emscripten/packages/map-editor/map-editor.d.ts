@@ -87,6 +87,20 @@ export interface Proof {
 	positions: { index: number; position: [number, number] }[];
 }
 
+/** What one map took from another. */
+export interface AppendReport {
+	name: string;
+	groups: number;
+	images: number;
+	/** Pictures the map already had, byte for byte, so they were not added. */
+	sharedImages: number;
+	/** Pictures whose name was taken by a different picture. */
+	renamedImages: number;
+	sounds: number;
+	envelopes: number;
+	settings: number;
+}
+
 /** One thing a map may say to a server. */
 export interface MapSetting {
 	name: string;
@@ -235,6 +249,8 @@ export declare class MapEditor {
 	settingNames(prefix: string): string[];
 	/** What is wrong with one settings line, or "" where nothing is. */
 	checkSetting(line: string): string;
+	/** Puts a second map's groups, assets and settings into this one; one history entry. */
+	appendFile(file: File, id?: MapId): Promise<AppendReport | null>;
 
 	/** Where a place in one group's coordinates is on the canvas, in pixels. */
 	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;

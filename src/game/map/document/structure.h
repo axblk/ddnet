@@ -219,6 +219,45 @@ namespace map_document
 	 *
 	 * @return Which picture of the map it became.
 	 */
+	/** What one map took from another - for saying so, and for testing it. */
+	class CAppendReport
+	{
+	public:
+		size_t m_Groups = 0;
+		size_t m_Images = 0;
+		/** Pictures the map already had, byte for byte, so they were not added. */
+		size_t m_SharedImages = 0;
+		/** Pictures whose name was taken by a different picture. */
+		size_t m_RenamedImages = 0;
+		size_t m_Sounds = 0;
+		size_t m_Envelopes = 0;
+		size_t m_Settings = 0;
+	};
+
+	/**
+	 * Puts a second map into this one: its groups, its pictures, its sounds,
+	 * its envelopes and the lines it asks of a server.
+	 *
+	 * Not its game group. Physics belongs to the map that is being worked on
+	 * - two game layers is not a map - so what comes over is everything that
+	 * is drawn, and the map keeps its own rules.
+	 *
+	 * Everything a layer names is named by its place, so every place in the
+	 * map coming in has to be read again against where it ends up. Pictures
+	 * are the awkward one: a picture the map already has, with the same name
+	 * *and* the same bytes, is the same picture and is not brought over
+	 * twice; one whose name is taken by a different picture is renamed rather
+	 * than dropped, because losing it would change what the map looks like.
+	 *
+	 * One history entry, however much came over.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Other The map to take from; it is not changed.
+	 *
+	 * @return What came over.
+	 */
+	CAppendReport AppendMap(CDocument &Doc, const CMapState &Other);
+
 	size_t AddImage(CDocument &Doc, CImage Image);
 
 	/**

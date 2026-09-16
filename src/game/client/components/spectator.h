@@ -10,16 +10,21 @@
 #include <game/client/game_view.h>
 #include <game/client/ui.h>
 
+#include <array>
+
 class CSpectator : public CComponent
 {
 	static constexpr int MULTI_VIEW = CGameView::CSpectatorSelectorState::MULTI_VIEW;
 	static constexpr int NO_SELECTION = CGameView::CSpectatorSelectorState::NO_SELECTION;
 
 	CUi::CTouchState m_TouchState;
+	std::array<CCachedText, 3> m_aHeaderTexts;
+	std::array<CCachedText, MAX_CLIENTS> m_aPlayerTexts;
 	CGameView::CSpectatorSelectorState &Selector();
 	const CGameView::CSpectatorSelectorState &Selector() const;
 	void Spectate(CGameView &View, const CGameView::CSpectatorSelectorState &Selector, int SpectatorId);
 	void ResetMultiView(CGameView &View);
+	void ResetTexts();
 	void ApplySelection(CGameView &View, CGameView::CSpectatorSelectorState &Selector, int SpectatorId, int DDTeam, bool Toggle, float Now);
 
 	bool CanChangeSpectatorId();
@@ -43,6 +48,8 @@ public:
 	void OnRender(const CRenderContext &Context) override;
 	void OnRelease() override;
 	void OnReset() override;
+	void OnShutdown() override;
+	void OnWindowResize() override;
 
 	void Spectate(int SpectatorId);
 	void SpectateClosest();

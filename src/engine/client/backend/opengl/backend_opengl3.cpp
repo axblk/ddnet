@@ -379,8 +379,6 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 	m_pTileProgramTextured = new CGLSLTileProgram;
 	m_pPrimitive3DProgram = new CGLSLPrimitiveProgram;
 	m_pPrimitive3DProgramTextured = new CGLSLPrimitiveProgram;
-	m_pBorderTileProgram = new CGLSLTileProgram;
-	m_pBorderTileProgramTextured = new CGLSLTileProgram;
 	m_pQuadProgram = new CGLSLQuadProgram;
 	m_pQuadProgramTextured = new CGLSLQuadProgram;
 	m_pQuadProgramGrouped = new CGLSLQuadProgram;
@@ -526,6 +524,8 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 
 		m_pTileProgram->m_LocPos = m_pTileProgram->GetUniformLoc("gPos");
 		m_pTileProgram->m_LocColor = m_pTileProgram->GetUniformLoc("gVertColor");
+		m_pTileProgram->m_LocOffset = m_pTileProgram->GetUniformLoc("gOffset");
+		m_pTileProgram->m_LocScale = m_pTileProgram->GetUniformLoc("gScale");
 	}
 	{
 		CGLSL VertexShader;
@@ -545,46 +545,8 @@ bool CCommandProcessorFragment_OpenGL3_3::Cmd_Init(const SCommand_Init *pCommand
 		m_pTileProgramTextured->m_LocPos = m_pTileProgramTextured->GetUniformLoc("gPos");
 		m_pTileProgramTextured->m_LocTextureSampler = m_pTileProgramTextured->GetUniformLoc("gTextureSampler");
 		m_pTileProgramTextured->m_LocColor = m_pTileProgramTextured->GetUniformLoc("gVertColor");
-	}
-	{
-		CGLSL VertexShader;
-		CGLSL FragmentShader;
-		VertexShader.LoadShader(&ShaderCompiler, "tile_border.vert", GL_VERTEX_SHADER);
-		FragmentShader.LoadShader(&ShaderCompiler, "tile_border.frag", GL_FRAGMENT_SHADER);
-		ShaderCompiler.ClearDefines();
-
-		m_pBorderTileProgram->CreateProgram();
-		m_pBorderTileProgram->AddShader(&VertexShader);
-		m_pBorderTileProgram->AddShader(&FragmentShader);
-		m_pBorderTileProgram->LinkProgram();
-
-		UseProgram(m_pBorderTileProgram);
-
-		m_pBorderTileProgram->m_LocPos = m_pBorderTileProgram->GetUniformLoc("gPos");
-		m_pBorderTileProgram->m_LocColor = m_pBorderTileProgram->GetUniformLoc("gVertColor");
-		m_pBorderTileProgram->m_LocOffset = m_pBorderTileProgram->GetUniformLoc("gOffset");
-		m_pBorderTileProgram->m_LocScale = m_pBorderTileProgram->GetUniformLoc("gScale");
-	}
-	{
-		CGLSL VertexShader;
-		CGLSL FragmentShader;
-		ShaderCompiler.AddDefine("TW_TILE_TEXTURED", "");
-		VertexShader.LoadShader(&ShaderCompiler, "tile_border.vert", GL_VERTEX_SHADER);
-		FragmentShader.LoadShader(&ShaderCompiler, "tile_border.frag", GL_FRAGMENT_SHADER);
-		ShaderCompiler.ClearDefines();
-
-		m_pBorderTileProgramTextured->CreateProgram();
-		m_pBorderTileProgramTextured->AddShader(&VertexShader);
-		m_pBorderTileProgramTextured->AddShader(&FragmentShader);
-		m_pBorderTileProgramTextured->LinkProgram();
-
-		UseProgram(m_pBorderTileProgramTextured);
-
-		m_pBorderTileProgramTextured->m_LocPos = m_pBorderTileProgramTextured->GetUniformLoc("gPos");
-		m_pBorderTileProgramTextured->m_LocTextureSampler = m_pBorderTileProgramTextured->GetUniformLoc("gTextureSampler");
-		m_pBorderTileProgramTextured->m_LocColor = m_pBorderTileProgramTextured->GetUniformLoc("gVertColor");
-		m_pBorderTileProgramTextured->m_LocOffset = m_pBorderTileProgramTextured->GetUniformLoc("gOffset");
-		m_pBorderTileProgramTextured->m_LocScale = m_pBorderTileProgramTextured->GetUniformLoc("gScale");
+		m_pTileProgramTextured->m_LocOffset = m_pTileProgramTextured->GetUniformLoc("gOffset");
+		m_pTileProgramTextured->m_LocScale = m_pTileProgramTextured->GetUniformLoc("gScale");
 	}
 	{
 		CGLSL VertexShader;
@@ -777,8 +739,6 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_Shutdown(const SCommand_Shutdown *
 	delete m_pPrimitiveProgramTextured;
 	delete m_pBlurProgram;
 	delete m_pPlanarYuvProgram;
-	delete m_pBorderTileProgram;
-	delete m_pBorderTileProgramTextured;
 	delete m_pQuadProgram;
 	delete m_pQuadProgramTextured;
 	delete m_pQuadProgramGrouped;
@@ -1512,28 +1472,18 @@ void CCommandProcessorFragment_OpenGL3_3::Cmd_DrawIndexed(const CCommandBuffer::
 		RenderDualAtlasComposite(pCommand->m_State, pCommand->m_IndexCount, pCommand->m_IndexOffset, pCommand->m_State.m_Texture.Id(), *pDrawData);
 		return;
 	}
-	else if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
+	else if(Program == EPipelineProgram::ARRAY_COLOR)
 	{
-		const bool HasTransform = Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
-		const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-		const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
-		if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
+		const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+		if(pColorData == nullptr)
 			return;
 
-		CGLSLTileProgram *pProgram;
-		if(HasTransform)
-			pProgram = IsTexturedState(pCommand->m_State) ? m_pBorderTileProgramTextured : m_pBorderTileProgram;
-		else
-			pProgram = IsTexturedState(pCommand->m_State) ? m_pTileProgramTextured : m_pTileProgram;
+		CGLSLTileProgram *pProgram = IsTexturedState(pCommand->m_State) ? m_pTileProgramTextured : m_pTileProgram;
 		UseProgram(pProgram);
 		SetState(pCommand->m_State, pProgram, true);
-		const ColorRGBA &Color = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
-		pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&Color);
-		if(HasTransform)
-		{
-			pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pTransformData->m_Offset);
-			pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pTransformData->m_Scale);
-		}
+		pProgram->SetUniformVec4(pProgram->m_LocColor, 1, (float *)&pColorData->m_Color);
+		pProgram->SetUniformVec2(pProgram->m_LocOffset, 1, (float *)&pColorData->m_Offset);
+		pProgram->SetUniformVec2(pProgram->m_LocScale, 1, (float *)&pColorData->m_Scale);
 		glDrawElements(GL_TRIANGLES, pCommand->m_IndexCount, GL_UNSIGNED_INT, reinterpret_cast<const void *>(pCommand->m_IndexOffset));
 		return;
 	}

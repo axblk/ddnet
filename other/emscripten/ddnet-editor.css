@@ -165,9 +165,22 @@ ddnet-editor[data-theme="light"],
 /* What says it is not there is not there. A class that sets `display` beats
    the browser's own rule for the `hidden` attribute, and half the rows in
    here are flex rows - so a row that was switched off was still drawn. */
+ddnet-editor [hidden],
 .editor-panels[hidden],
 .editor-panels [hidden] {
 	display: none !important;
+}
+
+/* A page around the editor may dress its own buttons - `ddnet-page.css` paints
+   them orange on hover - and a `button:hover` of the page's beats a class of
+   ours. The editor's buttons are not the page's; what they look like under the
+   pointer is said below, by name. */
+ddnet-editor button:hover,
+ddnet-editor button:focus,
+.editor-panels button:hover,
+.editor-panels button:focus {
+	background: none;
+	color: inherit;
 }
 
 /* The five areas the panels are spread into. Each is a strip of its own, told
@@ -250,6 +263,7 @@ ddnet-editor[data-theme="light"],
 
 .editor-statusbar {
 	display: flex;
+	flex-direction: row;
 	align-items: center;
 	gap: var(--space-2);
 	min-height: var(--row);
@@ -358,6 +372,7 @@ ddnet-editor[data-theme="light"],
    the accent, outside the element, on everything - the browser's own ring
    differs from platform to platform and is not always visible on the dark
    ground the editor sits on. */
+ddnet-editor :focus-visible,
 .editor-panels :focus-visible,
 .editor-overlay :focus-visible {
 	outline: 2px solid var(--accent);
@@ -497,6 +512,9 @@ ddnet-editor[data-theme="light"],
 @media (hover: hover) {
 	.editor-button:hover:not(:disabled),
 	.editor-small:hover:not(:disabled),
+	.editor-slot:hover:not(:disabled),
+	.editor-fold:hover,
+	.editor-eye:hover,
 	.editor-row:hover {
 		background: var(--bg-3);
 	}
@@ -971,6 +989,103 @@ circle.editor-source-dot.editor-source-picked {
 .editor-art-field input[type="number"] {
 	width: 56px;
 	font-variant-numeric: tabular-nums;
+}
+
+
+/* The big tile chooser, over the map. It is not a panel: it floats, it is
+   shut as soon as it has been used, and it is as big as the map lets it be -
+   the small tileset beside the map is seventeen pixels a tile, and seventeen
+   pixels is not a tile anybody can tell from its neighbour. */
+.editor-picker {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 2;
+	padding: var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+.editor-picker-tiles {
+	display: block;
+	image-rendering: pixelated;
+	background: var(--bg-0);
+	border-radius: var(--radius-1);
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.editor-picker-name {
+	margin: var(--space-1) 0 0;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+/* What lies under a spot on the map, where more than one layer does. */
+.editor-choose {
+	position: absolute;
+	z-index: 3;
+	list-style: none;
+	margin: 0;
+	padding: var(--space-1);
+	min-width: 160px;
+	background: var(--bg-2);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+	font: var(--type-sm);
+	color: var(--text-1);
+}
+
+.editor-choose-empty {
+	padding: var(--space-1);
+	color: var(--text-2);
+}
+
+/* The ten places a brush can be put away in. */
+.editor-slots {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-1);
+	margin-top: var(--space-2);
+}
+
+.editor-slot {
+	flex: 1;
+	min-width: var(--button-small);
+	min-height: var(--button-small);
+	border: 0;
+	border-radius: var(--radius-1);
+	background: var(--bg-2);
+	/* An empty place is quiet, but it is not switched off - it can be filled,
+	   and its number has to be readable to be aimed at. */
+	color: var(--text-2);
+	font: var(--type-mono);
+	cursor: pointer;
+}
+
+/* A place with something in it says so; an empty one is only a number. */
+.editor-slot[aria-pressed="true"] {
+	background: var(--sel);
+	color: var(--text-1);
+}
+
+/* What the line at the bottom says about where the work is. */
+.editor-statusline {
+	display: flex;
+	gap: var(--space-3);
+	color: var(--text-2);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.editor-statusline span:empty {
+	display: none;
 }
 
 /* Typing with tiles: a field and a button, on one line. */

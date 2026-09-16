@@ -32,7 +32,6 @@
 		<ddnet-editor id="editor" urlparam="map" remember>
 			<div class="open" slot="header">
 				<strong>DDNet Map Editor</strong>
-				<button class="editor-small" id="new-button">New map</button>
 				<p id="message" role="status">Starting&hellip;</p>
 			</div>
 		</ddnet-editor>
@@ -56,9 +55,6 @@
 			describe();
 			for (const type of ["document", "saved", "loaded", "closed"]) { editor.addEventListener(type, () => describe()); }
 			editor.addEventListener("error", event => say(`Could not ${event.detail && event.detail.what === "save" ? "save" : "open"} that.`));
-			// Opening and making a map are commands of the editor's; this page
-			// only says where one of the buttons for them sits.
-			document.getElementById("new-button").addEventListener("click", () => box.panels.run("file.new"));
 		</script>
 	</body>
 </html>

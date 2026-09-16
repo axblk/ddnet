@@ -381,6 +381,10 @@ bool CMapEditor::PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int
 		for(int tx = 0; tx < Width; ++tx)
 			SetBrushTile(Brush, tx, ty, (y + ty) * TILESET_SIDE + x + tx);
 	}
+	// A tile out of the tileset says what it does; the numbers say to which
+	// of them, and they are the ones last chosen rather than whatever the
+	// tileset would suggest, which is nothing.
+	map_document::SetBrushNumbers(Brush, m_Numbers);
 	m_Brush = std::move(Brush);
 	return true;
 }
@@ -391,7 +395,17 @@ bool CMapEditor::Grab(int Id, size_t Group, size_t Layer, int x, int y, int Widt
 	if(pMap == nullptr)
 		return false;
 	m_Brush = map_document::GrabTiles(*pMap->m_Document.Map().TileLayer(Group, Layer), x, y, Width, Height);
+	// A piece of a layer comes with the numbers that were on it, and now they
+	// are the ones in hand - so putting the piece down somewhere else puts
+	// down what was picked up.
+	m_Numbers = map_document::BrushNumbers(m_Brush);
 	return true;
+}
+
+void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
+{
+	m_Numbers = Numbers;
+	map_document::SetBrushNumbers(m_Brush, m_Numbers);
 }
 
 bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
@@ -465,6 +479,9 @@ bool CMapEditor::UseBrush(size_t Slot)
 	if(Slot >= m_aStoredBrushes.size() || m_aStoredBrushes[Slot].Width() == 0)
 		return false;
 	m_Brush = m_aStoredBrushes[Slot];
+	// A brush taken out of a slot brings its own numbers back with it, the
+	// same way a grabbed one does.
+	m_Numbers = map_document::BrushNumbers(m_Brush);
 	return true;
 }
 

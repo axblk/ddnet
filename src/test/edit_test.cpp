@@ -300,3 +300,70 @@ TEST(Edit, AStrokeOnlyTakesApartTheBlocksItTouched)
 	EXPECT_NE(pAfter->m_Tiles.ChunkId(0, 0), pBefore->m_Tiles.ChunkId(0, 0));
 	EXPECT_EQ(pAfter->m_Tiles.ChunkId(3, 0), pFarBlock);
 }
+
+// The numbers beside a physics tile belong to the brush: a number is chosen
+// and then tiles are put down with it. What is air keeps none of them, or the
+// file would carry a tile that does nothing with a number beside it.
+TEST(Edit, TheNumbersGoOnEveryTileOfTheBrushThatIsNotAir)
+{
+	CBrush Brush(ETileLayerKind::TELE, 2, 1);
+	CTileStore<CTeleTile> &Tele = std::get<CTileStore<CTeleTile>>(Brush.m_ExtraTiles);
+	Tele.Set(0, 0, TeleTile(TILE_TELEIN, 0));
+	// The second one stays air.
+
+	CBrushNumbers Numbers;
+	Numbers.m_Number = 42;
+	SetBrushNumbers(Brush, Numbers);
+
+	EXPECT_EQ(Tele.Get(0, 0).m_Number, 42);
+	EXPECT_EQ(Tele.Get(1, 0).m_Type, 0);
+	EXPECT_EQ(Tele.Get(1, 0).m_Number, 0);
+}
+
+TEST(Edit, ASwitchCarriesItsDelayAndASpeedupItsForce)
+{
+	CBrush Switch(ETileLayerKind::SWITCH, 1, 1);
+	CSwitchTile Tile = {};
+	Tile.m_Type = TILE_SWITCHOPEN;
+	std::get<CTileStore<CSwitchTile>>(Switch.m_ExtraTiles).Set(0, 0, Tile);
+	CBrushNumbers Numbers;
+	Numbers.m_Number = 7;
+	Numbers.m_Delay = 3;
+	SetBrushNumbers(Switch, Numbers);
+	EXPECT_EQ(std::get<CTileStore<CSwitchTile>>(Switch.m_ExtraTiles).Get(0, 0).m_Number, 7);
+	EXPECT_EQ(std::get<CTileStore<CSwitchTile>>(Switch.m_ExtraTiles).Get(0, 0).m_Delay, 3);
+
+	CBrush Speedup(ETileLayerKind::SPEEDUP, 1, 1);
+	CSpeedupTile Push = {};
+	Push.m_Type = TILE_SPEED_BOOST;
+	std::get<CTileStore<CSpeedupTile>>(Speedup.m_ExtraTiles).Set(0, 0, Push);
+	CBrushNumbers Pushing;
+	Pushing.m_Force = 20;
+	Pushing.m_MaxSpeed = 30;
+	// More than a turn round is the same way round.
+	Pushing.m_Angle = 450;
+	SetBrushNumbers(Speedup, Pushing);
+	const CSpeedupTile Written = std::get<CTileStore<CSpeedupTile>>(Speedup.m_ExtraTiles).Get(0, 0);
+	EXPECT_EQ(Written.m_Force, 20);
+	EXPECT_EQ(Written.m_MaxSpeed, 30);
+	EXPECT_EQ(Written.m_Angle, 90);
+}
+
+TEST(Edit, WhatABrushCarriesCanBeReadBackOffIt)
+{
+	CBrush Brush(ETileLayerKind::TELE, 2, 1);
+	CTileStore<CTeleTile> &Tele = std::get<CTileStore<CTeleTile>>(Brush.m_ExtraTiles);
+	// Air first, so that reading has to walk past it.
+	Tele.Set(1, 0, TeleTile(TILE_TELEOUT, 12));
+	EXPECT_EQ(BrushNumbers(Brush).m_Number, 12);
+
+	// A brush of a kind that has no numbers carries none, and is not changed
+	// by being given some.
+	CBrush Plain = TileBrush(2, 2, 5);
+	const CBrush Was = Plain;
+	CBrushNumbers Numbers;
+	Numbers.m_Number = 9;
+	SetBrushNumbers(Plain, Numbers);
+	EXPECT_EQ(Plain, Was);
+	EXPECT_EQ(BrushNumbers(Plain).m_Number, 0);
+}

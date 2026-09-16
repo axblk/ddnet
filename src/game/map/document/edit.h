@@ -90,6 +90,56 @@ namespace map_document
 	void RotateBrush(CBrush &Brush);
 
 	/**
+	 * What goes beside a physics tile: which of them it means.
+	 *
+	 * A tile index in a tele layer says what the tile *does* - send, check,
+	 * a start, an exit - and this says to which target. The same for a
+	 * switch's group and how long it waits, and for how hard and which way a
+	 * speedup pushes. It is one set for a whole brush rather than one per
+	 * tile, because that is how somebody places them: a number is chosen and
+	 * then tiles are put down with it.
+	 *
+	 * Which of these mean anything depends on the kind of layer, and the
+	 * ones that do not are left where they are.
+	 */
+	class CBrushNumbers
+	{
+	public:
+		/** A tele's target, a switch's group, a tune zone. 0 to 255. */
+		int m_Number = 0;
+		/** How long a switch waits, in seconds. 0 to 255. */
+		int m_Delay = 0;
+		/** How hard a speedup pushes, and how fast it may get. 0 to 255. */
+		int m_Force = 0;
+		int m_MaxSpeed = 0;
+		/** Which way a speedup pushes, in degrees. */
+		int m_Angle = 0;
+	};
+
+	/**
+	 * Writes those numbers onto every tile of the brush that is not air.
+	 *
+	 * Air keeps none of them: a number on a tile that does nothing would be
+	 * written into the file and read back as a tile that does nothing with a
+	 * number. A brush of a kind that has no numbers is left alone.
+	 *
+	 * @param Brush The brush to write on.
+	 * @param Numbers What to write.
+	 */
+	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers);
+
+	/**
+	 * The numbers the brush is carrying, read off its first tile that is not
+	 * air - for an interface that has just grabbed a piece of a layer and
+	 * wants to show what came with it.
+	 *
+	 * @param Brush The brush to read.
+	 *
+	 * @return What it carries, or all zeroes where it carries nothing.
+	 */
+	CBrushNumbers BrushNumbers(const CBrush &Brush);
+
+	/**
 	 * Changes one tile layer of the version being made.
 	 *
 	 * This is the three steps of `CMapState` as one, for the case that is

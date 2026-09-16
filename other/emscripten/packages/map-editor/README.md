@@ -83,6 +83,14 @@ unpacked in the program, and the page asks for the pixels
 (`editor.imageData(index)`) and draws them itself. Either way the program never
 draws a tileset - it draws maps.
 
+In a tele, switch, speedup or tune layer the tileset comes with the numbers
+that go beside a tile: which tele the tile sends to, which switch it belongs to
+and how long it waits, how hard and which way a speedup pushes. They belong to
+the brush rather than to a tile - a number is chosen and then tiles are put
+down with it - and grabbing a piece of a layer brings back the numbers that
+were on it, so carrying a piece of a map somewhere else carries them along.
+What is air keeps none of them.
+
 A stroke is one change made of many stamps, which is why it costs what it
 touched rather than what the map is: a hundred strokes of eight stamps each
 take 72 ms on ctf1 and 104 ms on Tsunami, a map eight times its size, and both
@@ -92,6 +100,6 @@ and 17 ms.
 ## What it is not, yet
 
 Quads, envelopes, images, sounds and the automapper are looked at but not
-changed; the numbers beside a tele or a switch tile cannot be set. A layer with
+changed. A layer with
 no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.

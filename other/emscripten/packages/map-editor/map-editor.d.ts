@@ -138,6 +138,9 @@ export declare class MapEditor {
 	storeBrush(slot: number): boolean;
 	useBrush(slot: number): boolean;
 	brushSize(): { width: number; height: number } | null;
+	/** What goes beside a physics tile the brush puts down. */
+	numbers(): { number: number; delay: number; force: number; maxSpeed: number; angle: number };
+	numbers(values: { number?: number; delay?: number; force?: number; maxSpeed?: number; angle?: number }): void;
 
 	highDetail(on?: boolean, id?: MapId): boolean | void;
 	entities(value?: boolean | number, id?: MapId): number | void;

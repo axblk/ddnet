@@ -321,6 +321,7 @@ protected:
 	int m_NumVertices = 0;
 	SGraphicsColor m_aColor[4];
 	vec2 m_aTexture[4];
+	bool m_ScreenTexCoords = false;
 	float m_Rotation = 0.0f;
 	int m_CurIndex = -1;
 	EDrawing m_Drawing = EDrawing::NONE;
@@ -884,6 +885,10 @@ public:
 	void QuadsSetRotation(float Angle);
 	void QuadsSetSubset(float TopLeftU, float TopLeftV, float BottomRightU, float BottomRightV);
 	void QuadsSetSubsetFree(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3, int Index = -1);
+	// Until the next Begin, every vertex samples the texture where it lands on
+	// the screen, whatever the subset says: a picture of the whole screen can then
+	// be drawn in any shape and stays where it was taken.
+	void QuadsSetScreenTexCoords() { m_ScreenTexCoords = true; }
 
 	struct CFreeformItem
 	{

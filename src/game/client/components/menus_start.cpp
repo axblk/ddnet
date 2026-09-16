@@ -53,7 +53,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		for(int i = 0; i < 5; ++i)
 		{
 			Remaining.HSplitBottom(20.0f, &Remaining, &Backdrop);
-			GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+			GameClient()->m_Menus.RenderBackdropRegion(Backdrop, IGraphics::CORNER_ALL, 5.0f);
 			Remaining.HSplitBottom(5.0f, &Remaining, nullptr);
 		}
 	}
@@ -113,12 +113,12 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	{
 		CUIRect Remaining = Menu, Backdrop;
 		Remaining.HSplitBottom(ButtonHeight, &Remaining, &Backdrop);
-		GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+		GameClient()->m_Menus.RenderBackdropRegion(Backdrop, IGraphics::CORNER_ALL, Rounding);
 		Remaining.HSplitBottom(QuitButtonGap, &Remaining, nullptr);
 		for(int i = 0; i < 5; ++i)
 		{
 			Remaining.HSplitBottom(ButtonHeight, &Remaining, &Backdrop);
-			GameClient()->m_Menus.RenderBackdropRegion(Backdrop);
+			GameClient()->m_Menus.RenderBackdropRegion(Backdrop, IGraphics::CORNER_ALL, Rounding);
 			Remaining.HSplitBottom(ButtonSpacing, &Remaining, nullptr);
 		}
 	}
@@ -196,7 +196,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(0), &CurVersion, GAME_RELEASE_VERSION, 14.0f, TEXTALIGN_MR);
 
 	static CButtonContainer s_ConsoleButton;
-	GameClient()->m_Menus.RenderBackdropRegion(ConsoleButton);
+	GameClient()->m_Menus.RenderBackdropRegion(ConsoleButton, IGraphics::CORNER_ALL, 5.0f);
 	TextRender()->SetFontPreset(EFontPreset::ICON_FONT);
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
 	if(GameClient()->m_Menus.DoButton_Menu(&s_ConsoleButton, FontIcon::TERMINAL, 0, &ConsoleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.1f)))
@@ -221,7 +221,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	// Whatever the updater puts here -- a button or a progress bar -- sits on the
 	// background map like the buttons above it do.
 	if(State == IUpdater::CLEAN ? NeedUpdate : State >= IUpdater::GETTING_MANIFEST)
-		GameClient()->m_Menus.RenderBackdropRegion(UpdateButton);
+		GameClient()->m_Menus.RenderBackdropRegion(UpdateButton, IGraphics::CORNER_ALL, 5.0f);
 
 	if(State == IUpdater::CLEAN && NeedUpdate)
 	{

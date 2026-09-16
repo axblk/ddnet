@@ -222,6 +222,29 @@ export declare class MapEditor {
 	save(id?: MapId, options?: { handout?: boolean }): boolean;
 	/** Whether the map has been changed since it was last written out. */
 	dirty(id?: MapId): boolean;
+	/** The maps in the browser's own storage, by name, with their size in bytes. */
+	saved(): { name: string; size: number }[];
+	/**
+	 * Which entities sheet physics layers are drawn out of: `ddnet`, `ddrace`,
+	 * `race`, `fng`, `vanilla`, `f-ddrace` or `blockworlds`. Called with a
+	 * name it sets it for every map; any other name changes nothing.
+	 */
+	entitiesImage(name?: string): string;
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there -
+	 * off by default, as in the native editor. Called with a value it sets it.
+	 */
+	allowUnused(on?: boolean): boolean;
+	/** Asks for a PNG of the whole map, drawn over the next frames and handed out. */
+	picture(id?: MapId): boolean;
+	/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+	pictureState(): 0 | 1 | 2 | 3;
+	/** How far the picture has got, from 0 to 1. */
+	pictureProgress(): number;
+	/** Opens one of those by name; the number of the map, or -1. */
+	openSaved(name: string): number;
+	/** Writes the map under another name without renaming it or marking it saved. */
+	saveCopy(id: MapId | undefined, name: string, options?: { handout?: boolean }): boolean;
 	/** Writes every changed map into the browser's own storage every so many seconds. */
 	autosave(seconds: number): void;
 
@@ -388,7 +411,7 @@ export declare class EditorPanels {
 	selection: { group: number; layer: number };
 	/** Which panel each area that shows one at a time has in front. */
 	readonly tab: { left: string; dock: string; tiles: string };
-	/** Everything the editor can be told to do. */
+	/** Everything the editor can be told to do - this panel's own copy, keys as they are now. */
 	readonly commands: EditorCommand[];
 	/** Which of the four ways the pointer draws while no modifier says otherwise. */
 	tool: "paint" | "grab" | "fill" | "erase";
@@ -431,7 +454,7 @@ export declare class EditorPanels {
 	 * Says something over the map, and hands the note back. A note goes by
 	 * itself after four seconds; `kind: "error"` stays until it is dismissed.
 	 */
-	tell(text: string, kind?: "note" | "error"): Element | null;
+	tell(text: string, kind?: "note" | "error" | "progress"): Element | null;
 	/** Writes it into the status line and says it over the map as well. */
 	say(text: string, kind?: "note" | "error"): void;
 	/** Shows what that button is called, where a pointer would have hovered. */
@@ -447,6 +470,38 @@ export declare class EditorPanels {
 	askNewMap(): void;
 	/** Asks what the map is to be called from now on, then saves it. */
 	askSaveAs(): void;
+	/** Picks one of the maps in this browser's storage and opens it. */
+	askOpenSaved(): void;
+	/** Asks for a name and writes a copy under it; this map stays this map. */
+	askSaveCopy(): void;
+	/** The editor's own yes-or-no question, instead of `confirm()`. */
+	askYesNo(title: string, text: string, yes: string, done: () => void): void;
+	/** Every key the editor answers to, on one sheet, where each can be changed. */
+	showKeys(): void;
+	/** Moves the focus to the next area (`1`) or the one before (`-1`), as F6 does. */
+	focusArea(step: 1 | -1): boolean;
+	/**
+	 * Gives a command these keys and nothing else. A key another command had
+	 * moves; that command is returned, `null` when none lost one. Fires
+	 * `editor-keys`.
+	 */
+	setKeys(id: string, keys: string[]): EditorCommand | null;
+	/** Every key back to what the command table says. */
+	resetKeys(): void;
+	/** The commands whose keys differ from the table, id to keys. */
+	changedKeys(): Record<string, string[]>;
+	/** Puts back what `changedKeys()` once said. */
+	applyKeys(changed: Record<string, string[]>): void;
+	/** Whether the tileset is shown in the colour of the layer it is for. */
+	brushColouring: boolean;
+	/** Whether a finger only pans once a pen has been seen (on, as on a drawing tablet). */
+	penHoldsPaper: boolean;
+	/** A picture of the whole map, with a note that counts while it is drawn. */
+	exportPicture(): boolean;
+	/** The outer ring of the selected tile layer, drawn with the brush. */
+	makeBorder(): boolean;
+	/** Takes out every envelope nothing is bound to, as one step. */
+	deleteUnusedEnvelopes(): { ok: boolean; envelopes?: number; error?: string };
 	closeDialog(): void;
 	refresh(): void;
 	destroy(): void;

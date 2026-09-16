@@ -57,8 +57,17 @@ TEST(DocumentSource, DrawsTheTilesOfALayerThatHasThem)
 
 TEST(DocumentSource, ALayerWithoutAnImageIsNotTextured)
 {
-	const CTileChunkCache::CLayerSource Source = DocumentLayerSource(Wrap(CTileLayer(ETileLayerKind::GAME, 16, 16)));
+	const CTileChunkCache::CLayerSource Source = DocumentLayerSource(Wrap(CTileLayer(ETileLayerKind::TILES, 16, 16)));
 	EXPECT_FALSE(Source.m_Textured);
+}
+
+TEST(DocumentSource, APhysicsLayerIsTexturedByTheEntitiesSheet)
+{
+	// No picture of its own, and drawn out of one all the same: uploaded
+	// without texture coordinates, the graphics would drop its draw the moment
+	// the entities sheet is bound.
+	for(const ETileLayerKind Kind : {ETileLayerKind::GAME, ETileLayerKind::FRONT, ETileLayerKind::TELE, ETileLayerKind::SPEEDUP, ETileLayerKind::SWITCH, ETileLayerKind::TUNE})
+		EXPECT_TRUE(DocumentLayerSource(Wrap(CTileLayer(Kind, 16, 16))).m_Textured);
 }
 
 TEST(DocumentSource, DrawsATeleLayerFromItsSecondPlane)

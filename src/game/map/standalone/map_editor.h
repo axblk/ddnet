@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -342,6 +343,16 @@ public:
 	 * list somebody is looking at all at once.
 	 */
 	std::string SettingNamesJson(const char *pPrefix) const;
+
+	/**
+	 * What lies in a directory of the storage, as a JSON array.
+	 *
+	 * For the browser, where the maps that were saved live in the program's
+	 * own file system and a page cannot look into it. Each entry says its
+	 * name without the `.map` and how big it is; directories and anything
+	 * that is not a map are left out.
+	 */
+	std::string SavedJson(const char *pDirectory, int StorageType);
 
 	/** What is wrong with one settings line - see `map_document::CheckSetting`. */
 	std::string CheckSetting(const char *pLine) const;
@@ -750,6 +761,49 @@ public:
 	/** Whether the pictures of the map in front are all here yet. */
 	bool Loading() const;
 
+	/**
+	 * Begins a picture of a whole map, written as a PNG a band at a time.
+	 *
+	 * What is in it is the map as it is looked at - the detail layers if
+	 * those are shown, the layers that are hidden left out - and none of the
+	 * working aids: no grid, no marks, no handles on a quad. It is drawn over
+	 * the frames that follow by `StepPicture`, because the whole of a large
+	 * map is hundreds of pieces and a browser has one thread.
+	 *
+	 * @param Id The number of the map.
+	 * @param pPath The file to write, as a path of the operating system.
+	 * @param PixelBudget How many pixels the picture may have at most.
+	 *
+	 * @return `true` when there is a picture to step through.
+	 */
+	bool BeginPicture(int Id, const char *pPath, size_t PixelBudget);
+
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there.
+	 * Off, as in the native editor: such a tile is put down as air.
+	 */
+	void SetAllowUnused(bool Allow) { m_AllowUnused = Allow; }
+
+	/**
+	 * Which entities sheet physics layers are drawn out of, for every map
+	 * that is open and every one opened later: one of the names in
+	 * `data/editor/entities_clear/`, such as `ddnet`, `race`, `fng` or
+	 * `vanilla`. A name that is not one of them is refused.
+	 *
+	 * @return Whether it was one of them.
+	 */
+	bool SetEntitiesImage(const char *pName);
+	const char *EntitiesImage() const { return m_EntitiesImage.c_str(); }
+	bool AllowUnused() const { return m_AllowUnused; }
+	/** How many tiles the last paint or fill put down as air for that reason. */
+	int LastDropped() const { return m_LastDropped; }
+
+	/** Draws pieces of it for that long; `false` once it is done or failed. */
+	bool StepPicture(std::chrono::nanoseconds Budget) { return m_View.StepFullImage(Budget); }
+	bool PictureRunning() const { return m_View.FullImageRunning(); }
+	bool PictureFailed() const { return m_View.FullImageFailed(); }
+	float PictureProgress() const { return m_View.FullImageProgress(); }
+
 	/** Says that the next frame has to be drawn. */
 	void Touch() { m_NeedsRedraw = true; }
 
@@ -823,6 +877,8 @@ private:
 	 * @return The map, or `nullptr` when any of that does not hold.
 	 */
 	CMap *ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush);
+	/** The brush as it is to be put down, with unused tiles taken out unless allowed. */
+	const map_document::CBrush &BrushToPlace();
 	/**
 	 * Puts one tile index in a brush, in whichever plane the kind keeps it.
 	 *
@@ -840,6 +896,12 @@ private:
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
 	map_document::CBrush m_Brush;
+	// What is actually put down when unused tiles are not allowed, and how
+	// many tiles that took out the last time.
+	map_document::CBrush m_PlacedBrush;
+	bool m_AllowUnused = false;
+	std::string m_EntitiesImage = "ddnet";
+	int m_LastDropped = 0;
 	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
 	// The `.rules` files that were handed in, by the name they came under.

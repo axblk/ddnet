@@ -521,9 +521,9 @@ namespace map_document
 			if(Game.has_value() && Group == Game->m_Group)
 				continue;
 			CGroup Coming = *Other.m_vpGroups[Group];
-			for(size_t Layer = 0; Layer < Coming.m_vpLayers.size(); ++Layer)
+			for(std::shared_ptr<const CLayer> &pLayer : Coming.m_vpLayers)
 			{
-				CLayer Changed = *Coming.m_vpLayers[Layer];
+				CLayer Changed = *pLayer;
 				const auto Shift = [](int &Bound, int By) {
 					if(Bound >= 0)
 						Bound += By;
@@ -557,7 +557,7 @@ namespace map_document
 						pSounds->m_Sources.Mutable()[Source] = Heard;
 					}
 				}
-				Coming.m_vpLayers[Layer] = std::make_shared<const CLayer>(std::move(Changed));
+				pLayer = std::make_shared<const CLayer>(std::move(Changed));
 			}
 			Map.AddGroup(std::move(Coming));
 			++Report.m_Groups;
@@ -733,6 +733,49 @@ namespace map_document
 					Map.ReplaceLayer(Group, Layer, std::move(Changed));
 			}
 		}
+	}
+
+	std::vector<size_t> UnusedEnvelopes(const CMapState &Map)
+	{
+		std::vector<bool> vUsed(Map.NumEnvelopes(), false);
+		const auto Mark = [&vUsed](int Bound) {
+			if(Bound >= 0 && (size_t)Bound < vUsed.size())
+				vUsed[(size_t)Bound] = true;
+		};
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Layer = 0; Layer < Map.NumLayers(Group); ++Layer)
+			{
+				const CLayer &Which = *Map.Layer(Group, Layer);
+				if(const CTileLayer *pTiles = std::get_if<CTileLayer>(&Which); pTiles != nullptr)
+				{
+					Mark(pTiles->m_ColorEnvelope);
+				}
+				else if(const CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Which); pQuads != nullptr)
+				{
+					for(size_t Index = 0; Index < pQuads->m_Quads.Size(); ++Index)
+					{
+						Mark(pQuads->m_Quads[Index].m_ColorEnv);
+						Mark(pQuads->m_Quads[Index].m_PosEnv);
+					}
+				}
+				else if(const CSoundLayer *pSounds = std::get_if<CSoundLayer>(&Which); pSounds != nullptr)
+				{
+					for(size_t Index = 0; Index < pSounds->m_Sources.Size(); ++Index)
+					{
+						Mark(pSounds->m_Sources[Index].m_SoundEnv);
+						Mark(pSounds->m_Sources[Index].m_PosEnv);
+					}
+				}
+			}
+		}
+		std::vector<size_t> vUnused;
+		for(size_t Envelope = Map.NumEnvelopes(); Envelope > 0; --Envelope)
+		{
+			if(!vUsed[Envelope - 1])
+				vUnused.push_back(Envelope - 1);
+		}
+		return vUnused;
 	}
 
 	namespace

@@ -52,7 +52,7 @@ all of it and a page may reach any of it.
 | `src` | A map to open, and changing it opens another. |
 | `urlparam` | The name of a parameter of the page's *own* address to take a map from - `urlparam="map"` reads `#map=…`. Left out, the element does not read the address at all, because two editors on one page could not both be what it is about. |
 | `theme="light"` | The light set of colours. |
-| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
+| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. It also keeps the shortcuts somebody chose. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
 | `controls="none\|compact\|full"` | How much tool bar. Left out, the size of the box decides. |
 | `readonly` | Nothing may be changed: no inspector, no brush, and the tool bar keeps only what is about looking. The pointer pans and zooms and paints nothing. |
 | `targets="auto\|big\|small"` | How big the things one aims at are. Left out (or `auto`), the browser is asked: `pointer: coarse` gets the finger sizes. The other two are for the cases where that answer is wrong - a touch laptop with a mouse says `fine`, a tablet in desktop mode says `coarse`, and neither is what the hand on it is doing. |
@@ -67,6 +67,17 @@ The keyboard works the same way. An editor answers a key when the focus is
 inside it; with the focus nowhere at all it answers only when it is the one
 editor on the page, because with two there would be no way to say which was
 meant.
+
+Everything can be reached without a pointer. **F6** and **Shift+F6** walk
+through the areas in reading order - the strip of maps, the tool bar, the
+tree, the map, the inspector, the dock - and land on what is chosen there.
+The tree is one stop for Tab: the arrows go from row to row and select,
+right opens a group and goes into it, left folds it or goes back up to it,
+Space is the eye and Enter goes to the name. A row of tabs is one stop too,
+and the left and right arrows show the neighbour. Space and Enter on a button
+press the button rather than being a shortcut. The map is a
+`role="application"` named *Map*, with a description of its keys and of
+Escape, the way back to it.
 
 ### The shape it takes
 
@@ -165,7 +176,7 @@ and adds buttons - never what the editor can do.
 | Two-finger tap / three-finger tap | back / forward |
 | A press that stands still, with an empty brush | which layer is here? |
 | A press that stands still, with a full brush | nothing - a finger may rest while it paints |
-| A pen | paints always; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass |
+| A pen | paints always, and its rubber end erases; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass (Settings → *With a pen, a finger only pans* turns that off) |
 
 The second finger of a pan lands fifty to a hundred and fifty milliseconds
 after the first, and by then the first has already put down a tile. Within
@@ -277,6 +288,60 @@ else the editor does happens and can be undone.
 All of that floats in a layer of its own over the six areas, so that a menu
 opened from the tree is not cut off by the edge of the column the tree stands
 in.
+
+### Files, and the tools that work on a whole map
+
+**Open from this browser** lists what lies in the browser's own storage -
+what autosave wrote and what every Save writes on its way to the downloads -
+with the size of each, because a name alone says nothing about which of two
+maps it is. The list comes from the program: the files are in its file
+system, and a page cannot look into that. **Save a copy** writes the map
+under another name and leaves the map one is working on as it was: its
+name, and the dot that says it has unsaved changes. Closing a map that has
+such changes asks first, in the editor's own dialogue rather than
+`confirm()`, which would stop the page - and the map being drawn - dead.
+
+**Export as a picture** (Ctrl+Shift+E) writes the whole map as a PNG at
+32 pixels a tile - or smaller in the same shape, where the map is bigger
+than a picture can be: 16384 pixels a side and 64 million in all, which is a
+poster. It is the map as it is looked at, with the detail layers if those
+are shown and without the hidden ones, and without the grid, the marks or a
+quad's handles. It is drawn a band at a time over the frames that follow,
+with the same sweep the map viewer uses, so the editor goes on answering; a
+picture that takes longer than a second says how far it has got over the
+map, and the program says when it is in the downloads.
+
+**A border round the layer** stamps what is in hand along the four edges of
+the selected tile layer, stepping by the brush's size, as one entry in the
+history. **Take out unused envelopes** asks the program which envelopes
+nothing is bound to - a layer, a quad or a sound source - and takes all of
+them out in one step; the bindings above them come down with them.
+
+Two settings are the native editor's, and work as they do there. **Allow
+unused tiles** (Ctrl+U) is off to begin with: a game, front, tele, speedup,
+switch or tune layer then only takes the tiles the game reads there, and a
+tile it does not read goes down as air - the editor says so, once every few
+seconds however long the stroke, and names the setting. **The tileset in the
+layer's colour** is on: a layer tinted blue shows a blue tileset, so that
+what is picked looks like what will appear, with the picture's own
+transparency kept.
+
+**Entities picture** chooses the sheet physics layers are drawn out of -
+DDNet, DDRace, Race, FNG, Vanilla, F-DDrace or Blockworlds - for every map at
+once, on the map and in the tileset of a physics layer, which shows that
+sheet instead of a grid of numbers. It is fetched when it is chosen, through
+the same loader as the map's own pictures, so choosing one never holds up a
+frame.
+
+**What the keys do** (Ctrl+/) is every shortcut on one sheet, grouped the way
+the palette groups them, and every key a command answers to rather than only
+the first. A key on the sheet is a button: press it, then the key it is to be.
+Escape leaves it as it was, Delete takes it away, and a key that belonged to
+another command moves rather than doubles - the line under the map says which
+command lost it. **Every key as it was** undoes all of it. With `remember` the
+element keeps the keys somebody chose under `ddnet-editor-keys`, and
+`editor-keys` tells a page that keeps them itself; `panels.applyKeys()` hands
+them back.
 
 ## What it is made of
 
@@ -409,6 +474,14 @@ opposite and takes it off them - a layer names a picture by its place, so the
 ones after it come down one and a layer that was drawn with the one that is
 gone is drawn with none. Taking the pixels back out ("out") leaves the name,
 which is a picture that lies beside the map again.
+
+A picture that is chosen under a name the map already has asks what it is
+for: the pixels of the one there is, or a second one beside it under the next
+free number. A map finds its pictures by name, and a second picture of the
+same name is one no layer would ever get. Taking a picture out of the map
+asks first when the game has no picture of that name - out of the map, every
+layer that uses it would show nothing to anybody without the file; one the
+game has goes out without a question.
 
 ## Envelopes
 

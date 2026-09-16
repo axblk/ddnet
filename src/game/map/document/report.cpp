@@ -419,10 +419,10 @@ namespace map_document
 		// does not have to know which end is which.
 		Writer.WriteAttribute("steps");
 		Writer.BeginArray();
-		constexpr int NUM_STEPS = 20;
-		for(int Step = 0; Step <= NUM_STEPS; ++Step)
+		constexpr int NumSteps = 20;
+		for(int Step = 0; Step <= NumSteps; ++Step)
 		{
-			const float Aspect = 1.0f + (16.0f / 9.0f - 1.0f) * (Step / (float)NUM_STEPS);
+			const float Aspect = 1.0f + (16.0f / 9.0f - 1.0f) * (Step / (float)NumSteps);
 			WriteProofRect(Writer, ProofScreen(Center, Aspect, Zoom));
 		}
 		Writer.EndArray();

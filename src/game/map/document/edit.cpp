@@ -311,6 +311,59 @@ namespace map_document
 			Brush.m_ExtraTiles);
 	}
 
+	int DropUnusedTiles(CBrush &Brush)
+	{
+		int Dropped = 0;
+		if(Brush.m_Kind == ETileLayerKind::GAME || Brush.m_Kind == ETileLayerKind::FRONT)
+		{
+			const bool Game = Brush.m_Kind == ETileLayerKind::GAME;
+			for(int y = 0; y < Brush.Height(); ++y)
+			{
+				for(int x = 0; x < Brush.Width(); ++x)
+				{
+					const CTile Tile = Brush.m_Tiles.Get(x, y);
+					if(Tile.m_Index == TILE_AIR || (Game ? IsValidGameTile(Tile.m_Index) : IsValidFrontTile(Tile.m_Index)))
+						continue;
+					Brush.m_Tiles.Set(x, y, CTile{TILE_AIR});
+					++Dropped;
+				}
+			}
+			return Dropped;
+		}
+		std::visit([&](auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(std::is_same_v<TStore, std::monostate>)
+				return;
+			else
+			{
+				using TTile = std::decay_t<decltype(Extra.Get(0, 0))>;
+				const auto Valid = [](int Type) {
+					if constexpr(std::is_same_v<TStore, CTileStore<CTeleTile>>)
+						return IsValidTeleTile(Type);
+					else if constexpr(std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+						return IsValidSpeedupTile(Type);
+					else if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+						return IsValidSwitchTile(Type);
+					else
+						return IsValidTuneTile(Type);
+				};
+				for(int y = 0; y < Extra.Height(); ++y)
+				{
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const TTile Tile = Extra.Get(x, y);
+						if(Tile.m_Type == 0 || Valid(Tile.m_Type))
+							continue;
+						Extra.Set(x, y, TTile{});
+						++Dropped;
+					}
+				}
+			}
+		},
+			Brush.m_ExtraTiles);
+		return Dropped;
+	}
+
 	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers)
 	{
 		const int Number = std::clamp(Numbers.m_Number, 0, 255);

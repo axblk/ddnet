@@ -306,6 +306,24 @@ export const COMMANDS = [
 		run: p => p.editor.save(),
 	},
 	{
+		// The maps in the browser's storage: what autosave wrote, and what
+		// "Save" always writes on its way out to the downloads.
+		id: "file.openSaved", label: "Open from this browser…", group: "File", menu: "File",
+		keys: ["Ctrl+Alt+O"],
+		run: p => p.askOpenSaved(),
+	},
+	{
+		id: "file.saveCopy", label: "Save a copy…", group: "File", menu: "File",
+		enabled: p => p.map !== null,
+		run: p => p.askSaveCopy(),
+	},
+	{
+		id: "file.picture", label: "Export as a picture", group: "File", safe: true, menu: "File",
+		keys: ["Ctrl+Shift+E"],
+		enabled: p => p.map !== null && p.editor.pictureState() !== 1,
+		run: p => p.exportPicture(),
+	},
+	{
 		id: "file.saveAs", label: "Save as…", group: "File", menu: "File",
 		keys: ["Ctrl+Shift+S"],
 		enabled: p => p.map !== null,
@@ -482,6 +500,19 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "tiles.border", label: "A border round the layer", group: "Brush", menu: "Tools",
+		enabled: p => {
+			const layer = p.selectedLayer();
+			return layer !== null && layer.type === "tiles" && !p.editor.brushEmpty();
+		},
+		run: p => p.makeBorder(),
+	},
+	{
+		id: "envelope.deleteUnused", label: "Take out unused envelopes", group: "Envelopes", menu: "Tools",
+		enabled: p => p.map !== null && p.map.envelopes !== undefined && p.map.envelopes.length > 0,
+		run: p => p.deleteUnusedEnvelopes(),
+	},
+	{
 		id: "tiles.nextFree", label: "The next unused number", group: "Brush", menu: "Tools",
 		keys: ["Ctrl+F"],
 		enabled: p => p.part("next-free") !== null && !p.part("next-free").disabled,
@@ -567,6 +598,13 @@ export const COMMANDS = [
 		keys: ["Ctrl+Alt+W"],
 		enabled: p => p.map !== null,
 		run: p => {
+			// Through the panels rather than straight into the program: with
+			// more than one map open this is the tab's cross, and a map with
+			// changes in it asks before it goes.
+			if (p.editor.maps.length > 1) {
+				p.closeMap(p.editor.map);
+				return;
+			}
 			p.editor.close();
 			p.refresh();
 		},
@@ -657,9 +695,60 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "settings.entities", label: "Entities picture…", group: "Settings", safe: true, menu: "Settings",
+		run: p => p.askEntitiesImage(),
+	},
+	{
+		id: "settings.brushColouring", label: "The tileset in the layer's colour", group: "Settings", safe: true, menu: "Settings",
+		pressed: p => p.brushColouring,
+		run: p => {
+			p.brushColouring = !p.brushColouring;
+			p.refresh();
+		},
+	},
+	{
+		id: "settings.penHoldsPaper", label: "With a pen, a finger only pans", group: "Settings", safe: true, menu: "Settings",
+		pressed: p => p.penHoldsPaper,
+		run: p => {
+			p.penHoldsPaper = !p.penHoldsPaper;
+			p.refresh();
+		},
+	},
+	{
+		// Ctrl+U, as in the native editor.
+		id: "settings.allowUnused", label: "Allow unused tiles", group: "Settings", menu: "Settings",
+		keys: ["Ctrl+U"],
+		pressed: p => p.editor.allowUnused(),
+		run: p => {
+			const now = p.editor.allowUnused(!p.editor.allowUnused());
+			p.say(now ? "Unused tiles may be put down" : "Unused tiles go down as air");
+			p.refreshBar();
+		},
+	},
+	{
+		// Not configurable - the keys are the table's, and the table is one
+		// place. What this is, is the sheet one looks at to find out what the
+		// keys are, which is what one actually wants from a shortcut dialogue.
+		id: "help.keys", label: "What the keys do", group: "Help", safe: true, menu: "Settings",
+		keys: ["Ctrl+/"],
+		run: p => p.showKeys(),
+	},
+	{
 		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", safe: true, menu: "Help",
 		keys: ["F1"],
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
+	},
+	{
+		// The browser's own convention for walking from one part of a page
+		// to the next.
+		id: "focus.next", label: "The next area", group: "View", safe: true,
+		keys: ["F6"],
+		run: p => p.focusArea(1),
+	},
+	{
+		id: "focus.previous", label: "The area before", group: "View", safe: true,
+		keys: ["Shift+F6"],
+		run: p => p.focusArea(-1),
 	},
 	{
 		id: "edit.escape", label: "Back to the map", group: "Edit", safe: true,

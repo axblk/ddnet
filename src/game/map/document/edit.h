@@ -131,6 +131,22 @@ namespace map_document
 	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers);
 
 	/**
+	 * Turns every tile of the brush that does nothing in its kind of layer
+	 * into air, and says how many there were.
+	 *
+	 * What the native editor does unless "allow unused" is on: a game, front,
+	 * tele, speedup, switch or tune layer only takes the tiles the game reads
+	 * there. A tile it does not read is a tile that is in the file for nobody.
+	 * A layer that is only drawn has no such thing, and its brush is left as
+	 * it is.
+	 *
+	 * @param Brush The brush to clean.
+	 *
+	 * @return How many tiles were turned into air.
+	 */
+	int DropUnusedTiles(CBrush &Brush);
+
+	/**
 	 * The numbers the brush is carrying, read off its first tile that is not
 	 * air - for an interface that has just grabbed a piece of a layer and
 	 * wants to show what came with it.

@@ -588,6 +588,79 @@ class CMapEditor extends Program {
 		return this.call("MapEditorCheckSetting", "string", ["string"], [line || ""]) || "";
 	}
 
+	/**
+	 * The maps that lie in the browser's own storage, newest name first.
+	 *
+	 * The program says it, not the page: the files are in the program's own
+	 * file system, and a page cannot look into it.
+	 */
+	saved() {
+		const text = this.call("MapEditorSaved", "string", [], []);
+		try {
+			return text === null ? [] : JSON.parse(text);
+		} catch (error) {
+			return [];
+		}
+	}
+
+	/**
+	 * Asks for a picture of the whole map, drawn a band at a time over the
+	 * frames that follow and handed out as a PNG when it is done.
+	 */
+	picture(id) {
+		return this.ask("MapEditorPicture", "number", [this.which(id)]) === 1;
+	}
+	/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+	pictureState() {
+		return this.call("MapEditorPictureState", "number") || 0;
+	}
+	/** How far the picture has got, from 0 to 1. */
+	pictureProgress() {
+		return this.call("MapEditorPictureProgress", "number") || 0;
+	}
+
+	/**
+	 * Which entities sheet physics layers are drawn out of - `ddnet`, `race`,
+	 * `fng`, `vanilla` and the rest of `data/editor/entities_clear/`. Called
+	 * with a name it sets it, for every map; a name that is not one of them
+	 * changes nothing.
+	 */
+	entitiesImage(name) {
+		if (name !== undefined) {
+			this.call("MapEditorSetEntitiesImage", "number", ["string"], [name]);
+		}
+		return this.call("MapEditorEntitiesImage", "string") || "ddnet";
+	}
+
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there.
+	 * Called with a value it sets it.
+	 */
+	allowUnused(on) {
+		if (on !== undefined) {
+			this.ask("MapEditorSetAllowUnused", null, [on ? 1 : 0]);
+		}
+		return this.call("MapEditorAllowUnused", "number") === 1;
+	}
+
+	/** Opens one of them by name, and puts it in front. */
+	openSaved(name) {
+		return this.call("MapEditorOpenSaved", "number", ["string"], [name || ""]);
+	}
+
+	/**
+	 * Writes the map out under another name without becoming that map.
+	 *
+	 * The map one is working on keeps its name and its place in the history,
+	 * so the dot that says "not saved" stays where it was. Saving *as* is a
+	 * rename and then a save, which is a different thing.
+	 */
+	saveCopy(id, name, options) {
+		const handout = !(options && options.handout === false);
+		return this.call("MapEditorSaveCopy", "number", ["number", "string", "number"],
+			[this.which(id), name || "", handout ? 1 : 0]) === 1;
+	}
+
 	/** The names of settings that begin with what has been typed. */
 	settingNames(prefix) {
 		const text = this.call("MapEditorSettingNames", "string", ["string"], [prefix || ""]);
@@ -1443,6 +1516,15 @@ class CEditorPanels {
 		// Whether a keyboard has been seen. A desk has one until proven
 		// otherwise; a finger has to show one first.
 		this.sawKey = false;
+		// The native editor's two settings about tiles: the tileset shown in
+		// the layer's colour (on, as there), and whether a tile that does
+		// nothing in a physics layer may be put down (off, as there).
+		this.brushColouring = true;
+		// Once a pen has been seen a finger pans rather than paints, because
+		// the hand holding the pen rests on the glass. Somebody who paints
+		// with a finger and points with the pen turns it off.
+		this.penHoldsPaper = true;
+		this.unusedSaidAt = -Infinity;
 		// What a long press says, where a pointer would have hovered.
 		this.tip = null;
 		// Which shape the box is in, once something tells us. Without a box
@@ -1510,8 +1592,10 @@ class CEditorPanels {
 		// or "hex".
 		this.tileInfo = "hex";
 		// The commands, and the keys that reach them.
-		this.commands = COMMANDS;
-		this.keys_ = keyTable(COMMANDS);
+		// A copy of each for these panels alone: the keys can be set, and two
+		// editors on one page need not agree about them.
+		this.commands = COMMANDS.map(command => Object.assign({}, command));
+		this.keys_ = keyTable(this.commands);
 		// Whether the strip at the bottom is open. It starts closed: what is
 		// in it - envelopes, the history, the server settings, the rules - is
 		// looked at now and then, and the map should not pay two hundred
@@ -1871,9 +1955,11 @@ class CEditorPanels {
 				const dirty = this.editor.dirty(id);
 				const name = this.editor.name(id) || "untitled";
 				tab.setAttribute("aria-selected", id === now ? "true" : "false");
+				tab.tabIndex = id === now ? 0 : -1;
 				tab.querySelector('[data-role="map-dot"]').hidden = !dirty;
 				tab.querySelector(".editor-map-name").textContent = name;
 				tab.title = `${name}${dirty ? " - not saved" : ""}`;
+				tab.setAttribute("aria-label", `${name}${dirty ? " (changed)" : ""}`);
 			}
 			return;
 		}
@@ -1886,6 +1972,7 @@ class CEditorPanels {
 			tab.dataset.map = String(id);
 			tab.setAttribute("role", "tab");
 			tab.setAttribute("aria-selected", id === now ? "true" : "false");
+			tab.tabIndex = id === now ? 0 : -1;
 			const dirty = this.editor.dirty(id);
 			const dot = document.createElement("span");
 			dot.className = "editor-map-dot";
@@ -1899,6 +1986,7 @@ class CEditorPanels {
 			// The dot is for the eye; the title is for whoever is not reading
 			// with their eyes.
 			tab.title = `${name.textContent}${dirty ? " - not saved" : ""}`;
+			tab.setAttribute("aria-label", `${name.textContent}${dirty ? " (changed)" : ""}`);
 			tab.addEventListener("click", () => this.showMap(id), { signal: this.stopping.signal });
 			if (open.length > 1) {
 				const shut = document.createElement("span");
@@ -1978,9 +2066,16 @@ class CEditorPanels {
 	}
 
 	/** Closes one, and puts another in front if that was the one in front. */
-	closeMap(id) {
+	closeMap(id, asked) {
 		const open = this.editor.maps;
 		if (open.length < 2) {
+			return false;
+		}
+		// What was changed and not written out is gone the moment the map is:
+		// the history goes with it. So it is asked first, once.
+		if (asked !== true && this.editor.dirty(id)) {
+			this.askYesNo("Close the map", `${this.editor.name(id) || "This map"} has changes that were never saved.`,
+				"Close it anyway", () => this.closeMap(id, true));
 			return false;
 		}
 		if (id === this.editor.map) {
@@ -2990,7 +3085,7 @@ class CEditorPanels {
 	 * list of what to ask, because a new map and a new name are the same
 	 * shape and only differ in what is asked.
 	 */
-	askFor(title, fields, done) {
+	askFor(title, fields, done, options) {
 		const home = this.overlayHome();
 		if (home === null) {
 			return;
@@ -3010,18 +3105,39 @@ class CEditorPanels {
 		form.append(head);
 		const inputs = new Map();
 		for (const field of fields) {
+			// A line that only says something has nothing to type into and no
+			// name to hand back - a question needs saying before it is asked.
+			if (field.kind === "note") {
+				const note = document.createElement("p");
+				note.className = "editor-dialog-note";
+				note.dataset.role = `dialog-${field.name}`;
+				note.textContent = field.label;
+				form.append(note);
+				continue;
+			}
 			const label = document.createElement("label");
 			label.className = "editor-dialog-field";
 			const name = document.createElement("span");
 			name.textContent = field.label;
-			const input = document.createElement("input");
-			input.type = field.kind === "number" ? "number" : "text";
+			let input;
+			if (field.kind === "pick") {
+				input = document.createElement("select");
+				for (const choice of field.choices) {
+					const one = document.createElement("option");
+					one.value = String(choice.value);
+					one.textContent = choice.label;
+					input.append(one);
+				}
+			} else {
+				input = document.createElement("input");
+				input.type = field.kind === "number" ? "number" : "text";
+				if (field.kind === "number") {
+					input.min = String(field.min);
+					input.max = String(field.max);
+				}
+			}
 			input.dataset.role = `dialog-${field.name}`;
 			input.value = String(field.value);
-			if (field.kind === "number") {
-				input.min = String(field.min);
-				input.max = String(field.max);
-			}
 			label.append(name, input);
 			form.append(label);
 			inputs.set(field.name, input);
@@ -3037,7 +3153,7 @@ class CEditorPanels {
 		go.type = "submit";
 		go.className = "editor-small editor-dialog-go";
 		go.dataset.role = "dialog-go";
-		go.textContent = title;
+		go.textContent = options && options.go ? options.go : title;
 		row.append(cancel, go);
 		form.append(row);
 		this.dialog.append(form);
@@ -3088,6 +3204,390 @@ class CEditorPanels {
 			this.editor.create(Math.max(2, answer.width), Math.max(2, answer.height), answer.name || "untitled");
 			this.refresh();
 		});
+	}
+
+	/**
+	 * A picture of the whole map, handed out as a PNG.
+	 *
+	 * A large map is hundreds of pieces and takes seconds; the plan's rule for
+	 * anything longer than a second is that it says so over the map while it
+	 * runs. So a note stands and counts, and goes when the picture is done -
+	 * which the program then says itself.
+	 */
+	exportPicture() {
+		if (!this.editor.picture()) {
+			this.say("A picture is already being made", "error");
+			return false;
+		}
+		const started = performance.now();
+		let note = null;
+		const watch = setInterval(() => {
+			const state = this.editor.pictureState();
+			if (state !== 1) {
+				clearInterval(watch);
+				if (note !== null) {
+					note.remove();
+				}
+				return;
+			}
+			if (performance.now() - started < 1000) {
+				return;
+			}
+			const percent = Math.round(this.editor.pictureProgress() * 100);
+			if (note === null) {
+				note = this.tell("Drawing the picture", "progress");
+			}
+			if (note !== null) {
+				note.firstElementChild.textContent = `Drawing the picture \u2026 ${percent} %`;
+			}
+		}, 250);
+		this.stopping.signal.addEventListener("abort", () => clearInterval(watch), { once: true });
+		return true;
+	}
+
+	/**
+	 * The outer ring of the layer, drawn with what is in hand.
+	 *
+	 * One entry in the history for the whole ring: the brush is stamped
+	 * along the four edges inside one transaction, and each stamp joins it.
+	 * A brush bigger than one tile steps by its own size, so the ring is the
+	 * brush's width thick and nothing is stamped twice.
+	 */
+	makeBorder() {
+		const layer = this.selectedLayer();
+		if (layer === null || layer.type !== "tiles" || layer.size === undefined) {
+			this.say("Pick a tile layer to put a border round", "error");
+			return false;
+		}
+		const brush = this.editor.brushSize();
+		if (brush === null || brush.width === 0 || brush.height === 0) {
+			this.say("Nothing in hand to draw the border with", "error");
+			return false;
+		}
+		const [width, height] = layer.size;
+		const where = this.selection;
+		const spots = new Set();
+		const stamp = (x, y) => spots.add(`${Math.max(0, Math.min(width - brush.width, x))},${Math.max(0, Math.min(height - brush.height, y))}`);
+		for (let x = 0; x < width; x += brush.width) {
+			stamp(x, 0);
+			stamp(x, height - brush.height);
+		}
+		for (let y = 0; y < height; y += brush.height) {
+			stamp(0, y);
+			stamp(width - brush.width, y);
+		}
+		this.change(() => {
+			this.editor.begin("Border");
+			for (const spot of spots) {
+				const [x, y] = spot.split(",").map(Number);
+				this.editor.paint(where.group, where.layer, x, y);
+			}
+			this.editor.commit();
+		});
+		this.say(`A border round ${layer.name || "the layer"}`);
+		return true;
+	}
+
+	/** Takes out every envelope that nothing is bound to. */
+	deleteUnusedEnvelopes() {
+		const answer = this.change(() => this.editor.apply({ op: "envelope.deleteUnused" }));
+		if (answer && answer.ok) {
+			const count = answer.envelopes || 0;
+			this.say(`${count} ${count === 1 ? "envelope" : "envelopes"} taken out`);
+		}
+		return answer;
+	}
+
+	/**
+	 * Every key the editor answers to, on one sheet.
+	 *
+	 * Grouped the way the palette groups them, because that is the order they
+	 * are in everywhere else. It is a dialogue and not a panel because it is
+	 * looked at once and then closed - and because a sheet that covered the
+	 * map while one worked would be the wrong shape of help.
+	 */
+	showKeys() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeDialog();
+		this.dialog = document.createElement("div");
+		this.dialog.className = "editor-dialog editor-dialog-wide";
+		this.dialog.dataset.role = "dialog";
+		this.dialog.setAttribute("role", "dialog");
+		this.dialog.setAttribute("aria-modal", "true");
+		this.dialog.setAttribute("aria-label", "What the keys do");
+		const form = document.createElement("form");
+		form.className = "editor-dialog-body";
+		const head = document.createElement("h2");
+		head.className = "editor-dialog-head";
+		head.textContent = "What the keys do";
+		const hint = document.createElement("p");
+		hint.className = "editor-dialog-note";
+		hint.textContent = "Press a key to give it another one. Delete takes it away, Escape leaves it as it was.";
+		form.append(head, hint);
+		const sheet = document.createElement("div");
+		sheet.className = "editor-keys";
+		sheet.dataset.role = "keys";
+		form.append(sheet);
+		const fill = () => {
+			sheet.textContent = "";
+			const groups = new Map();
+			for (const command of this.commands) {
+				// A command that has a key, or had one: taking a key away must
+				// not take the row away with it, or it could not be given back.
+				const had = COMMANDS.find(which => which.id === command.id);
+				if ((command.keys === undefined || command.keys.length === 0) && (had.keys === undefined || had.keys.length === 0)) {
+					continue;
+				}
+				if (!groups.has(command.group)) {
+					groups.set(command.group, []);
+				}
+				groups.get(command.group).push(command);
+			}
+			for (const [group, commands] of groups) {
+				const where = document.createElement("h3");
+				where.className = "editor-keys-group";
+				where.textContent = group;
+				sheet.append(where);
+				const list = document.createElement("dl");
+				list.className = "editor-keys-list";
+				for (const command of commands) {
+					const what = document.createElement("dt");
+					what.textContent = command.label;
+					const key = document.createElement("dd");
+					const button = document.createElement("button");
+					button.type = "button";
+					button.className = "editor-keys-key";
+					button.dataset.role = "key";
+					button.dataset.command = command.id;
+					// Every key it answers to, not only the first: the tool bar
+					// has room for one and a sheet has room for all of them.
+					button.textContent = command.keys === undefined || command.keys.length === 0
+						? "none" : command.keys.map(keyLabel).join(" or ");
+					button.setAttribute("aria-label", `${command.label}: ${button.textContent}. Press to change.`);
+					button.addEventListener("click", () => this.listenForKey(button, command, fill),
+						{ signal: this.stopping.signal });
+					key.append(button);
+					list.append(what, key);
+				}
+				sheet.append(list);
+			}
+		};
+		fill();
+		const row = document.createElement("div");
+		row.className = "editor-dialog-buttons";
+		const back = document.createElement("button");
+		back.type = "button";
+		back.className = "editor-small";
+		back.dataset.role = "keys-reset";
+		back.textContent = "Every key as it was";
+		back.addEventListener("click", () => {
+			this.resetKeys();
+			fill();
+		}, { signal: this.stopping.signal });
+		const go = document.createElement("button");
+		go.type = "submit";
+		go.className = "editor-small editor-dialog-go";
+		go.dataset.role = "dialog-go";
+		go.textContent = "Done";
+		row.append(back, go);
+		form.append(row);
+		this.dialog.append(form);
+		form.addEventListener("submit", event => {
+			event.preventDefault();
+			this.closeDialog();
+		}, { signal: this.stopping.signal });
+		home.append(this.dialog);
+		go.focus();
+	}
+
+	/**
+	 * Waits on one row of the sheet for the key that is to reach it.
+	 *
+	 * The press is taken before anything else hears it - otherwise the key
+	 * being set would also do what it does now. Escape leaves the row as it
+	 * was, Delete or Backspace takes its key away, and a modifier on its own
+	 * is waited past.
+	 */
+	listenForKey(button, command, done) {
+		button.textContent = "Press a key\u2026";
+		button.setAttribute("aria-pressed", "true");
+		const stop = new AbortController();
+		const signal = AbortSignal.any([stop.signal, this.stopping.signal]);
+		document.addEventListener("keydown", event => {
+			const name = keyName(event);
+			if (name === "") {
+				return;
+			}
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			stop.abort();
+			if (name !== "Escape") {
+				const taken = name === "Delete" || name === "Backspace" ? [] : [name];
+				const moved = this.setKeys(command.id, taken);
+				if (moved !== null) {
+					this.say(`${name} now does "${command.label}" rather than "${moved.label}"`);
+				}
+			}
+			done();
+		}, { capture: true, signal: signal });
+		// A press anywhere else gives up waiting.
+		document.addEventListener("pointerdown", event => {
+			if (event.target !== button) {
+				stop.abort();
+				done();
+			}
+		}, { capture: true, signal: signal });
+	}
+
+	/**
+	 * Gives a command these keys and no others.
+	 *
+	 * A key reaches one command, so a key that is given here is taken from
+	 * whichever had it; that one is handed back so that it can be said. What
+	 * differs from the table is told to the element, which keeps it where the
+	 * page asked it to keep things.
+	 *
+	 * @return The command that lost a key to this one, or `null`.
+	 */
+	setKeys(id, keys) {
+		const command = this.commands.find(which => which.id === id);
+		if (command === undefined) {
+			return null;
+		}
+		let moved = null;
+		for (const other of this.commands) {
+			if (other === command || other.keys === undefined) {
+				continue;
+			}
+			const kept = other.keys.filter(key => !keys.includes(key));
+			if (kept.length !== other.keys.length) {
+				other.keys = kept;
+				moved = other;
+			}
+		}
+		command.keys = keys.slice();
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+		this.tellKeys();
+		return moved;
+	}
+
+	/** Every key back to the table's. */
+	resetKeys() {
+		for (const command of this.commands) {
+			const table = COMMANDS.find(which => which.id === command.id);
+			command.keys = table.keys === undefined ? undefined : table.keys.slice();
+		}
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+		this.tellKeys();
+	}
+
+	/** What differs from the table: command by command, the keys it has now. */
+	changedKeys() {
+		const changed = {};
+		for (const command of this.commands) {
+			const table = COMMANDS.find(which => which.id === command.id);
+			const now = JSON.stringify(command.keys || []);
+			if (now !== JSON.stringify(table.keys || [])) {
+				changed[command.id] = command.keys || [];
+			}
+		}
+		return changed;
+	}
+
+	/** Puts keys back that were kept from another visit. */
+	applyKeys(changed) {
+		if (changed === null || typeof changed !== "object") {
+			return;
+		}
+		for (const [id, keys] of Object.entries(changed)) {
+			if (Array.isArray(keys) && keys.every(key => typeof key === "string")) {
+				const command = this.commands.find(which => which.id === id);
+				if (command !== undefined) {
+					command.keys = keys.slice();
+				}
+			}
+		}
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+	}
+
+	tellKeys() {
+		const target = this.box !== null && this.box !== undefined ? this.box : this.root;
+		if (target !== null) {
+			target.dispatchEvent(new CustomEvent("editor-keys", { detail: { keys: this.changedKeys() } }));
+		}
+	}
+
+	/** Which entities sheet, chosen from the ones there are. */
+	askEntitiesImage() {
+		const names = { ddnet: "DDNet", ddrace: "DDRace", race: "Race", fng: "FNG", vanilla: "Vanilla", "f-ddrace": "F-DDrace", blockworlds: "Blockworlds" };
+		this.askFor("Entities picture", [
+			{ name: "what", kind: "note", label: "What physics layers are drawn with - the map is the same whichever it is." },
+			{ name: "sheet", label: "Picture", kind: "pick", value: this.editor.entitiesImage(),
+				choices: Object.entries(names).map(([value, label]) => ({ value, label })) },
+		], answer => {
+			this.editor.entitiesImage(answer.sheet);
+			this.tilesetSource = undefined;
+			this.refresh();
+			this.say(`Physics layers drawn with ${names[answer.sheet] || answer.sheet}`);
+		}, { go: "Use it" });
+	}
+
+	/**
+	 * Asks a question whose answer is yes or no.
+	 *
+	 * The browser has `confirm()`, and it stops the whole page dead while it
+	 * is up - which in a program that keeps drawing means the map stops with
+	 * it. This one is the editor's own dialogue, in the editor's own colours,
+	 * and the frame goes on.
+	 */
+	askYesNo(title, text, yes, done) {
+		this.askFor(title, [{ name: "what", label: text, kind: "note" }],
+			() => done(), { go: yes });
+	}
+
+	/** One of the maps that lie in this browser's storage. */
+	askOpenSaved() {
+		const saved = this.editor.saved();
+		if (saved.length === 0) {
+			this.say("Nothing has been saved in this browser yet", "error");
+			return;
+		}
+		const size = bytes => bytes < 1024 ? `${bytes} B`
+			: bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KiB`
+				: `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+		this.askFor("Open from this browser", [{
+			name: "name", label: "Map", kind: "pick", value: saved[0].name,
+			choices: saved.map(one => ({ value: one.name, label: `${one.name} (${size(one.size)})` })),
+		}], answer => {
+			if (this.editor.openSaved(answer.name) < 0) {
+				this.say("That map could not be read", "error");
+				return;
+			}
+			this.refresh();
+			this.refreshMaps();
+		}, { go: "Open" });
+	}
+
+	/** Another file with the same map in it; this map stays this map. */
+	askSaveCopy() {
+		this.askFor("Save a copy", [
+			{ name: "name", label: "Called", kind: "text", value: `${this.editor.name() || "untitled"} copy` },
+		], answer => {
+			const name = (answer.name || "").trim();
+			if (name === "") {
+				this.say("A copy needs a name", "error");
+				return;
+			}
+			this.say(this.editor.saveCopy(undefined, name) ? `Copy saved as ${name}` : "That copy was refused",
+				this.editor.dirty() ? "note" : "note");
+			this.refreshMaps();
+		}, { go: "Save a copy" });
 	}
 
 	/** Called what, from now on - the name is the name of the file. */
@@ -3425,6 +3925,7 @@ class CEditorPanels {
 			button.hidden = roomy;
 			button.disabled = button.dataset.tab === "automap" && !there;
 			button.setAttribute("aria-selected", button.dataset.tab === this.tab.tiles ? "true" : "false");
+			button.tabIndex = button.dataset.tab === this.tab.tiles ? 0 : -1;
 		}
 	}
 
@@ -3479,6 +3980,7 @@ class CEditorPanels {
 					button.hidden = place.tab === always;
 					button.disabled = !has(place);
 					button.setAttribute("aria-selected", place.tab === this.tab[area] ? "true" : "false");
+					button.tabIndex = place.tab === this.tab[area] ? 0 : -1;
 				}
 			}
 		}
@@ -3576,7 +4078,7 @@ class CEditorPanels {
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
-		for (const type of ["document", "loaded", "closed", "saved", "error"]) {
+		for (const type of ["document", "loaded", "closed", "saved", "copied", "picture", "unused", "error"]) {
 			this.editor.addEventListener(type, event => this.onProgram(type, event.detail), { signal: signal });
 		}
 		// Whoever put the panels on the page may hand out the keyboard
@@ -3591,6 +4093,18 @@ class CEditorPanels {
 	onProgram(type, detail) {
 		if (type === "saved") {
 			this.say("Saved");
+		} else if (type === "unused") {
+			// Once every few seconds at most: a stroke across a hundred tiles
+			// is one thing to say, not a hundred.
+			const now = performance.now();
+			if (now - this.unusedSaidAt > TOAST_MS) {
+				this.unusedSaidAt = now;
+				const count = detail && detail.tiles ? detail.tiles : 0;
+				this.say(`${count === 1 ? "A tile does" : "Some tiles do"} nothing in this layer and went down as air - Settings, "Allow unused tiles"`);
+			}
+			return;
+		} else if (type === "picture") {
+			this.say("The picture is in your downloads");
 		} else if (type === "error") {
 			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`, "error");
 		} else if (type === "loaded") {
@@ -3609,12 +4123,32 @@ class CEditorPanels {
 		this.sawKey = true;
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-			// Escape is the way out of a field, and the only key a field
-			// hands on.
+			// Escape is the way out of a field, and F6 the way on to the next
+			// area; those two are all a field hands on.
+			const name = keyName(event);
+			const on = this.keys_.get(name);
+			if (on !== undefined && (on.id === "focus.next" || on.id === "focus.previous")) {
+				event.preventDefault();
+				this.run(on.id);
+				return;
+			}
 			if (event.key !== "Escape") {
 				return;
 			}
 			target.blur();
+		}
+		// Space and Enter on a button press the button, and a list that is
+		// open to the keyboard walks with the arrows - neither is a shortcut.
+		if (target && !event.ctrlKey && !event.altKey && !event.metaKey) {
+			const own = target.tagName === "SELECT"
+				? ["ArrowUp", "ArrowDown", "Home", "End", " ", "Enter"]
+				: target.tagName === "BUTTON" || target.getAttribute("role") === "button" ? [" ", "Enter"] : [];
+			if (own.includes(event.key)) {
+				return;
+			}
+		}
+		if (target && target.getAttribute && target.getAttribute("role") === "tab" && this.onTabKey(event)) {
+			return;
 		}
 		const command = this.keys_.get(keyName(event));
 		if (command === undefined) {
@@ -3765,7 +4299,7 @@ class CEditorPanels {
 		const note = document.createElement("div");
 		note.className = "editor-toast";
 		note.dataset.role = "toast";
-		note.dataset.kind = kind === "error" ? "error" : "note";
+		note.dataset.kind = kind === "error" || kind === "progress" ? kind : "note";
 		// What went wrong interrupts; what merely happened does not.
 		note.setAttribute("role", kind === "error" ? "alert" : "status");
 		const what = document.createElement("span");
@@ -3780,7 +4314,9 @@ class CEditorPanels {
 			away.setAttribute("aria-label", "Dismiss");
 			away.addEventListener("click", () => note.remove(), { signal: this.stopping.signal });
 			note.append(away);
-		} else {
+		} else if (kind !== "progress") {
+			// Work that is still going on says so until it is over; whoever
+			// started it takes the note away.
 			setTimeout(() => note.remove(), TOAST_MS);
 		}
 		this.toasts.append(note);
@@ -4151,6 +4687,15 @@ class CEditorPanels {
 
 	refreshTree() {
 		const tree = this.part("tree");
+		// The rows are made anew, so a keyboard that was in the tree would
+		// otherwise find itself nowhere.
+		const hadFocus = tree.contains(document.activeElement);
+		if (!this.treeKeys) {
+			this.treeKeys = true;
+			tree.setAttribute("role", "tree");
+			tree.setAttribute("aria-label", "Groups and layers");
+			tree.addEventListener("keydown", event => this.onTreeKey(event), { signal: this.stopping.signal });
+		}
 		tree.textContent = "";
 		if (this.map === null) {
 			return;
@@ -4158,12 +4703,21 @@ class CEditorPanels {
 		this.map.groups.forEach((group, groupIndex) => {
 			const item = document.createElement("li");
 			item.className = "editor-group";
+			item.setAttribute("role", "none");
 			const head = document.createElement("div");
 			head.className = "editor-row";
 			head.dataset.role = "group";
 			head.dataset.group = String(groupIndex);
+			head.setAttribute("role", "treeitem");
+			head.setAttribute("aria-level", "1");
+			head.setAttribute("aria-expanded", this.collapsed.has(groupIndex) ? "false" : "true");
+			head.setAttribute("aria-selected", this.selection.group === groupIndex && this.selection.layer < 0 ? "true" : "false");
+			head.tabIndex = -1;
 			const fold = document.createElement("button");
 			fold.className = "editor-fold";
+			// The row is the one stop for the keyboard; the arrows fold it.
+			fold.tabIndex = -1;
+			fold.setAttribute("aria-hidden", "true");
 			fold.textContent = this.collapsed.has(groupIndex) ? "▸" : "▾";
 			fold.addEventListener("click", event => {
 				event.stopPropagation();
@@ -4192,12 +4746,17 @@ class CEditorPanels {
 			if (!this.collapsed.has(groupIndex)) {
 				const list = document.createElement("ul");
 				list.className = "editor-layers";
+				list.setAttribute("role", "group");
 				group.layers.forEach((layer, layerIndex) => {
 					const row = document.createElement("li");
 					row.className = "editor-row editor-layer";
 					row.dataset.role = "layer";
 					row.dataset.group = String(groupIndex);
 					row.dataset.layer = String(layerIndex);
+					row.setAttribute("role", "treeitem");
+					row.setAttribute("aria-level", "2");
+					row.setAttribute("aria-selected", this.selection.group === groupIndex && this.selection.layer === layerIndex ? "true" : "false");
+					row.tabIndex = -1;
 					const what = layer.type === "tiles" ? layer.kind : layer.type;
 					// Hiding a layer is a thing about looking, so the eye is
 					// not a property and writes no history entry.
@@ -4208,6 +4767,8 @@ class CEditorPanels {
 					eye.textContent = shown ? "\u25c9" : "\u25cb";
 					eye.title = shown ? "Hide this layer" : "Show this layer";
 					eye.setAttribute("aria-pressed", shown ? "true" : "false");
+					// Space on the row does what the eye does.
+					eye.tabIndex = -1;
 					eye.addEventListener("click", event => {
 						event.stopPropagation();
 						this.editor.visible(groupIndex, layerIndex, !shown);
@@ -4218,6 +4779,7 @@ class CEditorPanels {
 					row.append(eye, label);
 					if (!shown) {
 						row.classList.add("editor-hidden-layer");
+						row.setAttribute("aria-description", "hidden");
 					}
 					if (this.selection.group === groupIndex && this.selection.layer === layerIndex) {
 						row.classList.add("editor-selected");
@@ -4234,7 +4796,165 @@ class CEditorPanels {
 			}
 			tree.append(item);
 		});
+		// One stop for Tab in the whole tree - the row that is selected, or
+		// its group while the group is folded up - rather than one per layer.
+		const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+		const stop = rows.find(row => row.getAttribute("aria-selected") === "true")
+			|| rows.find(row => row.dataset.role === "group" && Number(row.dataset.group) === this.selection.group)
+			|| rows[0];
+		if (stop !== undefined) {
+			stop.tabIndex = 0;
+			if (hadFocus) {
+				stop.focus();
+			}
+		}
 		this.addMoreButtons();
+	}
+
+	/**
+	 * The tree as a keyboard walks it: up and down go from row to row and
+	 * select, right opens a group and goes into it, left folds it or goes back
+	 * up to it, Space is the eye (or the fold) and Enter goes to the name.
+	 */
+	onTreeKey(event) {
+		const row = event.target.closest('[role="treeitem"]');
+		if (row === null || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+			return;
+		}
+		const tree = this.part("tree");
+		const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+		const at = rows.indexOf(row);
+		const group = Number(row.dataset.group);
+		const isGroup = row.dataset.role === "group";
+		const choose = other => {
+			if (other === undefined) {
+				return;
+			}
+			this.selection = { group: Number(other.dataset.group), layer: other.dataset.role === "group" ? -1 : Number(other.dataset.layer) };
+			this.refresh();
+			const now = tree.querySelector('[role="treeitem"][tabindex="0"]');
+			if (now !== null) {
+				now.focus();
+			}
+		};
+		const fold = shut => {
+			if (shut) {
+				this.collapsed.add(group);
+			} else {
+				this.collapsed.delete(group);
+			}
+			this.refreshTree();
+		};
+		switch (event.key) {
+		case "ArrowDown":
+			choose(rows[at + 1]);
+			break;
+		case "ArrowUp":
+			choose(rows[at - 1]);
+			break;
+		case "Home":
+			choose(rows[0]);
+			break;
+		case "End":
+			choose(rows[rows.length - 1]);
+			break;
+		case "ArrowRight":
+			if (isGroup && this.collapsed.has(group)) {
+				fold(false);
+			} else if (isGroup) {
+				choose(rows[at + 1] !== undefined && rows[at + 1].dataset.role === "layer" ? rows[at + 1] : undefined);
+			}
+			break;
+		case "ArrowLeft":
+			if (isGroup && !this.collapsed.has(group)) {
+				fold(true);
+			} else if (!isGroup) {
+				choose(rows.find(other => other.dataset.role === "group" && Number(other.dataset.group) === group));
+			}
+			break;
+		case " ":
+			if (isGroup) {
+				fold(!this.collapsed.has(group));
+			} else {
+				row.querySelector('[data-role="visible"]').click();
+			}
+			break;
+		case "Enter":
+		case "F2": {
+			if (row.getAttribute("aria-selected") !== "true") {
+				choose(row);
+			}
+			const name = this.part("props").querySelector("input");
+			if (name !== null) {
+				name.focus();
+				name.select();
+			}
+			break;
+		}
+		default:
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+	}
+
+	/**
+	 * A row of tabs as a keyboard walks it: one stop for Tab, the arrows go
+	 * to the neighbour and show it, Home and End to the ends. Whether it was
+	 * one of those keys.
+	 */
+	onTabKey(event) {
+		if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey
+			|| !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+			return false;
+		}
+		const tabs = [...event.target.parentElement.children]
+			.filter(one => one.getAttribute("role") === "tab" && !one.hidden && !one.disabled);
+		const at = tabs.indexOf(event.target);
+		const next = event.key === "Home" ? tabs[0]
+			: event.key === "End" ? tabs[tabs.length - 1]
+				: tabs[(at + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+		event.preventDefault();
+		if (next !== undefined && next !== event.target) {
+			next.click();
+			next.focus();
+		}
+		return true;
+	}
+
+	/**
+	 * Where F6 goes: the areas in the order they are read - the strip of
+	 * maps, the tool bar, the left, the map, the right and the dock - leaving
+	 * out whatever is not shown. The focus lands on what that area has
+	 * selected, or else on the first thing in it that takes the focus.
+	 */
+	focusArea(step) {
+		const canvas = this.editor.canvas;
+		const areas = this.areas === null
+			? [this.element, canvas]
+			: [this.maps, this.areas.toolbar, this.areas.left, canvas, this.areas.right, this.areas.dock];
+		const shown = areas.filter(area => area !== null && area !== undefined && !area.hidden && area.getClientRects().length > 0);
+		if (shown.length === 0) {
+			return false;
+		}
+		const now = document.activeElement;
+		const from = shown.findIndex(area => area === now || (area !== canvas && area.contains(now)));
+		const next = shown[from < 0 ? (step > 0 ? 0 : shown.length - 1) : (from + step + shown.length) % shown.length];
+		if (next === canvas) {
+			canvas.focus();
+			return true;
+		}
+		const usable = one => !one.disabled && one.tabIndex >= 0 && one.getClientRects().length > 0 && one.closest("[hidden]") === null;
+		// What is chosen in the area before whatever comes first in it: the
+		// row of the tree, then the tab in front, then anything at all.
+		for (const which of ['[role="treeitem"][tabindex="0"]', '[role="tab"][aria-selected="true"]', 'button, input, select, textarea, [tabindex="0"]']) {
+			const one = [...next.querySelectorAll(which)].find(usable);
+			if (one !== undefined) {
+				one.focus();
+				return true;
+			}
+		}
+		return false;
 	}
 
 	refreshProps() {
@@ -4495,11 +5215,16 @@ class CEditorPanels {
 		// and is asked for. Only a layer with no picture at all is left with
 		// a grid of numbers - the tiles are still there to be picked, they
 		// just cannot be shown.
-		const source = image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
+		// A physics layer has no picture of its own: it is drawn out of the
+		// entities sheet, so that is what its tileset shows too.
+		const physics = layer.kind !== undefined && layer.kind !== "tiles";
+		const source = physics
+			? new URL(`editor/entities_clear/${this.editor.entitiesImage()}.png`, this.dataBase).href
+			: image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
 		if (source !== this.tilesetSource) {
 			this.tilesetSource = source;
 			this.tileset = null;
-			if (image !== null && !image.external) {
+			if (!physics && image !== null && !image.external) {
 				this.tileset = this.editor.imageData(layer.image);
 			} else if (source !== null) {
 				const picture = new Image();
@@ -4790,6 +5515,34 @@ class CEditorPanels {
 		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
+	/**
+	 * The tileset in the colour of the layer it is drawn into.
+	 *
+	 * What "brush colouring" is in the native editor: a layer that tints its
+	 * tiles blue shows a blue tileset, so that what is picked looks like what
+	 * will appear. The colour is multiplied in and the picture's own alpha is
+	 * put back, because a tint that filled the transparent parts would be a
+	 * coloured square and not a tileset. Opaque either way - how see-through a
+	 * layer is says nothing about which tile is which.
+	 */
+	tintTileset(paint, picture, canvas) {
+		const layer = this.selectedLayer();
+		if (!this.brushColouring || layer === null || !Array.isArray(layer.color)) {
+			return;
+		}
+		const [r, g, b] = layer.color;
+		if (r === 255 && g === 255 && b === 255) {
+			return;
+		}
+		paint.save();
+		paint.globalCompositeOperation = "multiply";
+		paint.fillStyle = `rgb(${r}, ${g}, ${b})`;
+		paint.fillRect(0, 0, canvas.width, canvas.height);
+		paint.globalCompositeOperation = "destination-in";
+		paint.drawImage(picture, 0, 0, canvas.width, canvas.height);
+		paint.restore();
+	}
+
 	paintTileset(into) {
 		const canvas = into === undefined ? this.part("tileset") : into;
 		const paint = canvas.getContext("2d");
@@ -4806,9 +5559,11 @@ class CEditorPanels {
 			packed.getContext("2d").putImageData(this.tileset, 0, 0);
 			paint.imageSmoothingEnabled = false;
 			paint.drawImage(packed, 0, 0, canvas.width, canvas.height);
+			this.tintTileset(paint, packed, canvas);
 		} else if (this.tileset !== null) {
 			paint.imageSmoothingEnabled = false;
 			paint.drawImage(this.tileset, 0, 0, canvas.width, canvas.height);
+			this.tintTileset(paint, this.tileset, canvas);
 		} else {
 			paint.fillStyle = "#1a1a1e";
 			paint.fillRect(0, 0, canvas.width, canvas.height);
@@ -5745,23 +6500,72 @@ class CEditorPanels {
 			// picture - the file is `grass_main.png`, the picture is
 			// `grass_main`.
 			const name = chosen.name.replace(/\.[^.]*$/, "");
-			this.change(() => {
-				if (replacing >= 0) {
-					return { ok: this.editor.setImagePixels(replacing, pixels) === true };
+			const put = (into, called) => this.change(() => {
+				if (into >= 0) {
+					this.image = into;
+					return { ok: this.editor.setImagePixels(into, pixels) === true };
 				}
-				const index = this.editor.addImage(name, pixels);
+				const index = this.editor.addImage(called, pixels);
 				if (index >= 0) {
 					this.image = index;
 				}
 				return { ok: index >= 0, error: "The picture was refused" };
 			});
-		}, { signal: signal });
-		this.part("unpack-image").addEventListener("click", () => {
-			if (this.image < 0) {
+			if (replacing >= 0) {
+				put(replacing, name);
 				return;
 			}
-			this.change(() => this.editor.apply({ op: "image.setProp", image: this.image, prop: "external", value: true }));
-			this.refresh();
+			// A map finds its pictures by name, so two of one name are one
+			// too many: the second would never be the one a layer gets. Which
+			// of the two things somebody meant is theirs to say.
+			const images = this.map === null ? [] : this.map.images;
+			const same = images.findIndex(image => image.name === name);
+			if (same < 0) {
+				put(-1, name);
+				return;
+			}
+			let free = 2;
+			while (images.some(image => image.name === `${name} ${free}`)) {
+				++free;
+			}
+			this.askFor("The map has that picture", [
+				{ name: "what", kind: "note", label: `There is already a picture called ${name}${images[same].external ? ", beside the map" : ", in the map"}.` },
+				{
+					name: "how", label: "Use the file", kind: "pick", value: "replace", choices: [
+						{ value: "replace", label: `for ${name}` },
+						{ value: "beside", label: `as ${name} ${free}` },
+					],
+				},
+			], answer => put(answer.how === "replace" ? same : -1, answer.how === "replace" ? name : `${name} ${free}`),
+			{ go: "Use it" });
+		}, { signal: signal });
+		this.part("unpack-image").addEventListener("click", async () => {
+			if (this.image < 0 || this.map === null) {
+				return;
+			}
+			const which = this.image;
+			const image = this.map.images[which];
+			const unpack = () => {
+				this.change(() => this.editor.apply({ op: "image.setProp", image: which, prop: "external", value: true }));
+				this.refresh();
+			};
+			// A picture beside the map is looked for among the game's own, by
+			// name. One the game does not have is a layer everybody else sees
+			// as nothing - which is worth one question before it happens.
+			let known = true;
+			try {
+				const answer = await fetch(new URL(`mapres/${image.name}.png`, this.dataBase).href, { method: "HEAD" });
+				known = answer.ok;
+			} catch (error) {
+				// Nobody to ask is not a no: unpacking stays possible offline.
+			}
+			if (known) {
+				unpack();
+				return;
+			}
+			this.askYesNo("Take the picture out of the map",
+				`The game has no picture called ${image.name}. Out of the map, every layer that uses it shows nothing to anybody without the file.`,
+				"Take it out anyway", unpack);
 		}, { signal: signal });
 		this.part("delete-image").addEventListener("click", () => {
 			if (this.image < 0) {
@@ -6460,7 +7264,7 @@ function steerWithPointer(editor, options) {
 	const settings = Object.assign({
 		canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null,
 		onClickInGroup: null, afterStroke: null, onLongPress: null, onFingerTap: null, onAsk: null,
-		signal: undefined,
+		penHoldsPaper: null, signal: undefined,
 	}, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
@@ -6764,7 +7568,7 @@ function steerWithPointer(editor, options) {
 		}
 		// A finger on a tablet where a pen has been seen holds the paper; the
 		// pen is what draws.
-		if (sawPen && event.pointerType === "touch") {
+		if (sawPen && event.pointerType === "touch" && (settings.penHoldsPaper === null || settings.penHoldsPaper())) {
 			pointer = event.pointerId;
 			last = { x: event.clientX, y: event.clientY };
 			capture(pointer, true);
@@ -6792,7 +7596,9 @@ function steerWithPointer(editor, options) {
 			return;
 		}
 		const tile = tileAt(event);
-		if (event.button !== 0 || where === null || tile === null) {
+		// The other end of a pen is a rubber, and it comes as button 5.
+		const rubber = event.pointerType === "pen" && event.button === 5;
+		if ((event.button !== 0 && !rubber) || where === null || tile === null) {
 			doing = "move";
 			return;
 		}
@@ -6800,7 +7606,8 @@ function steerWithPointer(editor, options) {
 		// A held modifier says what this one stroke is; without one it is
 		// whatever the brush has been set to, which is painting until somebody
 		// says otherwise.
-		const asked = event.altKey ? "fill"
+		const asked = rubber ? "erase"
+			: event.altKey ? "fill"
 			: event.shiftKey ? "grab"
 				: (event.ctrlKey || event.metaKey) ? "erase"
 					: (settings.mode === null ? "paint" : settings.mode());
@@ -7079,6 +7886,11 @@ const HANDLE_REACH_FINGER = 22;
 // than a tap. Twenty pixels is narrow enough that a stroke which starts near
 // the edge of the map still starts on the map.
 const EDGE_SWIPE_ZONE = 20;
+
+// Where an element with `remember` keeps the keys somebody set.
+const KEYS_STORAGE = "ddnet-editor-keys";
+// Each element's description of its map needs a name no other element has.
+let mapHelpCount = 0;
 const EDGE_SWIPE_REACH = 40;
 
 const SECOND_FINGER_MS = 150;
@@ -7399,9 +8211,18 @@ class CEditorElement extends ELEMENT_BASE {
 		this.editorCanvas = document.createElement("canvas");
 		this.editorCanvas.className = "editor-canvas";
 		this.editorCanvas.dataset.role = "map";
-		// The map takes the keyboard, so it has to be able to hold it.
+		// The map takes the keyboard, so it has to be able to hold it. It is
+		// an application to a screen reader, whose own keys would otherwise
+		// never reach it; what it answers to, and the way out, is said in a
+		// description beside it.
 		this.editorCanvas.tabIndex = 0;
-		this.mapBox.append(this.editorCanvas);
+		this.editorCanvas.setAttribute("role", "application");
+		this.editorCanvas.setAttribute("aria-label", "Map");
+		this.mapHelp = document.createElement("p");
+		this.mapHelp.hidden = true;
+		this.mapHelp.id = `ddnet-editor-map-help-${++mapHelpCount}`;
+		this.editorCanvas.setAttribute("aria-describedby", this.mapHelp.id);
+		this.mapBox.append(this.editorCanvas, this.mapHelp);
 		// The way a map is chosen from the disc. The element keeps it, because
 		// opening one is a command of the editor's and not of whatever page
 		// happens to hold it.
@@ -7433,6 +8254,29 @@ class CEditorElement extends ELEMENT_BASE {
 	/** The program, once it runs, and `null` before that. */
 	get editor() {
 		return this.editorInstance;
+	}
+
+	/**
+	 * What the map says it answers to, for whoever cannot see it: the keys
+	 * as they are now, which are not always the table's.
+	 */
+	describeMap() {
+		const panels = this.editorPanels;
+		if (panels === null) {
+			return;
+		}
+		const key = id => {
+			const command = panels.commands.find(one => one.id === id);
+			return command === undefined || command.keys.length === 0 ? null : keyLabel(command.keys[0]);
+		};
+		const said = [
+			["palette.open", "finds any command by its name"],
+			["edit.undo", "undoes"],
+			["layer.next", "goes to the layer below"],
+			["focus.next", "goes to the next area"],
+			["edit.escape", "comes back to the map"],
+		].filter(([id]) => key(id) !== null).map(([id, what]) => `${key(id)} ${what}`);
+		this.mapHelp.textContent = `The pointer paints with the brush and the mouse wheel zooms. ${said.join(", ")}.`;
 	}
 
 	/** The panels beside the map, once they are there. */
@@ -7705,6 +8549,7 @@ class CEditorElement extends ELEMENT_BASE {
 			// go through `run`, where everything else is refused.
 			target: () => (panels.readonly ? null : panels.selection),
 			mode: () => panels.tool,
+			penHoldsPaper: () => panels.penHoldsPaper,
 			onChange: () => panels.refresh(),
 			// Panning and zooming change nothing about the map, so the panels
 			// are left alone - but what is drawn over the canvas is now over
@@ -7739,7 +8584,26 @@ class CEditorElement extends ELEMENT_BASE {
 		// minute - a safety net, not a place to keep a map.
 		if (this.hasAttribute("remember")) {
 			instance.autosave(60);
+			// And the keys somebody set, which are theirs rather than a map's.
+			try {
+				panels.applyKeys(JSON.parse(localStorage.getItem(KEYS_STORAGE) || "null"));
+			} catch (error) {
+				// Nothing kept, or something that is not keys: the table's.
+			}
+			this.addEventListener("editor-keys", event => {
+				try {
+					if (Object.keys(event.detail.keys).length === 0) {
+						localStorage.removeItem(KEYS_STORAGE);
+					} else {
+						localStorage.setItem(KEYS_STORAGE, JSON.stringify(event.detail.keys));
+					}
+				} catch (error) {
+					// A browser that keeps nothing forgets the keys with the tab.
+				}
+			}, { signal: signal });
 		}
+		this.describeMap();
+		this.addEventListener("editor-keys", () => this.describeMap(), { signal: signal });
 		document.addEventListener("keydown", event => {
 			if (this.hears()) {
 				panels.onKey(event);

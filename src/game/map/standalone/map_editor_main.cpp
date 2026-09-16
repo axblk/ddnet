@@ -57,6 +57,15 @@ namespace
 
 	CMapEditor *g_pEditor = nullptr;
 	bool g_Quit = false;
+	constexpr const char *PICTURE_DIRECTORY = "screenshots";
+	// A picture that was asked for and has not been begun yet, and how the
+	// last one went: 0 never asked, 1 under way, 2 handed over, 3 failed.
+	int g_PictureMap = -1;
+	int g_PictureState = 0;
+	std::string g_PictureFile;
+	// How long a frame may spend on the picture before the page gets the
+	// thread back - the same as the viewer.
+	constexpr std::chrono::nanoseconds PICTURE_BUDGET = std::chrono::milliseconds(40);
 	// What a question was answered with, kept alive until the next one is
 	// asked: a page reads it out of the heap after the call has returned.
 	std::string g_Answer;
@@ -87,6 +96,7 @@ namespace
 		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
 		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
 		log_info(TOOL_NAME, "  -q <g>:<l>:<n>  Put handles on the corners of that quad");
+		log_info(TOOL_NAME, "  -e <sheet>      Show what the tiles do, drawn with that entities picture (ddnet, race, fng, ...)");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -118,6 +128,22 @@ namespace
 		if(g_pEditor == nullptr)
 			return;
 		Say("document", "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}");
+	}
+
+	/**
+	 * Tells the page that tiles went down as air because they do nothing
+	 * there - once per frame at most, however many stamps a stroke was.
+	 */
+	void SayDropped()
+	{
+		if(g_pEditor == nullptr || g_pEditor->LastDropped() == 0)
+			return;
+		for(const auto &[Type, Json] : g_vSaid)
+		{
+			if(Type == "unused")
+				return;
+		}
+		Say("unused", "{\"tiles\":" + std::to_string(g_pEditor->LastDropped()) + "}");
 	}
 
 	/** Tells the page everything that has happened since the last frame. */
@@ -323,6 +349,85 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingProblems(int Id)
 EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
 {
 	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
+}
+
+/**
+ * Asks for a picture of the map in front, the whole of it.
+ *
+ * Begun between two frames and drawn over the ones after, like everything
+ * that takes longer than a frame; `MapEditorPictureState` says how it went.
+ */
+EMSCRIPTEN_KEEPALIVE int MapEditorPicture(int Id)
+{
+	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr || g_pEditor->PictureRunning())
+		return 0;
+	g_PictureMap = Id;
+	g_PictureState = 1;
+	return 1;
+}
+
+/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+EMSCRIPTEN_KEEPALIVE int MapEditorPictureState()
+{
+	return g_PictureState;
+}
+
+/** How far the picture has got, from 0 to 1. */
+EMSCRIPTEN_KEEPALIVE float MapEditorPictureProgress()
+{
+	return g_pEditor == nullptr ? 0.0f : g_pEditor->PictureProgress();
+}
+
+/** The maps that are in the browser's own storage, with their sizes. */
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSaved()
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SavedJson(SAVE_DIRECTORY, IStorage::TYPE_SAVE));
+}
+
+/** Opens one of them by the name the list gave. */
+EMSCRIPTEN_KEEPALIVE int MapEditorOpenSaved(const char *pName)
+{
+	if(g_pEditor == nullptr || pName == nullptr || pName[0] == '\0')
+		return -1;
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s/%s.map", SAVE_DIRECTORY, pName);
+	const int Id = g_pEditor->Open(aFilename, IStorage::TYPE_SAVE);
+	if(Id < 0)
+	{
+		Say("error", "{\"what\":\"open\"}");
+		return -1;
+	}
+	Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
+	return Id;
+}
+
+/**
+ * Writes the map out under another name without becoming that map.
+ *
+ * What "save a copy" means: the copy is made and the map one is working on
+ * is the one one was working on, with the name it had and the place in the
+ * history it had. Saving *as* is a rename and then a save, and that is a
+ * different thing.
+ */
+EMSCRIPTEN_KEEPALIVE int MapEditorSaveCopy(int Id, const char *pName, int Handout)
+{
+	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr || pName == nullptr || pName[0] == '\0')
+		return 0;
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s/%s.map", SAVE_DIRECTORY, pName);
+	g_pEditor->Storage()->CreateFolder(SAVE_DIRECTORY, IStorage::TYPE_SAVE);
+	if(!g_pEditor->Save(Id, aFilename, IStorage::TYPE_SAVE))
+	{
+		Say("error", "{\"what\":\"save\",\"map\":" + std::to_string(Id) + "}");
+		return 0;
+	}
+	g_pEditor->Storage()->SyncPersistentStorage();
+	if(Handout != 0)
+		g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+	// Not `saved`: the map is as changed as it was, and a dot that went away
+	// because a copy was written would be a lie.
+	Say("copied", "{\"map\":" + std::to_string(Id) + "}");
+	return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
@@ -748,7 +853,31 @@ EMSCRIPTEN_KEEPALIVE int MapEditorPaint(int Id, int Group, int Layer, int X, int
 	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Paint(Id, (size_t)Group, (size_t)Layer, X, Y))
 		return 0;
 	SayChanged(Id);
+	SayDropped();
 	return 1;
+}
+
+/** Which entities sheet the physics layers are drawn out of, by name. */
+EMSCRIPTEN_KEEPALIVE int MapEditorSetEntitiesImage(const char *pName)
+{
+	return g_pEditor != nullptr && g_pEditor->SetEntitiesImage(pName) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorEntitiesImage()
+{
+	return g_pEditor == nullptr ? "" : g_pEditor->EntitiesImage();
+}
+
+/** Whether tiles that do nothing in a physics layer may be put there. */
+EMSCRIPTEN_KEEPALIVE void MapEditorSetAllowUnused(int Allow)
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->SetAllowUnused(Allow != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorAllowUnused()
+{
+	return g_pEditor != nullptr && g_pEditor->AllowUnused() ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
@@ -756,6 +885,7 @@ EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int 
 	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Fill(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
 		return 0;
 	SayChanged(Id);
+	SayDropped();
 	return 1;
 }
 
@@ -873,6 +1003,7 @@ int main(int argc, const char **argv)
 	std::vector<std::pair<size_t, size_t>> vHide;
 	std::string Marked;
 	std::string ShownQuad;
+	std::string Entities;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -900,6 +1031,10 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-q") == 0 && i + 1 < argc)
 		{
 			ShownQuad = argv[++i];
+		}
+		else if(str_comp(argv[i], "-e") == 0 && i + 1 < argc)
+		{
+			Entities = argv[++i];
 		}
 		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
 		{
@@ -940,6 +1075,14 @@ int main(int argc, const char **argv)
 	if(!Editor.Init(argc, argv))
 		return 1;
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL listens for keys on the whole window unless told otherwise, and it
+	// cancels what it hears there - so a space bar on one of the page's
+	// buttons would press nothing. This program takes no keys through SDL at
+	// all, because the page drives it, so SDL only gets the ones struck on the
+	// map. The hint is read out of the environment when nothing set it.
+	setenv("SDL_EMSCRIPTEN_KEYBOARD_ELEMENT", "#canvas", 1);
+#endif
 	if(!Editor.OpenWindow(Width, Height, Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow(), !Surfaceless))
 		return 1;
 
@@ -957,6 +1100,15 @@ int main(int argc, const char **argv)
 			return 1;
 		if(Grid > 0)
 			Editor.Display(Id)->m_Grid = Grid;
+		if(!Entities.empty())
+		{
+			if(!Editor.SetEntitiesImage(Entities.c_str()))
+			{
+				log_error(TOOL_NAME, "There is no entities picture called '%s'", Entities.c_str());
+				return 1;
+			}
+			Editor.Display(Id)->m_EntityOverlayVal = 100;
+		}
 		for(const auto &[Group, Layer] : vHide)
 			Editor.Display(Id)->SetVisible(Group, Layer, false);
 		if(!ShownQuad.empty())
@@ -1053,6 +1205,34 @@ int main(int argc, const char **argv)
 			Image.Free();
 			break;
 		}
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(g_PictureMap >= 0)
+		{
+			// Begun here rather than in the call: the call comes from the page
+			// in the middle of whatever, and this is between two frames.
+			const int Map = std::exchange(g_PictureMap, -1);
+			char aName[IO_MAX_PATH_LENGTH];
+			str_format(aName, sizeof(aName), "%s/%s.png", PICTURE_DIRECTORY, Editor.Name(Map));
+			Editor.Storage()->CreateFolder(PICTURE_DIRECTORY, IStorage::TYPE_SAVE);
+			char aPath[IO_MAX_PATH_LENGTH];
+			Editor.Storage()->GetCompletePath(IStorage::TYPE_SAVE, aName, aPath, sizeof(aPath));
+			g_PictureFile = aName;
+			if(!Editor.BeginPicture(Map, aPath, CStandaloneMapView::VIEWER_FULL_IMAGE_PIXELS))
+			{
+				g_PictureState = 3;
+				Say("error", "{\"what\":\"picture\"}");
+			}
+		}
+		else if(Editor.PictureRunning() && !Editor.StepPicture(PICTURE_BUDGET))
+		{
+			const bool Made = !Editor.PictureFailed();
+			if(Made)
+				Editor.Storage()->SendFileToUser(g_PictureFile.c_str(), IStorage::TYPE_SAVE);
+			g_PictureState = Made ? 2 : 3;
+			Say(Made ? "picture" : "error", Made ? "{}" : "{\"what\":\"picture\"}");
+		}
+#endif
 
 		// Nothing is drawn while nothing has changed. An editor that draws
 		// sixty frames a second at a map nobody is touching empties a

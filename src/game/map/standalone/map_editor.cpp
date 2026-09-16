@@ -68,6 +68,7 @@ int CMapEditor::Add(map_document::CMapState Opened, const char *pName)
 	pMap->m_Name = pName == nullptr || pName[0] == '\0' ? UNNAMED : pName;
 	pMap->m_View.SetSurface(std::max(m_View.Width(), 1), std::max(m_View.Height(), 1));
 	pMap->m_pImages = std::make_unique<CDocumentImages>(m_View.Graphics(), m_View.Storage(), m_View.AssetLoader(), nullptr, m_pLogContext);
+	pMap->m_pImages->SetEntities(m_EntitiesImage.c_str());
 	pMap->m_pRenderer = std::make_unique<CDocumentRenderer>();
 	pMap->m_pRenderer->OnInit(m_View.Graphics(), pMap->m_pImages.get());
 
@@ -329,6 +330,51 @@ std::string CMapEditor::SettingNamesJson(const char *pPrefix) const
 	Writer.BeginArray();
 	for(const std::string &Name : map_document::CompleteSetting(pPrefix))
 		Writer.WriteStrValue(Name.c_str());
+	Writer.EndArray();
+	return Writer.GetOutputString();
+}
+
+std::string CMapEditor::SavedJson(const char *pDirectory, int StorageType)
+{
+	struct CFound
+	{
+		IStorage *m_pStorage;
+		const char *m_pDirectory;
+		int m_StorageType;
+		std::vector<std::pair<std::string, int64_t>> m_vFiles;
+	};
+	CFound Found{m_View.Storage(), pDirectory, StorageType, {}};
+	m_View.Storage()->ListDirectory(StorageType, pDirectory, [](const char *pName, int IsDir, int Type, void *pUser) {
+		CFound *pFound = static_cast<CFound *>(pUser);
+		if(IsDir != 0 || !str_endswith(pName, ".map"))
+			return 0;
+		char aPath[IO_MAX_PATH_LENGTH];
+		str_format(aPath, sizeof(aPath), "%s/%s", pFound->m_pDirectory, pName);
+		// How big it is, because a name alone says nothing about whether this
+		// is the map somebody meant. Unreadable ones are left out: a name in
+		// the list that cannot be opened is worse than no name.
+		IOHANDLE File = pFound->m_pStorage->OpenFile(aPath, IOFLAG_READ, pFound->m_StorageType);
+		if(!File)
+			return 0;
+		const int64_t Size = io_length(File);
+		io_close(File);
+		std::string Name(pName);
+		Name.erase(Name.size() - 4);
+		pFound->m_vFiles.emplace_back(std::move(Name), Size);
+		return 0; }, &Found);
+	std::sort(Found.m_vFiles.begin(), Found.m_vFiles.end(),
+		[](const auto &First, const auto &Second) { return First.first < Second.first; });
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	for(const auto &[Name, Size] : Found.m_vFiles)
+	{
+		Writer.BeginObject();
+		Writer.WriteAttribute("name");
+		Writer.WriteStrValue(Name.c_str());
+		Writer.WriteAttribute("size");
+		Writer.WriteIntValue((int)Size);
+		Writer.EndObject();
+	}
 	Writer.EndArray();
 	return Writer.GetOutputString();
 }
@@ -702,6 +748,41 @@ CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
 	return Params;
 }
 
+bool CMapEditor::BeginPicture(int Id, const char *pPath, size_t PixelBudget)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return false;
+	// The version as it is now, held by the picture for as long as it is
+	// being drawn: somebody who goes on painting while a large map is written
+	// out gets the map as it was when they asked, in every piece of it.
+	auto pShown = std::make_shared<const map_document::CMapState>(pMap->m_Document.Map());
+	const CDocumentRenderer::CParams Looked = ParamsFor(*pMap);
+	const int MapId = Id;
+	return m_View.BeginFullImageOf(pPath, pMap->m_Display.m_TimeOffsetMillis, PixelBudget, WorldSize(Id),
+		[this, MapId, pShown, Looked](const CStandaloneMapView::SRenderParams &Piece) {
+			CMap *pDrawn = Find(MapId);
+			IGraphics *pGraphics = m_View.Graphics();
+			pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));
+			pGraphics->Clear(0.0f, 0.0f, 0.0f);
+			if(pDrawn == nullptr)
+				return;
+			CDocumentRenderer::CParams Params;
+			Params.m_Center = Piece.m_Center;
+			Params.m_Zoom = Piece.m_Zoom;
+			Params.m_ViewSize = Piece.m_ViewSize;
+			Params.m_Window = Piece.m_Window;
+			Params.m_TimeOffsetMillis = Piece.m_TimeOffsetMillis;
+			Params.m_HighDetail = Looked.m_HighDetail;
+			Params.m_EntityOverlayVal = Looked.m_EntityOverlayVal;
+			Params.m_pHidden = &pDrawn->m_Display.m_vHidden;
+			pDrawn->m_pRenderer->Use(pShown);
+			pDrawn->m_pRenderer->Render(Params);
+			// The next frame on the screen draws the document as it is by then.
+			m_NeedsRedraw = true;
+		});
+}
+
 vec2 CMapEditor::PixelInGroup(int Id, size_t Group, vec2 World) const
 {
 	const CMap *pMap = Find(Id);
@@ -849,6 +930,32 @@ void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
 	map_document::SetBrushNumbers(m_Brush, m_Numbers);
 }
 
+bool CMapEditor::SetEntitiesImage(const char *pName)
+{
+	// The sheets there are, as the native editor offers them. A name from a
+	// page goes into a path, so it is one of these or nothing.
+	static constexpr const char *s_apKnown[] = {"ddnet", "ddrace", "race", "fng", "vanilla", "f-ddrace", "blockworlds"};
+	if(pName == nullptr || std::none_of(std::begin(s_apKnown), std::end(s_apKnown), [pName](const char *pKnown) { return str_comp(pKnown, pName) == 0; }))
+		return false;
+	m_EntitiesImage = pName;
+	for(const auto &pMap : m_vpMaps)
+		pMap->m_pImages->SetEntities(pName);
+	Touch();
+	return true;
+}
+
+const map_document::CBrush &CMapEditor::BrushToPlace()
+{
+	m_LastDropped = 0;
+	if(m_AllowUnused)
+		return m_Brush;
+	// A copy only where there is something to take out: the brush's stores
+	// are shared, so the copy costs pointers until a tile is changed in it.
+	m_PlacedBrush = m_Brush;
+	m_LastDropped = map_document::DropUnusedTiles(m_PlacedBrush);
+	return m_LastDropped == 0 ? m_Brush : m_PlacedBrush;
+}
+
 bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
 {
 	CMap *pMap = ForTiles(Id, Group, Layer, true);
@@ -858,7 +965,7 @@ bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
 	// button went down - so a stroke is one entry and a single stamp is one
 	// as well.
 	pMap->m_Document.Begin("Draw");
-	map_document::PaintTiles(pMap->m_Document, Group, Layer, x, y, m_Brush);
+	map_document::PaintTiles(pMap->m_Document, Group, Layer, x, y, BrushToPlace());
 	pMap->m_Document.Commit();
 	Touch();
 	return true;
@@ -871,7 +978,7 @@ bool CMapEditor::Fill(int Id, size_t Group, size_t Layer, int x, int y, int Widt
 		return false;
 	pMap->m_Document.Begin("Fill");
 	map_document::EditTileLayer(pMap->m_Document, Group, Layer, [&](map_document::CTileLayer &Changed) {
-		map_document::FillTiles(Changed, x, y, Width, Height, m_Brush);
+		map_document::FillTiles(Changed, x, y, Width, Height, BrushToPlace());
 	});
 	pMap->m_Document.Commit();
 	Touch();

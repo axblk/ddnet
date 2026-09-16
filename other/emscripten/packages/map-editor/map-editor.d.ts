@@ -23,6 +23,8 @@ export interface TileLayer extends LayerBase {
 	automapperConfig: number;
 	automapperSeed: number;
 	automapperAutomatic: boolean;
+	/** Whether game tiles can be built from this layer's tiles. */
+	construct: boolean;
 }
 
 export interface QuadLayer extends LayerBase {
@@ -105,6 +107,7 @@ export type Command =
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.resize"; group: number; layer: number; width?: number; height?: number; label?: string }
+	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
 	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
 	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }

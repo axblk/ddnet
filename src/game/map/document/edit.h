@@ -174,6 +174,69 @@ namespace map_document
 	std::vector<ivec2> NumberPlaces(const CTileLayer &Layer, int Number);
 
 	/**
+	 * Which physics tile a layer's tiles are to be turned into.
+	 *
+	 * The thirteen the editor in the client offers under "construct", in the
+	 * order it offers them: a design layer says where the walls are and this
+	 * writes the game tiles under them, which is how a map is built - the
+	 * shape is drawn once and the physics follow it.
+	 */
+	enum class EGameTile
+	{
+		AIR,
+		HOOKABLE,
+		DEATH,
+		UNHOOKABLE,
+		HOOKTHROUGH,
+		FREEZE,
+		UNFREEZE,
+		DEEP_FREEZE,
+		DEEP_UNFREEZE,
+		BLUE_CHECK_TELE,
+		RED_CHECK_TELE,
+		LIVE_FREEZE,
+		LIVE_UNFREEZE,
+	};
+
+	/**
+	 * Whether this layer's tiles can be turned into game tiles at all.
+	 *
+	 * They can when the layer lies over the game layer tile for tile: it has
+	 * to be a drawn layer rather than a physics one, its group must not move
+	 * with the camera, and the group's offset has to be whole tiles. A layer
+	 * in a parallax group is somewhere else at every moment, so there is no
+	 * answer to where its tiles are.
+	 *
+	 * @param Map The map the layer is in.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 */
+	bool CanConstructGameTiles(const CMapState &Map, size_t Group, size_t Layer);
+
+	/**
+	 * Writes a physics tile under every tile this layer holds.
+	 *
+	 * Air in the design layer is left alone - this puts tiles under what is
+	 * drawn, it does not clear what is not. The game layer grows if the design
+	 * layer reaches past it, and because the physics layers of a map are all
+	 * one size, they all grow with it.
+	 *
+	 * The two checkpoints are the exception that is not one: they are tele
+	 * tiles, so they go into the tele layer, with the number 1 - and if the
+	 * map has no tele layer, it gets one.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Group Which group the design layer is in.
+	 * @param Layer Which layer of it.
+	 * @param Tile Which physics tile to write.
+	 *
+	 * @return How many tiles were written, which is 0 for a layer that is all
+	 * air - and then the version is no version, the way every other change
+	 * that changed nothing is none.
+	 */
+	int ConstructGameTiles(CDocument &Doc, size_t Group, size_t Layer, EGameTile Tile);
+
+	/**
 	 * Changes one tile layer of the version being made.
 	 *
 	 * This is the three steps of `CMapState` as one, for the case that is

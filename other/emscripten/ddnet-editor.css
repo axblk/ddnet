@@ -274,6 +274,19 @@
 	min-width: 0;
 }
 
+/* The thirteen construct operations, under the properties of a layer that
+   lies over the game layer. Hidden for every other layer. */
+.editor-construct {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-construct select {
+	flex: 1;
+	min-width: 0;
+}
+
 /* The row a layer would land on if it were let go of now. */
 .editor-drop {
 	outline: 1px dashed #9fb8de;

@@ -3,6 +3,7 @@
 #include <engine/shared/jsonwriter.h>
 
 #include <game/map/document/document.h>
+#include <game/map/document/edit.h>
 
 #include <variant>
 
@@ -34,8 +35,14 @@ namespace map_document
 			Writer.EndArray();
 		}
 
-		void WriteTileLayer(CJsonWriter &Writer, const CTileLayer &Layer)
+		void WriteTileLayer(CJsonWriter &Writer, const CTileLayer &Layer, bool Construct)
 		{
+			// Whether this layer's tiles can be turned into game tiles. The
+			// rule is the document's - a page cannot work out for itself
+			// whether a group lies over the game layer - so the answer comes
+			// with the layer rather than being asked for separately.
+			Writer.WriteAttribute("construct");
+			Writer.WriteBoolValue(Construct);
 			Writer.WriteAttribute("type");
 			Writer.WriteStrValue("tiles");
 			Writer.WriteAttribute("kind");
@@ -62,7 +69,7 @@ namespace map_document
 			Writer.WriteBoolValue(Layer.m_AutomapperAutomatic);
 		}
 
-		void WriteLayer(CJsonWriter &Writer, const CLayer &Layer)
+		void WriteLayer(CJsonWriter &Writer, const CLayer &Layer, bool Construct)
 		{
 			Writer.BeginObject();
 			const CLayerProperties &Properties = LayerProperties(Layer);
@@ -70,11 +77,11 @@ namespace map_document
 			Writer.WriteStrValue(Properties.m_Name.c_str());
 			Writer.WriteAttribute("detail");
 			Writer.WriteBoolValue(Properties.m_Detail);
-			std::visit([&Writer](const auto &Kind) {
+			std::visit([&Writer, Construct](const auto &Kind) {
 				using TLayer = std::decay_t<decltype(Kind)>;
 				if constexpr(std::is_same_v<TLayer, CTileLayer>)
 				{
-					WriteTileLayer(Writer, Kind);
+					WriteTileLayer(Writer, Kind, Construct);
 				}
 				else if constexpr(std::is_same_v<TLayer, CQuadLayer>)
 				{
@@ -99,8 +106,9 @@ namespace map_document
 			Writer.EndObject();
 		}
 
-		void WriteGroup(CJsonWriter &Writer, const CGroup &Group)
+		void WriteGroup(CJsonWriter &Writer, const CMapState &Map, size_t Index)
 		{
+			const CGroup &Group = *Map.Group(Index);
 			Writer.BeginObject();
 			Writer.WriteAttribute("name");
 			Writer.WriteStrValue(Group.m_Name.c_str());
@@ -117,8 +125,8 @@ namespace map_document
 			Writer.EndArray();
 			Writer.WriteAttribute("layers");
 			Writer.BeginArray();
-			for(const auto &pLayer : Group.m_vpLayers)
-				WriteLayer(Writer, *pLayer);
+			for(size_t Layer = 0; Layer < Group.m_vpLayers.size(); ++Layer)
+				WriteLayer(Writer, *Group.m_vpLayers[Layer], CanConstructGameTiles(Map, Index, Layer));
 			Writer.EndArray();
 			Writer.EndObject();
 		}
@@ -153,7 +161,7 @@ namespace map_document
 		Writer.WriteAttribute("groups");
 		Writer.BeginArray();
 		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
-			WriteGroup(Writer, *Map.Group(Group));
+			WriteGroup(Writer, Map, Group);
 		Writer.EndArray();
 
 		Writer.WriteAttribute("envelopes");

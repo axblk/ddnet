@@ -274,6 +274,82 @@ EMSCRIPTEN_KEEPALIVE float MapEditorGroupWorldY(int Id, int Group, float X, floa
 	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->WorldInGroup(Id, (size_t)Group, vec2(X, Y)).y;
 }
 
+// And the other way round: where a place in a group's coordinates is on the
+// surface. What an overlay drawn in the page has to ask, so that a shape over
+// the map stays over the place it belongs to when the view moves.
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupPixelX(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->PixelInGroup(Id, (size_t)Group, vec2(X, Y)).x;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupPixelY(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->PixelInGroup(Id, (size_t)Group, vec2(X, Y)).y;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSoundSources(int Id, int Group, int Layer)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->SoundSourcesJson(Id, Group, Layer));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorExplain(int Id, int Group, int Layer, int Index)
+{
+	if(g_pEditor == nullptr)
+		return "";
+	const char *pExplanation = g_pEditor->Explain(Id, Group, Layer, Index);
+	// An empty answer rather than nothing, because the page reads a string
+	// and "there is nothing to say" is a thing to say.
+	return pExplanation == nullptr ? "" : pExplanation;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingsHelp()
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingsHelpJson());
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingProblems(int Id)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingProblemsJson(Id));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->AddTileArt(Id, pName, Width, Height, pPixels);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorArtColors(int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->CountArtColors(Width, Height, pPixels);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+	int PixelStep, int QuadSize, int Centralize, int Merge)
+{
+	return g_pEditor == nullptr ?
+		       -1 :
+		       g_pEditor->AddQuadArt(Id, pName, Width, Height, pPixels, PixelStep, QuadSize, Centralize != 0, Merge != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorAppend(int Id, const char *pPath, int StorageType)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->Append(Id, pPath, StorageType));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorCheckSetting(const char *pLine)
+{
+	return g_pEditor == nullptr ? "" : Answer(g_pEditor->CheckSetting(pLine));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorProof(int Id, int Menu)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->ProofJson(Id, Menu != 0));
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorQuads(int Id, int Group, int Layer)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->QuadsJson(Id, Group, Layer));
@@ -318,6 +394,13 @@ EMSCRIPTEN_KEEPALIVE int MapEditorTileIndex(int Id, int Group, int Layer, int X,
 EMSCRIPTEN_KEEPALIVE int MapEditorLoadRules(const char *pName, const char *pText)
 {
 	return g_pEditor == nullptr ? 0 : (int)g_pEditor->LoadRules(pName, pText);
+}
+
+// Which lines of a rules file were passed over, as a JSON array of line
+// numbers counting from one. Empty for a file that was understood whole.
+EMSCRIPTEN_KEEPALIVE const char *MapEditorRuleProblems(const char *pName)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->RuleProblems(pName));
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorNumRuleConfigs(const char *pName)
@@ -379,6 +462,32 @@ EMSCRIPTEN_KEEPALIVE const uint8_t *MapEditorImagePixels(int Id, int Index)
 {
 	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
 	return pImage == nullptr || pImage->m_Data.Empty() ? nullptr : &pImage->m_Data[0];
+}
+
+// The bytes of a sound, and how many. The same rule as the pixels above: no
+// copy is made, and the address is good until the map changes.
+EMSCRIPTEN_KEEPALIVE const uint8_t *MapEditorSoundData(int Id, int Index)
+{
+	const map_document::CSound *pSound = g_pEditor == nullptr ? nullptr : g_pEditor->Sound(Id, Index);
+	return pSound == nullptr || pSound->m_Data.Empty() ? nullptr : &pSound->m_Data[0];
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorSoundSize(int Id, int Index)
+{
+	const map_document::CSound *pSound = g_pEditor == nullptr ? nullptr : g_pEditor->Sound(Id, Index);
+	return pSound == nullptr ? 0 : (int)pSound->m_Data.Size();
+}
+
+// An Opus file read into the map. Bytes rather than a command, because
+// hundreds of kilobytes of JSON are a text nobody should write or read.
+EMSCRIPTEN_KEEPALIVE int MapEditorAddSound(int Id, const char *pName, int Size, const uint8_t *pData)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->AddSound(Id, pName, Size, pData);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorSetSoundData(int Id, int Index, int Size, const uint8_t *pData)
+{
+	return g_pEditor != nullptr && g_pEditor->SetSoundData(Id, Index, Size, pData) ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorImageWidth(int Id, int Index)

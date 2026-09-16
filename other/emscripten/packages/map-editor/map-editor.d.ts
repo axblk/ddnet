@@ -23,6 +23,8 @@ export interface TileLayer extends LayerBase {
 	automapperConfig: number;
 	automapperSeed: number;
 	automapperAutomatic: boolean;
+	/** Whether game tiles can be built from this layer's tiles. */
+	construct: boolean;
 }
 
 export interface QuadLayer extends LayerBase {
@@ -62,10 +64,71 @@ export interface Quad {
 	points: number[];
 	/** Four colours as sixteen numbers, each 0 to 255. */
 	colors: number[];
+	/** Four places in the picture as eight numbers; 1024 is the whole picture. */
+	texcoords: number[];
 	posEnv: number;
 	posEnvOffset: number;
 	colorEnv: number;
 	colorEnvOffset: number;
+}
+
+/** Proof mode: a rectangle as left, top, right, bottom in world units. */
+export type ProofRect = [number, number, number, number];
+
+export interface Proof {
+	menu: boolean;
+	/** Where the camera stands, in the game layer's coordinates. */
+	center: [number, number];
+	/** Twenty-one shapes from square to 16:9; together they are one outline. */
+	steps: ProofRect[];
+	/** The two shapes a mapper is told to check, with their names. */
+	named: { name: string; rect: ProofRect }[];
+	/** Where a menu background can stand in this map; empty outside menu mode. */
+	positions: { index: number; position: [number, number] }[];
+}
+
+/** What one map took from another. */
+export interface AppendReport {
+	name: string;
+	groups: number;
+	images: number;
+	/** Pictures the map already had, byte for byte, so they were not added. */
+	sharedImages: number;
+	/** Pictures whose name was taken by a different picture. */
+	renamedImages: number;
+	sounds: number;
+	envelopes: number;
+	settings: number;
+}
+
+/** One thing a map may say to a server. */
+export interface MapSetting {
+	name: string;
+	help: string;
+	/** A variable takes one number and has a range; a command takes what its args say. */
+	variable: boolean;
+	default?: number;
+	range?: [number, number];
+	/** `i` a whole number, `f` a number, `s` a word, `r` the rest of the line. */
+	args: { name: string; type: string; optional: boolean }[];
+}
+
+export interface SoundSource {
+	/** Where it is, in world units. */
+	position: [number, number];
+	shape: "circle" | "rectangle";
+	/** How far it carries, in world units; only a circle has one. */
+	radius?: number;
+	/** How wide and how tall, in world units; only a rectangle has one. */
+	size?: [number, number];
+	loop: boolean;
+	pan: boolean;
+	timeDelay: number;
+	falloff: number;
+	posEnv: number;
+	posEnvOffset: number;
+	soundEnv: number;
+	soundEnvOffset: number;
 }
 
 export interface Envelope {
@@ -104,6 +167,16 @@ export type Command =
 	| { op: "layer.add"; group: number; type?: "tiles" | "quads" | "sounds"; kind?: string; width?: number; height?: number; name?: string; label?: string }
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
+	| { op: "layer.resize"; group: number; layer: number; width?: number; height?: number; label?: string }
+	| { op: "layer.type"; group: number; layer: number; x: number; y: number; text: string; label?: string }
+	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
+	| { op: "quad.setTexcoord"; group: number; layer: number; quad: number; corner: number; u: number; v: number; label?: string }
+	| { op: "quad.carve"; group: number; layer: number; quad: number; points: number[]; label?: string }
+	| { op: "quad.shape"; group: number; layer: number; quad: number; shape: "square" | "aspect" | "centerPivot" | "align"; grid?: number; label?: string }
+	| { op: "source.add"; group: number; layer: number; x: number; y: number; radius?: number; label?: string }
+	| { op: "source.delete"; group: number; layer: number; source: number; label?: string }
+	| { op: "source.setPoint"; group: number; layer: number; source: number; x: number; y: number; label?: string }
+	| { op: "source.setProp"; group: number; layer: number; source: number; prop: string; value: unknown; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
 	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
 	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }
@@ -117,6 +190,9 @@ export type Command =
 	| { op: "image.add"; name: string; width?: number; height?: number; label?: string }
 	| { op: "image.delete"; image: number; label?: string }
 	| { op: "image.setProp"; image: number; prop: "name" | "external"; value: string | boolean; label?: string }
+	| { op: "sound.add"; name: string; label?: string }
+	| { op: "sound.delete"; sound: number; label?: string }
+	| { op: "sound.setProp"; sound: number; prop: "name" | "external"; value: string | boolean; label?: string }
 	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
 	| { op: "envelope.delete"; envelope: number; label?: string }
 	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
@@ -161,6 +237,29 @@ export declare class MapEditor {
 	tileIndex(group: number, layer: number, x: number, y: number, id?: MapId): number;
 	/** Keeps a `.rules` file under a name; answers how many configurations it holds. */
 	loadRules(name: string, text: string): number;
+	/** The sound sources of one layer, or null for a layer that holds none. */
+	sources(group: number, layer: number, id?: number): SoundSource[] | null;
+	/** What a player would see from where the view is looking, in world units. */
+	proof(menu?: boolean, id?: MapId): Proof | null;
+	/** What a tile of a physics layer does, or "" where there is nothing to say. */
+	explain(group: number, layer: number, index: number, id?: MapId): string;
+	/** Everything a map may say to a server, asked once and kept. */
+	settingsHelp(): MapSetting[];
+	/** What is wrong with each settings line, and where each repeats an earlier one. */
+	settingProblems(id?: MapId): { problem: string; repeats: number }[];
+	/** The names of settings that begin with what has been typed. */
+	settingNames(prefix: string): string[];
+	/** What is wrong with one settings line, or "" where nothing is. */
+	checkSetting(line: string): string;
+	/** Puts a second map's groups, assets and settings into this one; one history entry. */
+	appendFile(file: File, id?: MapId): Promise<AppendReport | null>;
+
+	/** Where a place in one group's coordinates is on the canvas, in pixels. */
+	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;
+
+	/** Which lines of a rules file were passed over, counting from one. */
+	ruleProblems(name: string): number[];
+
 	/** What the configurations of a rules file that was loaded are called. */
 	ruleConfigs(name: string): string[];
 	/** Runs one configuration over a layer, or over a piece of it, as one history entry. */
@@ -169,8 +268,22 @@ export declare class MapEditor {
 	}): boolean;
 	/** Puts a picture with its pixels into the map; answers which picture it became, or -1. */
 	addImage(name: string, pixels: ImageData, id?: MapId): number;
+	/** A picture as tile layers drawn with palettes of its own colours; answers the group, or -1. */
+	addTileArt(name: string, pixels: ImageData, id?: MapId): number;
+	/** How many colours a picture holds, not counting what is not opaque. */
+	artColors(pixels: ImageData): number;
+	/** A picture as a group of quads, one per pixel or per run of one colour. */
+	addQuadArt(name: string, pixels: ImageData, options?: {
+		pixelStep?: number; quadSize?: number; centralize?: boolean; merge?: boolean;
+	}, id?: MapId): number;
 	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */
 	setImagePixels(index: number, pixels: ImageData, id?: MapId): boolean;
+	/** Puts a sound with its bytes into the map; answers which sound it became, or -1. */
+	addSound(name: string, bytes: Uint8Array | ArrayBuffer, id?: MapId): number;
+	/** Puts other bytes into a sound the map has, keeping the layers that play it. */
+	setSoundData(index: number, bytes: Uint8Array | ArrayBuffer, id?: MapId): boolean;
+	/** The bytes of a sound packed into the map file, or null for one beside it. */
+	soundData(index: number, id?: MapId): Uint8Array | null;
 	/** The lowest number a physics layer is not using yet, or -1 when all are taken. */
 	nextFreeNumber(group: number, layer: number, checkpoint?: boolean, id?: MapId): number;
 	/** Moves the view to the `which`-th place a number is used; answers how many there are. */
@@ -247,6 +360,17 @@ export declare function steerEditor(
 		/** Which layer the pointer paints in - the panels know. */
 		target?: (() => { group: number; layer: number } | null) | null;
 		onChange?: (() => void) | null;
+		/**
+		 * Called with a click in the painted layer's own coordinates before
+		 * anything else is done with it. Answering `true` takes the click.
+		 */
+		onClickInGroup?: ((world: { x: number; y: number }, where: { group: number; layer: number }) => boolean) | null;
+		/** Called with the tile under the pointer on every move, or null once it has left. */
+		onHover?: ((tile: { x: number; y: number } | null) => void) | null;
+		/** Called when only the view moved - panned or zoomed. */
+		onView?: (() => void) | null;
+		/** Called while a stroke's change is still open. */
+		afterStroke?: ((where: { group: number; layer: number }, box: { x: number; y: number; width: number; height: number }) => void) | null;
 		signal?: AbortSignal;
 	},
 ): { destroy(): void };

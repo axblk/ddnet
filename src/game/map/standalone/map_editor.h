@@ -140,6 +140,19 @@ public:
 	int Open(const char *pPath, int StorageType);
 
 	/**
+	 * Puts a second map into one that is already open - see
+	 * `map_document::AppendMap`.
+	 *
+	 * @param Id The number of the map to put it into.
+	 * @param pPath The file to take from.
+	 * @param StorageType Where to look for it.
+	 *
+	 * @return What came over, as JSON, or `null` if the file could not be
+	 * read.
+	 */
+	std::string Append(int Id, const char *pPath, int StorageType);
+
+	/**
 	 * An empty map with a game layer, which is what "new map" means.
 	 *
 	 * @param Width How many tiles wide the game layer is.
@@ -246,6 +259,40 @@ public:
 	const map_document::CImage *Image(int Id, int Index) const;
 
 	/**
+	 * One sound of a map, to read its bytes out of.
+	 *
+	 * The same rule as a picture: the address is good until the map changes,
+	 * and whoever wants to play the sound should take a copy.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which sound of the map.
+	 *
+	 * @return The sound, or `nullptr` where there is none.
+	 */
+	const map_document::CSound *Sound(int Id, int Index) const;
+
+	/**
+	 * Reads a sound into the map as bytes, and says which one it became.
+	 *
+	 * The bytes are an Opus file, and they cross as bytes rather than as a
+	 * command for the same reason a picture's pixels do: a sound is hundreds
+	 * of kilobytes, and hundreds of kilobytes of JSON are a text nobody
+	 * should write or read. What is in them is the map's business as little
+	 * as it is this program's - nothing here plays anything.
+	 *
+	 * @param Id The number of the map.
+	 * @param pName What the sound is called.
+	 * @param Size How many bytes.
+	 * @param pData The bytes.
+	 *
+	 * @return Which sound of the map it became, or -1.
+	 */
+	int AddSound(int Id, const char *pName, int Size, const uint8_t *pData);
+
+	/** Puts other bytes into a sound that is already in the map. */
+	bool SetSoundData(int Id, int Index, int Size, const uint8_t *pData);
+
+	/**
 	 * The quads of one layer, as JSON - see `map_document::QuadsJson`.
 	 *
 	 * @param Id The number of the map.
@@ -255,6 +302,36 @@ public:
 	 * @return The JSON text, or `null` for a layer that holds no quads.
 	 */
 	std::string QuadsJson(int Id, int Group, int Layer) const;
+
+	/** The sound sources of one layer - see `map_document::SoundSourcesJson`. */
+	std::string SoundSourcesJson(int Id, int Group, int Layer) const;
+
+	/**
+	 * Proof mode around where the view is looking - see
+	 * `map_document::ProofJson`.
+	 *
+	 * The place is the view's own centre rather than something the page
+	 * passes in, because proof mode asks "what would a player standing where
+	 * I am looking see", and where that is, is the view's answer.
+	 */
+	std::string ProofJson(int Id, bool Menu) const;
+
+	/** Everything a map may say to a server - see `map_document::SettingsHelpJson`. */
+	std::string SettingsHelpJson() const;
+
+	/** What is wrong with each settings line - see `map_document::SettingProblemsJson`. */
+	std::string SettingProblemsJson(int Id) const;
+
+	/**
+	 * The names of settings that begin with what has been typed.
+	 *
+	 * Handed over as a JSON array rather than one at a time, because it is a
+	 * list somebody is looking at all at once.
+	 */
+	std::string SettingNamesJson(const char *pPrefix) const;
+
+	/** What is wrong with one settings line - see `map_document::CheckSetting`. */
+	std::string CheckSetting(const char *pLine) const;
 
 	/**
 	 * Where a pixel of the surface is, in the coordinates one group is drawn
@@ -271,6 +348,24 @@ public:
 	 * @return The place, in world units.
 	 */
 	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
+
+	/**
+	 * The other way round: where a place in one group's coordinates is on
+	 * the surface.
+	 *
+	 * This is what an overlay drawn in the page needs. A sound source is a
+	 * circle in its group's coordinates, and an SVG circle over the canvas is
+	 * in pixels; asking the program rather than working it out in the page
+	 * is what keeps the shape over the place it belongs to when the view
+	 * moves.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param World The place, in world units.
+	 *
+	 * @return Where on the surface, in pixels from its top left.
+	 */
+	vec2 PixelInGroup(int Id, size_t Group, vec2 World) const;
 
 	/**
 	 * What tile stands in one place of a layer.
@@ -290,6 +385,23 @@ public:
 	int TileIndex(int Id, int Group, int Layer, int x, int y) const;
 
 	/**
+	 * What a tile of a physics layer does, in a sentence - see
+	 * `map_document::ExplainTile`.
+	 *
+	 * The index rather than a place, because the two things that want it are
+	 * the map under the pointer and the tileset a brush is picked from, and
+	 * only one of those has places.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, whose kind decides what a number means.
+	 * @param Index The tile, 0 to 255.
+	 *
+	 * @return The sentence, or `nullptr` where there is nothing to say.
+	 */
+	const char *Explain(int Id, int Group, int Layer, int Index) const;
+
+	/**
 	 * Keeps a `.rules` file under a name, parsed, for automapping with.
 	 *
 	 * The file is not read here: natively it comes off the disk and in the
@@ -303,6 +415,16 @@ public:
 	 * @return How many configurations it holds.
 	 */
 	size_t LoadRules(const char *pName, const char *pText);
+
+	/**
+	 * Which lines of a rules file were passed over, as a JSON array.
+	 *
+	 * A rules file is read as far as it is understood and what is left over
+	 * is skipped, which is what lets a file from a newer editor still
+	 * automap - but somebody writing one wants to be told, and a line number
+	 * is the only useful way to say it. Counting starts at one.
+	 */
+	std::string RuleProblems(const char *pName) const;
 
 	/** How many configurations a rules file that was loaded holds. */
 	size_t NumRuleConfigs(const char *pName) const;
@@ -352,6 +474,26 @@ public:
 	 * @return Which picture of the map it became, or -1 where it was refused.
 	 */
 	int AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
+
+	/**
+	 * Turns a picture into tile layers of its own colours - see
+	 * `map_document::AddTileArt`.
+	 *
+	 * @return Which group of the map it became, or -1.
+	 */
+	int AddTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
+
+	/** How many colours a picture holds, so a page can warn before it asks. */
+	int CountArtColors(int Width, int Height, const uint8_t *pPixels) const;
+
+	/**
+	 * Turns a picture into one quad per pixel - see
+	 * `map_document::AddQuadArt`.
+	 *
+	 * @return Which group of the map it became, or -1.
+	 */
+	int AddQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+		int PixelStep, int QuadSize, bool Centralize, bool Merge);
 
 	/**
 	 * Puts other pixels into a picture the map already has, keeping every
@@ -683,6 +825,7 @@ private:
 	// They belong to the editor rather than to a map: the same rules
 	// automap every map that draws with that picture.
 	std::map<std::string, map_document::CAutomapRules> m_Rules;
+	std::map<std::string, std::vector<int>> m_RuleProblems;
 };
 
 #endif // GAME_MAP_STANDALONE_MAP_EDITOR_H

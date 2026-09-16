@@ -7,18 +7,23 @@
 
 #include <engine/graphics.h>
 #include <engine/shared/datafile.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/storage.h>
 
+#include <game/map/document/art.h>
 #include <game/map/document/automap.h>
 #include <game/map/document/command.h>
 #include <game/map/document/edit.h>
+#include <game/map/document/explain.h>
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
+#include <game/map/document/settings.h>
 #include <game/map/document/structure.h>
 #include <game/mapitems.h>
 
 #include <algorithm>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -98,6 +103,59 @@ int CMapEditor::Open(const char *pPath, int StorageType)
 	char aName[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(fs_filename(pPath), aName, sizeof(aName));
 	return Add(std::move(Read), aName);
+}
+
+std::string CMapEditor::Append(int Id, const char *pPath, int StorageType)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return "null";
+	CDataFileReader File;
+	if(!File.Open(m_View.Storage(), pPath, StorageType))
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to open map '%s'", pPath);
+		return "null";
+	}
+	map_document::CMapState Read;
+	std::vector<std::string> vWarnings;
+	const bool Ok = map_document::ReadMapState(File, &Read, &vWarnings);
+	File.Close();
+	for(const std::string &Warning : vWarnings)
+		log_warn(m_pLogContext, "%s", Warning.c_str());
+	if(!Ok)
+	{
+		log_error_color(ERROR_LOG_COLOR, m_pLogContext, "Failed to read map '%s'", pPath);
+		return "null";
+	}
+
+	char aName[IO_MAX_PATH_LENGTH];
+	fs_split_file_extension(fs_filename(pPath), aName, sizeof(aName));
+	std::string Label = std::string("Append ") + aName;
+	pMap->m_Document.Begin(Label.c_str(), nullptr);
+	const map_document::CAppendReport Report = map_document::AppendMap(pMap->m_Document, Read);
+	pMap->m_Document.Commit();
+	Touch();
+
+	CJsonStringWriter Writer;
+	Writer.BeginObject();
+	Writer.WriteAttribute("name");
+	Writer.WriteStrValue(aName);
+	Writer.WriteAttribute("groups");
+	Writer.WriteIntValue((int)Report.m_Groups);
+	Writer.WriteAttribute("images");
+	Writer.WriteIntValue((int)Report.m_Images);
+	Writer.WriteAttribute("sharedImages");
+	Writer.WriteIntValue((int)Report.m_SharedImages);
+	Writer.WriteAttribute("renamedImages");
+	Writer.WriteIntValue((int)Report.m_RenamedImages);
+	Writer.WriteAttribute("sounds");
+	Writer.WriteIntValue((int)Report.m_Sounds);
+	Writer.WriteAttribute("envelopes");
+	Writer.WriteIntValue((int)Report.m_Envelopes);
+	Writer.WriteAttribute("settings");
+	Writer.WriteIntValue((int)Report.m_Settings);
+	Writer.EndObject();
+	return Writer.GetOutputString();
 }
 
 int CMapEditor::Create(int Width, int Height, const char *pName)
@@ -228,6 +286,48 @@ std::string CMapEditor::QuadsJson(int Id, int Group, int Layer) const
 	return map_document::QuadsJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
 }
 
+std::string CMapEditor::SoundSourcesJson(int Id, int Group, int Layer) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return "null";
+	return map_document::SoundSourcesJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
+}
+
+std::string CMapEditor::ProofJson(int Id, bool Menu) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return "null";
+	return map_document::ProofJson(pMap->m_Document.Map(), pMap->m_View.Center(), Menu);
+}
+
+std::string CMapEditor::SettingsHelpJson() const
+{
+	return map_document::SettingsHelpJson();
+}
+
+std::string CMapEditor::SettingProblemsJson(int Id) const
+{
+	const CMap *pMap = Find(Id);
+	return pMap == nullptr ? "[]" : map_document::SettingProblemsJson(pMap->m_Document.Map());
+}
+
+std::string CMapEditor::SettingNamesJson(const char *pPrefix) const
+{
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	for(const std::string &Name : map_document::CompleteSetting(pPrefix))
+		Writer.WriteStrValue(Name.c_str());
+	Writer.EndArray();
+	return Writer.GetOutputString();
+}
+
+std::string CMapEditor::CheckSetting(const char *pLine) const
+{
+	return map_document::CheckSetting(pLine);
+}
+
 std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 {
 	const CMap *pMap = Find(Id);
@@ -245,19 +345,52 @@ int CMapEditor::TileIndex(int Id, int Group, int Layer, int x, int y) const
 	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
 		return -1;
 	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
-	if(pTiles == nullptr || x >= pTiles->Width() || y >= pTiles->Height())
+	if(pTiles == nullptr)
 		return -1;
-	return pTiles->m_Tiles.Get(x, y).m_Index;
+	return map_document::TileMeaning(*pTiles, x, y);
+}
+
+const char *CMapEditor::Explain(int Id, int Group, int Layer, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return nullptr;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return nullptr;
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr)
+		return nullptr;
+	return map_document::ExplainTile(pTiles->m_Kind, Index);
 }
 
 size_t CMapEditor::LoadRules(const char *pName, const char *pText)
 {
 	if(pName == nullptr || pName[0] == '\0')
 		return 0;
-	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText);
+	std::vector<int> vNotUnderstood;
+	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText, &vNotUnderstood);
 	const size_t Configs = Rules.NumConfigs();
 	m_Rules[pName] = std::move(Rules);
+	m_RuleProblems[pName] = std::move(vNotUnderstood);
 	return Configs;
+}
+
+std::string CMapEditor::RuleProblems(const char *pName) const
+{
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	if(pName != nullptr)
+	{
+		const auto Found = m_RuleProblems.find(pName);
+		if(Found != m_RuleProblems.end())
+		{
+			for(const int Line : Found->second)
+				Writer.WriteIntValue(Line);
+		}
+	}
+	Writer.EndArray();
+	return Writer.GetOutputString();
 }
 
 size_t CMapEditor::NumRuleConfigs(const char *pName) const
@@ -336,6 +469,43 @@ int CMapEditor::AddImage(int Id, const char *pName, int Width, int Height, const
 	return (int)Index;
 }
 
+int CMapEditor::AddTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	pMap->m_Document.Begin("Tile art");
+	const size_t Group = map_document::AddTileArt(pMap->m_Document, pName, Width, Height, pPixels);
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Group;
+}
+
+int CMapEditor::CountArtColors(int Width, int Height, const uint8_t *pPixels) const
+{
+	return Width <= 0 || Height <= 0 || pPixels == nullptr ?
+		       0 :
+		       (int)map_document::CountArtColors(Width, Height, pPixels);
+}
+
+int CMapEditor::AddQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+	int PixelStep, int QuadSize, bool Centralize, bool Merge)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	map_document::CQuadArtOptions Options;
+	Options.m_PixelStep = PixelStep;
+	Options.m_QuadSize = QuadSize;
+	Options.m_Centralize = Centralize;
+	Options.m_Merge = Merge;
+	pMap->m_Document.Begin("Quad art");
+	const size_t Group = map_document::AddQuadArt(pMap->m_Document, pName, Width, Height, pPixels, Options);
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Group;
+}
+
 bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)
 {
 	CMap *pMap = Find(Id);
@@ -351,6 +521,48 @@ bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const 
 	Changed.m_Data.Mutable().assign(pPixels, pPixels + (size_t)Width * (size_t)Height * 4);
 	pMap->m_Document.Begin("Replace image");
 	map_document::SetImage(pMap->m_Document, (size_t)Index, std::move(Changed));
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+const map_document::CSound *CMapEditor::Sound(int Id, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || (size_t)Index >= pMap->m_Document.Map().NumSounds())
+		return nullptr;
+	return pMap->m_Document.Map().Sound((size_t)Index);
+}
+
+int CMapEditor::AddSound(int Id, const char *pName, int Size, const uint8_t *pData)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || pName == nullptr || pName[0] == '\0' || Size <= 0 || pData == nullptr)
+		return -1;
+	map_document::CSound Sound;
+	Sound.m_Name = pName;
+	Sound.m_External = false;
+	Sound.m_Data.Mutable().assign(pData, pData + (size_t)Size);
+	pMap->m_Document.Begin("Add sound");
+	const size_t Index = map_document::AddSound(pMap->m_Document, std::move(Sound));
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Index;
+}
+
+bool CMapEditor::SetSoundData(int Id, int Index, int Size, const uint8_t *pData)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || Size <= 0 || pData == nullptr)
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Index >= Map.NumSounds())
+		return false;
+	map_document::CSound Changed = *Map.Sound((size_t)Index);
+	Changed.m_External = false;
+	Changed.m_Data.Mutable().assign(pData, pData + (size_t)Size);
+	pMap->m_Document.Begin("Replace sound");
+	map_document::SetSound(pMap->m_Document, (size_t)Index, std::move(Changed));
 	pMap->m_Document.Commit();
 	Touch();
 	return true;
@@ -478,6 +690,24 @@ CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
 	if(Game.has_value())
 		Params.m_GridGroup = Game->m_Group;
 	return Params;
+}
+
+vec2 CMapEditor::PixelInGroup(int Id, size_t Group, vec2 World) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group >= pMap->m_Document.Map().NumGroups())
+		return vec2(0.0f, 0.0f);
+	const CScreenRect Shown = pMap->m_pRenderer->GroupScreen(*pMap->m_Document.Map().m_vpGroups[Group], ParamsFor(*pMap));
+	const float Width = std::max(1, m_View.Width());
+	const float Height = std::max(1, m_View.Height());
+	// The inverse of `WorldInGroup`, and deliberately the same sum read
+	// backwards: a group with no width on the screen would divide by nothing,
+	// and that is a group nobody can point at anyway.
+	if(Shown.Width() == 0.0f || Shown.Height() == 0.0f)
+		return vec2(0.0f, 0.0f);
+	return vec2(
+		(World.x - Shown.m_TopLeft.x) / Shown.Width() * Width,
+		(World.y - Shown.m_TopLeft.y) / Shown.Height() * Height);
 }
 
 vec2 CMapEditor::WorldInGroup(int Id, size_t Group, vec2 Pixel) const

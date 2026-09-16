@@ -149,6 +149,64 @@ TEST(Structure, MovingALayerLeavesEveryOtherGroupAlone)
 	EXPECT_EQ(Document.Map().Group(1), Before.Group(1));
 }
 
+TEST(Structure, ADrawnLayerIsResizedByItself)
+{
+	CDocument Document(TwoGroups());
+	Document.Begin("Resize");
+	CTileLayer Painted = *Document.Map().TileLayer(0, 0);
+	CTile Solid = {};
+	Solid.m_Index = 4;
+	Painted.m_Tiles.Set(7, 7, Solid);
+	Painted.m_Tiles.Set(1, 1, Solid);
+	Document.Edit().ReplaceLayer(0, 0, Painted);
+	Document.Commit();
+	const CLayer *pUntouched = Document.Map().Layer(0, 1);
+
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{0, 0}, 16, 4);
+	Document.Commit();
+
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Width(), 16);
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Height(), 4);
+	// What was below the new edge is gone, and the rest is where it was.
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->m_Tiles.Get(7, 7).m_Index, 0);
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->m_Tiles.Get(1, 1).m_Index, 4);
+	// The game layer is not a drawn layer's business.
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Width(), 8);
+	// And neither is the layer beside it.
+	EXPECT_EQ(Document.Map().Layer(0, 1), pUntouched);
+}
+
+TEST(Structure, ResizingOnePhysicsLayerResizesThemAll)
+{
+	CMapState Map = TwoGroups();
+	CGroup Game = *Map.Group(1);
+	Game.m_vpLayers.push_back(std::make_shared<const CLayer>(TileLayer("tele", ETileLayerKind::TELE)));
+	Map.ReplaceGroup(1, std::move(Game));
+	CDocument Document(std::move(Map));
+	const CLayer *pDrawn = Document.Map().Layer(0, 0);
+
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{1, 1}, 12, 12);
+	Document.Commit();
+
+	// The tele layer was asked, but the game layer plays the same size.
+	EXPECT_EQ(Document.Map().TileLayer(1, 1)->Width(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 1)->Height(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Width(), 12);
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Height(), 12);
+	// A layer that is only drawn keeps its own size, and stays the node it is.
+	EXPECT_EQ(Document.Map().TileLayer(0, 0)->Width(), 8);
+	EXPECT_EQ(Document.Map().Layer(0, 0), pDrawn);
+
+	// A size that is already there is not a change.
+	const size_t Entries = Document.History().NumEntries();
+	Document.Begin("Resize");
+	ResizeLayer(Document, CLayerAddress{1, 0}, 12, 12);
+	Document.Commit();
+	EXPECT_EQ(Document.History().NumEntries(), Entries);
+}
+
 TEST(Structure, TheGameLayerIsFoundWhereverItIs)
 {
 	const CMapState Map = TwoGroups();
@@ -330,6 +388,168 @@ TEST(Structure, ReplacingAPictureKeepsTheLayersDrawnWithIt)
 	EXPECT_EQ(Document.Map().Image(1)->m_Name, "second");
 }
 
+namespace
+{
+	/** A map with one quad layer, and a picture for it to be drawn with. */
+	CDocument QuadMap(int ImageWidth = 0, int ImageHeight = 0)
+	{
+		CMapState Map;
+		CGroup Group;
+		CQuadLayer Layer;
+		if(ImageWidth > 0)
+		{
+			Layer.m_Image = 0;
+			CImage Image;
+			Image.m_Name = "picture";
+			Image.m_Width = ImageWidth;
+			Image.m_Height = ImageHeight;
+			Map.AddImage(std::move(Image));
+		}
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Layer)));
+		Map.AddGroup(std::move(Group));
+		return CDocument(std::move(Map));
+	}
+
+	/** A quad whose corners are somewhere rather than in a rectangle. */
+	CQuad CrookedQuad()
+	{
+		CQuad Quad = MakeQuad(0, 0, 64, 64);
+		Quad.m_aPoints[0] = CPoint{i2fx(-30), i2fx(-34)};
+		Quad.m_aPoints[1] = CPoint{i2fx(40), i2fx(-20)};
+		Quad.m_aPoints[2] = CPoint{i2fx(-20), i2fx(30)};
+		Quad.m_aPoints[3] = CPoint{i2fx(36), i2fx(26)};
+		Quad.m_aPoints[4] = CPoint{i2fx(0), i2fx(0)};
+		return Quad;
+	}
+
+	const CQuad &QuadIn(const CDocument &Document, size_t Index = 0)
+	{
+		return std::get<CQuadLayer>(*Document.Map().Layer(0, 0)).m_Quads[Index];
+	}
+} // namespace
+
+TEST(Structure, ASoundSourceIsAddedChangedAndTakenOut)
+{
+	CMapState Map;
+	CGroup Group;
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(CSoundLayer()));
+	Map.AddGroup(std::move(Group));
+	CDocument Document(std::move(Map));
+	const CLayerAddress Where{0, 0};
+
+	Document.Begin("Add");
+	EXPECT_EQ(AddSoundSource(Document, Where, MakeSoundSource(320, 160)), 0u);
+	EXPECT_EQ(AddSoundSource(Document, Where, MakeSoundSource(64, 64, 32)), 1u);
+	Document.Commit();
+
+	const auto &&Sources = [&Document]() -> const CSharedList<CSoundSource> & {
+		return std::get<CSoundLayer>(*Document.Map().Layer(0, 0)).m_Sources;
+	};
+	ASSERT_EQ(Sources().Size(), 2u);
+	// What a new one is: a circle that loops and is heard all the way to its
+	// edge, bound to no envelope.
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 320);
+	EXPECT_EQ(Sources()[0].m_Shape.m_Type, CSoundShape::SHAPE_CIRCLE);
+	EXPECT_EQ(Sources()[0].m_Shape.m_Circle.m_Radius, 96);
+	EXPECT_EQ(Sources()[0].m_Loop, 1);
+	EXPECT_EQ(Sources()[0].m_PosEnv, -1);
+	EXPECT_EQ(Sources()[1].m_Shape.m_Circle.m_Radius, 32);
+
+	Document.Begin("Move");
+	CSoundSource Moved = Sources()[0];
+	Moved.m_Position = CPoint{i2fx(10), i2fx(20)};
+	SetSoundSource(Document, Where, 0, Moved);
+	Document.Commit();
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 10);
+	EXPECT_EQ(fx2i(Sources()[1].m_Position.x), 64) << "the other one is left alone";
+
+	Document.Begin("Delete");
+	DeleteSoundSource(Document, Where, 0);
+	Document.Commit();
+	ASSERT_EQ(Sources().Size(), 1u);
+	EXPECT_EQ(fx2i(Sources()[0].m_Position.x), 64);
+}
+
+TEST(Structure, SquaringAQuadMakesItTheRectangleItSpans)
+{
+	CDocument Document = QuadMap();
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Square");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::SQUARE));
+	Document.Commit();
+
+	const CQuad &Quad = QuadIn(Document);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), -34);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 40);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].y), -34);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].x), -30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y), 30);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].x), 40);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].y), 30);
+	// The pivot is not a corner and is left where it was.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 0);
+}
+
+TEST(Structure, TheProportionsComeFromThePictureOrTheAnswerIsNo)
+{
+	// Twice as wide as it is tall, so a quad 70 across becomes 35 down.
+	CDocument Document = QuadMap(512, 256);
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Aspect");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::ASPECT));
+	Document.Commit();
+
+	const CQuad &Quad = QuadIn(Document);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x) - fx2i(Quad.m_aPoints[0].x), 70);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y) - fx2i(Quad.m_aPoints[0].y), 35);
+
+	// A layer drawn with no picture has no proportions to ask for.
+	CDocument Plain = QuadMap();
+	Plain.Begin("Add");
+	AddQuad(Plain, CLayerAddress{0, 0}, CrookedQuad());
+	Plain.Commit();
+	Plain.Begin("Aspect");
+	EXPECT_FALSE(ShapeQuad(Plain, CLayerAddress{0, 0}, 0, EQuadShape::ASPECT));
+	Plain.Abort();
+}
+
+TEST(Structure, ThePivotGoesInTheMiddleAndTheCornersOntoTheGrid)
+{
+	CDocument Document = QuadMap();
+	Document.Begin("Add");
+	AddQuad(Document, CLayerAddress{0, 0}, CrookedQuad());
+	Document.Commit();
+
+	Document.Begin("Centre");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::CENTER_PIVOT));
+	Document.Commit();
+	// Halfway between -30 and 40, and between -34 and 30.
+	EXPECT_EQ(fx2i(QuadIn(Document).m_aPoints[4].x), 5);
+	EXPECT_EQ(fx2i(QuadIn(Document).m_aPoints[4].y), -2);
+
+	Document.Begin("Align");
+	EXPECT_TRUE(ShapeQuad(Document, CLayerAddress{0, 0}, 0, EQuadShape::ALIGN, 32));
+	Document.Commit();
+	const CQuad &Quad = QuadIn(Document);
+	// Every corner to the nearest crossing, and a corner left of nothing
+	// rounds away from zero rather than towards it.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].y), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[2].y), 32);
+	// The pivot goes along, or it would no longer be where the quad turns.
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 0);
+}
+
 TEST(Structure, APointGoesWhereItsTimeBelongs)
 {
 	CDocument Document(WithEnvelopes());
@@ -394,4 +614,134 @@ TEST(Structure, TakingAnEnvelopeOutTakesEverythingOffIt)
 	// Bound above it: one place down, and still the same envelope.
 	EXPECT_EQ(Map.TileLayer(1, 0)->m_ColorEnvelope, 1);
 	EXPECT_EQ(Map.Envelope(Map.TileLayer(1, 0)->m_ColorEnvelope)->m_Name, "third");
+}
+
+namespace
+{
+	CImage Picture(const char *pName, uint8_t Byte)
+	{
+		CImage Made;
+		Made.m_Name = pName;
+		Made.m_External = false;
+		Made.m_Width = 1;
+		Made.m_Height = 1;
+		Made.m_Data.Mutable() = {Byte, Byte, Byte, 255};
+		return Made;
+	}
+
+	// A map worth appending: one group that is drawn, one game group that is
+	// not to come over, a picture, a sound, an envelope and a settings line,
+	// all named by something.
+	CMapState MapToAppend(const char *pImageName, uint8_t ImageByte)
+	{
+		CMapState Map;
+		CGroup Drawn;
+		Drawn.m_Name = "decoration";
+		CTileLayer Tiles(ETileLayerKind::TILES, 4, 4);
+		Tiles.m_Name = "tiles";
+		Tiles.m_Image = 0;
+		Tiles.m_ColorEnvelope = 0;
+		Drawn.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Tiles)));
+		CSoundLayer Sounds;
+		Sounds.m_Name = "ambience";
+		Sounds.m_Sound = 0;
+		Drawn.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+		Map.AddGroup(std::move(Drawn));
+
+		CGroup Game;
+		Game.m_Name = "game";
+		CTileLayer Physics(ETileLayerKind::GAME, 4, 4);
+		Physics.m_Name = "game";
+		Game.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Physics)));
+		Map.AddGroup(std::move(Game));
+
+		Map.AddImage(Picture(pImageName, ImageByte));
+		CSound Noise;
+		Noise.m_Name = "wind";
+		Map.AddSound(std::move(Noise));
+		CEnvelope Colour;
+		Colour.m_Name = "fade";
+		Map.AddEnvelope(std::move(Colour));
+		Map.m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+		return Map;
+	}
+} // namespace
+
+TEST(Structure, AppendingBringsEverythingDrawnAndLeavesThePhysicsBehind)
+{
+	CDocument Document(TwoGroups());
+	Document.Begin("Setting up", nullptr);
+	Document.Edit().AddImage(Picture("sand", 1));
+	Document.Edit().m_Info.m_Settings.Mutable().push_back("sv_deepfly 0");
+	Document.Commit();
+	const size_t WasGroups = Document.Map().NumGroups();
+
+	Document.Begin("Append", nullptr);
+	const CAppendReport Report = AppendMap(Document, MapToAppend("grass", 2));
+	Document.Commit();
+	EXPECT_EQ(Report.m_Groups, 1u) << "the game group stays where it is";
+	EXPECT_EQ(Report.m_Images, 1u);
+	EXPECT_EQ(Report.m_Sounds, 1u);
+	EXPECT_EQ(Report.m_Envelopes, 1u);
+	EXPECT_EQ(Report.m_Settings, 0u) << "a line already there is already there";
+
+	const CMapState &Map = Document.Map();
+	ASSERT_EQ(Map.NumGroups(), WasGroups + 1);
+	EXPECT_EQ(NameOf(Map, WasGroups, 0), std::string("tiles"));
+	// Everything it named is named by its place, so every place was read again.
+	EXPECT_EQ(std::get<CTileLayer>(*Map.Layer(WasGroups, 0)).m_Image, 1) << "behind the picture that was there";
+	EXPECT_EQ(std::get<CTileLayer>(*Map.Layer(WasGroups, 0)).m_ColorEnvelope, 0);
+	EXPECT_EQ(std::get<CSoundLayer>(*Map.Layer(WasGroups, 1)).m_Sound, 0);
+	EXPECT_EQ(Map.m_Info.m_Settings.Size(), 1u);
+}
+
+TEST(Structure, APictureTheMapAlreadyHasIsNotBroughtOverTwiceUnlessItIsADifferentPicture)
+{
+	// The same name and the same bytes is the same picture.
+	CDocument Same(TwoGroups());
+	Same.Begin("Setting up", nullptr);
+	Same.Edit().AddImage(Picture("grass", 2));
+	Same.Commit();
+	Same.Begin("Append", nullptr);
+	const CAppendReport Shared = AppendMap(Same, MapToAppend("grass", 2));
+	Same.Commit();
+	EXPECT_EQ(Shared.m_Images, 0u);
+	EXPECT_EQ(Shared.m_SharedImages, 1u);
+	EXPECT_EQ(Same.Map().NumImages(), 1u);
+	EXPECT_EQ(std::get<CTileLayer>(*Same.Map().Layer(2, 0)).m_Image, 0) << "drawn with the one that was there";
+
+	// The same name and different bytes is a different picture, and losing it
+	// would change what the map looks like.
+	CDocument Other(TwoGroups());
+	Other.Begin("Setting up", nullptr);
+	Other.Edit().AddImage(Picture("grass", 9));
+	Other.Commit();
+	Other.Begin("Append", nullptr);
+	const CAppendReport Renamed = AppendMap(Other, MapToAppend("grass", 2));
+	Other.Commit();
+	EXPECT_EQ(Renamed.m_Images, 1u);
+	EXPECT_EQ(Renamed.m_RenamedImages, 1u);
+	ASSERT_EQ(Other.Map().NumImages(), 2u);
+	EXPECT_EQ(Other.Map().Image(1)->m_Name, "grass (1)");
+	EXPECT_EQ(std::get<CTileLayer>(*Other.Map().Layer(2, 0)).m_Image, 1) << "drawn with its own";
+}
+
+TEST(Structure, AppendingIsOneEntryAndUndoTakesAllOfItBack)
+{
+	CDocument Document(TwoGroups());
+	const size_t WasGroups = Document.Map().NumGroups();
+	Document.Begin("Append", nullptr);
+	AppendMap(Document, MapToAppend("grass", 2));
+	Document.Commit();
+	// One entry on top of the one every document opens with, however much came
+	// over.
+	EXPECT_EQ(Document.History().NumEntries(), 2u);
+	EXPECT_EQ(Document.Map().NumGroups(), WasGroups + 1);
+	EXPECT_EQ(Document.Map().NumImages(), 1u);
+
+	Document.Undo();
+	EXPECT_EQ(Document.Map().NumGroups(), WasGroups);
+	EXPECT_EQ(Document.Map().NumImages(), 0u);
+	EXPECT_EQ(Document.Map().NumSounds(), 0u);
+	EXPECT_EQ(Document.Map().NumEnvelopes(), 0u);
 }

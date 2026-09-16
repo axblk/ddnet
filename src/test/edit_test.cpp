@@ -409,3 +409,122 @@ TEST(Edit, WhereANumberIsUsedComesOutOnePlacePerCluster)
 	// Zero is no number rather than a number nothing uses.
 	EXPECT_TRUE(NumberPlaces(Layer, 0).empty());
 }
+
+namespace
+{
+	/**
+	 * A map to construct in: a design group over a game group, both on the
+	 * grid, with the design layer holding two tiles.
+	 */
+	CMapState DesignOverGame(int OffsetX = 0, int OffsetY = 0, int ParallaxX = 100)
+	{
+		CMapState State;
+		CGroup Design;
+		Design.m_OffsetX = OffsetX;
+		Design.m_OffsetY = OffsetY;
+		Design.m_ParallaxX = ParallaxX;
+		CTileLayer Drawn(ETileLayerKind::TILES, 4, 4);
+		Drawn.m_Tiles.Set(1, 1, Tile(7));
+		Drawn.m_Tiles.Set(2, 1, Tile(8));
+		Design.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Drawn)));
+		State.AddGroup(std::move(Design));
+
+		CGroup Game;
+		Game.m_vpLayers.push_back(std::make_shared<const CLayer>(CTileLayer(ETileLayerKind::GAME, 8, 8)));
+		State.AddGroup(std::move(Game));
+		return State;
+	}
+} // namespace
+
+TEST(Edit, ConstructingPutsAPhysicsTileUnderEveryTileThatIsDrawn)
+{
+	CDocument Document(DesignOverGame());
+	Document.Begin("Construct");
+	EXPECT_EQ(ConstructGameTiles(Document, 0, 0, EGameTile::UNHOOKABLE), 2);
+	Document.Commit();
+
+	const CTileLayer *pGame = Document.Map().TileLayer(1, 0);
+	EXPECT_EQ(IndexAt(*pGame, 1, 1), TILE_NOHOOK);
+	EXPECT_EQ(IndexAt(*pGame, 2, 1), TILE_NOHOOK);
+	// Air in the design layer is left alone rather than cleared.
+	EXPECT_EQ(IndexAt(*pGame, 0, 0), 0);
+	EXPECT_EQ(IndexAt(*pGame, 3, 3), 0);
+	// The design layer itself is untouched.
+	EXPECT_EQ(IndexAt(*Document.Map().TileLayer(0, 0), 1, 1), 7);
+}
+
+TEST(Edit, ConstructingFollowsTheOffsetOfItsGroup)
+{
+	// Two tiles right and one down, and a group offset counts backwards.
+	CDocument Document(DesignOverGame(-64, -32));
+	Document.Begin("Construct");
+	EXPECT_EQ(ConstructGameTiles(Document, 0, 0, EGameTile::DEATH), 2);
+	Document.Commit();
+
+	const CTileLayer *pGame = Document.Map().TileLayer(1, 0);
+	EXPECT_EQ(IndexAt(*pGame, 3, 2), TILE_DEATH);
+	EXPECT_EQ(IndexAt(*pGame, 4, 2), TILE_DEATH);
+	EXPECT_EQ(IndexAt(*pGame, 1, 1), 0);
+}
+
+TEST(Edit, ConstructingGrowsTheGameLayerAndTheOthersWithIt)
+{
+	CMapState State = DesignOverGame(-192, -192);
+	CGroup Game = *State.Group(1);
+	Game.m_vpLayers.push_back(std::make_shared<const CLayer>(CTileLayer(ETileLayerKind::FRONT, 8, 8)));
+	State.ReplaceGroup(1, std::move(Game));
+	CDocument Document(std::move(State));
+
+	Document.Begin("Construct");
+	EXPECT_EQ(ConstructGameTiles(Document, 0, 0, EGameTile::HOOKABLE), 2);
+	Document.Commit();
+
+	// Six tiles across plus four of design layer is ten.
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Width(), 10);
+	EXPECT_EQ(Document.Map().TileLayer(1, 0)->Height(), 10);
+	EXPECT_EQ(Document.Map().TileLayer(1, 1)->Width(), 10);
+	EXPECT_EQ(IndexAt(*Document.Map().TileLayer(1, 0), 7, 7), TILE_SOLID);
+}
+
+TEST(Edit, ACheckpointGoesIntoTheTeleLayerTheMapGetsForIt)
+{
+	CDocument Document(DesignOverGame());
+	ASSERT_EQ(Document.Map().NumLayers(1), 1u);
+
+	Document.Begin("Construct");
+	EXPECT_EQ(ConstructGameTiles(Document, 0, 0, EGameTile::BLUE_CHECK_TELE), 2);
+	Document.Commit();
+
+	// The map had no tele layer, so it has one now, beside the game layer.
+	ASSERT_EQ(Document.Map().NumLayers(1), 2u);
+	const CTileLayer *pTele = Document.Map().TileLayer(1, 1);
+	EXPECT_EQ(pTele->m_Kind, ETileLayerKind::TELE);
+	EXPECT_EQ(pTele->Width(), 8);
+	EXPECT_EQ(TeleTiles(*pTele).Get(1, 1).m_Type, TILE_TELECHECKIN);
+	EXPECT_EQ(TeleTiles(*pTele).Get(1, 1).m_Number, 1);
+	// The plane that is drawn stays air, the way a physics layer holds it.
+	EXPECT_EQ(IndexAt(*pTele, 1, 1), 0);
+	// And the game layer was not written to.
+	EXPECT_EQ(IndexAt(*Document.Map().TileLayer(1, 0), 1, 1), 0);
+
+	// A second run finds the layer that is there.
+	Document.Begin("Construct");
+	EXPECT_EQ(ConstructGameTiles(Document, 0, 0, EGameTile::RED_CHECK_TELE), 2);
+	Document.Commit();
+	EXPECT_EQ(Document.Map().NumLayers(1), 2u);
+	EXPECT_EQ(TeleTiles(*Document.Map().TileLayer(1, 1)).Get(2, 1).m_Type, TILE_TELECHECKINEVIL);
+}
+
+TEST(Edit, WhatCanBeConstructedFromAndWhatCannot)
+{
+	// A layer over the game layer, on the grid and standing still.
+	EXPECT_TRUE(CanConstructGameTiles(DesignOverGame(), 0, 0));
+	// The game layer is not constructed from itself.
+	EXPECT_FALSE(CanConstructGameTiles(DesignOverGame(), 1, 0));
+	// A group that moves with the camera is somewhere else at every moment.
+	EXPECT_FALSE(CanConstructGameTiles(DesignOverGame(0, 0, 50), 0, 0));
+	// And an offset that is not whole tiles is not a place either.
+	EXPECT_FALSE(CanConstructGameTiles(DesignOverGame(-17, 0), 0, 0));
+	// A map with no game layer has nothing to construct into.
+	EXPECT_FALSE(CanConstructGameTiles(OneLayer(), 0, 0));
+}

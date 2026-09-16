@@ -8,7 +8,7 @@
 
 #include <game/client/ui.h>
 #include <game/editor/editor_actions.h>
-#include <game/editor/explanations.h>
+#include <game/explanations.h>
 
 void CMapView::CState::Reset(CEditor *pEditor)
 {

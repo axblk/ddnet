@@ -67,6 +67,26 @@ namespace map_document
 	 */
 	size_t MoveGroup(CDocument &Doc, size_t From, size_t To);
 
+	/**
+	 * Gives a tile layer another size.
+	 *
+	 * What is still on the layer stays where it is and what falls outside is
+	 * gone; the price is the blocks the new edge cuts through rather than the
+	 * blocks the layer holds - see `CTileStore::Resize`.
+	 *
+	 * The physics layers of a map are all the size of its game layer, because
+	 * that is the size the game plays: a tele layer that is wider than the
+	 * game layer has tiles nobody can stand on, and one that is narrower is a
+	 * map whose right-hand edge teleports nobody. So resizing any of them
+	 * resizes all of them, and a plain drawn layer is resized by itself.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a tile layer.
+	 * @param Width How wide it is to be, at least one tile.
+	 * @param Height How tall.
+	 */
+	void ResizeLayer(CDocument &Doc, const CLayerAddress &Layer, int Width, int Height);
+
 	/** Adds a layer at the end of a group, and says where it went. */
 	CLayerAddress AddLayer(CDocument &Doc, size_t Group, CLayer Layer);
 
@@ -130,6 +150,133 @@ namespace map_document
 	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
 
 	/**
+	 * A sound source at that place, in world units - what "add a source"
+	 * means before anybody has changed anything about it.
+	 *
+	 * It is a circle of that radius, loops, does not pan, and fades to
+	 * nothing at its edge, which is the sound somebody asking for one
+	 * usually wants; everything else about it is a field.
+	 *
+	 * @param X Where it goes, in world units.
+	 * @param Y The same, downwards.
+	 * @param Radius How far it is heard, in world units.
+	 *
+	 * @return The source, which is not in any layer yet.
+	 */
+	CSoundSource MakeSoundSource(int X, int Y, int Radius = 96);
+
+	/**
+	 * Puts a sound source at the end of a sound layer, and says which one it
+	 * became.
+	 */
+	size_t AddSoundSource(CDocument &Doc, const CLayerAddress &Layer, const CSoundSource &Source);
+
+	/** Takes one source out of a sound layer. */
+	void DeleteSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source);
+
+	/** Puts a changed source back in place of the one that was there. */
+	void SetSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source, const CSoundSource &Changed);
+
+	/**
+	 * The four ways a quad is put in order rather than dragged into it.
+	 *
+	 * All four are what the editor in the client offers beside a quad, and
+	 * all four are worth having because a quad dragged by four corners is
+	 * almost never the rectangle somebody meant.
+	 */
+	enum class EQuadShape
+	{
+		/** The rectangle its corners span - top, left, bottom, right. */
+		SQUARE,
+		/** As wide as it is, and as tall as its picture's proportions ask. */
+		ASPECT,
+		/** The pivot into the middle of the corners. */
+		CENTER_PIVOT,
+		/** Every corner onto the nearest crossing of a grid. */
+		ALIGN,
+	};
+
+	/**
+	 * Puts one quad into shape.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a quad layer.
+	 * @param Quad Which quad of it.
+	 * @param Shape Which of the four.
+	 * @param Grid How far apart the crossings are for `ALIGN`, in world
+	 * units; a tile is thirty-two. Means nothing to the other three.
+	 *
+	 * @return Whether it could be done, which is false only for `ASPECT` on a
+	 * layer that is drawn with no picture - there are no proportions to ask.
+	 */
+	bool ShapeQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, EQuadShape Shape, int Grid = 32);
+
+	/**
+	 * Makes a new quad out of four places inside an existing one - the knife.
+	 *
+	 * The old quad is left alone. What it gives the new one is its picture and
+	 * its colours: each of the four places is written as a mixture of three of
+	 * the old quad's corners, in the proportion of the three triangles the
+	 * place makes with them, and the colour and the place in the picture come
+	 * out of that same mixture. A piece cut out of a wall therefore still
+	 * shows the part of the wall it was cut from.
+	 *
+	 * The four places are taken as a ring, the way somebody clicks them, and
+	 * put into the order the file keeps corners in. A ring wound the other way
+	 * round, or folded over itself, is straightened rather than refused.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to hold quads.
+	 * @param Quad Which quad of it to cut from.
+	 * @param apPoints Four places, in world units.
+	 *
+	 * @return Which quad of the layer the new one became.
+	 */
+	size_t CarveQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const vec2 *apPoints);
+
+	/** Whether a place lies inside a quad at all, so a knife can refuse it. */
+	bool PointInQuad(const CQuad &Quad, vec2 Point);
+
+	/** What one map took from another - for saying so, and for testing it. */
+	class CAppendReport
+	{
+	public:
+		size_t m_Groups = 0;
+		size_t m_Images = 0;
+		/** Pictures the map already had, byte for byte, so they were not added. */
+		size_t m_SharedImages = 0;
+		/** Pictures whose name was taken by a different picture. */
+		size_t m_RenamedImages = 0;
+		size_t m_Sounds = 0;
+		size_t m_Envelopes = 0;
+		size_t m_Settings = 0;
+	};
+
+	/**
+	 * Puts a second map into this one: its groups, its pictures, its sounds,
+	 * its envelopes and the lines it asks of a server.
+	 *
+	 * Not its game group. Physics belongs to the map that is being worked on
+	 * - two game layers is not a map - so what comes over is everything that
+	 * is drawn, and the map keeps its own rules.
+	 *
+	 * Everything a layer names is named by its place, so every place in the
+	 * map coming in has to be read again against where it ends up. Pictures
+	 * are the awkward one: a picture the map already has, with the same name
+	 * *and* the same bytes, is the same picture and is not brought over
+	 * twice; one whose name is taken by a different picture is renamed rather
+	 * than dropped, because losing it would change what the map looks like.
+	 *
+	 * One history entry, however much came over.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Other The map to take from; it is not changed.
+	 *
+	 * @return What came over.
+	 */
+	CAppendReport AppendMap(CDocument &Doc, const CMapState &Other);
+
+	/**
 	 * Adds a picture at the end, and says where it went.
 	 *
 	 * @param Doc The document being changed.
@@ -167,6 +314,40 @@ namespace map_document
 	 * @param Changed What it is to be.
 	 */
 	void SetImage(CDocument &Doc, size_t Index, CImage Changed);
+
+	/**
+	 * Adds a sound at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Sound The sound to add.
+	 *
+	 * @return Which sound of the map it became.
+	 */
+	size_t AddSound(CDocument &Doc, CSound Sound);
+
+	/**
+	 * Takes a sound out of the map, and takes it off every layer that played
+	 * it.
+	 *
+	 * The same rebinding as a picture: a layer names a sound by its place, so
+	 * what pointed past the one that is gone comes down one and a layer that
+	 * played it plays none. A layer that played another sound is left as the
+	 * node it is.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Sound Which sound to take out.
+	 */
+	void DeleteSound(CDocument &Doc, size_t Sound);
+
+	/**
+	 * Puts another sound in the place of one, keeping every layer that plays
+	 * it.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Index Which sound of the map.
+	 * @param Changed What it is to be.
+	 */
+	void SetSound(CDocument &Doc, size_t Index, CSound Changed);
 
 	/**
 	 * Adds an envelope at the end, and says where it went.

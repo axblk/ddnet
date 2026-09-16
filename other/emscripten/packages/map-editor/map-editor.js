@@ -34,6 +34,7 @@ addIcons({
 	undo: '<path d="M4 11h10a5 5 0 0 1 0 10h-6M4 11l5-5M4 11l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+	proof: '<rect x="1.8" y="5" width="20.4" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.2" y="8" width="11.6" height="8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.4 1.8"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -73,6 +74,8 @@ class CMapEditor extends Program {
 	savedAt = new Map();
 	/** What `autosave` set going, 0 while nothing is. */
 	autosaveTimer = 0;
+	// The table of what a server would accept, once it has been asked for.
+	settingsKnown = null;
 
 	// A call that takes numbers and answers nothing.
 	setNumbers(name, values) {
@@ -240,6 +243,22 @@ class CMapEditor extends Program {
 		return this.call("MapEditorLoadRules", "number", ["string", "string"], [name, text]) || 0;
 	}
 
+	/**
+	 * Which lines of a rules file were passed over, counting from one.
+	 *
+	 * A rules file is read as far as it is understood, so a line the grammar
+	 * has no word for stops nothing - but somebody writing one wants to be
+	 * told which line it was.
+	 */
+	ruleProblems(name) {
+		const answer = this.call("MapEditorRuleProblems", "string", ["string"], [name]);
+		try {
+			return JSON.parse(answer || "[]");
+		} catch (error) {
+			return [];
+		}
+	}
+
 	/** What the configurations of a rules file that was loaded are called. */
 	ruleConfigs(name) {
 		const count = this.call("MapEditorNumRuleConfigs", "number", ["string"], [name]) || 0;
@@ -288,6 +307,39 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * Turns a picture into a group of tile layers drawn with palettes made
+	 * out of its own colours. Answers which group it became, or -1.
+	 *
+	 * A picture of more than 255 colours needs more than one palette and gets
+	 * a layer for each; `artColors` says how many there are, so a page can
+	 * warn before it asks.
+	 */
+	addTileArt(name, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorTileArt", "number", ["number", "string", "number", "number", "number"],
+				[this.which(id), name, width, height, address]));
+	}
+
+	/** How many colours a picture holds, not counting what is not opaque. */
+	artColors(pixels) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.ask("MapEditorArtColors", "number", [width, height, address])) || 0;
+	}
+
+	/**
+	 * Turns a picture into a group with one quad per pixel - or per run of
+	 * pixels of one colour. Answers which group it became, or -1.
+	 */
+	addQuadArt(name, pixels, options, id) {
+		const settings = Object.assign({ pixelStep: 1, quadSize: 64, centralize: false, merge: true }, options || {});
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorQuadArt", "number",
+				["number", "string", "number", "number", "number", "number", "number", "number", "number"],
+				[this.which(id), name, width, height, address, settings.pixelStep, settings.quadSize,
+					settings.centralize ? 1 : 0, settings.merge ? 1 : 0]));
+	}
+
+	/**
 	 * Puts other pixels into a picture the map already has, keeping every
 	 * layer that is drawn with it - which is what replacing a picture is for.
 	 */
@@ -311,6 +363,66 @@ class CMapEditor extends Program {
 		try {
 			module.HEAPU8.set(new Uint8Array(pixels.data.buffer, pixels.data.byteOffset, bytes), address);
 			return work(address, pixels.width, pixels.height);
+		} finally {
+			module._free(address);
+		}
+	}
+
+	/**
+	 * Reads a sound into the map as bytes, and says which one it became.
+	 *
+	 * The bytes are an Opus file - what is in them is nobody's business here;
+	 * the map keeps them and the browser is the one that can play them.
+	 */
+	addSound(name, bytes, id) {
+		return this.withBytes(bytes, (address, size) =>
+			this.call("MapEditorAddSound", "number", ["number", "string", "number", "number"],
+				[this.which(id), name, size, address]));
+	}
+
+	/** Puts other bytes into a sound the map already has. */
+	setSoundData(index, bytes, id) {
+		return this.withBytes(bytes, (address, size) =>
+			this.ask("MapEditorSetSoundData", "number", [this.which(id), index, size, address]) === 1);
+	}
+
+	/**
+	 * The bytes of a sound the map holds, as a `Uint8Array`, or null where it
+	 * holds none - a sound that lies beside the map has none here. What comes
+	 * out goes back in through `setSoundData` unchanged.
+	 *
+	 * A copy, because the program's own bytes are only good until the map
+	 * changes and whoever plays a sound holds it for longer than that.
+	 */
+	soundData(index, id) {
+		const module = this.module;
+		const map = this.which(id);
+		const size = this.ask("MapEditorSoundSize", "number", [map, index]);
+		if (module == null || size === null || size <= 0) {
+			return null;
+		}
+		const address = this.ask("MapEditorSoundData", "number", [map, index]);
+		if (!address) {
+			return null;
+		}
+		return module.HEAPU8.slice(address, address + size);
+	}
+
+	// Hands a block of bytes to the program and takes the room back again.
+	// The program copies what it keeps, the same as with the pixels.
+	withBytes(bytes, work) {
+		const module = this.module;
+		const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0);
+		if (module == null || view.length === 0) {
+			return null;
+		}
+		const address = module._malloc(view.length);
+		if (!address) {
+			return null;
+		}
+		try {
+			module.HEAPU8.set(view, address);
+			return work(address, view.length);
 		} finally {
 			module._free(address);
 		}
@@ -355,6 +467,119 @@ class CMapEditor extends Program {
 		const map = this.which(id);
 		const wx = this.ask("MapEditorGroupWorldX", "number", [map, group, x, y]);
 		return wx === null ? null : { x: wx, y: this.ask("MapEditorGroupWorldY", "number", [map, group, x, y]) };
+	}
+
+	/**
+	 * The other way round: where a place in one group's coordinates is on the
+	 * canvas, in pixels from its top left.
+	 *
+	 * What an overlay drawn in the page has to ask. Working it out here
+	 * instead would mean keeping a second copy of the sum the renderer draws
+	 * with, and the two would drift apart the first time one of them changed.
+	 */
+	groupPixelAt(group, x, y, id) {
+		const map = this.which(id);
+		const px = this.ask("MapEditorGroupPixelX", "number", [map, group, x, y]);
+		return px === null ? null : { x: px, y: this.ask("MapEditorGroupPixelY", "number", [map, group, x, y]) };
+	}
+
+	/**
+	 * The sound sources of one layer, or null for a layer that holds none.
+	 *
+	 * Places and sizes in world units, the same as the quads, because that is
+	 * the number a page can turn a click into and back.
+	 */
+	sources(group, layer, id) {
+		return this.json("MapEditorSoundSources", [this.which(id), group, layer]);
+	}
+
+	/**
+	 * What a player would see from where the view is looking, in the game
+	 * layer's world units.
+	 *
+	 * Asked afresh whenever the view moves, because that is what it is about:
+	 * the rectangle belongs to the place, not to the moment.
+	 *
+	 * @param menu Whether to answer for a menu background rather than a game.
+	 */
+	proof(menu, id) {
+		return this.json("MapEditorProof", [this.which(id), menu ? 1 : 0]);
+	}
+
+	/**
+	 * What a tile of a physics layer does, in a sentence, or "" where there
+	 * is nothing to say.
+	 *
+	 * The same sentences the editor in the client shows: somebody who learned
+	 * what a tile does in one editor should not be told something else in the
+	 * other.
+	 */
+	explain(group, layer, index, id) {
+		return this.ask("MapEditorExplain", "string", [this.which(id), group, layer, index]) || "";
+	}
+
+	/**
+	 * Everything a map may say to a server, with what it means and what it
+	 * takes.
+	 *
+	 * Asked once and kept: the list does not change while the editor runs.
+	 */
+	settingsHelp() {
+		if (this.settingsKnown === null) {
+			this.settingsKnown = this.json("MapEditorSettingsHelp", []) || [];
+		}
+		return this.settingsKnown;
+	}
+
+	/** What is wrong with each settings line, and where each repeats an earlier one. */
+	settingProblems(id) {
+		return this.json("MapEditorSettingProblems", [this.which(id)]) || [];
+	}
+
+	/**
+	 * Puts a second map into the one that is open: everything it draws, and
+	 * the pictures, sounds and envelopes it draws with, and the lines it asks
+	 * of a server. Not its game layer - physics belongs to the map being
+	 * worked on, and two game layers is not a map.
+	 *
+	 * One history entry, however much comes over. Answers what came over, or
+	 * null where the file could not be read.
+	 */
+	async appendFile(file, id) {
+		const where = this.filePath(file.name);
+		if (where === null) {
+			return null;
+		}
+		const path = await this.writeFile(where, file.name, new Uint8Array(await file.arrayBuffer()));
+		// The file is where the page put it rather than anywhere the program
+		// would look for it, so it is named absolutely (`TYPE_ABSOLUTE`).
+		const text = this.call("MapEditorAppend", "string", ["number", "string", "number"],
+			[this.which(id), path, STORAGE_ABSOLUTE]);
+		try {
+			return text === null || text === "null" ? null : JSON.parse(text);
+		} catch (error) {
+			return null;
+		}
+	}
+
+	/**
+	 * What is wrong with one settings line, or "" where nothing is.
+	 *
+	 * Asked about a line that is not in the map yet, which is the whole point:
+	 * saying so after it has been put in is saying so too late.
+	 */
+	checkSetting(line) {
+		return this.call("MapEditorCheckSetting", "string", ["string"], [line || ""]) || "";
+	}
+
+	/** The names of settings that begin with what has been typed. */
+	settingNames(prefix) {
+		const text = this.call("MapEditorSettingNames", "string", ["string"], [prefix || ""]);
+		try {
+			return text === null ? [] : JSON.parse(text);
+		} catch (error) {
+			return [];
+		}
 	}
 
 	/**
@@ -689,8 +914,10 @@ const PANELS_HTML = `
 	<button class="editor-button" data-role="entities" data-icon="entities" title="What the tiles do" aria-pressed="false"></button>
 	<button class="editor-button" data-role="animate" data-icon="play" title="Let the envelopes run" aria-pressed="false"></button>
 	<button class="editor-button" data-role="grid" data-icon="grid" title="A grid on the tiles (G)" aria-pressed="false"></button>
+	<button class="editor-button" data-role="proof" data-icon="proof" title="What a player would see (P); again for a menu background" aria-pressed="false"></button>
 	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
+	<span class="editor-hover" data-role="hover"></span>
 </div>
 <div class="editor-columns">
 	<section class="editor-panel" data-role="tree-panel">
@@ -706,10 +933,23 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<ul class="editor-tree" data-role="tree"></ul>
+		<div class="editor-art" data-role="art">
+			<button class="editor-small" data-role="tile-art" title="A picture as tiles, with a palette made of its own colours">picture as tiles&hellip;</button>
+			<button class="editor-small" data-role="quad-art" title="A picture as quads, one per pixel">as quads&hellip;</button>
+			<label class="editor-art-field">px <input type="number" data-role="art-step" min="1" max="64" value="1" title="How many pixels of the picture one quad stands for"></label>
+			<label class="editor-art-field">size <input type="number" data-role="art-size" min="1" max="1024" value="64" title="How wide a quad is on the map, in world units"></label>
+			<label class="editor-art-field"><input type="checkbox" data-role="art-merge" checked title="A run of one colour becomes one quad"> merge</label>
+			<label class="editor-art-field"><input type="checkbox" data-role="art-centralize" title="Every quad turns about the same place"> one pivot</label>
+			<input type="file" accept="image/png,image/*" data-role="art-file" hidden>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="props-panel">
 		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2></header>
 		<div class="editor-props" data-role="props"></div>
+		<div class="editor-construct" data-role="construct" hidden>
+			<select class="editor-small" data-role="construct-tile"></select>
+			<button class="editor-small" data-role="construct-run" title="Put this physics tile under every tile this layer draws">construct</button>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="tiles-panel" hidden>
 		<header class="editor-panel-head">
@@ -729,6 +969,51 @@ const PANELS_HTML = `
 			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
 		</div>
+		<div class="editor-type" data-role="type">
+			<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
+			<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
+		</div>
+	</section>
+	<section class="editor-panel" data-role="audio-panel">
+		<header class="editor-panel-head">
+			<h2>Sounds</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="play-sound" title="Play it, through the browser">&#9654;</button>
+				<button class="editor-small" data-role="add-sound" title="Read an Opus file into the map">+</button>
+				<button class="editor-small" data-role="replace-sound" title="Other bytes for this sound">&#8635;</button>
+				<button class="editor-small" data-role="unpack-sound" title="Take the bytes out and name the file instead">out</button>
+				<button class="editor-small" data-role="delete-sound" title="Take this sound out of the map">-</button>
+			</span>
+		</header>
+		<ol class="editor-images" data-role="sound-list"></ol>
+		<input type="file" accept="audio/opus,audio/ogg,.opus" data-role="sound-file" hidden>
+		<audio data-role="sound-player" hidden></audio>
+	</section>
+	<section class="editor-panel" data-role="sounds-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Sound sources</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-source" title="A source in the middle of the view">+</button>
+				<button class="editor-small" data-role="delete-source" title="Delete the source that is picked">-</button>
+			</span>
+		</header>
+		<ol class="editor-quads" data-role="source-list"></ol>
+		<div class="editor-props" data-role="source-props"></div>
+	</section>
+	<section class="editor-panel" data-role="rules-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Rules</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="rules-apply" title="Read the text as it stands now">apply</button>
+				<button class="editor-small" data-role="rules-revert" title="Fetch the file again as it lies beside the game">revert</button>
+				<button class="editor-small" data-role="rules-save" title="Write the text out as a file">save</button>
+			</span>
+		</header>
+		<div class="editor-code">
+			<pre class="editor-code-view" data-role="rules-view" aria-hidden="true"></pre>
+			<textarea class="editor-code-text" data-role="rules-text" spellcheck="false" wrap="off"></textarea>
+		</div>
+		<p class="editor-code-status" data-role="rules-status"></p>
 	</section>
 	<section class="editor-panel" data-role="quads-panel" hidden>
 		<header class="editor-panel-head">
@@ -736,9 +1021,16 @@ const PANELS_HTML = `
 			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="add-quad" title="A quad in the middle of the view">+</button>
 				<button class="editor-small" data-role="delete-quad" title="Delete the quad that is picked">-</button>
+				<button class="editor-small" data-role="knife" title="Cut a piece out of the quad that is picked: four clicks inside it" aria-pressed="false">knife</button>
 			</span>
 		</header>
 		<ol class="editor-quads" data-role="quad-list"></ol>
+		<div class="editor-shape" data-role="shape">
+			<button class="editor-small" data-role="shape-square" title="The rectangle the corners span">square</button>
+			<button class="editor-small" data-role="shape-aspect" title="As tall as the picture's proportions ask">aspect</button>
+			<button class="editor-small" data-role="shape-centerPivot" title="The pivot into the middle">pivot</button>
+			<button class="editor-small" data-role="shape-align" title="Every corner onto the nearest tile">align</button>
+		</div>
 		<div class="editor-props" data-role="quad-props"></div>
 	</section>
 	<section class="editor-panel" data-role="images-panel">
@@ -770,12 +1062,16 @@ const PANELS_HTML = `
 		<header class="editor-panel-head">
 			<h2>Map</h2>
 			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="append-map" title="Put another map's groups into this one">append&hellip;</button>
 				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
 				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
 			</span>
 		</header>
 		<div class="editor-props" data-role="info-props"></div>
 		<ol class="editor-settings" data-role="setting-list"></ol>
+		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
+		<datalist data-role="setting-names"></datalist>
+		<input type="file" accept=".map" data-role="append-file" hidden>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -828,6 +1124,85 @@ const LAYER_PROPS = {
 	sounds: [{ prop: "sound", label: "Sound", kind: "number" }],
 };
 
+// The grammar of a `.rules` file, as far as colouring it needs to know: the
+// words that begin a line, and the words that stand inside one. Taken from
+// the parser rather than from memory - a word the parser does not know is a
+// word this must not paint as if it did.
+const RULES_KEYWORDS = ["NewRun", "Index", "Pos", "Random", "Modulo", "NoDefaultRule", "NoLayerCopy"];
+const RULES_WORDS = ["EMPTY", "FULL", "INDEX", "NOTINDEX", "NONE", "OR", "XFLIP", "YFLIP", "ROTATE"];
+
+function escaped(text) {
+	return text.replace(/[&<>]/g, one => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[one]);
+}
+
+/**
+ * A rules file, painted.
+ *
+ * A textarea cannot colour its own text, so what is coloured is a `<pre>`
+ * behind it holding the same words; the textarea above it is transparent
+ * except for its caret. That is why the two have to be laid out to the pixel
+ * and why the scrolling of the one is copied onto the other.
+ *
+ * @param text The whole file.
+ * @param problems The line numbers the program passed over, counting from
+ * one; those lines are painted as the mistakes they are.
+ */
+function paintedRules(text, problems) {
+	const bad = new Set(problems);
+	return text.split("\n").map((line, index) => {
+		const number = index + 1;
+		const trimmed = line.trimStart();
+		let body;
+		if (trimmed.startsWith("#")) {
+			body = `<span class="rules-comment">${escaped(line)}</span>`;
+		} else if (trimmed.startsWith("[")) {
+			body = `<span class="rules-config">${escaped(line)}</span>`;
+		} else {
+			// Word by word, so that the spaces between them stay where they
+			// are - a colouring that moves the text is worse than none.
+			body = escaped(line).replace(/[^\s]+/g, word => {
+				if (RULES_KEYWORDS.includes(word)) {
+					return `<span class="rules-keyword">${word}</span>`;
+				}
+				if (RULES_WORDS.includes(word)) {
+					return `<span class="rules-word">${word}</span>`;
+				}
+				if (/^-?\d+(\.\d+)?%?$/.test(word)) {
+					return `<span class="rules-number">${word}</span>`;
+				}
+				return word;
+			});
+		}
+		return bad.has(number) ? `<span class="rules-problem">${body}</span>` : body;
+	}).join("\n");
+}
+
+// The thirteen physics tiles a layer's tiles can be turned into, in the order
+// the editor in the client offers them. The names are the command's; what
+// stands beside them is what a person reads.
+const GAME_TILES = [
+	["hookable", "Hookable"],
+	["unhookable", "Unhookable"],
+	["hookthrough", "Hookthrough"],
+	["death", "Death"],
+	["freeze", "Freeze"],
+	["unfreeze", "Unfreeze"],
+	["deepFreeze", "Deep freeze"],
+	["deepUnfreeze", "Deep unfreeze"],
+	["liveFreeze", "Live freeze"],
+	["liveUnfreeze", "Live unfreeze"],
+	["blueCheckTele", "Blue check tele"],
+	["redCheckTele", "Red check tele"],
+	["air", "Air"],
+];
+
+// How large a tile layer is. Not a property like the others: it goes through
+// `layer.resize`, because a physics layer is not resized on its own.
+const SIZE_PROPS = [
+	{ prop: "width", label: "Width", kind: "count" },
+	{ prop: "height", label: "Height", kind: "count" },
+];
+
 // How the value of a group or layer is found in what the program said about
 // it: a clip is one array of four, an offset one of two, everything else is
 // itself.
@@ -835,6 +1210,7 @@ const PACKED = {
 	offsetX: ["offset", 0], offsetY: ["offset", 1],
 	parallaxX: ["parallax", 0], parallaxY: ["parallax", 1],
 	clipX: ["clip", 0], clipY: ["clip", 1], clipW: ["clip", 2], clipH: ["clip", 3],
+	width: ["size", 0], height: ["size", 1],
 };
 
 function propertyValue(thing, prop) {
@@ -921,9 +1297,28 @@ class CEditorPanels {
 		// belong to. `null` means there are none for that picture - asked
 		// once and then remembered, so a layer without rules costs one 404.
 		this.rules = new Map();
+		// The text of those files, by the same name. Kept apart from the
+		// parsed ones because what is typed into the box is not what the
+		// program holds until somebody says so.
+		this.ruleText = new Map();
 		// Which of the places a number is used at was looked at last, so that
 		// pressing the button again goes to the next one.
 		this.gotoAt = 0;
+		// Which sound source is picked, or -1 for none.
+		this.source = -1;
+		// Which sound of the map is picked, and the address of the one that
+		// is playing, so that it can be given back again.
+		this.sound = -1;
+		this.playing = null;
+		// The shapes drawn over the canvas, made once the canvas has a parent
+		// to hang them in.
+		this.overlay = null;
+		// Whether what a player would see is drawn, and at which zoom:
+		// "off", "game" or "menu".
+		this.proof = "off";
+		// The places clicked with the knife so far, or null when it is not
+		// out. Four of them make a cut.
+		this.carving = null;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -937,8 +1332,29 @@ class CEditorPanels {
 		if (settings.container !== null) {
 			settings.container.append(this.root);
 		}
+		this.makeOverlay();
 		this.wire();
 		this.refresh();
+	}
+
+	/**
+	 * The SVG that shapes are drawn on, over the canvas.
+	 *
+	 * It goes where the canvas is rather than where the panels are, because
+	 * that is what it lies over; a page that puts the canvas somewhere with
+	 * no parent to hang it in gets no overlay and loses nothing else.
+	 */
+	makeOverlay() {
+		const canvas = this.editor.canvas;
+		const parent = canvas === null || canvas === undefined ? null : canvas.parentElement;
+		if (parent === null) {
+			return;
+		}
+		this.overlay = document.createElementNS(SVG_NAMESPACE, "svg");
+		this.overlay.setAttribute("class", "editor-overlay");
+		this.overlay.dataset.role = "overlay";
+		this.overlay.hidden = true;
+		parent.append(this.overlay);
 	}
 
 	/** The panels themselves, for a page that wants to put them elsewhere. */
@@ -952,6 +1368,14 @@ class CEditorPanels {
 
 	destroy() {
 		this.stopping.abort();
+		if (this.playing !== null) {
+			URL.revokeObjectURL(this.playing);
+			this.playing = null;
+		}
+		if (this.overlay !== null) {
+			this.overlay.remove();
+			this.overlay = null;
+		}
 		this.root.remove();
 	}
 
@@ -978,6 +1402,16 @@ class CEditorPanels {
 			this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
 			this.refreshBar();
 		});
+		// Off, then a game, then a menu background, then off again: three
+		// states on one button, because the two on-states are the same
+		// question asked at two zooms.
+		on("proof", () => {
+			this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
+			this.refreshBar();
+			this.refreshOverlay();
+		});
+		this.wireArt();
+		this.wireType();
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
 		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
 		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
@@ -986,6 +1420,11 @@ class CEditorPanels {
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
 		this.wireAutomap();
+		this.wireConstruct();
+		this.wireShape();
+		this.wireRules();
+		this.wireSounds();
+		this.wireAudio();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -1040,6 +1479,13 @@ class CEditorPanels {
 			if (key === "g") {
 				this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
 				this.refreshBar();
+				event.preventDefault();
+				return;
+			}
+			if (key === "p") {
+				this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
+				this.refreshBar();
+				this.refreshOverlay();
 				event.preventDefault();
 				return;
 			}
@@ -1269,7 +1715,9 @@ class CEditorPanels {
 		this.refreshProps();
 		this.refreshTiles();
 		this.refreshQuads();
+		this.refreshSounds();
 		this.refreshImages();
+		this.refreshAudio();
 		this.refreshEnvelopes();
 		this.refreshInfo();
 		this.refreshHistory();
@@ -1294,6 +1742,9 @@ class CEditorPanels {
 		set("entities", this.editor.entities() > 0);
 		set("animate", this.editor.animate());
 		set("grid", this.editor.grid() > 0);
+		const proof = this.part("proof");
+		proof.setAttribute("aria-pressed", this.proof === "off" ? "false" : "true");
+		proof.dataset.proof = this.proof;
 	}
 
 	refreshTree() {
@@ -1386,6 +1837,7 @@ class CEditorPanels {
 	refreshProps() {
 		const props = this.part("props");
 		props.textContent = "";
+		this.part("construct").hidden = true;
 		if (this.map === null || this.map.groups.length === 0) {
 			this.part("props-title").textContent = "Properties";
 			return;
@@ -1409,8 +1861,14 @@ class CEditorPanels {
 				op: "layer.setProp", group: where.group, layer: where.layer, prop: field.prop, value: value,
 			})));
 		}
+		this.part("construct").hidden = layer.construct !== true;
 		if (layer.type === "tiles") {
-			props.append(this.readout("Size", `${layer.size[0]} x ${layer.size[1]}`));
+			for (const size of SIZE_PROPS) {
+				props.append(this.field(layer, size, value => ({
+					op: "layer.resize", group: where.group, layer: where.layer,
+					[size.prop]: value, label: "Resize layer",
+				})));
+			}
 		} else if (layer.type === "quads") {
 			props.append(this.readout("Quads", String(layer.quads)));
 		}
@@ -1495,6 +1953,41 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			input.addEventListener("change", close, { signal: this.stopping.signal });
 			input.addEventListener("blur", close, { signal: this.stopping.signal });
+		} else if (description.kind === "choice") {
+			// A word out of a short list, which is a `<select>` rather than a
+			// field: the list is what the command will take, so a word that
+			// would be refused cannot be typed in the first place.
+			const chooser = document.createElement("select");
+			chooser.dataset.role = input.dataset.role;
+			for (const [value, label] of description.options) {
+				const option = document.createElement("option");
+				option.value = value;
+				option.textContent = label;
+				chooser.append(option);
+			}
+			chooser.value = String(current);
+			chooser.addEventListener("change", () => {
+				send(chooser.value);
+				this.refresh();
+			}, { signal: this.stopping.signal });
+			row.append(name, chooser);
+			return row;
+		} else if (description.kind === "count") {
+			// A number that is only handed over when the field is left. Every
+			// step on the way would be a change of its own, and a layer typed
+			// from 8 to 150 would be resized to 1 and then to 15 first - which
+			// for a size means the tiles outside are gone before the number is
+			// finished.
+			input.type = "number";
+			input.min = "1";
+			input.value = String(current);
+			input.addEventListener("change", () => {
+				const value = Number.parseInt(input.value, 10);
+				if (Number.isFinite(value)) {
+					send(value);
+				}
+				this.refresh();
+			}, { signal: this.stopping.signal });
 		} else {
 			input.type = "text";
 			input.value = String(current);
@@ -1582,6 +2075,7 @@ class CEditorPanels {
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
 		this.refreshNumbers(layer);
 		this.refreshAutomap(layer);
+		this.refreshRules(layer);
 
 		// The picture the layer is drawn with, where the map names one that
 		// lies beside it. A layer whose picture is inside the map file, or
@@ -1756,6 +2250,32 @@ class CEditorPanels {
 	}
 
 	/**
+	 * The thirteen construct operations: a physics tile under every tile the
+	 * layer draws.
+	 *
+	 * Whether a layer can be built from at all is the program's answer
+	 * (`layer.construct` in the structure), not the page's - it depends on
+	 * where the group lies over the game layer, and the page does not know
+	 * that rule.
+	 */
+	wireConstruct() {
+		const choice = this.part("construct-tile");
+		for (const [name, label] of GAME_TILES) {
+			const option = document.createElement("option");
+			option.value = name;
+			option.textContent = label;
+			choice.append(option);
+		}
+		this.part("construct-run").addEventListener("click", () => {
+			const where = this.selection;
+			this.change(() => this.editor.apply({
+				op: "layer.constructGameTiles", group: where.group, layer: where.layer,
+				tile: choice.value,
+			}));
+		}, { signal: this.stopping.signal });
+	}
+
+	/**
 	 * Runs the layer's own rules over what a stroke just drew, where the
 	 * layer was told to do that by itself.
 	 *
@@ -1805,6 +2325,10 @@ class CEditorPanels {
 				.then(answer => (answer.ok ? answer.text() : null))
 				.then(text => {
 					this.rules.set(name, text === null || this.editor.loadRules(name, text) === 0 ? null : name);
+					if (text !== null) {
+						this.ruleText.set(name, text);
+						this.part("rules-text").dataset.rules = "";
+					}
 					this.refreshTiles();
 				})
 				.catch(() => {
@@ -2031,6 +2555,10 @@ class CEditorPanels {
 			this.quad = -1;
 		}
 		this.part("delete-quad").disabled = this.quad < 0;
+		// Shaping is something done to a quad, so it is there when one is
+		// picked; only the proportions also need a picture on the layer.
+		this.part("shape").hidden = this.quad < 0;
+		this.part("shape-aspect").disabled = layer.image < 0;
 		const list = this.part("quad-list");
 		list.textContent = "";
 		quads.forEach((quad, index) => {
@@ -2059,6 +2587,368 @@ class CEditorPanels {
 	}
 
 	/**
+	 * The sound sources of a sound layer: where they are and what they are.
+	 *
+	 * Where they are is dragged on the map like a quad's points; what they
+	 * are - the shape, how far they carry, what they are bound to - are
+	 * fields. What is heard is not shown here at all: the program has no
+	 * sound in it, and the page has the file.
+	 */
+	wireSounds() {
+		const signal = this.stopping.signal;
+		this.part("add-source").addEventListener("click", () => {
+			const where = this.selection;
+			const canvas = this.editor.canvas;
+			// In the middle of the view of its own group, the same as a quad.
+			const middle = this.editor.groupWorldAt(where.group, canvas.width / 2, canvas.height / 2);
+			if (middle === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "source.add", group: where.group, layer: where.layer,
+				x: Math.round(middle.x), y: Math.round(middle.y),
+			}));
+			if (answer && answer.ok) {
+				this.source = answer.source;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-source").addEventListener("click", () => {
+			if (this.source < 0) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => this.editor.apply({ op: "source.delete", group: where.group, layer: where.layer, source: this.source }));
+			this.source = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshSounds() {
+		const panel = this.part("sounds-panel");
+		const layer = this.selectedLayer();
+		panel.hidden = layer === null || layer.type !== "sounds";
+		if (panel.hidden) {
+			this.source = -1;
+			this.refreshOverlay();
+			return;
+		}
+		const where = this.selection;
+		const sources = this.editor.sources(where.group, where.layer) || [];
+		if (this.source >= sources.length) {
+			this.source = -1;
+		}
+		this.part("delete-source").disabled = this.source < 0;
+		const list = this.part("source-list");
+		list.textContent = "";
+		sources.forEach((source, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "source";
+			row.dataset.source = String(index);
+			// Where it is, in tiles, the same way a quad is listed: a source
+			// has no name either.
+			row.textContent = `${index}: ${Math.round(source.position[0] / MAP_TILE_SIZE)}, ${Math.round(source.position[1] / MAP_TILE_SIZE)}`;
+			if (index === this.source) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.source = index;
+				this.refreshSounds();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+		this.refreshSourceProps(sources[this.source]);
+		this.refreshOverlay(sources);
+	}
+
+	refreshSourceProps(source) {
+		const props = this.part("source-props");
+		props.textContent = "";
+		if (source === undefined) {
+			return;
+		}
+		const where = this.selection;
+		const index = this.source;
+		const thing = Object.assign({}, source, {
+			radius: source.radius === undefined ? 0 : source.radius,
+			width: source.size === undefined ? 0 : source.size[0],
+			height: source.size === undefined ? 0 : source.size[1],
+		});
+		const set = prop => value => ({
+			op: "source.setProp", group: where.group, layer: where.layer, source: index,
+			prop: prop, value: value,
+		});
+		// Which fields a source has depends on what it is heard within: a
+		// circle has a radius and no sides, a rectangle the other way round.
+		const fields = SOURCE_PROPS.concat(source.shape === "circle" ? SOURCE_CIRCLE : SOURCE_RECTANGLE);
+		for (const field of fields) {
+			props.append(this.field(thing, field, set(field.prop)));
+		}
+	}
+
+	/**
+	 * The shapes of the sound sources, drawn over the canvas as an SVG.
+	 *
+	 * The program does not draw them: a sound layer is not seen, and what is
+	 * drawn here is a working aid rather than part of the map. An SVG is what
+	 * this is for - a few shapes that stand over a picture and are told where
+	 * to stand. Where that is comes from the program (`groupPixelAt`), not
+	 * from a sum repeated here, or the shapes and the map would drift apart
+	 * the first time one of the two changed.
+	 */
+	refreshOverlay(known) {
+		const overlay = this.overlay;
+		if (overlay === null) {
+			return;
+		}
+		const canvas = this.editor.canvas;
+		if (canvas === null || canvas === undefined) {
+			return;
+		}
+		overlay.textContent = "";
+		// The canvas is drawn in the pixels the screen has and laid out in
+		// the units the page uses; the SVG is laid out, so it is told about
+		// the drawn ones and scales itself.
+		overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
+		const drawn = this.paintProof(overlay) + this.paintCarve(overlay) + this.paintSources(overlay, known);
+		overlay.hidden = drawn === 0;
+	}
+
+	/**
+	 * What a player would see, drawn over the map.
+	 *
+	 * Twenty-one rectangles are one outline: the widest screen and the
+	 * tallest one are the two ends of it, and everything in between is a
+	 * shape somebody's window actually has. The two named ones are drawn on
+	 * top, because they are the two a mapper is told to check.
+	 *
+	 * It is all in the game layer's coordinates - proof mode asks what a
+	 * *player* sees, and a player sees the game.
+	 */
+	paintProof(overlay) {
+		if (this.proof === "off" || this.map === null) {
+			return 0;
+		}
+		const group = this.map.groups.findIndex(g => g.layers.some(l => l.kind === "game"));
+		if (group < 0) {
+			return 0;
+		}
+		const proof = this.editor.proof(this.proof === "menu");
+		if (proof === null) {
+			return 0;
+		}
+		const spot = (x, y) => this.editor.groupPixelAt(group, x, y);
+		const corners = rect => {
+			const a = spot(rect[0], rect[1]);
+			const b = spot(rect[2], rect[3]);
+			return a === null || b === null ? null : [a, b];
+		};
+		const box = (rect, kind, name) => {
+			const both = corners(rect);
+			if (both === null) {
+				return 0;
+			}
+			const shape = document.createElementNS(SVG_NAMESPACE, "rect");
+			shape.setAttribute("x", String(both[0].x));
+			shape.setAttribute("y", String(both[0].y));
+			shape.setAttribute("width", String(Math.max(1, both[1].x - both[0].x)));
+			shape.setAttribute("height", String(Math.max(1, both[1].y - both[0].y)));
+			shape.setAttribute("class", `editor-proof editor-proof-${kind}`);
+			shape.dataset.role = "proof-rect";
+			shape.dataset.proof = kind;
+			if (name !== undefined) {
+				shape.dataset.name = name;
+			}
+			overlay.append(shape);
+			return 1;
+		};
+
+		let drawn = 0;
+		// The two ends of the outline first, then the shapes in between as one
+		// path, so that the middle is a hint and the ends are the answer.
+		const steps = proof.steps;
+		drawn += box(steps[0], "step");
+		drawn += box(steps[steps.length - 1], "step");
+		const path = document.createElementNS(SVG_NAMESPACE, "path");
+		const along = (pick, from, to) => {
+			const points = [];
+			for (let i = from; i !== to; i += from < to ? 1 : -1) {
+				const both = corners(steps[i]);
+				if (both !== null) {
+					points.push(pick(both));
+				}
+			}
+			return points;
+		};
+		// Each corner walks its own way from the tall screen to the wide one:
+		// four lines, which together are the edge of everything anybody sees.
+		const line = points => points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join("");
+		const last = steps.length;
+		path.setAttribute("d", [
+			line(along(b => ({ x: b[0].x, y: b[0].y }), 0, last)),
+			line(along(b => ({ x: b[1].x, y: b[0].y }), 0, last)),
+			line(along(b => ({ x: b[0].x, y: b[1].y }), 0, last)),
+			line(along(b => ({ x: b[1].x, y: b[1].y }), 0, last)),
+		].join(""));
+		path.setAttribute("class", "editor-proof editor-proof-outline");
+		path.dataset.role = "proof-outline";
+		overlay.append(path);
+		drawn += 1;
+
+		proof.named.forEach((named, index) => {
+			drawn += box(named.rect, index === 0 ? "first" : "second", named.name);
+		});
+
+		// Where the camera stands, and - behind a menu - the other places it
+		// could stand in this map, each moved as if it were the one standing.
+		const here = spot(proof.center[0], proof.center[1]);
+		if (here !== null) {
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(here.x));
+			dot.setAttribute("cy", String(here.y));
+			dot.setAttribute("r", "6");
+			dot.setAttribute("class", "editor-proof-tee");
+			dot.dataset.role = "proof-tee";
+			overlay.append(dot);
+			drawn += 1;
+		}
+		proof.positions.forEach(position => {
+			const at = spot(position.position[0], position.position[1]);
+			if (at === null) {
+				return;
+			}
+			const mark = document.createElementNS(SVG_NAMESPACE, "circle");
+			mark.setAttribute("cx", String(at.x));
+			mark.setAttribute("cy", String(at.y));
+			mark.setAttribute("r", "6");
+			mark.setAttribute("class", "editor-proof-position");
+			mark.dataset.role = "proof-position";
+			mark.dataset.index = String(position.index);
+			overlay.append(mark);
+			drawn += 1;
+		});
+		return drawn;
+	}
+
+	/**
+	 * What is under the pointer, said in the bar.
+	 *
+	 * Three things, and the third is the one that matters: where, which tile,
+	 * and what that tile does. The number comes in both bases because a
+	 * mapper reads tiles in decimal and the entities sheet is sixteen wide,
+	 * so hex says which row and column in one go - `0x23` is row 2, column 3.
+	 *
+	 * @param tile Where the pointer is, in tiles, or null for gone.
+	 */
+	hoverAt(tile) {
+		const readout = this.part("hover");
+		if (tile === null || this.map === null) {
+			readout.textContent = "";
+			return;
+		}
+		const where = this.selection;
+		const layer = this.selectedLayer();
+		if (layer === null || layer.type !== "tiles") {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			return;
+		}
+		const index = this.editor.tileIndex(where.group, where.layer, tile.x, tile.y);
+		if (index < 0) {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			return;
+		}
+		const hex = index.toString(16).toUpperCase().padStart(2, "0");
+		const said = this.editor.explain(where.group, where.layer, index);
+		readout.textContent = `${tile.x}, ${tile.y} · ${index} (0x${hex})${said === "" ? "" : ` · ${said}`}`;
+		readout.title = said;
+	}
+
+	/**
+	 * Where the knife has been clicked so far, so that a cut half made can be
+	 * seen while it is being made.
+	 */
+	paintCarve(overlay) {
+		if (this.carving === null || this.carving.length === 0) {
+			return 0;
+		}
+		const where = this.selection;
+		const spot = (x, y) => this.editor.groupPixelAt(where.group, x, y);
+		const places = [];
+		for (let at = 0; at < this.carving.length; at += 2) {
+			const point = spot(this.carving[at], this.carving[at + 1]);
+			if (point !== null) {
+				places.push(point);
+			}
+		}
+		if (places.length === 0) {
+			return 0;
+		}
+		const line = document.createElementNS(SVG_NAMESPACE, "path");
+		line.setAttribute("d", places.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join(""));
+		line.setAttribute("class", "editor-carve");
+		line.dataset.role = "carve-line";
+		overlay.append(line);
+		places.forEach((place, index) => {
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(place.x));
+			dot.setAttribute("cy", String(place.y));
+			dot.setAttribute("r", "4");
+			dot.setAttribute("class", "editor-carve-dot");
+			dot.dataset.role = "carve-dot";
+			dot.dataset.point = String(index);
+			overlay.append(dot);
+		});
+		return places.length + 1;
+	}
+
+	/** The shapes a sound layer's sources are heard within. */
+	paintSources(overlay, known) {
+		const layer = this.selectedLayer();
+		const where = this.selection;
+		const sources = layer !== null && layer.type === "sounds"
+			? (known || this.editor.sources(where.group, where.layer) || [])
+			: [];
+		const spot = (x, y) => this.editor.groupPixelAt(where.group, x, y);
+		sources.forEach((source, index) => {
+			const at = spot(source.position[0], source.position[1]);
+			if (at === null) {
+				return;
+			}
+			const shape = document.createElementNS(SVG_NAMESPACE, source.shape === "circle" ? "circle" : "rect");
+			if (source.shape === "circle") {
+				// A radius is a distance, so it is measured rather than
+				// converted: how far the point that far away landed.
+				const edge = spot(source.position[0] + source.radius, source.position[1]);
+				shape.setAttribute("cx", String(at.x));
+				shape.setAttribute("cy", String(at.y));
+				shape.setAttribute("r", String(Math.max(1, edge === null ? 1 : Math.abs(edge.x - at.x))));
+			} else {
+				const corner = spot(source.position[0] - source.size[0] / 2, source.position[1] - source.size[1] / 2);
+				const other = spot(source.position[0] + source.size[0] / 2, source.position[1] + source.size[1] / 2);
+				shape.setAttribute("x", String(corner === null ? at.x : corner.x));
+				shape.setAttribute("y", String(corner === null ? at.y : corner.y));
+				shape.setAttribute("width", String(Math.max(1, other === null || corner === null ? 1 : other.x - corner.x)));
+				shape.setAttribute("height", String(Math.max(1, other === null || corner === null ? 1 : other.y - corner.y)));
+			}
+			shape.setAttribute("class", index === this.source ? "editor-source editor-source-picked" : "editor-source");
+			shape.dataset.role = "source-shape";
+			shape.dataset.source = String(index);
+			overlay.append(shape);
+
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(at.x));
+			dot.setAttribute("cy", String(at.y));
+			dot.setAttribute("r", "5");
+			dot.setAttribute("class", index === this.source ? "editor-source-dot editor-source-picked" : "editor-source-dot");
+			dot.dataset.role = "source-dot";
+			dot.dataset.source = String(index);
+			overlay.append(dot);
+		});
+		return sources.length;
+	}
+
+	/**
 	 * The colours and the envelope bindings of the quad that is picked.
 	 *
 	 * Written as fields rather than dragged on the map, because that is what
@@ -2084,11 +2974,307 @@ class CEditorPanels {
 			props.append(this.field(thing, { prop: `corner${corner}`, label: `${name} colour`, kind: "color" }, set));
 			props.append(this.field(thing, { prop: `alpha${corner}`, label: `${name} alpha`, kind: "number" },
 				value => set(value === null ? null : color.slice(0, 3).concat([Math.min(255, Math.max(0, value))]))));
+			// Where the corner sits in the picture. 1024 is the whole picture
+			// across, which is the number the file holds and the one the
+			// editor in the client shows, so a map made in either comes out
+			// with the same numbers in it.
+			const texture = quad.texcoords.slice(corner * 2, corner * 2 + 2);
+			thing[`texU${corner}`] = texture[0];
+			thing[`texV${corner}`] = texture[1];
+			const place = (u, v) => ({
+				op: "quad.setTexcoord", group: where.group, layer: where.layer, quad: index,
+				corner: corner, u: u, v: v,
+			});
+			props.append(this.field(thing, { prop: `texU${corner}`, label: `${name} tex U`, kind: "number" },
+				value => place(value, texture[1])));
+			props.append(this.field(thing, { prop: `texV${corner}`, label: `${name} tex V`, kind: "number" },
+				value => place(texture[0], value)));
 		});
 		for (const description of QUAD_PROPS) {
 			props.append(this.field(thing, description,
 				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
 		}
+	}
+
+	/**
+	 * The rules file of the picture a layer is drawn with, as text.
+	 *
+	 * A rules file does not belong to the map - it lies beside the game,
+	 * named after the picture - so what is edited here is the copy the
+	 * program holds. `apply` reads the text as it stands and says which lines
+	 * it could not use, `revert` fetches the file again, and `save` writes it
+	 * out so that it can be put where the game looks for it. Nothing here
+	 * touches the map, so nothing here is in the history.
+	 */
+	wireRules() {
+		const text = this.part("rules-text");
+		const view = this.part("rules-view");
+		// The painted copy is behind the text and has to be scrolled with it,
+		// or the two drift apart the moment the file is longer than the box.
+		text.addEventListener("scroll", () => {
+			view.scrollTop = text.scrollTop;
+			view.scrollLeft = text.scrollLeft;
+		}, { signal: this.stopping.signal });
+		text.addEventListener("input", () => this.paintRules(), { signal: this.stopping.signal });
+
+		this.part("rules-apply").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			this.ruleText.set(name, text.value);
+			const configs = this.editor.loadRules(name, text.value);
+			this.rules.set(name, configs === 0 ? null : name);
+			// The configurations may be other ones now, so the automapper's
+			// list has to be built again rather than kept.
+			this.part("automap-config").dataset.rules = "";
+			this.refresh();
+		}, { signal: this.stopping.signal });
+
+		this.part("rules-revert").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			this.ruleText.delete(name);
+			this.rules.delete(name);
+			this.part("automap-config").dataset.rules = "";
+			this.refresh();
+		}, { signal: this.stopping.signal });
+
+		this.part("rules-save").addEventListener("click", () => {
+			const name = this.rulesNameFor(this.selectedLayer());
+			if (name === null) {
+				return;
+			}
+			const handout = document.createElement("a");
+			const address = URL.createObjectURL(new Blob([text.value], { type: "text/plain" }));
+			handout.href = address;
+			handout.download = `${name}.rules`;
+			handout.click();
+			// Given back once the browser has had it; keeping it would keep
+			// the whole file alive for as long as the page is open.
+			setTimeout(() => URL.revokeObjectURL(address), 10000);
+		}, { signal: this.stopping.signal });
+	}
+
+	/** Paints the text as it stands, and says what the program made of it. */
+	paintRules() {
+		const name = this.rulesNameFor(this.selectedLayer());
+		const text = this.part("rules-text");
+		const problems = name === null ? [] : this.editor.ruleProblems(name);
+		// Only the lines that were passed over the last time it was read, so
+		// a line being typed is not painted as a mistake before it is done.
+		const stale = name === null || this.ruleText.get(name) !== text.value;
+		this.part("rules-view").innerHTML = paintedRules(text.value, stale ? [] : problems);
+		const configs = name === null ? [] : this.editor.ruleConfigs(name);
+		const said = [`${configs.length} ${configs.length === 1 ? "configuration" : "configurations"}`];
+		if (stale) {
+			said.push("not read yet");
+		} else if (problems.length > 0) {
+			said.push(`${problems.length === 1 ? "line" : "lines"} ${problems.join(", ")} not understood`);
+		}
+		this.part("rules-status").textContent = said.join(" \u00b7 ");
+	}
+
+	refreshRules(layer) {
+		const panel = this.part("rules-panel");
+		const name = this.rulesNameFor(layer);
+		panel.hidden = name === null || this.rules.get(name) === null;
+		if (panel.hidden || this.rules.get(name) === undefined) {
+			return;
+		}
+		const text = this.part("rules-text");
+		// The text belongs to the picture, so switching between two layers
+		// drawn with the same one keeps whatever was typed into it.
+		if (text.dataset.rules !== name) {
+			text.dataset.rules = name;
+			text.value = this.ruleText.get(name) || "";
+		}
+		this.paintRules();
+	}
+
+	/**
+	 * The four ways a quad is put in order rather than dragged into it.
+	 *
+	 * A quad dragged by four corners is almost never the rectangle somebody
+	 * meant, so there are buttons for the rectangle, for the proportions of
+	 * the picture, for the pivot in the middle, and for the grid.
+	 */
+	/**
+	 * A picture turned into map: as tiles with a palette of its own colours,
+	 * or as quads, one per pixel.
+	 *
+	 * The browser decodes the file, the same as it does for a picture the map
+	 * is drawn with. Which of the two is wanted is a question about the
+	 * picture rather than about the map, so both are offered and neither is
+	 * the default.
+	 */
+	wireArt() {
+		const signal = this.stopping.signal;
+		const file = this.part("art-file");
+		let asQuads = false;
+		this.part("tile-art").addEventListener("click", () => {
+			asQuads = false;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("quad-art").addEventListener("click", () => {
+			asQuads = true;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const pixels = await pixelsOf(chosen);
+			if (pixels === null) {
+				this.say("That picture could not be read");
+				return;
+			}
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			if (asQuads) {
+				const options = {
+					pixelStep: Math.max(1, Number(this.part("art-step").value) || 1),
+					quadSize: Math.max(1, Number(this.part("art-size").value) || 64),
+					centralize: this.part("art-centralize").checked,
+					merge: this.part("art-merge").checked,
+				};
+				const across = Math.ceil(pixels.width / options.pixelStep);
+				const down = Math.ceil(pixels.height / options.pixelStep);
+				// Said before it happens, because a quad per pixel of a
+				// photograph is a number nobody means to ask for.
+				if (across * down > ART_QUAD_WARNING && !confirm(
+					`${name} would be up to ${across * down} quads. Go on?`)) {
+					return;
+				}
+				const group = this.change(() => this.editor.addQuadArt(name, pixels, options));
+				this.say(group >= 0 ? `${name} as quads` : "That picture was refused");
+			} else {
+				const colors = this.editor.artColors(pixels);
+				const sheets = Math.max(1, Math.ceil(colors / (ART_PALETTE_SIZE - 1)));
+				if (colors === 0) {
+					this.say("Nothing in that picture is opaque");
+					return;
+				}
+				if (sheets > 1 && !confirm(
+					`${name} holds ${colors} colours, which needs ${sheets} palettes and ${sheets} layers. Go on?`)) {
+					return;
+				}
+				const group = this.change(() => this.editor.addTileArt(name, pixels));
+				this.say(group >= 0
+					? `${name} as tiles: ${colors} ${colors === 1 ? "colour" : "colours"}${sheets > 1 ? ` in ${sheets} layers` : ""}`
+					: "That picture was refused");
+			}
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	/**
+	 * Typing with tiles.
+	 *
+	 * A font tileset is a tileset like any other; what makes it a font is
+	 * that `A` is at 1 and `1` is at 54, which is a convention of the sheets
+	 * people draw rather than anything the file knows. The editor in the
+	 * client types a keystroke at a time in a mode of its own; a page has
+	 * text fields, so here it is a text and one history entry - which is also
+	 * the only version that can be undone in one go.
+	 *
+	 * Where it goes is the middle of the view, because that is where somebody
+	 * is looking when they decide to write something.
+	 */
+	wireType() {
+		const signal = this.stopping.signal;
+		const write = () => {
+			const field = this.part("type-text");
+			const text = field.value;
+			if (text === "" || this.map === null) {
+				return;
+			}
+			const where = this.selection;
+			const at = this.editor.tileAt(this.editor.canvas.width / 2, this.editor.canvas.height / 2);
+			if (at === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "layer.type", group: where.group, layer: where.layer, x: at.x, y: at.y, text: text,
+			}));
+			if (answer && answer.ok) {
+				this.say(`${answer.tiles} ${answer.tiles === 1 ? "tile" : "tiles"} at ${at.x}, ${at.y}`);
+				field.value = "";
+			} else {
+				this.say(answer && answer.error ? answer.error : "That text was refused");
+			}
+			this.refresh();
+		};
+		this.part("type-place").addEventListener("click", write, { signal: signal });
+		this.part("type-text").addEventListener("keydown", event => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				write();
+			}
+		}, { signal: signal });
+	}
+
+	wireShape() {
+		for (const shape of ["square", "aspect", "centerPivot", "align"]) {
+			this.part(`shape-${shape}`).addEventListener("click", () => {
+				const where = this.selection;
+				this.change(() => this.editor.apply({
+					op: "quad.shape", group: where.group, layer: where.layer,
+					quad: this.quad, shape: shape,
+				}));
+			}, { signal: this.stopping.signal });
+		}
+		this.part("knife").addEventListener("click", () => this.knife(this.carving === null),
+			{ signal: this.stopping.signal });
+	}
+
+	/**
+	 * The knife: out or away.
+	 *
+	 * Out, it waits for four clicks inside the quad that is picked and makes
+	 * a piece of it into a quad of its own. Away, whatever was clicked so far
+	 * is forgotten - a cut half made is not a cut.
+	 */
+	knife(out) {
+		this.carving = out ? [] : null;
+		this.part("knife").setAttribute("aria-pressed", out ? "true" : "false");
+		this.refreshOverlay();
+	}
+
+	/**
+	 * A click on the map while the knife is out.
+	 *
+	 * @param world Where it was, in the quad layer's own coordinates.
+	 *
+	 * @return Whether the knife took it, so the canvas knows to do nothing
+	 * else with the click.
+	 */
+	carveAt(world) {
+		if (this.carving === null || this.quad < 0) {
+			return false;
+		}
+		this.carving.push(Math.round(world.x), Math.round(world.y));
+		if (this.carving.length < 8) {
+			this.refreshOverlay();
+			return true;
+		}
+		const where = this.selection;
+		const points = this.carving;
+		this.carving = [];
+		const answer = this.change(() => this.editor.apply({
+			op: "quad.carve", group: where.group, layer: where.layer, quad: this.quad, points: points,
+		}));
+		if (answer && answer.ok) {
+			this.quad = answer.quad;
+		} else {
+			this.say(answer && answer.error ? answer.error : "That cut was refused");
+		}
+		this.refresh();
+		return true;
 	}
 
 	/**
@@ -2198,6 +3384,143 @@ class CEditorPanels {
 	}
 
 	/**
+	 * The sounds of the map: reading one in, swapping its bytes, taking the
+	 * bytes back out, taking it away - and hearing it.
+	 *
+	 * The bytes are an Opus file and nothing here looks into them. The
+	 * program has no sound in it and does not need any: a browser decodes
+	 * Opus, so the one place that can play a map's sound is the page.
+	 */
+	wireAudio() {
+		const signal = this.stopping.signal;
+		const file = this.part("sound-file");
+		let replacing = -1;
+		this.part("add-sound").addEventListener("click", () => {
+			replacing = -1;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("replace-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			replacing = this.sound;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const bytes = new Uint8Array(await chosen.arrayBuffer());
+			// The name without its suffix, the same as a picture: the file is
+			// `wind.opus`, the sound is `wind`.
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			this.change(() => {
+				if (replacing >= 0) {
+					return { ok: this.editor.setSoundData(replacing, bytes) === true, error: "The sound was refused" };
+				}
+				const index = this.editor.addSound(name, bytes);
+				if (index >= 0) {
+					this.sound = index;
+				}
+				return { ok: index >= 0, error: "The sound was refused" };
+			});
+			this.refresh();
+		}, { signal: signal });
+		this.part("unpack-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "sound.setProp", sound: this.sound, prop: "external", value: true }));
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-sound").addEventListener("click", () => {
+			if (this.sound < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "sound.delete", sound: this.sound }));
+			this.sound = -1;
+			this.refresh();
+		}, { signal: signal });
+		this.part("play-sound").addEventListener("click", () => this.playSound(), { signal: signal });
+	}
+
+	/**
+	 * Plays the sound that is picked, through the browser.
+	 *
+	 * A sound that lies beside the map is fetched the way its picture would
+	 * be; one that is in the map is handed over as the bytes it is. Either
+	 * way the browser decodes it - the program never has to know what Opus
+	 * is, which is the whole reason the bytes are kept as bytes.
+	 */
+	playSound() {
+		if (this.sound < 0 || this.map === null) {
+			return;
+		}
+		const sound = this.map.sounds[this.sound];
+		if (sound === undefined) {
+			return;
+		}
+		const audio = this.part("sound-player") || new Audio();
+		if (this.playing !== null) {
+			URL.revokeObjectURL(this.playing);
+			this.playing = null;
+		}
+		if (sound.external) {
+			audio.src = new URL(`mapres/${sound.name}.opus`, this.dataBase).href;
+		} else {
+			const bytes = this.editor.soundData(this.sound);
+			if (bytes === null) {
+				this.say("That sound has no bytes to play");
+				return;
+			}
+			this.playing = URL.createObjectURL(new Blob([bytes], { type: "audio/ogg" }));
+			audio.src = this.playing;
+		}
+		audio.play().catch(() => this.say("This browser would not play that"));
+	}
+
+	refreshAudio() {
+		const panel = this.part("audio-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const sounds = this.map.sounds || [];
+		if (this.sound >= sounds.length) {
+			this.sound = -1;
+		}
+		for (const role of ["play-sound", "replace-sound", "unpack-sound", "delete-sound"]) {
+			this.part(role).disabled = this.sound < 0;
+		}
+		if (this.sound >= 0) {
+			this.part("unpack-sound").disabled = sounds[this.sound].external;
+		}
+		const list = this.part("sound-list");
+		list.textContent = "";
+		sounds.forEach((sound, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "sound";
+			row.dataset.sound = String(index);
+			// Where its bytes are, the same thing worth saying about a
+			// picture: one beside the map has to be fetched, one in it does
+			// not.
+			row.textContent = `${sound.name}${sound.external ? " (beside)" : ` ${sound.bytes < 1024 ? `${sound.bytes} B` : `${Math.round(sound.bytes / 1024)} KiB`}`}`;
+			if (index === this.sound) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.sound = index;
+				this.refreshAudio();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+	}
+
+	/**
 	 * What the map says about itself, and the lines a server runs when it
 	 * loads it.
 	 *
@@ -2207,6 +3530,45 @@ class CEditorPanels {
 	 */
 	wireInfo() {
 		const signal = this.stopping.signal;
+		const appending = this.part("append-file");
+		this.part("append-map").addEventListener("click", () => {
+			appending.value = "";
+			appending.click();
+		}, { signal: signal });
+		appending.addEventListener("change", async () => {
+			const chosen = appending.files && appending.files[0];
+			if (!chosen) {
+				return;
+			}
+			const came = await this.editor.appendFile(chosen);
+			if (came === null) {
+				this.say("That map could not be read");
+				return;
+			}
+			// Said rather than shown somewhere: appending moves numbers about
+			// everywhere at once, and a count is the only honest summary.
+			const parts = [`${came.groups} ${came.groups === 1 ? "group" : "groups"}`];
+			if (came.images > 0) {
+				parts.push(`${came.images} ${came.images === 1 ? "picture" : "pictures"}`);
+			}
+			if (came.sharedImages > 0) {
+				parts.push(`${came.sharedImages} already there`);
+			}
+			if (came.renamedImages > 0) {
+				parts.push(`${came.renamedImages} renamed`);
+			}
+			if (came.sounds > 0) {
+				parts.push(`${came.sounds} ${came.sounds === 1 ? "sound" : "sounds"}`);
+			}
+			if (came.envelopes > 0) {
+				parts.push(`${came.envelopes} ${came.envelopes === 1 ? "envelope" : "envelopes"}`);
+			}
+			if (came.settings > 0) {
+				parts.push(`${came.settings} ${came.settings === 1 ? "setting" : "settings"}`);
+			}
+			this.say(`From ${came.name}: ${parts.join(", ")}`);
+			this.refresh();
+		}, { signal: signal });
 		this.part("add-setting").addEventListener("click", () => {
 			const answer = this.change(() => this.editor.apply({ op: "info.settings.add", value: "sv_setting 0" }));
 			if (answer && answer.ok) {
@@ -2252,6 +3614,7 @@ class CEditorPanels {
 			return;
 		}
 		list.textContent = "";
+		const problems = this.editor.settingProblems();
 		settings.forEach((line, index) => {
 			const row = document.createElement("li");
 			row.className = "editor-row";
@@ -2272,12 +3635,62 @@ class CEditorPanels {
 			input.addEventListener("change", () => {
 				this.change(() => this.editor.apply({ op: "info.settings.set", line: index, value: input.value }));
 			}, { signal: this.stopping.signal });
+			// While it is being typed, nothing is changed and nothing is
+			// undone - only said. A line half written is wrong on the way to
+			// being right, and saying so at every keystroke is the point.
+			input.addEventListener("input", () => this.sayAboutSetting(input), { signal: this.stopping.signal });
+			input.addEventListener("focus", () => this.sayAboutSetting(input), { signal: this.stopping.signal });
 			if (index === this.setting) {
 				row.classList.add("editor-selected");
+			}
+			const problem = problems[index] || { problem: "", repeats: -1 };
+			if (problem.problem !== "") {
+				row.classList.add("editor-setting-wrong");
+				input.title = problem.problem;
+			} else if (problem.repeats >= 0) {
+				row.classList.add("editor-setting-repeat");
+				input.title = `the same as line ${problem.repeats + 1}`;
 			}
 			row.append(input);
 			list.append(row);
 		});
+	}
+
+	/**
+	 * What is wrong with the line being typed, and what could be meant.
+	 *
+	 * Said rather than refused: a line on its way to being right is wrong for
+	 * most of the time it is being written, and an editor that would not let
+	 * that happen would be an editor nobody could type in. The names that
+	 * begin with what stands there go into the list the browser offers, which
+	 * is the one piece of completion a page gets for free and the one that
+	 * already works the way everybody expects.
+	 */
+	sayAboutSetting(input) {
+		const said = this.part("setting-said");
+		const text = input.value;
+		const first = text.split(" ")[0];
+		const names = this.part("setting-names");
+		// Only while a name is still being written: once there is a space,
+		// the name is settled and offering more of them is in the way.
+		const offers = text.includes(" ") ? [] : this.editor.settingNames(first);
+		names.textContent = "";
+		for (const name of offers) {
+			const option = document.createElement("option");
+			option.value = name;
+			names.append(option);
+		}
+		// A list is named rather than nested, so the name has to be one of a
+		// kind - two editors on one page would otherwise offer each other's.
+		if (names.id === "") {
+			names.id = `editor-settings-${++panelCount}`;
+		}
+		input.setAttribute("list", names.id);
+
+		const problem = this.editor.checkSetting(text);
+		const known = this.editor.settingsHelp().find(setting => setting.name === first.toLowerCase());
+		said.textContent = problem !== "" ? problem : (known === undefined ? "" : known.help);
+		said.classList.toggle("editor-setting-said-wrong", problem !== "");
 	}
 
 	refreshEnvelopes() {
@@ -2318,7 +3731,7 @@ class CEditorPanels {
 		svg.dataset.time = String(bounds.time);
 		svg.dataset.low = String(bounds.low);
 		svg.dataset.high = String(bounds.high);
-		const make = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+		const make = name => document.createElementNS(SVG_NAMESPACE, name);
 		const x = time => (bounds.time === 0 ? 0 : (time / bounds.time) * 100);
 		// Upside down, because a value that grows should go up and an SVG
 		// counts downwards.
@@ -2610,10 +4023,16 @@ class CEditorPanels {
  * one the pointer only moves the map.
  * @param options.onChange Called after anything was painted, for a page that
  * wants to show it.
+ * @param options.onView Called when only the view moved - panned or zoomed.
+ * Kept apart from `onChange` because rebuilding the panels on every pixel of
+ * a drag would be work nobody asked for; what a moved view changes is what is
+ * drawn over the canvas.
+ * @param options.afterStroke Called while a stroke's change is still open,
+ * with the layer and the rectangle it went over.
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -2684,6 +4103,15 @@ function steerWithPointer(editor, options) {
 			settings.onChange();
 		}
 	};
+	// Only the view moved. Kept apart from `onChange` because that one
+	// rebuilds the panels, and rebuilding them on every pixel of a drag would
+	// be work nobody asked for - what a moved view changes is what is drawn
+	// over the canvas, and nothing else.
+	const moved = () => {
+		if (settings.onView !== null) {
+			settings.onView();
+		}
+	};
 	// The rectangle two corners make, as a place and a size. Either corner
 	// may be the one that was there first.
 	const between = (one, other) => ({
@@ -2705,6 +4133,45 @@ function steerWithPointer(editor, options) {
 	 * pointer is asked for in those coordinates too, and the two are compared
 	 * where they both mean the same thing.
 	 */
+	// Which sound source is being dragged, while one is.
+	let sourceDrag = null;
+
+	/**
+	 * Takes hold of a sound source under the pointer, if there is one.
+	 *
+	 * The same sum as the quad points, for the same reason: a source lives in
+	 * its group's coordinates, so the pointer is asked for in those too.
+	 */
+	const takeSource = (event, where) => {
+		const sources = editor.sources(where.group, where.layer);
+		if (sources === null) {
+			return false;
+		}
+		const spot = atCanvas(event);
+		const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+		if (world === null) {
+			return false;
+		}
+		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const reach = step === null ? 32 : Math.abs(step.x - world.x);
+
+		let best = null;
+		sources.forEach((source, index) => {
+			const away = Math.hypot(source.position[0] - world.x, source.position[1] - world.y);
+			if (away <= reach && (best === null || away < best.away)) {
+				best = { source: index, away: away };
+			}
+		});
+		if (best === null) {
+			return false;
+		}
+		doing = "source";
+		sourceDrag = { group: where.group, layer: where.layer, source: best.source };
+		editor.begin("Move sound source");
+		changed();
+		return true;
+	};
+
 	const takeQuadPoint = (event, where) => {
 		const quads = editor.quads(where.group, where.layer);
 		if (quads === null) {
@@ -2751,7 +4218,17 @@ function steerWithPointer(editor, options) {
 		last = { x: event.clientX, y: event.clientY };
 		capture(pointer, true);
 		const where = target();
-		if (event.button === 0 && where !== null && takeQuadPoint(event, where)) {
+		// A tool that takes clicks takes this one and nothing else happens
+		// with it - the knife is the one there is so far.
+		if (event.button === 0 && where !== null && settings.onClickInGroup !== null) {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+			if (world !== null && settings.onClickInGroup(world, where) === true) {
+				doing = "tool";
+				return;
+			}
+		}
+		if (event.button === 0 && where !== null && (takeQuadPoint(event, where) || takeSource(event, where))) {
 			return;
 		}
 		const tile = tileAt(event);
@@ -2782,13 +4259,26 @@ function steerWithPointer(editor, options) {
 	}, { signal: signal });
 
 	canvas.addEventListener("pointermove", event => {
+		// Where the pointer is, said on every move whether or not anything is
+		// being drawn with it: what is under the pointer is a question about
+		// the pointer, not about the stroke.
+		if (settings.onHover !== null) {
+			settings.onHover(tileAt(event));
+		}
 		if (doing === null || pointer !== event.pointerId) {
+			return;
+		}
+		if (doing === "tool") {
 			return;
 		}
 		if (doing === "move") {
 			const factor = scale();
 			editor.moveByPixels(-(event.clientX - last.x) * factor, -(event.clientY - last.y) * factor);
 			last = { x: event.clientX, y: event.clientY };
+			// The view moved, so anything drawn over the canvas is now over
+			// the wrong place. The program redraws itself; an overlay in the
+			// page has to be told.
+			moved();
 			return;
 		}
 		if (doing === "quad") {
@@ -2799,6 +4289,17 @@ function steerWithPointer(editor, options) {
 					op: "quad.setPoint", group: quadPoint.group, layer: quadPoint.layer,
 					quad: quadPoint.quad, point: quadPoint.point,
 					x: Math.round(world.x), y: Math.round(world.y),
+				});
+			}
+			return;
+		}
+		if (doing === "source") {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(sourceDrag.group, spot.x, spot.y);
+			if (world !== null) {
+				editor.apply({
+					op: "source.setPoint", group: sourceDrag.group, layer: sourceDrag.layer,
+					source: sourceDrag.source, x: Math.round(world.x), y: Math.round(world.y),
 				});
 			}
 			return;
@@ -2824,13 +4325,27 @@ function steerWithPointer(editor, options) {
 		}
 	}, { signal: signal });
 
+	canvas.addEventListener("pointerleave", () => {
+		if (settings.onHover !== null) {
+			settings.onHover(null);
+		}
+	}, { signal: signal });
+
 	const release = event => {
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
-		if (doing === "quad") {
+		if (doing === "tool") {
+			// A tool's click did its work when it went down; letting go of it
+			// is nothing.
+			doing = null;
+			capture(event.pointerId, false);
+			return;
+		}
+		if (doing === "quad" || doing === "source") {
 			doing = null;
 			quadPoint = null;
+			sourceDrag = null;
 			editor.commit();
 			changed();
 			capture(event.pointerId, false);
@@ -2878,7 +4393,7 @@ function steerWithPointer(editor, options) {
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
-		if (doing === "quad") {
+		if (doing === "quad" || doing === "source") {
 			editor.commit();
 			changed();
 		}
@@ -2897,6 +4412,7 @@ function steerWithPointer(editor, options) {
 		event.preventDefault();
 		const at = atCanvas(event);
 		editor.zoomAt(at.x, at.y, event.deltaY > 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
+		moved();
 	}, { signal: signal, passive: false });
 	return { destroy: () => stopping.abort() };
 }
@@ -2918,6 +4434,43 @@ const WHEEL_ZOOM_STEP = 1.1;
 // program counts them. "Off" is not one of them and is not in the list.
 const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Freeze",
 	"Unfreeze", "Deep Freeze", "Deep Unfreeze", "Live Freeze", "Live Unfreeze"];
+
+// What SVG elements are made in. The envelope panel says it in place; here it
+// is a name because the overlay makes one of these per source per frame.
+/** How many colours one palette picture holds, one of them being none. */
+const ART_PALETTE_SIZE = 256;
+
+/** Above this many quads, a picture is asked about before it becomes one. */
+const ART_QUAD_WARNING = 5000;
+
+/** `IStorage::TYPE_ABSOLUTE`: a path as it stands, not one to look up. */
+const STORAGE_ABSOLUTE = -2;
+
+// How many panels this page has made, so that a list one of them names is
+// not a list another one finds.
+let panelCount = 0;
+
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+// What a sound source has beside where it is. Which of the two shapes it is
+// decides whether it has a radius or two sides; the rest are the same either
+// way. Distances are world units, the same as everywhere a page is given one.
+const SOURCE_PROPS = [
+	{ prop: "shape", label: "Heard within", kind: "choice", options: [["circle", "Circle"], ["rectangle", "Rectangle"]] },
+	{ prop: "loop", label: "Loop", kind: "boolean" },
+	{ prop: "pan", label: "Panning", kind: "boolean" },
+	{ prop: "timeDelay", label: "Delay (s)", kind: "number" },
+	{ prop: "falloff", label: "Falloff", kind: "number" },
+	{ prop: "posEnv", label: "Position envelope", kind: "number" },
+	{ prop: "posEnvOffset", label: "Position offset", kind: "number" },
+	{ prop: "soundEnv", label: "Sound envelope", kind: "number" },
+	{ prop: "soundEnvOffset", label: "Sound offset", kind: "number" },
+];
+const SOURCE_CIRCLE = [{ prop: "radius", label: "Radius", kind: "number" }];
+const SOURCE_RECTANGLE = [
+	{ prop: "width", label: "Width", kind: "number" },
+	{ prop: "height", label: "Height", kind: "number" },
+];
 
 const QUAD_CORNERS = ["Top left", "Top right", "Bottom left", "Bottom right"];
 const QUAD_PROPS = [

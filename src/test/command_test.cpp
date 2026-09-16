@@ -8,8 +8,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace map_document;
 
@@ -177,6 +180,55 @@ TEST(Command, ALayerPropertyIsSetByNameAndKind)
 	Commands.Ok(R"({"op":"layer.add","group":0,"type":"quads"})");
 	EXPECT_EQ(Commands.Refused(R"({"op":"layer.setProp","group":0,"layer":1,"prop":"color","value":[1,2,3,4]})"),
 		"this layer has no 'color'");
+}
+
+TEST(Command, ALayerIsResizedAndTheRefusalsSayWhy)
+{
+	CCommands Commands(TwoGroups());
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"width":20,"height":3})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Width(), 20);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Height(), 3);
+
+	// One side on its own is the other side as it stands.
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"height":9})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Width(), 20);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->Height(), 9);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":0,"width":0})"),
+		"a layer has to be at least one tile");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":0,"width":100001})"),
+		"a layer is at most 100000 tiles a side");
+	Commands.Ok(R"({"op":"layer.add","group":0,"type":"quads"})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.resize","group":0,"layer":1,"width":4,"height":4})"),
+		"that layer holds no tiles");
+}
+
+TEST(Command, GameTilesAreConstructedUnderWhatIsDrawn)
+{
+	CCommands Commands(TwoGroups());
+	// The sky layer is 8 by 4 over a game layer of 16 by 9; two tiles in it.
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"width":8,"height":4})");
+	CTileLayer Drawn = *Commands.m_Document.Map().TileLayer(0, 0);
+	CTile Wall = {};
+	Wall.m_Index = 9;
+	Drawn.m_Tiles.Set(1, 1, Wall);
+	Drawn.m_Tiles.Set(2, 2, Wall);
+	Commands.m_Document.Begin("Paint");
+	Commands.m_Document.Edit().ReplaceLayer(0, 0, std::move(Drawn));
+	Commands.m_Document.Commit();
+
+	const CJson pAnswer = Commands.Ok(R"({"op":"layer.constructGameTiles","group":0,"layer":0,"tile":"freeze"})");
+	EXPECT_EQ(Number(pAnswer, "tiles"), 2);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(1, 0)->m_Tiles.Get(1, 1).m_Index, TILE_FREEZE);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(1, 0)->m_Tiles.Get(2, 2).m_Index, TILE_FREEZE);
+	EXPECT_EQ(Commands.m_Document.History().Entry(Commands.m_Document.History().NumEntries() - 1).m_Label,
+		"Construct game tiles");
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.constructGameTiles","group":0,"layer":0,"tile":"lava"})"),
+		"there is no game tile called 'lava'");
+	// The game layer is not constructed from itself.
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.constructGameTiles","group":1,"layer":0,"tile":"freeze"})"),
+		"this layer does not lie over the game layer tile for tile");
 }
 
 TEST(Command, AChangeThatIsRefusedLeavesTheMapWhereItWas)
@@ -522,6 +574,269 @@ TEST(Command, DraggingThePivotCarriesTheCornersAlong)
 	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 200);
 	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), 150) << "the corner came along";
 	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), 60) << "and did not move in the other direction";
+}
+
+namespace
+{
+	CMapState WithSounds()
+	{
+		CMapState Map = TwoGroups();
+		CSoundLayer Sounds;
+		Sounds.m_Name = "sounds";
+		CGroup Group;
+		Group.m_Name = "audible";
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Sounds)));
+		Map.AddGroup(std::move(Group));
+		CEnvelope Envelope;
+		Envelope.m_Name = "volume";
+		Map.AddEnvelope(std::move(Envelope));
+		return Map;
+	}
+
+	const CSoundLayer &SoundsOf(const CMapState &Map)
+	{
+		return std::get<CSoundLayer>(*Map.Layer(2, 0));
+	}
+} // namespace
+
+TEST(Command, ASoundSourceIsPlacedMovedAndTakenOut)
+{
+	CCommands Commands(WithSounds());
+	const CJson pAnswer = Commands.Ok(R"({"op":"source.add","group":2,"layer":0,"x":320,"y":160,"radius":48})");
+	EXPECT_EQ(Number(pAnswer, "source"), 0);
+	ASSERT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources.Size(), 1u);
+	EXPECT_EQ(fx2i(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Position.x), 320);
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Shape.m_Circle.m_Radius, 48);
+
+	Commands.Ok(R"({"op":"source.setPoint","group":2,"layer":0,"source":0,"x":40,"y":50})");
+	EXPECT_EQ(fx2i(SoundsOf(Commands.m_Document.Map()).m_Sources[0].m_Position.y), 50);
+
+	Commands.Ok(R"({"op":"source.delete","group":2,"layer":0,"source":0})");
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sources.Size(), 0u);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.add","group":0,"layer":0,"x":0,"y":0})"), "that layer holds no sounds");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.add","group":2,"layer":0,"x":0,"y":0,"radius":0})"),
+		"a source is heard within something");
+}
+
+TEST(Command, WhatASoundSourceIsHeardWithinIsOneThingOrTheOther)
+{
+	CCommands Commands(WithSounds());
+	Commands.Ok(R"({"op":"source.add","group":2,"layer":0,"x":0,"y":0})");
+	const auto &&Source = [&Commands]() { return SoundsOf(Commands.m_Document.Map()).m_Sources[0]; };
+
+	// A circle has a radius and no sides.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"radius","value":64})");
+	EXPECT_EQ(Source().m_Shape.m_Circle.m_Radius, 64);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"width","value":10})"),
+		"this source is heard within a circle");
+
+	// Becoming a rectangle brings a size with it rather than keeping whatever
+	// stood in the same place in the union.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"rectangle"})");
+	EXPECT_EQ(Source().m_Shape.m_Type, CSoundShape::SHAPE_RECTANGLE);
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Width), 192);
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"height","value":64})");
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Height), 64);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"radius","value":10})"),
+		"this source is heard within a rectangle");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"triangle"})"),
+		"a source is heard within a circle or a rectangle");
+
+	// Asking for the shape it already has changes nothing about its size.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"shape","value":"rectangle"})");
+	EXPECT_EQ(fx2i(Source().m_Shape.m_Rectangle.m_Height), 64);
+
+	// The rest are fields, and a binding names an envelope the map has.
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"loop","value":false})");
+	EXPECT_EQ(Source().m_Loop, 0);
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"falloff","value":300})");
+	EXPECT_EQ(Source().m_Falloff, 255) << "a falloff is a byte";
+	Commands.Ok(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"soundEnv","value":0})");
+	EXPECT_EQ(Source().m_SoundEnv, 0);
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"soundEnv","value":1})"),
+		"there is no such envelope");
+	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"pitch","value":1})"),
+		"a sound source has no 'pitch'");
+}
+
+TEST(Command, TextIsTypedIntoALayerThatDrawsAndNotIntoOneThatDoesNot)
+{
+	CCommands Commands(TwoGroups());
+	const CJson pTyped = Commands.Ok(R"({"op":"layer.type","group":0,"layer":0,"x":1,"y":1,"text":"HI"})");
+	EXPECT_EQ(Number(pTyped, "tiles"), 2);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Tiles.Get(1, 1).m_Index, 8) << "H is the eighth letter";
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Tiles.Get(2, 1).m_Index, 9);
+
+	// A physics layer other than the game and front layers draws nothing of
+	// its own - its tiles are air and its meaning sits beside them - so there
+	// is nothing for a letter to be drawn with.
+	Commands.Ok(R"({"op":"layer.add","group":1,"type":"tiles","kind":"tele","name":"tele"})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.type","group":1,"layer":1,"x":0,"y":0,"text":"HI"})"),
+		"a physics layer draws no letters");
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.type","group":0,"layer":0,"x":0,"y":0})"), "The command has no 'text'");
+}
+
+TEST(Command, TheKnifeCutsAPieceOutOfAQuadAndItKeepsWhatItWasCutFrom)
+{
+	CCommands Commands(WithQuads());
+	// A quad 128 wide and 128 tall about (128, 128), so its corners are at
+	// 64 and 192 - and colours that differ from corner to corner, so that a
+	// piece cut out of it can be held against where it came from.
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":128,"y":128,"width":128,"height":128})");
+	for(int Corner = 0; Corner < 4; ++Corner)
+	{
+		const std::string Set = R"({"op":"quad.setColor","group":2,"layer":0,"quad":0,"corner":)" +
+					std::to_string(Corner) + R"(,"value":[)" + std::to_string(Corner * 80) + R"(,0,0,255]})";
+		Commands.Ok(Set.c_str());
+	}
+	// And the whole picture across it, so a piece keeps the part of the
+	// picture it sits over.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":0,"u":0,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":1024,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":2,"u":0,"v":1024})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":3,"u":1024,"v":1024})");
+
+	// The middle quarter of it, clicked round as a ring.
+	const CJson pCut = Commands.Ok(
+		R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96,160,160,96,160]})");
+	EXPECT_EQ(Number(pCut, "quad"), 1);
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 2u) << "the quad it was cut from stays";
+
+	const CQuad &Piece = QuadsOf(Commands.m_Document.Map()).m_Quads[1];
+	EXPECT_EQ(fx2i(Piece.m_aPoints[0].x), 96);
+	EXPECT_EQ(fx2i(Piece.m_aPoints[1].x), 160) << "the ring became two rows";
+	EXPECT_EQ(fx2i(Piece.m_aPoints[2].y), 160);
+	EXPECT_EQ(fx2i(Piece.m_aPoints[4].x), 128) << "the pivot in the middle of the piece";
+	EXPECT_EQ(fx2i(Piece.m_aPoints[4].y), 128);
+
+	// A quarter in from each edge is a quarter of the way through every
+	// mixture, so the corner colours come out a quarter and three quarters
+	// of the way between the old ones: 0, 80, 160, 240 becomes 60, 100, 180, 140.
+	EXPECT_EQ(Piece.m_aColors[0].r, 60);
+	EXPECT_EQ(Piece.m_aColors[1].r, 100);
+	EXPECT_EQ(Piece.m_aColors[2].r, 140);
+	EXPECT_EQ(Piece.m_aColors[3].r, 180);
+	// And the part of the picture it sits over is the middle quarter of it.
+	EXPECT_EQ(Piece.m_aTexcoords[0].x, 256);
+	EXPECT_EQ(Piece.m_aTexcoords[0].y, 256);
+	EXPECT_EQ(Piece.m_aTexcoords[3].x, 768);
+	EXPECT_EQ(Piece.m_aTexcoords[3].y, 768);
+}
+
+TEST(Command, TheKnifeCutsInsideTheQuadAndNowhereElse)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":128,"y":128,"width":128,"height":128})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,300,96,160,160,96,160]})"),
+		"a knife cuts inside the quad, not outside it");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96]})"),
+		"a knife cuts along four places, which is eight numbers");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 1u);
+
+	// The same four places clicked the other way round cover the same piece of
+	// map. Which corner is which differs, and it does not matter: what each
+	// corner shows comes from where it sits rather than from which corner it
+	// is, so the piece looks the same either way.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":0,"u":0,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":1024,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":2,"u":0,"v":1024})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":3,"u":1024,"v":1024})");
+	Commands.Ok(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96,160,160,96,160]})");
+	Commands.Ok(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,160,160,160,160,96,96,96]})");
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 3u);
+
+	const auto &&Places = [](const CQuad &Quad) {
+		std::vector<std::pair<int, int>> vPlaces;
+		for(size_t Corner = 0; Corner < 4; ++Corner)
+			vPlaces.emplace_back(fx2i(Quad.m_aPoints[Corner].x), fx2i(Quad.m_aPoints[Corner].y));
+		std::sort(vPlaces.begin(), vPlaces.end());
+		return vPlaces;
+	};
+	const CQuad &One = QuadsOf(Commands.m_Document.Map()).m_Quads[1];
+	const CQuad &Other = QuadsOf(Commands.m_Document.Map()).m_Quads[2];
+	EXPECT_EQ(Places(One), Places(Other)) << "the same four places";
+
+	// A quarter of the way in on the map is a quarter of the way into the
+	// picture, whichever corner is standing there.
+	for(const CQuad *pPiece : {&One, &Other})
+	{
+		for(size_t Corner = 0; Corner < 4; ++Corner)
+		{
+			EXPECT_EQ(pPiece->m_aTexcoords[Corner].x, (fx2i(pPiece->m_aPoints[Corner].x) - 64) * 8);
+			EXPECT_EQ(pPiece->m_aTexcoords[Corner].y, (fx2i(pPiece->m_aPoints[Corner].y) - 64) * 8);
+		}
+	}
+}
+
+TEST(Command, ASoundFileIsAddedNamedAndTakenOffTheLayersPlayingIt)
+{
+	CCommands Commands(WithSounds());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"sound.add","name":"wind"})"), "sound"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"sound.add","name":"rain"})"), "sound"), 1);
+	const map_document::CSound *pSound = Commands.m_Document.Map().Sound(1);
+	ASSERT_NE(pSound, nullptr);
+	EXPECT_EQ(pSound->m_Name, "rain");
+	EXPECT_TRUE(pSound->m_External) << "a sound that comes through a command has no bytes";
+
+	Commands.Ok(R"({"op":"sound.setProp","sound":1,"prop":"name","value":"drizzle"})");
+	EXPECT_EQ(Commands.m_Document.Map().Sound(1)->m_Name, "drizzle");
+
+	// The layer plays the second one; taking the first one away moves it up.
+	Commands.Ok(R"({"op":"layer.setProp","group":2,"layer":0,"prop":"sound","value":1})");
+	Commands.Ok(R"({"op":"sound.delete","sound":0})");
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sound, 0);
+	// And taking away the one it plays leaves it silent.
+	Commands.Ok(R"({"op":"sound.delete","sound":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumSounds(), 0u);
+	EXPECT_EQ(SoundsOf(Commands.m_Document.Map()).m_Sound, -1);
+}
+
+TEST(Command, ASoundIsMadeExternalButNotEmbeddedWithoutBytes)
+{
+	CCommands Commands(WithSounds());
+	Commands.Ok(R"({"op":"sound.add","name":"wind"})");
+	// It came in beside the map, so there are no bytes to go back to.
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"external","value":false})"),
+		"that sound has no bytes of its own");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.add","name":""})"), "a sound needs a name");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"bytes","value":4})"), "a sound has no 'bytes'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"sound.setProp","sound":0,"prop":"name","value":""})"), "a name is a word");
+}
+
+TEST(Command, AQuadsCornersAreMovedAroundInThePicture)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0})");
+	// 1024 is the whole picture across, so this corner sits three pictures in.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":3072,"v":0})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(Quad.m_aTexcoords[1].x, 3072);
+	EXPECT_EQ(Quad.m_aTexcoords[1].y, 0);
+	EXPECT_EQ(Quad.m_aTexcoords[0].x, 0) << "the other corners are left alone";
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":4,"u":0,"v":0})"),
+		"'corner' is 4, which is not there");
+}
+
+TEST(Command, AQuadIsPutIntoShapeByName)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0,"width":70,"height":40})");
+	Commands.Ok(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"align","grid":32})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 32);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"round"})"),
+		"there is no way of shaping a quad called 'round'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"align","grid":0})"),
+		"a grid is at least one unit wide");
+	// The layer is drawn with no picture, so there are no proportions.
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"aspect"})"),
+		"this layer is drawn with no picture, so it has no proportions");
+	// And a refused shaping leaves the map and the history where they were.
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[0].x), -32);
 }
 
 TEST(Command, AQuadsColoursAndEnvelopesAreSetAndChecked)

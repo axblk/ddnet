@@ -5,7 +5,9 @@
 #include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
 
+#include <game/map/document/art.h>
 #include <game/map/document/document.h>
+#include <game/map/document/edit.h>
 #include <game/map/document/structure.h>
 
 #include <algorithm>
@@ -248,6 +250,108 @@ namespace map_document
 			return true;
 		}
 
+		/**
+		 * Reads what a command says about a sound source onto one.
+		 *
+		 * The shape is the awkward one: which of the two it is and how large
+		 * it is are three numbers in a union, so setting the shape sets a
+		 * size with it rather than leaving whatever the other kind had.
+		 */
+		bool SetSoundProp(CSoundSource &Source, const char *pProp, const json_value *pValue, size_t NumEnvelopes, std::string *pError)
+		{
+			if(str_comp(pProp, "loop") == 0 || str_comp(pProp, "pan") == 0)
+			{
+				bool Value = false;
+				if(!ReadBool(pValue, &Value, pError))
+					return false;
+				(str_comp(pProp, "loop") == 0 ? Source.m_Loop : Source.m_Pan) = Value ? 1 : 0;
+				return true;
+			}
+			if(str_comp(pProp, "shape") == 0)
+			{
+				std::string Value;
+				if(!ReadString(pValue, &Value, pError))
+					return false;
+				if(Value == "circle")
+				{
+					if(Source.m_Shape.m_Type != CSoundShape::SHAPE_CIRCLE)
+					{
+						Source.m_Shape.m_Type = CSoundShape::SHAPE_CIRCLE;
+						Source.m_Shape.m_Circle.m_Radius = 96;
+					}
+					return true;
+				}
+				if(Value == "rectangle")
+				{
+					if(Source.m_Shape.m_Type != CSoundShape::SHAPE_RECTANGLE)
+					{
+						Source.m_Shape.m_Type = CSoundShape::SHAPE_RECTANGLE;
+						Source.m_Shape.m_Rectangle.m_Width = i2fx(192);
+						Source.m_Shape.m_Rectangle.m_Height = i2fx(192);
+					}
+					return true;
+				}
+				*pError = "a source is heard within a circle or a rectangle";
+				return false;
+			}
+
+			int Value = 0;
+			if(!ReadInt(pValue, &Value, pError))
+				return false;
+			const bool Envelope = str_comp(pProp, "posEnv") == 0 || str_comp(pProp, "soundEnv") == 0;
+			if(Envelope && (Value < -1 || Value >= (int)NumEnvelopes))
+			{
+				*pError = "there is no such envelope";
+				return false;
+			}
+			if(str_comp(pProp, "radius") == 0)
+			{
+				if(Source.m_Shape.m_Type != CSoundShape::SHAPE_CIRCLE)
+				{
+					*pError = "this source is heard within a rectangle";
+					return false;
+				}
+				if(Value <= 0)
+				{
+					*pError = "a source is heard within something";
+					return false;
+				}
+				Source.m_Shape.m_Circle.m_Radius = Value;
+			}
+			else if(str_comp(pProp, "width") == 0 || str_comp(pProp, "height") == 0)
+			{
+				if(Source.m_Shape.m_Type != CSoundShape::SHAPE_RECTANGLE)
+				{
+					*pError = "this source is heard within a circle";
+					return false;
+				}
+				if(Value <= 0)
+				{
+					*pError = "a source is heard within something";
+					return false;
+				}
+				(str_comp(pProp, "width") == 0 ? Source.m_Shape.m_Rectangle.m_Width : Source.m_Shape.m_Rectangle.m_Height) = i2fx(Value);
+			}
+			else if(str_comp(pProp, "timeDelay") == 0)
+				Source.m_TimeDelay = Value;
+			else if(str_comp(pProp, "falloff") == 0)
+				Source.m_Falloff = std::clamp(Value, 0, 255);
+			else if(str_comp(pProp, "posEnv") == 0)
+				Source.m_PosEnv = Value;
+			else if(str_comp(pProp, "posEnvOffset") == 0)
+				Source.m_PosEnvOffset = Value;
+			else if(str_comp(pProp, "soundEnv") == 0)
+				Source.m_SoundEnv = Value;
+			else if(str_comp(pProp, "soundEnvOffset") == 0)
+				Source.m_SoundEnvOffset = Value;
+			else
+			{
+				*pError = std::string("a sound source has no '") + pProp + "'";
+				return false;
+			}
+			return true;
+		}
+
 		bool SetEnvelopeProp(CEnvelope &Envelope, const char *pProp, const json_value *pValue, std::string *pError)
 		{
 			if(str_comp(pProp, "name") == 0)
@@ -372,6 +476,58 @@ namespace map_document
 			*pError = std::string("this layer has no '") + pProp + "'";
 			return false;
 		}
+
+		/**
+		 * The thirteen construct operations by name, in the order the editor
+		 * in the client offers them.
+		 */
+		bool ReadGameTile(const char *pName, EGameTile *pOut)
+		{
+			static const struct
+			{
+				const char *m_pName;
+				EGameTile m_Tile;
+			} s_aTiles[] = {
+				{"air", EGameTile::AIR},
+				{"hookable", EGameTile::HOOKABLE},
+				{"death", EGameTile::DEATH},
+				{"unhookable", EGameTile::UNHOOKABLE},
+				{"hookthrough", EGameTile::HOOKTHROUGH},
+				{"freeze", EGameTile::FREEZE},
+				{"unfreeze", EGameTile::UNFREEZE},
+				{"deepFreeze", EGameTile::DEEP_FREEZE},
+				{"deepUnfreeze", EGameTile::DEEP_UNFREEZE},
+				{"blueCheckTele", EGameTile::BLUE_CHECK_TELE},
+				{"redCheckTele", EGameTile::RED_CHECK_TELE},
+				{"liveFreeze", EGameTile::LIVE_FREEZE},
+				{"liveUnfreeze", EGameTile::LIVE_UNFREEZE},
+			};
+			const auto *pFound = std::find_if(std::begin(s_aTiles), std::end(s_aTiles),
+				[pName](const auto &Known) { return str_comp(pName, Known.m_pName) == 0; });
+			if(pFound == std::end(s_aTiles))
+				return false;
+			*pOut = pFound->m_Tile;
+			return true;
+		}
+
+		/** The four ways a quad is put into shape, by name. */
+		bool ReadQuadShape(const char *pName, EQuadShape *pOut)
+		{
+			if(str_comp(pName, "square") == 0)
+				*pOut = EQuadShape::SQUARE;
+			else if(str_comp(pName, "aspect") == 0)
+				*pOut = EQuadShape::ASPECT;
+			else if(str_comp(pName, "centerPivot") == 0)
+				*pOut = EQuadShape::CENTER_PIVOT;
+			else if(str_comp(pName, "align") == 0)
+				*pOut = EQuadShape::ALIGN;
+			else
+				return false;
+			return true;
+		}
+
+		/** How long a side of a tile layer may be, as in the client. */
+		constexpr int MAX_LAYER_SIDE = 100000;
 
 		bool ReadTileLayerKind(const char *pKind, ETileLayerKind *pOut)
 		{
@@ -552,6 +708,71 @@ namespace map_document
 			Document.Commit();
 			return Succeeded("group", (int)Address.m_Group, "layer", (int)Address.m_Layer);
 		}
+		if(str_comp(pOp, "layer.resize") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CTileLayer *pTiles = std::get_if<CTileLayer>(Map.Layer(Group, Layer));
+			if(pTiles == nullptr)
+				return Failed("that layer holds no tiles");
+			const int Width = Arguments.Int("width", pTiles->Width());
+			const int Height = Arguments.Int("height", pTiles->Height());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			// The same bounds the editor in the client offers, and for the
+			// same reason: a layer is written out as a plain array of tiles,
+			// so a size nobody could save is not one to let in.
+			if(Width <= 0 || Height <= 0)
+				return Failed("a layer has to be at least one tile");
+			if(Width > MAX_LAYER_SIDE || Height > MAX_LAYER_SIDE)
+				return Failed("a layer is at most 100000 tiles a side");
+			Document.Begin(Arguments.Str("label", "Resize layer"), pMerge);
+			ResizeLayer(Document, CLayerAddress{Group, Layer}, Width, Height);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "layer.type") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			const int X = Arguments.Int("x");
+			const int Y = Arguments.Int("y");
+			const char *pText = Arguments.Str("text", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pText == nullptr)
+				return Failed("The command has no 'text'");
+			const CTileLayer *pTiles = std::get_if<CTileLayer>(Map.Layer(Group, Layer));
+			if(pTiles == nullptr)
+				return Failed("that layer holds no tiles");
+			if(!DrawsOwnTiles(pTiles->m_Kind))
+				return Failed("a physics layer draws no letters");
+			Document.Begin(Arguments.Str("label", "Type"), pMerge);
+			const int Wrote = TypeText(Document, CLayerAddress{Group, Layer}, X, Y, pText);
+			Document.Commit();
+			return Succeeded("tiles", Wrote);
+		}
+		if(str_comp(pOp, "layer.constructGameTiles") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			const char *pTile = Arguments.Str("tile", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pTile == nullptr)
+				return Failed("The command has no 'tile'");
+			EGameTile Tile;
+			if(!ReadGameTile(pTile, &Tile))
+				return Failed(std::string("there is no game tile called '") + pTile + "'");
+			if(!CanConstructGameTiles(Map, Group, Layer))
+				return Failed("this layer does not lie over the game layer tile for tile");
+			Document.Begin(Arguments.Str("label", "Construct game tiles"), pMerge);
+			const int Written = ConstructGameTiles(Document, Group, Layer, Tile);
+			Document.Commit();
+			return Succeeded("tiles", Written);
+		}
 		if(str_comp(pOp, "layer.setProp") == 0)
 		{
 			const size_t Group = Arguments.Index("group", Map.NumGroups());
@@ -573,7 +794,8 @@ namespace map_document
 
 		if(str_comp(pOp, "quad.add") == 0 || str_comp(pOp, "quad.delete") == 0 ||
 			str_comp(pOp, "quad.setPoint") == 0 || str_comp(pOp, "quad.setColor") == 0 ||
-			str_comp(pOp, "quad.setProp") == 0)
+			str_comp(pOp, "quad.setTexcoord") == 0 || str_comp(pOp, "quad.shape") == 0 ||
+			str_comp(pOp, "quad.carve") == 0 || str_comp(pOp, "quad.setProp") == 0)
 		{
 			const size_t Group = Arguments.Index("group", Map.NumGroups());
 			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
@@ -612,8 +834,74 @@ namespace map_document
 				return Succeeded();
 			}
 
+			if(str_comp(pOp, "quad.carve") == 0)
+			{
+				// Four places inside the quad, in the order somebody clicked
+				// them, in world units.
+				const json_value *pPoints = json_object_get(pParsed.get(), "points");
+				if(pPoints->type != json_array || pPoints->u.array.length != 8)
+					return Failed("a knife cuts along four places, which is eight numbers");
+				vec2 aRing[4];
+				for(size_t Corner = 0; Corner < 4; ++Corner)
+				{
+					// Whole world units, the same as everywhere else a place
+					// leaves the page: a thirty-second of a tile is finer than
+					// anybody can click.
+					const json_value *pX = json_array_get(pPoints, (int)Corner * 2);
+					const json_value *pY = json_array_get(pPoints, (int)Corner * 2 + 1);
+					if(pX->type != json_integer || pY->type != json_integer)
+						return Failed("a place is two whole numbers");
+					aRing[Corner] = vec2((float)json_int_get(pX), (float)json_int_get(pY));
+				}
+				for(const vec2 &Place : aRing)
+				{
+					if(!PointInQuad(pQuads->m_Quads[Quad], Place))
+						return Failed("a knife cuts inside the quad, not outside it");
+				}
+				Document.Begin(Arguments.Str("label", "Carve quad"), pMerge);
+				const size_t Made = CarveQuad(Document, Address, Quad, aRing);
+				Document.Commit();
+				return Succeeded("quad", (int)Made);
+			}
+
+			if(str_comp(pOp, "quad.shape") == 0)
+			{
+				const char *pShape = Arguments.Str("shape", nullptr);
+				const int Grid = Arguments.Int("grid", 32);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pShape == nullptr)
+					return Failed("The command has no 'shape'");
+				EQuadShape Shape;
+				if(!ReadQuadShape(pShape, &Shape))
+					return Failed(std::string("there is no way of shaping a quad called '") + pShape + "'");
+				if(Grid <= 0)
+					return Failed("a grid is at least one unit wide");
+				Document.Begin(Arguments.Str("label", pShape), pMerge);
+				if(!ShapeQuad(Document, Address, Quad, Shape, Grid))
+				{
+					Document.Abort();
+					return Failed("this layer is drawn with no picture, so it has no proportions");
+				}
+				Document.Commit();
+				return Succeeded();
+			}
+
 			CQuad Changed = pQuads->m_Quads[Quad];
-			if(str_comp(pOp, "quad.setPoint") == 0)
+			if(str_comp(pOp, "quad.setTexcoord") == 0)
+			{
+				// Where a corner sits in the picture, in the same numbers the
+				// file holds and the editor in the client shows: 1024 is the
+				// whole picture across, so 0 and 1024 are its two edges and
+				// anything else repeats or crops it.
+				const size_t Corner = Arguments.Index("corner", std::size(Changed.m_aTexcoords));
+				const int U = Arguments.Int("u");
+				const int V = Arguments.Int("v");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Changed.m_aTexcoords[Corner] = CPoint{U, V};
+			}
+			else if(str_comp(pOp, "quad.setPoint") == 0)
 			{
 				// Five points: four corners in the order the file keeps them,
 				// and the pivot it turns about.
@@ -666,6 +954,74 @@ namespace map_document
 				return Failed(Arguments.Error());
 			Document.Begin(Arguments.Str("label", str_comp(pOp, "quad.setPoint") == 0 ? "Move quad" : "Quad"), pMerge);
 			SetQuad(Document, Address, Quad, Changed);
+			Document.Commit();
+			return Succeeded();
+		}
+
+		if(str_comp(pOp, "source.add") == 0 || str_comp(pOp, "source.delete") == 0 ||
+			str_comp(pOp, "source.setPoint") == 0 || str_comp(pOp, "source.setProp") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CSoundLayer *pSounds = std::get_if<CSoundLayer>(Map.Layer(Group, Layer));
+			if(pSounds == nullptr)
+				return Failed("that layer holds no sounds");
+			const CLayerAddress Address{Group, Layer};
+
+			if(str_comp(pOp, "source.add") == 0)
+			{
+				// In world units, the same as a quad: a page turns a click
+				// into a place and hands the place over.
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				const int Radius = Arguments.Int("radius", 96);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(Radius <= 0)
+					return Failed("a source is heard within something");
+				Document.Begin(Arguments.Str("label", "Add sound source"), pMerge);
+				const size_t Index = AddSoundSource(Document, Address, MakeSoundSource(X, Y, Radius));
+				Document.Commit();
+				return Succeeded("source", (int)Index);
+			}
+
+			const size_t Source = Arguments.Index("source", pSounds->m_Sources.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+
+			if(str_comp(pOp, "source.delete") == 0)
+			{
+				Document.Begin(Arguments.Str("label", "Delete sound source"), pMerge);
+				DeleteSoundSource(Document, Address, Source);
+				Document.Commit();
+				return Succeeded();
+			}
+
+			CSoundSource Changed = pSounds->m_Sources[Source];
+			if(str_comp(pOp, "source.setPoint") == 0)
+			{
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Changed.m_Position = CPoint{i2fx(X), i2fx(Y)};
+			}
+			else
+			{
+				const char *pProp = Arguments.Str("prop", nullptr);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pProp == nullptr)
+					return Failed("The command has no 'prop'");
+				std::string Error;
+				if(!SetSoundProp(Changed, pProp, json_object_get(pParsed.get(), "value"), Map.NumEnvelopes(), &Error))
+					return Failed(Error);
+			}
+
+			Document.Begin(Arguments.Str("label", str_comp(pOp, "source.setPoint") == 0 ? "Move sound source" : "Sound source"), pMerge);
+			SetSoundSource(Document, Address, Source, Changed);
 			Document.Commit();
 			return Succeeded();
 		}
@@ -844,6 +1200,72 @@ namespace map_document
 			}
 			Document.Begin(Arguments.Str("label", pProp), pMerge);
 			SetImage(Document, Index, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "sound.add") == 0)
+		{
+			// Only a sound that lies beside the map: the bytes of an embedded
+			// one do not go through JSON, they go through
+			// `CMapEditor::AddSound` as the bytes they are.
+			const char *pName = Arguments.Str("name", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pName == nullptr || pName[0] == '\0')
+				return Failed("a sound needs a name");
+			CSound Sound;
+			Sound.m_Name = pName;
+			Sound.m_External = true;
+			Document.Begin(Arguments.Str("label", "Add sound"), pMerge);
+			const size_t Index = AddSound(Document, std::move(Sound));
+			Document.Commit();
+			return Succeeded("sound", (int)Index);
+		}
+		if(str_comp(pOp, "sound.delete") == 0)
+		{
+			const size_t Sound = Arguments.Index("sound", Map.NumSounds());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete sound"), pMerge);
+			DeleteSound(Document, Sound);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "sound.setProp") == 0)
+		{
+			const size_t Index = Arguments.Index("sound", Map.NumSounds());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CSound Changed = *Map.Sound(Index);
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(str_comp(pProp, "name") == 0)
+			{
+				if(pValue->type != json_string || pValue->u.string.length == 0)
+					return Failed("a name is a word");
+				Changed.m_Name = pValue->u.string.ptr;
+			}
+			else if(str_comp(pProp, "external") == 0)
+			{
+				if(pValue->type != json_boolean)
+					return Failed("that is yes or no");
+				const bool External = pValue->u.boolean != 0;
+				// The same rule as a picture: going the other way needs bytes,
+				// and bytes do not come through here.
+				if(!External && Changed.m_Data.Empty())
+					return Failed("that sound has no bytes of its own");
+				Changed.m_External = External;
+				if(External)
+					Changed.m_Data = CSharedList<uint8_t>();
+			}
+			else
+			{
+				return Failed(std::string("a sound has no '") + pProp + "'");
+			}
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			SetSound(Document, Index, std::move(Changed));
 			Document.Commit();
 			return Succeeded();
 		}

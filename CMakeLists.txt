@@ -2659,6 +2659,8 @@ set_src(GAME_SHARED GLOB src/game
   alloc.h
   collision.cpp
   collision.h
+  explanations.cpp
+  explanations.h
   gamecore.cpp
   gamecore.h
   ghost_data.h
@@ -2735,6 +2737,8 @@ list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
 
 set_src(GAME_MAP GLOB_RECURSE src/game/map
   # tidy-alphabetical-start
+  document/art.cpp
+  document/art.h
   document/assets.h
   document/automap.cpp
   document/automap.h
@@ -2743,13 +2747,19 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/document.h
   document/edit.cpp
   document/edit.h
+  document/explain.cpp
+  document/explain.h
   document/history.h
   document/layer.h
   document/map_file.cpp
   document/map_file.h
   document/map_state.h
+  document/proof.cpp
+  document/proof.h
   document/report.cpp
   document/report.h
+  document/settings.cpp
+  document/settings.h
   document/shared_list.h
   document/structure.cpp
   document/structure.h
@@ -3262,8 +3272,6 @@ if(CLIENT)
     enums.h
     envelope_editor.cpp
     envelope_editor.h
-    explanations.cpp
-    explanations.h
     file_browser.cpp
     file_browser.h
     font_typer.cpp
@@ -4548,6 +4556,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
     # tidy-alphabetical-start
     aio_test.cpp
+    art_test.cpp
     asset_loader_test.cpp
     assets_test.cpp
     automap_test.cpp
@@ -4569,6 +4578,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     document_test.cpp
     edit_test.cpp
     editor_test.cpp
+    explain_test.cpp
     font_loading_test.cpp
     fs_test.cpp
     game_mode_registry_test.cpp
@@ -4607,6 +4617,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     packer_test.cpp
     png_decode_zlib_test.cpp
     prng_test.cpp
+    proof_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp
     report_test.cpp
@@ -4616,6 +4627,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     serverbrowser_test.cpp
     serverinfo_test.cpp
     session_manager_test.cpp
+    settings_test.cpp
     shared_list_test.cpp
     snapshot_test.cpp
     sound_test.cpp

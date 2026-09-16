@@ -106,7 +106,7 @@ namespace map_document
 		return Index >= m_vConfigs.size() ? "" : m_vConfigs[Index].m_Name.c_str();
 	}
 
-	CAutomapRules ParseAutomapRules(const char *pText)
+	CAutomapRules ParseAutomapRules(const char *pText, std::vector<int> *pvNotUnderstood)
 	{
 		CAutomapRules Rules;
 		CAutomapRules::CConfig *pConfig = nullptr;
@@ -115,8 +115,10 @@ namespace map_document
 
 		CLines Lines(pText);
 		std::string Line;
+		int Number = 0;
 		while(Lines.Next(&Line))
 		{
+			++Number;
 			const char *pLine = Line.c_str();
 			// A line that starts with a space, a tab or a hash is a comment
 			// or a blank - the same rule the editor in the client uses.
@@ -286,6 +288,14 @@ namespace map_document
 			else if(str_startswith(pLine, "NoLayerCopy") && pRun != nullptr)
 			{
 				pRun->m_AutomapCopy = false;
+			}
+			else if(pvNotUnderstood != nullptr)
+			{
+				// Either a word the grammar does not have, or one it has in a
+				// place where it means nothing - a `Pos` before any `Index`
+				// has nothing to belong to. Both are worth saying out loud to
+				// somebody writing a rules file; neither stops the rest.
+				pvNotUnderstood->push_back(Number);
 			}
 		}
 

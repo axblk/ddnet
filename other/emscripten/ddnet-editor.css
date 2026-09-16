@@ -55,6 +55,22 @@
 	opacity: 0.75;
 }
 
+/* What is under the pointer. It changes on every move, so it is given a whole
+   line of its own rather than being allowed to push the buttons about. */
+.editor-hover {
+	flex-basis: 100%;
+	min-width: 0;
+	opacity: 0.7;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.editor-hover:empty {
+	display: none;
+}
+
 .editor-columns {
 	display: flex;
 	flex-direction: column;
@@ -274,6 +290,152 @@
 	min-width: 0;
 }
 
+/* The shapes of the sound sources, over the canvas. The SVG is laid out to
+   fill whatever the canvas fills and lets every click through: taking hold of
+   a source is the canvas pointer's job, the same as a quad's corner, so
+   nothing here may stand in its way. */
+.editor-overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+}
+
+.editor-source {
+	fill: #5a9ce8;
+	fill-opacity: 0.12;
+	stroke: #5a9ce8;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-source-dot {
+	fill: #5a9ce8;
+	stroke: #16161a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-source-picked {
+	fill: #e8b84a;
+	stroke: #e8b84a;
+}
+
+circle.editor-source-picked,
+rect.editor-source-picked {
+	fill-opacity: 0.18;
+}
+
+circle.editor-source-dot.editor-source-picked {
+	fill: #e8b84a;
+	stroke: #16161a;
+	fill-opacity: 1;
+}
+
+/* The rules file as text. A textarea cannot colour its own words, so what is
+   coloured is a `<pre>` behind it holding the same ones; the textarea above
+   is transparent but for its caret. The two therefore have to agree about
+   every measurement that moves text - font, padding, line height, wrapping -
+   or the colours slide off the words. */
+.editor-code {
+	position: relative;
+	height: 220px;
+	margin-top: 4px;
+	border-radius: 4px;
+	background: #16161a;
+	overflow: hidden;
+}
+
+.editor-code-view,
+.editor-code-text {
+	position: absolute;
+	inset: 0;
+	margin: 0;
+	padding: 6px;
+	border: 0;
+	box-sizing: border-box;
+	font: 12px/1.45 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+	white-space: pre;
+	tab-size: 4;
+	overflow: auto;
+}
+
+.editor-code-view {
+	pointer-events: none;
+	color: #cfd3d8;
+}
+
+.editor-code-text {
+	background: transparent;
+	color: transparent;
+	caret-color: #e8e8e8;
+	resize: none;
+}
+
+.editor-code-text:focus {
+	outline: 1px solid #9fb8de;
+	outline-offset: -1px;
+}
+
+.editor-code-status {
+	margin: 4px 0 0;
+	opacity: 0.75;
+}
+
+.rules-comment {
+	color: #7c8894;
+}
+
+.rules-config {
+	color: #e8b84a;
+	font-weight: 600;
+}
+
+.rules-keyword {
+	color: #7fb2f0;
+}
+
+.rules-word {
+	color: #5ad07a;
+}
+
+.rules-number {
+	color: #e0916a;
+}
+
+/* A line the program could not use. Underlined rather than only coloured,
+   because a colour on its own is not a message somebody can read. */
+.rules-problem {
+	text-decoration: underline wavy #e8615a;
+	text-underline-offset: 3px;
+}
+
+/* The four ways a quad is put into shape, between the list and the fields. */
+.editor-shape {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-shape button {
+	flex: 1;
+	min-width: 0;
+}
+
+/* The thirteen construct operations, under the properties of a layer that
+   lies over the game layer. Hidden for every other layer. */
+.editor-construct {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-construct select {
+	flex: 1;
+	min-width: 0;
+}
+
 /* The row a layer would land on if it were let go of now. */
 .editor-drop {
 	outline: 1px dashed #9fb8de;
@@ -332,4 +494,121 @@
 	border-radius: 4px;
 	cursor: crosshair;
 	touch-action: none;
+}
+
+/* Proof mode: what a player would see. The colours are the ones the editor in
+   the client uses, because somebody who knows one should not have to learn the
+   other - white for the range of shapes, red for 4:3, green for 16:10. */
+.editor-proof {
+	fill: none;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-proof-step,
+.editor-proof-outline {
+	stroke: #ffffff;
+	stroke-opacity: 0.55;
+}
+
+.editor-proof-first {
+	stroke: #e2544a;
+	stroke-width: 2;
+}
+
+.editor-proof-second {
+	stroke: #5ac26a;
+	stroke-width: 2;
+}
+
+.editor-proof-tee {
+	fill: #5a9ce8;
+	fill-opacity: 0.45;
+	stroke: #5a9ce8;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-proof-position {
+	fill: #5ac26a;
+	fill-opacity: 0.35;
+	stroke: #5ac26a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+/* Settings that a server would not accept, and settings said twice. Both are
+   marked on the line rather than in a message somewhere else: the line is
+   where the mistake is. */
+.editor-setting-wrong input {
+	border-color: #e2544a;
+	background: rgba(226, 84, 74, 0.12);
+}
+
+.editor-setting-repeat input {
+	border-color: #e8b84a;
+	background: rgba(232, 184, 74, 0.1);
+}
+
+.editor-setting-said {
+	margin: 4px 0 0;
+	min-height: 1.4em;
+	opacity: 0.7;
+	font-size: 11px;
+}
+
+.editor-setting-said-wrong {
+	color: #e2544a;
+	opacity: 1;
+}
+
+/* The knife, while a cut is being made: the places clicked so far, and the
+   line between them. */
+.editor-carve {
+	fill: none;
+	stroke: #ffffff;
+	stroke-width: 1.5;
+	stroke-dasharray: 5 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-carve-dot {
+	fill: #e8b84a;
+	stroke: #16161a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+/* Turning a picture into map. The two buttons and the four numbers that go
+   with the quad one, wrapped so they fall onto as many lines as they need. */
+.editor-art {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	margin-top: 6px;
+}
+
+.editor-art-field {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 11px;
+	opacity: 0.8;
+}
+
+.editor-art-field input[type="number"] {
+	width: 48px;
+}
+
+/* Typing with tiles: a field and a button, on one line. */
+.editor-type {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-type input {
+	flex: 1;
+	min-width: 0;
 }

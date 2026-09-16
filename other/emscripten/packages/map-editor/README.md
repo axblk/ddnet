@@ -68,6 +68,23 @@ changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.
 
+A tile layer's properties hold its width and its height. They are the one pair
+of fields that is only handed over when the field is left rather than at every
+keystroke: on the way from 8 to 150 the number is 1 and then 15, and for a size
+that would mean the tiles outside are gone before the number is finished. The
+physics layers of a map are all the size of its game layer - that is the size
+the game plays - so resizing one of them resizes all of them, and a layer that
+is only drawn is resized by itself.
+
+Under the properties of such a layer stand the thirteen construct operations:
+pick a physics tile and every tile the layer draws gets one under it. That is
+how a map is built - the shape is drawn once and the physics follow it. The row
+is only there for a layer the operation means anything for, and whether it does
+is the program's answer (`layer.construct`), not the page's: it depends on the
+group lying over the game layer tile for tile, and a group that moves with the
+camera is somewhere else at every moment. The two checkpoints are tele tiles,
+so they go into the tele layer - and a map without one gets one.
+
 ## The automapper
 
 A rules file belongs to a picture, not to a layer: a layer drawn with
@@ -95,6 +112,23 @@ the rectangle itself is written back. And the rules that only fire sometimes
 fire off a hash of the place rather than a die, so the same seed twice is the
 same map - which is why running the same configuration again writes no history
 entry at all: it changed nothing.
+
+And the file itself can be written. The `Rules` panel holds it as text with
+its words coloured - configurations, the words that begin a line, the words
+that stand inside one, and the numbers - and `apply` hands the text as it
+stands back to the program. What the program could not use it says by line
+number, and those lines are underlined where they stand: a rules file is read
+as far as it is understood and the rest is passed over, which is what lets a
+file from a newer editor still automap, but somebody writing one wants to be
+told. `revert` fetches the file again and `save` writes the text out so that
+it can be put where the game looks for it. A rules file is not part of the
+map, so none of this is in the history and none of it makes the map unsaved.
+
+A textarea cannot colour its own words, so what is coloured is a `<pre>`
+behind it holding the same ones and the textarea above is transparent but for
+its caret. The two therefore have to agree about every measurement that moves
+text - font, padding, line height, wrapping - and the scrolling of the one is
+copied onto the other.
 
 ## Pictures
 
@@ -137,6 +171,156 @@ one and a binding to the one that is gone becomes no binding at all. A layer
 that was bound to nothing is left as the node it is, which is why this costs
 the layers that used the envelope rather than the map.
 
+## What a tile is, and what it does
+
+The bar says what is under the pointer: where it is, which tile stands there
+in decimal and in hex, and what that tile does. Hex because the entities sheet
+is sixteen wide, so `0x23` names row 2 and column 3 in one go; decimal because
+that is how mappers talk about tiles.
+
+The sentence is the one the editor in the client shows. Those sentences moved
+out of `game/editor/` into `game/` for this - they were always only a table
+about `game/mapitems.h`, and somebody who learned what a tile does in one
+editor should not be told something else in the other.
+
+Which number a tile *is* turns out to be a question the file format answers
+rather than the layer: the three kinds that draw their own tiles keep it where
+it is drawn from, and a physics layer draws nothing, so its plane of tiles is
+air and the meaning sits beside it in the extra plane.
+`map_document::TileMeaning` is the one place that knows which, so
+`editor.tileIndex` on a tele layer gives 26 rather than the 0 it draws.
+
+## Proof mode
+
+The one question an editor cannot answer by looking: is this still on screen
+for everybody? A map is edited at whatever zoom and in whatever window somebody
+happens to have; it is played on a screen whose shape nobody chose, at a zoom
+the game decides. Proof mode draws that screen over the map - twenty-one
+shapes from square to 16:9, which together are the outline of everything
+anybody could see, with 4:3 and 16:10 named and drawn on top because those are
+the two a mapper is told to check.
+
+The arithmetic is the game's own (`CalcViewSize`), so the rectangle here and
+the view a client ends up with are the same rectangle rather than two guesses
+about it. The document answers it (`map_document::ProofScreen`, `ProofJson`)
+and the page draws it in the same SVG the sound sources use, because it is
+lines over a picture and that is what an overlay is for.
+
+It stays in the middle of the screen and the map moves under it, the same as
+in the editor in the client: the question is what a player standing *here*
+would see, and where here is, is where the view is looking. Pressing the
+button - or `P` - once gives a game, twice gives a menu background at the
+menu's own 0.7 zoom, three times turns it off. In menu mode the places this
+map names for a menu background come with it: a map says so with time
+checkpoint tiles in its game layer, tile 35 being the first place. Places the
+map does not name are not shown, because where those stand is the client's
+business and the document does not know the client.
+
+## Sound sources
+
+A sound layer is not seen, so the shapes its sources are heard within are
+drawn by the page rather than by the program: an SVG over the canvas, which is
+what an SVG is for - a few shapes that stand over a picture and are told where
+to stand. Where that is comes from the program (`editor.groupPixelAt`), the
+other way round from what a pointer asks, so the shapes and the map cannot
+drift apart. The SVG lets every click through: taking hold of a source is the
+canvas pointer's job, the same as a quad's corner.
+
+Where a source is, is dragged; what it is, is fields. A source is heard within
+a circle or within a rectangle, and which of the two decides which fields it
+has - a circle has a radius and no sides. Changing from one to the other
+brings a size along rather than keeping whatever stood in the same place in
+the file's union of the two.
+
+Panning and zooming do not change the map, so the panels are left alone; what
+they do change is where an overlay belongs, which is why steering the canvas
+says `onView` as well as `onChange`. Rebuilding every panel on every pixel of
+a drag would be work nobody asked for.
+
+## Sound files
+
+A sound in a map is an Opus file and the program never looks into it: it takes
+the bytes, keeps them, and hands them back. There is no decoder in it and
+there does not need to be one, because the one thing that has to play a map's
+sound is a browser, and every browser decodes Opus. `editor.addSound(name,
+bytes)` puts one in, `editor.soundData(index)` takes the bytes out again
+unchanged, and the panel wraps those bytes in a `Blob` for an `<audio>`
+element. A sound that lies beside the map is played from `mapres/<name>.opus`
+instead, the same place a picture beside the map comes from.
+
+The bytes go the way a picture's pixels go - through their own C entrance,
+not through JSON - while the structure around them goes through `apply`:
+`sound.add` names one that lies beside the map, `sound.setProp` renames it or
+takes its bytes out, and `sound.delete` takes it away. Taking one away takes
+it off the layers that played it, the same arithmetic as a picture or an
+envelope: what pointed past it comes down one, what pointed at it points at
+nothing. Going the other way - beside the map back into it - is not something
+a command can do, because the bytes are not in the command.
+
+## Typing with tiles
+
+A font tileset is a tileset like any other; what makes it a font is that `A` is
+at tile 1 and `1` is at tile 54, which is a convention of the sheets people
+draw rather than anything the file format knows. Letters and digits become
+those tiles, a space becomes nothing, and a newline goes down a row and back to
+the column it started in - so a block of text stays a block, and a line that
+reaches the right-hand edge wraps the same way. Anything else is passed over: a
+font tileset has 26 letters and ten digits, and refusing a comma would be
+refusing the sentence it stands in.
+
+The editor in the client does this a keystroke at a time in a mode of its own.
+A page has text fields, so here it is a text and one history entry - which is
+also the only version that can be undone in one go. It is written where the
+view is looking, because that is where somebody is when they decide to write
+something.
+
+## A picture, turned into map
+
+Two ways of doing it, and which one is wanted is a question about the picture
+rather than about the map, so both are offered and neither is the default.
+
+**As tiles**, the picture becomes its own tileset: every colour in it gets a
+tile of that colour on a 16-by-16 sheet, and the layer is those tiles. Tile 0
+is nothing, which is what a pixel that is not opaque becomes. A picture of more
+than 255 colours needs more than one sheet and gets a layer for each; together
+they are the picture, one layer over the next, and no pixel is drawn twice. The
+colours are sorted rather than taken as found, so the same picture always gives
+the same palette and a map made twice is the same map.
+
+**As quads**, each pixel becomes a quad of one colour. A run of one colour
+becomes *one* quad - grow right as far as the colour holds, then down as far as
+whole rows of it hold - which makes a flat picture cheap and leaves a
+photograph exactly as dear as it was. The group clips to what was drawn, so a
+picture put on a map stays where it was put. `pixelStep` reads every second or
+fourth pixel, `quadSize` says how big one is on the map, and `centralize` puts
+every pivot in the same place, which is what an envelope wants: one envelope
+then turns the whole picture rather than every pixel on the spot.
+
+Both read pixels rather than a file, the same as `addImage`: a browser decodes
+a PNG and the map already keeps RGBA, so a decoder in the program would be a
+second one. Both ask before doing something expensive - `artColors` says how
+many palettes a picture would need, and a quad count above a few thousand is
+put to the user first, because a quad per pixel of a photograph is not
+something anybody means to ask for.
+
+## Appending a map
+
+Another map's groups go into this one: everything it draws, the pictures,
+sounds and envelopes it draws with, and the lines it asks of a server. Not its
+game layer - physics belongs to the map being worked on, and two game layers
+is not a map.
+
+Everything a layer names, it names by its place, so every place in the map
+coming in is read again against where it ends up. Pictures are the awkward
+one. A picture with the same name *and* the same bytes is the same picture and
+is not brought over twice; one whose name is taken by a different picture is
+renamed to `name (1)` rather than dropped, because dropping it would change
+what the map looks like. A settings line already there is already there.
+
+All of it is one history entry, however much came over, and what came over is
+said in the status line as counts - appending moves numbers about everywhere
+at once, and a count is the only honest summary of that.
+
 ## Quads
 
 A quad is four corners and a pivot, and all five are dragged on the map rather
@@ -148,10 +332,25 @@ dragging the pivot carries all five, which is how a quad is moved without
 changing its shape. Either way the whole drag is one history entry.
 
 What is not a point is a field: a colour on each of the four corners with its
-alpha beside it, and which envelopes move and colour the quad. A binding names
-an envelope by its place, so one the map does not have is refused rather than
-written - a map that reads back differently than it was written is not a saved
-map.
+alpha beside it, where that corner sits in the picture, and which envelopes
+move and colour the quad. A binding names an envelope by its place, so one the
+map does not have is refused rather than written - a map that reads back
+differently than it was written is not a saved map.
+
+The two picture fields per corner are in the numbers the map file holds, which
+are also the numbers the editor in the client shows: 1024 is the whole picture
+across, so 0 and 1024 are its two edges and 3072 is three pictures along. A
+fraction would have been friendlier to read and would have thrown away what a
+quad that repeats its picture forty times holds.
+
+Above the fields stand the four ways a quad is put in order rather than
+dragged into it: **square** makes it the rectangle its corners span, **aspect**
+keeps its width and takes its height from the proportions of the picture,
+**pivot** puts the pivot in the middle, and **align** moves every corner - and
+the pivot with them - onto the nearest tile. A quad dragged by four corners is
+almost never the rectangle somebody meant. The editor in the client leaves the
+first corner alone when it aligns; that is a slip rather than a rule, and it is
+not copied.
 
 The points go out in world units (`editor.quads(group, layer)`), because that
 is the only number a page can do anything with - it turns a click into a place
@@ -160,6 +359,23 @@ and back - and the pointer asks the program where a click lands in the group
 what is drawn and what is caught cannot drift apart. A new quad appears in the
 middle of the view of *its group*, not of the plain view: in a group with no
 parallax at all those are nowhere near each other.
+
+The knife cuts a piece out of a quad. Four clicks inside it make a new quad of
+those four places; the one that was cut from is left alone, which is what the
+editor in the client does too - a knife here adds rather than divides.
+
+What the piece keeps is what it was cut from. Each of the four places is
+written as a mixture of three of the old quad's corners, in the proportion of
+the three triangles the place makes with them, and the colour and the place in
+the picture come out of that same mixture - so a piece cut out of a wall still
+shows the part of the wall it sits over. A quarter of the way in on the map is
+a quarter of the way into the picture.
+
+The four places come in as a ring, because that is how somebody clicks them,
+and the file keeps corners as two rows; a ring that folds over itself is
+unfolded rather than refused. A ring clicked the other way round gives the same
+piece: which corner is which differs, and it does not matter, because what each
+corner shows comes from where it sits.
 
 ## What the map says about itself
 
@@ -173,6 +389,31 @@ A setting is one line. A line with a break in it would come back as two lines
 and then the map would not be the map that was written, so it is refused.
 There is no checking of what the line *says*: that would need the console's
 own list of commands, which is the server's business and not the document's.
+
+The lines a server runs when it loads the map are checked while they are being
+typed. Nothing checks them today until a server refuses to start, which is the
+wrong moment to find out that a variable is spelled wrong.
+
+What a server would accept is not written out again here: it is every config
+variable carrying `CFGFLAG_GAME`, taken from `config_variables.h` itself so
+that the two cannot fall out of step, plus the six commands a map may use,
+which are not variables and so are not in that file. Twenty-nine things in
+all, each with the sentence the config already carries - which is what the
+line under the list says once a name is settled.
+
+Three things are said about a line: a name a server has never heard of, an
+argument that is the wrong shape or outside its range, and a line that says
+the same thing as an earlier one. The third is the interesting one, because
+"the same thing" is not "the same text": `sv_deepfly 0` twice is a mistake,
+and `tune_zone 1 ...` beside `tune_zone 2 ...` is not, so each command says
+how many of its arguments tell two of them apart.
+
+None of it refuses anything. A line on its way to being right is wrong for
+most of the time it is being written, and an editor that would not let that
+happen is an editor nobody can type in - so it is marked and explained, and
+that is all. The names that begin with what stands there go into a `datalist`,
+which is the one piece of completion a page gets for free and the one that
+already behaves the way everybody expects.
 
 ## The brush
 
@@ -216,7 +457,7 @@ and 17 ms.
 
 ## What it is not, yet
 
-Sounds are looked at but not changed, a quad's picture coordinates are read
-but not yet edited, and a rules file can be run but not written - there is no
-editor for the rules themselves. A layer with no picture at all is shown as a grid of numbers - the tiles are still there to
-be picked, they just cannot be shown.
+Nothing of the plan is missing any more. What is not here is what the plan
+says is not here: editing together, testing a map in the browser, and a new
+file format. A layer with no picture at all is shown as a grid of numbers - the
+tiles are still there to be picked, they just cannot be shown.

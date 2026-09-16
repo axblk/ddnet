@@ -293,3 +293,67 @@ TEST(TileStore, SaysWhichBlocksAVersionChanged)
 	CTileStore<CTile> Resized(ACROSS * CHUNK, 3 * CHUNK);
 	EXPECT_EQ(Collect(Resized, First).size(), (size_t)ACROSS * 3);
 }
+
+TEST(TileStore, KeepsWhatIsStillOnTheLayerWhenItIsResized)
+{
+	constexpr int CHUNK = CTileStore<CTile>::CHUNK_SIZE;
+	CTileStore<CTile> Store(2 * CHUNK, 2 * CHUNK);
+	Store.Set(5, 5, Tile(1));
+	Store.Set(CHUNK + 5, 5, Tile(2));
+	Store.Set(5, CHUNK + 5, Tile(3));
+	Store.Set(2 * CHUNK - 1, 2 * CHUNK - 1, Tile(4));
+
+	// Growing keeps everything and puts air in what is new.
+	CTileStore<CTile> Larger = Store;
+	Larger.Resize(3 * CHUNK, 3 * CHUNK);
+	EXPECT_EQ(Larger.Width(), 3 * CHUNK);
+	EXPECT_EQ(Larger.Height(), 3 * CHUNK);
+	EXPECT_EQ(Larger.Get(5, 5).m_Index, 1);
+	EXPECT_EQ(Larger.Get(CHUNK + 5, 5).m_Index, 2);
+	EXPECT_EQ(Larger.Get(5, CHUNK + 5).m_Index, 3);
+	EXPECT_EQ(Larger.Get(2 * CHUNK - 1, 2 * CHUNK - 1).m_Index, 4);
+	EXPECT_EQ(Larger.Get(2 * CHUNK, 2 * CHUNK).m_Index, 0);
+	// Every block lay wholly inside both sizes, so all four are shared.
+	EXPECT_EQ(Larger.ChunkId(0, 0), Store.ChunkId(0, 0));
+	EXPECT_EQ(Larger.ChunkId(1, 1), Store.ChunkId(1, 1));
+
+	// And the tiles that fall outside are gone rather than hidden: making it
+	// small and large again gives air back.
+	CTileStore<CTile> Smaller = Store;
+	Smaller.Resize(CHUNK, CHUNK);
+	EXPECT_EQ(Smaller.Get(5, 5).m_Index, 1);
+	EXPECT_EQ(Smaller.Get(CHUNK + 5, 5).m_Index, 0);
+	EXPECT_EQ(Smaller.ChunkId(0, 0), Store.ChunkId(0, 0));
+	Smaller.Resize(2 * CHUNK, 2 * CHUNK);
+	EXPECT_EQ(Smaller.Get(5, 5).m_Index, 1);
+	EXPECT_EQ(Smaller.Get(CHUNK + 5, 5).m_Index, 0);
+	EXPECT_EQ(Smaller.Get(2 * CHUNK - 1, 2 * CHUNK - 1).m_Index, 0);
+}
+
+TEST(TileStore, WritesOutABlockTheNewEdgeCutsThrough)
+{
+	constexpr int CHUNK = CTileStore<CTile>::CHUNK_SIZE;
+	CTileStore<CTile> Store(CHUNK, CHUNK);
+	Store.Set(0, 0, Tile(1));
+	Store.Set(CHUNK - 1, 0, Tile(2));
+	Store.Set(0, CHUNK - 1, Tile(3));
+
+	// Half a block wide is still one block, but not the same one: what was to
+	// the right of the new edge had to be left out of it.
+	CTileStore<CTile> Narrow = Store;
+	Narrow.Resize(CHUNK / 2, CHUNK);
+	EXPECT_EQ(Narrow.Get(0, 0).m_Index, 1);
+	EXPECT_EQ(Narrow.Get(0, CHUNK - 1).m_Index, 3);
+	EXPECT_EQ(Narrow.UsedChunks(), 1);
+	EXPECT_NE(Narrow.ChunkId(0, 0), Store.ChunkId(0, 0));
+
+	// A block whose tiles all fall outside is not written out at all, so a
+	// layer that ends up holding nothing holds no blocks either.
+	CTileStore<CTile> Far(CHUNK, CHUNK);
+	Far.Set(CHUNK - 1, CHUNK - 1, Tile(5));
+	EXPECT_EQ(Far.UsedChunks(), 1);
+	Far.Resize(1, 1);
+	EXPECT_EQ(Far.Get(0, 0).m_Index, 0);
+	EXPECT_EQ(Far.UsedChunks(), 0);
+	EXPECT_EQ(Far.Bytes(), 0u);
+}

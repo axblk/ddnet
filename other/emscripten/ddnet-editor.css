@@ -1488,6 +1488,31 @@ circle.editor-source-dot.editor-source-picked {
 	white-space: nowrap;
 }
 
+.editor-keys-key {
+	min-height: var(--button-small);
+	padding: 0 var(--space-1);
+	color: var(--text-2);
+	font: var(--type-xs);
+	background: none;
+	border: 1px solid transparent;
+	border-radius: var(--radius-1);
+	cursor: pointer;
+}
+
+/* The row that is waiting for its key says so in the one colour that means
+   "this is what the keyboard is talking to". */
+.editor-keys-key[aria-pressed="true"] {
+	color: var(--text-1);
+	border-color: var(--accent);
+}
+
+@media (hover: hover) {
+	.editor-keys-key:hover {
+		color: var(--text-1);
+		border-color: var(--line-strong);
+	}
+}
+
 .editor-keys-list dd {
 	margin: 0;
 	color: var(--text-2);

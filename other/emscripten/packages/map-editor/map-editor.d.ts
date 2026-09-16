@@ -411,7 +411,7 @@ export declare class EditorPanels {
 	selection: { group: number; layer: number };
 	/** Which panel each area that shows one at a time has in front. */
 	readonly tab: { left: string; dock: string; tiles: string };
-	/** Everything the editor can be told to do. */
+	/** Everything the editor can be told to do - this panel's own copy, keys as they are now. */
 	readonly commands: EditorCommand[];
 	/** Which of the four ways the pointer draws while no modifier says otherwise. */
 	tool: "paint" | "grab" | "fill" | "erase";
@@ -476,10 +476,24 @@ export declare class EditorPanels {
 	askSaveCopy(): void;
 	/** The editor's own yes-or-no question, instead of `confirm()`. */
 	askYesNo(title: string, text: string, yes: string, done: () => void): void;
-	/** Every key the editor answers to, on one sheet. */
+	/** Every key the editor answers to, on one sheet, where each can be changed. */
 	showKeys(): void;
+	/**
+	 * Gives a command these keys and nothing else. A key another command had
+	 * moves; that command is returned, `null` when none lost one. Fires
+	 * `editor-keys`.
+	 */
+	setKeys(id: string, keys: string[]): EditorCommand | null;
+	/** Every key back to what the command table says. */
+	resetKeys(): void;
+	/** The commands whose keys differ from the table, id to keys. */
+	changedKeys(): Record<string, string[]>;
+	/** Puts back what `changedKeys()` once said. */
+	applyKeys(changed: Record<string, string[]>): void;
 	/** Whether the tileset is shown in the colour of the layer it is for. */
 	brushColouring: boolean;
+	/** Whether a finger only pans once a pen has been seen (on, as on a drawing tablet). */
+	penHoldsPaper: boolean;
 	/** A picture of the whole map, with a note that counts while it is drawn. */
 	exportPicture(): boolean;
 	/** The outer ring of the selected tile layer, drawn with the brush. */

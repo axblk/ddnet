@@ -267,6 +267,14 @@ export declare class MapEditor {
 	}): boolean;
 	/** Puts a picture with its pixels into the map; answers which picture it became, or -1. */
 	addImage(name: string, pixels: ImageData, id?: MapId): number;
+	/** A picture as tile layers drawn with palettes of its own colours; answers the group, or -1. */
+	addTileArt(name: string, pixels: ImageData, id?: MapId): number;
+	/** How many colours a picture holds, not counting what is not opaque. */
+	artColors(pixels: ImageData): number;
+	/** A picture as a group of quads, one per pixel or per run of one colour. */
+	addQuadArt(name: string, pixels: ImageData, options?: {
+		pixelStep?: number; quadSize?: number; centralize?: boolean; merge?: boolean;
+	}, id?: MapId): number;
 	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */
 	setImagePixels(index: number, pixels: ImageData, id?: MapId): boolean;
 	/** Puts a sound with its bytes into the map; answers which sound it became, or -1. */

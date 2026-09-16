@@ -578,3 +578,25 @@ circle.editor-source-dot.editor-source-picked {
 	stroke-width: 1.5;
 	vector-effect: non-scaling-stroke;
 }
+
+/* Turning a picture into map. The two buttons and the four numbers that go
+   with the quad one, wrapped so they fall onto as many lines as they need. */
+.editor-art {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	align-items: center;
+	margin-top: 6px;
+}
+
+.editor-art-field {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 11px;
+	opacity: 0.8;
+}
+
+.editor-art-field input[type="number"] {
+	width: 48px;
+}

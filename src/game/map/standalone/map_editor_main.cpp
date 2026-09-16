@@ -302,6 +302,24 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
 	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
 }
 
+EMSCRIPTEN_KEEPALIVE int MapEditorTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->AddTileArt(Id, pName, Width, Height, pPixels);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorArtColors(int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->CountArtColors(Width, Height, pPixels);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+	int PixelStep, int QuadSize, int Centralize, int Merge)
+{
+	return g_pEditor == nullptr ?
+		       -1 :
+		       g_pEditor->AddQuadArt(Id, pName, Width, Height, pPixels, PixelStep, QuadSize, Centralize != 0, Merge != 0);
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorAppend(int Id, const char *pPath, int StorageType)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->Append(Id, pPath, StorageType));

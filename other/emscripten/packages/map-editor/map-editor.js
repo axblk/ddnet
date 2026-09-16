@@ -307,6 +307,39 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * Turns a picture into a group of tile layers drawn with palettes made
+	 * out of its own colours. Answers which group it became, or -1.
+	 *
+	 * A picture of more than 255 colours needs more than one palette and gets
+	 * a layer for each; `artColors` says how many there are, so a page can
+	 * warn before it asks.
+	 */
+	addTileArt(name, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorTileArt", "number", ["number", "string", "number", "number", "number"],
+				[this.which(id), name, width, height, address]));
+	}
+
+	/** How many colours a picture holds, not counting what is not opaque. */
+	artColors(pixels) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.ask("MapEditorArtColors", "number", [width, height, address])) || 0;
+	}
+
+	/**
+	 * Turns a picture into a group with one quad per pixel - or per run of
+	 * pixels of one colour. Answers which group it became, or -1.
+	 */
+	addQuadArt(name, pixels, options, id) {
+		const settings = Object.assign({ pixelStep: 1, quadSize: 64, centralize: false, merge: true }, options || {});
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorQuadArt", "number",
+				["number", "string", "number", "number", "number", "number", "number", "number", "number"],
+				[this.which(id), name, width, height, address, settings.pixelStep, settings.quadSize,
+					settings.centralize ? 1 : 0, settings.merge ? 1 : 0]));
+	}
+
+	/**
 	 * Puts other pixels into a picture the map already has, keeping every
 	 * layer that is drawn with it - which is what replacing a picture is for.
 	 */
@@ -900,6 +933,15 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<ul class="editor-tree" data-role="tree"></ul>
+		<div class="editor-art" data-role="art">
+			<button class="editor-small" data-role="tile-art" title="A picture as tiles, with a palette made of its own colours">picture as tiles&hellip;</button>
+			<button class="editor-small" data-role="quad-art" title="A picture as quads, one per pixel">as quads&hellip;</button>
+			<label class="editor-art-field">px <input type="number" data-role="art-step" min="1" max="64" value="1" title="How many pixels of the picture one quad stands for"></label>
+			<label class="editor-art-field">size <input type="number" data-role="art-size" min="1" max="1024" value="64" title="How wide a quad is on the map, in world units"></label>
+			<label class="editor-art-field"><input type="checkbox" data-role="art-merge" checked title="A run of one colour becomes one quad"> merge</label>
+			<label class="editor-art-field"><input type="checkbox" data-role="art-centralize" title="Every quad turns about the same place"> one pivot</label>
+			<input type="file" accept="image/png,image/*" data-role="art-file" hidden>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="props-panel">
 		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2></header>
@@ -1364,6 +1406,7 @@ class CEditorPanels {
 			this.refreshBar();
 			this.refreshOverlay();
 		});
+		this.wireArt();
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
 		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
 		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
@@ -3053,6 +3096,77 @@ class CEditorPanels {
 	 * meant, so there are buttons for the rectangle, for the proportions of
 	 * the picture, for the pivot in the middle, and for the grid.
 	 */
+	/**
+	 * A picture turned into map: as tiles with a palette of its own colours,
+	 * or as quads, one per pixel.
+	 *
+	 * The browser decodes the file, the same as it does for a picture the map
+	 * is drawn with. Which of the two is wanted is a question about the
+	 * picture rather than about the map, so both are offered and neither is
+	 * the default.
+	 */
+	wireArt() {
+		const signal = this.stopping.signal;
+		const file = this.part("art-file");
+		let asQuads = false;
+		this.part("tile-art").addEventListener("click", () => {
+			asQuads = false;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("quad-art").addEventListener("click", () => {
+			asQuads = true;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const pixels = await pixelsOf(chosen);
+			if (pixels === null) {
+				this.say("That picture could not be read");
+				return;
+			}
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			if (asQuads) {
+				const options = {
+					pixelStep: Math.max(1, Number(this.part("art-step").value) || 1),
+					quadSize: Math.max(1, Number(this.part("art-size").value) || 64),
+					centralize: this.part("art-centralize").checked,
+					merge: this.part("art-merge").checked,
+				};
+				const across = Math.ceil(pixels.width / options.pixelStep);
+				const down = Math.ceil(pixels.height / options.pixelStep);
+				// Said before it happens, because a quad per pixel of a
+				// photograph is a number nobody means to ask for.
+				if (across * down > ART_QUAD_WARNING && !confirm(
+					`${name} would be up to ${across * down} quads. Go on?`)) {
+					return;
+				}
+				const group = this.change(() => this.editor.addQuadArt(name, pixels, options));
+				this.say(group >= 0 ? `${name} as quads` : "That picture was refused");
+			} else {
+				const colors = this.editor.artColors(pixels);
+				const sheets = Math.max(1, Math.ceil(colors / (ART_PALETTE_SIZE - 1)));
+				if (colors === 0) {
+					this.say("Nothing in that picture is opaque");
+					return;
+				}
+				if (sheets > 1 && !confirm(
+					`${name} holds ${colors} colours, which needs ${sheets} palettes and ${sheets} layers. Go on?`)) {
+					return;
+				}
+				const group = this.change(() => this.editor.addTileArt(name, pixels));
+				this.say(group >= 0
+					? `${name} as tiles: ${colors} ${colors === 1 ? "colour" : "colours"}${sheets > 1 ? ` in ${sheets} layers` : ""}`
+					: "That picture was refused");
+			}
+			this.refresh();
+		}, { signal: signal });
+	}
+
 	wireShape() {
 		for (const shape of ["square", "aspect", "centerPivot", "align"]) {
 			this.part(`shape-${shape}`).addEventListener("click", () => {
@@ -4272,6 +4386,12 @@ const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Fr
 
 // What SVG elements are made in. The envelope panel says it in place; here it
 // is a name because the overlay makes one of these per source per frame.
+/** How many colours one palette picture holds, one of them being none. */
+const ART_PALETTE_SIZE = 256;
+
+/** Above this many quads, a picture is asked about before it becomes one. */
+const ART_QUAD_WARNING = 5000;
+
 /** `IStorage::TYPE_ABSOLUTE`: a path as it stands, not one to look up. */
 const STORAGE_ABSOLUTE = -2;
 

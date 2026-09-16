@@ -106,11 +106,17 @@ namespace map_document
 	 * still automaps with the rules that are left.
 	 *
 	 * @param pText The whole file, newline-separated.
+	 * @param pvNotUnderstood Where the numbers of the lines it passed over
+	 * are put, counting from one, or `nullptr` to not be told. A line is in
+	 * there either because the grammar has no such word or because it has it
+	 * in a place where it means nothing - a `Pos` before any `Index` belongs
+	 * to nothing. Blank lines and comments are not passed over, they are
+	 * nothing, and they are not in there.
 	 *
 	 * @return What it understood, which is empty for a file with no
 	 * configuration in it.
 	 */
-	CAutomapRules ParseAutomapRules(const char *pText);
+	CAutomapRules ParseAutomapRules(const char *pText, std::vector<int> *pvNotUnderstood = nullptr);
 
 	/**
 	 * Runs one configuration of a rules file over a rectangle of a layer.

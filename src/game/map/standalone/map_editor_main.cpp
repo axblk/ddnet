@@ -305,6 +305,13 @@ EMSCRIPTEN_KEEPALIVE int MapEditorLoadRules(const char *pName, const char *pText
 	return g_pEditor == nullptr ? 0 : (int)g_pEditor->LoadRules(pName, pText);
 }
 
+// Which lines of a rules file were passed over, as a JSON array of line
+// numbers counting from one. Empty for a file that was understood whole.
+EMSCRIPTEN_KEEPALIVE const char *MapEditorRuleProblems(const char *pName)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->RuleProblems(pName));
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorNumRuleConfigs(const char *pName)
 {
 	return g_pEditor == nullptr ? 0 : (int)g_pEditor->NumRuleConfigs(pName);

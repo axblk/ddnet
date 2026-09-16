@@ -113,6 +113,23 @@ fire off a hash of the place rather than a die, so the same seed twice is the
 same map - which is why running the same configuration again writes no history
 entry at all: it changed nothing.
 
+And the file itself can be written. The `Rules` panel holds it as text with
+its words coloured - configurations, the words that begin a line, the words
+that stand inside one, and the numbers - and `apply` hands the text as it
+stands back to the program. What the program could not use it says by line
+number, and those lines are underlined where they stand: a rules file is read
+as far as it is understood and the rest is passed over, which is what lets a
+file from a newer editor still automap, but somebody writing one wants to be
+told. `revert` fetches the file again and `save` writes the text out so that
+it can be put where the game looks for it. A rules file is not part of the
+map, so none of this is in the history and none of it makes the map unsaved.
+
+A textarea cannot colour its own words, so what is coloured is a `<pre>`
+behind it holding the same ones and the textarea above is transparent but for
+its caret. The two therefore have to agree about every measurement that moves
+text - font, padding, line height, wrapping - and the scrolling of the one is
+copied onto the other.
+
 ## Pictures
 
 A picture is read in by the browser, not by the program: a browser reads PNGs,

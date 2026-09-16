@@ -304,6 +304,16 @@ public:
 	 */
 	size_t LoadRules(const char *pName, const char *pText);
 
+	/**
+	 * Which lines of a rules file were passed over, as a JSON array.
+	 *
+	 * A rules file is read as far as it is understood and what is left over
+	 * is skipped, which is what lets a file from a newer editor still
+	 * automap - but somebody writing one wants to be told, and a line number
+	 * is the only useful way to say it. Counting starts at one.
+	 */
+	std::string RuleProblems(const char *pName) const;
+
 	/** How many configurations a rules file that was loaded holds. */
 	size_t NumRuleConfigs(const char *pName) const;
 
@@ -683,6 +693,7 @@ private:
 	// They belong to the editor rather than to a map: the same rules
 	// automap every map that draws with that picture.
 	std::map<std::string, map_document::CAutomapRules> m_Rules;
+	std::map<std::string, std::vector<int>> m_RuleProblems;
 };
 
 #endif // GAME_MAP_STANDALONE_MAP_EDITOR_H

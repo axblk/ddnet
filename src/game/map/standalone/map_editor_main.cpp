@@ -287,6 +287,26 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorExplain(int Id, int Group, int Layer, 
 	return pExplanation == nullptr ? "" : pExplanation;
 }
 
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingsHelp()
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingsHelpJson());
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingProblems(int Id)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingProblemsJson(Id));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorCheckSetting(const char *pLine)
+{
+	return g_pEditor == nullptr ? "" : Answer(g_pEditor->CheckSetting(pLine));
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorProof(int Id, int Menu)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->ProofJson(Id, Menu != 0));

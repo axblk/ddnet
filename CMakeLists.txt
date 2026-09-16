@@ -2718,6 +2718,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/proof.h
   document/report.cpp
   document/report.h
+  document/settings.cpp
+  document/settings.h
   document/shared_list.h
   document/structure.cpp
   document/structure.h
@@ -4621,6 +4623,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     serverbrowser_test.cpp
     serverinfo_test.cpp
     session_manager_test.cpp
+    settings_test.cpp
     shared_list_test.cpp
     snapshot_test.cpp
     sound_test.cpp

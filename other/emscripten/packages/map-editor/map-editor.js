@@ -74,6 +74,8 @@ class CMapEditor extends Program {
 	savedAt = new Map();
 	/** What `autosave` set going, 0 while nothing is. */
 	autosaveTimer = 0;
+	// The table of what a server would accept, once it has been asked for.
+	settingsKnown = null;
 
 	// A call that takes numbers and answers nothing.
 	setNumbers(name, values) {
@@ -481,6 +483,44 @@ class CMapEditor extends Program {
 	 */
 	explain(group, layer, index, id) {
 		return this.ask("MapEditorExplain", "string", [this.which(id), group, layer, index]) || "";
+	}
+
+	/**
+	 * Everything a map may say to a server, with what it means and what it
+	 * takes.
+	 *
+	 * Asked once and kept: the list does not change while the editor runs.
+	 */
+	settingsHelp() {
+		if (this.settingsKnown === null) {
+			this.settingsKnown = this.json("MapEditorSettingsHelp", []) || [];
+		}
+		return this.settingsKnown;
+	}
+
+	/** What is wrong with each settings line, and where each repeats an earlier one. */
+	settingProblems(id) {
+		return this.json("MapEditorSettingProblems", [this.which(id)]) || [];
+	}
+
+	/**
+	 * What is wrong with one settings line, or "" where nothing is.
+	 *
+	 * Asked about a line that is not in the map yet, which is the whole point:
+	 * saying so after it has been put in is saying so too late.
+	 */
+	checkSetting(line) {
+		return this.call("MapEditorCheckSetting", "string", ["string"], [line || ""]) || "";
+	}
+
+	/** The names of settings that begin with what has been typed. */
+	settingNames(prefix) {
+		const text = this.call("MapEditorSettingNames", "string", ["string"], [prefix || ""]);
+		try {
+			return text === null ? [] : JSON.parse(text);
+		} catch (error) {
+			return [];
+		}
 	}
 
 	/**
@@ -955,6 +995,8 @@ const PANELS_HTML = `
 		</header>
 		<div class="editor-props" data-role="info-props"></div>
 		<ol class="editor-settings" data-role="setting-list"></ol>
+		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
+		<datalist data-role="setting-names"></datalist>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -3251,6 +3293,7 @@ class CEditorPanels {
 			return;
 		}
 		list.textContent = "";
+		const problems = this.editor.settingProblems();
 		settings.forEach((line, index) => {
 			const row = document.createElement("li");
 			row.className = "editor-row";
@@ -3271,12 +3314,62 @@ class CEditorPanels {
 			input.addEventListener("change", () => {
 				this.change(() => this.editor.apply({ op: "info.settings.set", line: index, value: input.value }));
 			}, { signal: this.stopping.signal });
+			// While it is being typed, nothing is changed and nothing is
+			// undone - only said. A line half written is wrong on the way to
+			// being right, and saying so at every keystroke is the point.
+			input.addEventListener("input", () => this.sayAboutSetting(input), { signal: this.stopping.signal });
+			input.addEventListener("focus", () => this.sayAboutSetting(input), { signal: this.stopping.signal });
 			if (index === this.setting) {
 				row.classList.add("editor-selected");
+			}
+			const problem = problems[index] || { problem: "", repeats: -1 };
+			if (problem.problem !== "") {
+				row.classList.add("editor-setting-wrong");
+				input.title = problem.problem;
+			} else if (problem.repeats >= 0) {
+				row.classList.add("editor-setting-repeat");
+				input.title = `the same as line ${problem.repeats + 1}`;
 			}
 			row.append(input);
 			list.append(row);
 		});
+	}
+
+	/**
+	 * What is wrong with the line being typed, and what could be meant.
+	 *
+	 * Said rather than refused: a line on its way to being right is wrong for
+	 * most of the time it is being written, and an editor that would not let
+	 * that happen would be an editor nobody could type in. The names that
+	 * begin with what stands there go into the list the browser offers, which
+	 * is the one piece of completion a page gets for free and the one that
+	 * already works the way everybody expects.
+	 */
+	sayAboutSetting(input) {
+		const said = this.part("setting-said");
+		const text = input.value;
+		const first = text.split(" ")[0];
+		const names = this.part("setting-names");
+		// Only while a name is still being written: once there is a space,
+		// the name is settled and offering more of them is in the way.
+		const offers = text.includes(" ") ? [] : this.editor.settingNames(first);
+		names.textContent = "";
+		for (const name of offers) {
+			const option = document.createElement("option");
+			option.value = name;
+			names.append(option);
+		}
+		// A list is named rather than nested, so the name has to be one of a
+		// kind - two editors on one page would otherwise offer each other's.
+		if (names.id === "") {
+			names.id = `editor-settings-${++panelCount}`;
+		}
+		input.setAttribute("list", names.id);
+
+		const problem = this.editor.checkSetting(text);
+		const known = this.editor.settingsHelp().find(setting => setting.name === first.toLowerCase());
+		said.textContent = problem !== "" ? problem : (known === undefined ? "" : known.help);
+		said.classList.toggle("editor-setting-said-wrong", problem !== "");
 	}
 
 	refreshEnvelopes() {
@@ -4003,6 +4096,10 @@ const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Fr
 
 // What SVG elements are made in. The envelope panel says it in place; here it
 // is a name because the overlay makes one of these per source per frame.
+// How many panels this page has made, so that a list one of them names is
+// not a list another one finds.
+let panelCount = 0;
+
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 // What a sound source has beside where it is. Which of the two shapes it is

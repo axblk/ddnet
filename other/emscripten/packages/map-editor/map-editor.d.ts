@@ -344,6 +344,23 @@ export declare class MapEditor {
 	addEventListener(type: string, listener: (event: CustomEvent) => void, options?: AddEventListenerOptions): void;
 }
 
+/** One thing the editor can be told to do. */
+export interface EditorCommand {
+	id: string;
+	label: string;
+	/** File, Edit, View, Layer, Brush, Quads, Areas, Help. */
+	group: string;
+	/** The keys that reach it, as `Ctrl+Shift+Z` and the like. */
+	keys: string[];
+	/** Whether it wants a button on the tool bar. */
+	bar?: boolean;
+	/** The icon on that button. */
+	icon?: string;
+	enabled?: (panels: EditorPanels) => boolean;
+	pressed?: (panels: EditorPanels) => boolean;
+	run: (panels: EditorPanels) => void;
+}
+
 export declare class EditorPanels {
 	constructor(editor: MapEditor, options?: {
 		container?: Element | null;
@@ -358,6 +375,14 @@ export declare class EditorPanels {
 	selection: { group: number; layer: number };
 	/** Which panel each area that shows one at a time has in front. */
 	readonly tab: { left: string; dock: string; tiles: string };
+	/** Everything the editor can be told to do. */
+	readonly commands: EditorCommand[];
+	/** Which of the four ways the pointer draws while no modifier says otherwise. */
+	tool: "paint" | "grab" | "fill" | "erase";
+	/** How much the line under the pointer says about a tile. */
+	tileInfo: "off" | "dec" | "hex";
+	/** Does one of the commands by name, if it can be done at all. */
+	run(id: string): boolean;
 	/** One of the panels' parts by the name it carries, wherever it stands. */
 	part(role: string): Element | null;
 	/** Every part of that name. */

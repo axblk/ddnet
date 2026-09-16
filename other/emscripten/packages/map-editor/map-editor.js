@@ -23,6 +23,7 @@
  */
 
 import DDNetBase, { addIcons, followSize, Program } from "@ddnet/base";
+import { COMMANDS, commandRole, commandTitle, keyName, keyTable } from "./commands.js";
 
 // The pictures on the editor's own buttons. Named as the viewer names its
 // own, so that a page which shows both says the same thing twice rather than
@@ -35,6 +36,11 @@ addIcons({
 	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
 	proof: '<rect x="1.8" y="5" width="20.4" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.2" y="8" width="11.6" height="8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.4 1.8"/>',
+	paint: '<path d="M4 16.5 15.2 5.3a2.4 2.4 0 0 1 3.4 3.4L7.5 19.9 3 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	grab: '<path d="M6 3.5v9M6 9.5 4.2 13a6 6 0 0 0 5.3 8.5H14a6 6 0 0 0 6-6V9M20 9V7M16.5 9V6.5M13 9V6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+	fill: '<path d="M11 2.5 3.5 10a1.6 1.6 0 0 0 0 2.3l6.2 6.2a1.6 1.6 0 0 0 2.3 0l7.5-7.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M20.5 15c1.4 2 2 3.2 2 4a2 2 0 1 1-4 0c0-.8.6-2 2-4Z"/>',
+	erase: '<path d="M8.5 20.5 3 15a1.6 1.6 0 0 1 0-2.3l9.2-9.2a1.6 1.6 0 0 1 2.3 0l6.5 6.5a1.6 1.6 0 0 1 0 2.3l-8.2 8.2ZM8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+	folder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -50,10 +56,6 @@ export const programUrl = new URL(PROGRAM, import.meta.url).href;
 // written in those units and a page has no business knowing them, so the one
 // place that turns the one into the other is here.
 const MAP_TILE_SIZE = 32;
-
-// How many tiles apart the lines of the grid are when it is switched on. Ten,
-// because that is what somebody counting tiles counts in.
-const GRID_SPACING = 10;
 
 /**
  * A map editor: the base, told where its script lies, and the map said in the
@@ -933,15 +935,6 @@ const TABBED_AREAS = { left: "structure", dock: "dock" };
 
 const PANELS_HTML = `
 <div class="editor-bar" data-role="bar">
-	<button class="editor-button" data-role="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo"></button>
-	<button class="editor-button" data-role="redo" data-icon="redo" title="Redo (Ctrl+Y)" aria-label="Redo"></button>
-	<button class="editor-button" data-role="fit" data-icon="fit" title="The whole map (Home)" aria-label="The whole map"></button>
-	<button class="editor-button" data-role="detail" data-icon="detail" title="What is only there to look at" aria-pressed="true"></button>
-	<button class="editor-button" data-role="entities" data-icon="entities" title="What the tiles do" aria-pressed="false"></button>
-	<button class="editor-button" data-role="animate" data-icon="play" title="Let the envelopes run" aria-pressed="false"></button>
-	<button class="editor-button" data-role="grid" data-icon="grid" title="A grid on the tiles (G)" aria-pressed="false"></button>
-	<button class="editor-button" data-role="proof" data-icon="proof" title="What a player would see (P); again for a menu background" aria-pressed="false"></button>
-	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
 	<span class="editor-hover" data-role="hover"></span>
 </div>
@@ -1373,6 +1366,15 @@ class CEditorPanels {
 		this.box = null;
 		// Which panel each area shows, for the two that show one at a time.
 		this.tab = { left: "layers", dock: "envelopes", tiles: "tiles" };
+		// Which of the four ways the pointer draws, while no modifier says
+		// otherwise.
+		this.tool = "paint";
+		// How much the line under the pointer says about a tile: "off", "dec"
+		// or "hex".
+		this.tileInfo = "hex";
+		// The commands, and the keys that reach them.
+		this.commands = COMMANDS;
+		this.keys_ = keyTable(COMMANDS);
 		// Whether the strip at the bottom is open. It starts closed: what is
 		// in it - envelopes, the history, the server settings, the rules - is
 		// looked at now and then, and the map should not pay two hundred
@@ -1384,6 +1386,7 @@ class CEditorPanels {
 		this.root = document.createElement("div");
 		this.root.className = "editor-panels";
 		this.root.innerHTML = PANELS_HTML;
+		this.buildBar();
 		DDNetBase.paintIcons(this.root);
 		if (settings.container !== null) {
 			settings.container.append(this.root);
@@ -1434,6 +1437,43 @@ class CEditorPanels {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The tool bar, out of the list of commands. Nothing here knows what any
+	 * of the buttons do; a button is a command that said it wanted one.
+	 */
+	buildBar() {
+		const bar = this.root.querySelector('[data-role="bar"]');
+		const status = bar.firstElementChild;
+		for (const command of this.commands) {
+			if (command.bar !== true) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-button";
+			button.dataset.role = commandRole(command);
+			button.dataset.command = command.id;
+			button.dataset.icon = command.icon;
+			button.title = commandTitle(command);
+			button.setAttribute("aria-label", command.label);
+			if (command.pressed !== undefined) {
+				button.setAttribute("aria-pressed", "false");
+			}
+			button.addEventListener("click", () => this.run(command.id), { signal: this.stopping.signal });
+			bar.insertBefore(button, status);
+		}
+	}
+
+	/** Does one of the commands, by name, if it can be done at all. */
+	run(id) {
+		const command = this.commands.find(which => which.id === id);
+		if (command === undefined || (command.enabled !== undefined && !command.enabled(this))) {
+			return false;
+		}
+		command.run(this);
+		return true;
 	}
 
 	/** Every part of that name, wherever the panels stand. */
@@ -1637,42 +1677,14 @@ class CEditorPanels {
 	wire() {
 		const signal = this.stopping.signal;
 		const on = (role, handler) => this.part(role).addEventListener("click", handler, { signal: signal });
-		on("undo", () => this.stepHistory(() => this.editor.undo()));
-		on("redo", () => this.stepHistory(() => this.editor.redo()));
-		on("fit", () => this.editor.fit());
-		on("save", () => this.editor.save());
-		on("detail", () => {
-			this.editor.highDetail(!this.editor.highDetail());
-			this.refreshBar();
-		});
-		on("entities", () => {
-			this.editor.entities(this.editor.entities() > 0 ? 0 : 100);
-			this.refreshBar();
-		});
-		on("animate", () => {
-			this.editor.animate(!this.editor.animate());
-			this.refreshBar();
-		});
-		on("grid", () => {
-			this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
-			this.refreshBar();
-		});
-		// Off, then a game, then a menu background, then off again: three
-		// states on one button, because the two on-states are the same
-		// question asked at two zooms.
-		on("proof", () => {
-			this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
-			this.refreshBar();
-			this.refreshOverlay();
-		});
 		this.wireArt();
 		this.wireType();
-		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
-		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
-		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
-		on("flip-x", () => { this.editor.flipBrushX(); this.refreshTiles(); });
-		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
-		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
+		on("add-group", () => this.run("layer.addGroup"));
+		on("add-layer", () => this.run("layer.addTiles"));
+		on("add-quads", () => this.run("layer.addQuads"));
+		on("flip-x", () => this.run("brush.flipX"));
+		on("flip-y", () => this.run("brush.flipY"));
+		on("rotate", () => this.run("brush.rotate"));
 		this.wireTileset();
 		this.wireAutomap();
 		this.wireConstruct();
@@ -1684,9 +1696,9 @@ class CEditorPanels {
 		this.wireQuads();
 		this.wireImages();
 		this.wireInfo();
-		on("delete", () => this.deleteSelected());
-		on("up", () => this.moveSelected(-1));
-		on("down", () => this.moveSelected(1));
+		on("delete", () => this.run("layer.delete"));
+		on("up", () => this.run("layer.up"));
+		on("down", () => this.run("layer.down"));
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
@@ -1718,60 +1730,105 @@ class CEditorPanels {
 	onKey(event) {
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+			// Escape is the way out of a field, and the only key a field
+			// hands on.
+			if (event.key !== "Escape") {
+				return;
+			}
+			target.blur();
+		}
+		const command = this.keys_.get(keyName(event));
+		if (command === undefined) {
 			return;
 		}
-		// The brush, which is what an editor's keyboard is mostly for: turn it
-		// over, turn it round, and ten slots to put one away in.
-		if (!event.ctrlKey && !event.metaKey && !event.altKey) {
-			const key = event.key.toLowerCase();
-			if (key === "x" || key === "y" || key === "r") {
-				if (key === "x") {
-					this.editor.flipBrushX();
-				} else if (key === "y") {
-					this.editor.flipBrushY();
-				} else {
-					this.editor.rotateBrush();
-				}
-				this.refreshTiles();
-				event.preventDefault();
-				return;
-			}
-			if (key === "g") {
-				this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
-				this.refreshBar();
-				event.preventDefault();
-				return;
-			}
-			if (key === "p") {
-				this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
-				this.refreshBar();
-				this.refreshOverlay();
-				event.preventDefault();
-				return;
-			}
-			if (key >= "0" && key <= "9") {
-				const slot = Number.parseInt(key, 10);
-				if (event.shiftKey) {
-					this.editor.storeBrush(slot);
-				} else {
-					this.editor.useBrush(slot);
-				}
-				this.refreshTiles();
-				event.preventDefault();
-				return;
-			}
+		// A command that only belongs to the map leaves the key alone
+		// everywhere else - Tab walks through the buttons there.
+		if (command.where === "map" && event.target !== this.editor.canvas) {
+			return;
 		}
-		if (event.ctrlKey || event.metaKey) {
-			if (event.key === "z" && !event.shiftKey) {
-				this.stepHistory(() => this.editor.undo());
-			} else if (event.key === "y" || (event.key === "z" && event.shiftKey)) {
-				this.stepHistory(() => this.editor.redo());
-			} else {
-				return;
-			}
-			event.preventDefault();
+		// A command that cannot be done now still takes the key: a disabled
+		// Ctrl+S must not reach the browser's own save dialogue.
+		event.preventDefault();
+		this.run(command.id);
+	}
+
+	/**
+	 * Opens the file dialogue for a map. The element around the panels keeps
+	 * the input, because a page may have put the panels somewhere without one.
+	 */
+	openMap() {
+		if (this.box !== null && this.box !== undefined && typeof this.box.openFile === "function") {
+			this.box.openFile();
+			return;
+		}
+		this.say("This page opens maps its own way");
+	}
+
+	/** The layer before or after the one that is selected, over all groups. */
+	stepSelection(step) {
+		if (this.map === null) {
+			return;
+		}
+		const all = [];
+		this.map.groups.forEach((group, index) => {
+			all.push({ group: index, layer: -1 });
+			group.layers.forEach((layer, which) => all.push({ group: index, layer: which }));
+		});
+		const now = all.findIndex(where => where.group === this.selection.group && where.layer === this.selection.layer);
+		const next = all[Math.min(all.length - 1, Math.max(0, (now < 0 ? 0 : now) + step))];
+		if (next !== undefined) {
+			this.selection = next;
+			this.refresh();
 		}
 	}
+
+	/**
+	 * Takes away whatever is picked - a quad, a sound source, a line of the
+	 * server settings. The layer itself has a key of its own, because losing a
+	 * layer to a stray Delete is a bad afternoon.
+	 */
+	deletePicked() {
+		const layer = this.selectedLayer();
+		const kind = layer === null ? null : layer.type;
+		if (kind === "quads" && this.quad >= 0) {
+			this.part("delete-quad").click();
+		} else if (kind === "sounds" && this.source >= 0) {
+			this.part("delete-source").click();
+		} else if (this.setting >= 0 && this.tab.dock === "settings") {
+			this.part("delete-setting").click();
+		} else {
+			this.say("Nothing picked - Ctrl+Delete takes the layer");
+		}
+	}
+
+	/**
+	 * One step back out of whatever is open: a sub-mode first, then the
+	 * focus, which always ends up on the map.
+	 */
+	escape() {
+		if (this.carving !== null) {
+			this.knife();
+			return;
+		}
+		const canvas = this.editor.canvas;
+		if (canvas !== null && canvas !== undefined) {
+			canvas.focus();
+		}
+	}
+
+	/** Whether one of the areas beside the map is shown. */
+	areaShown(area) {
+		return this.areas !== null && !this.areas[area].hidden;
+	}
+
+	showArea(area, on) {
+		if (this.areas === null) {
+			return;
+		}
+		this.areas[area].hidden = !on;
+		this.refreshBar();
+	}
+
 
 	say(text) {
 		this.part("status").textContent = text || "";
@@ -1997,17 +2054,25 @@ class CEditorPanels {
 	}
 
 	refreshBar() {
-		const history = this.editor.history();
-		const set = (role, on) => this.part(role).setAttribute("aria-pressed", on ? "true" : "false");
-		this.part("undo").disabled = !(history && history.canUndo);
-		this.part("redo").disabled = !(history && history.canRedo);
-		set("detail", this.editor.highDetail());
-		set("entities", this.editor.entities() > 0);
-		set("animate", this.editor.animate());
-		set("grid", this.editor.grid() > 0);
+		for (const command of this.commands) {
+			if (command.bar !== true) {
+				continue;
+			}
+			const button = this.part(commandRole(command));
+			if (button === null) {
+				continue;
+			}
+			button.disabled = command.enabled !== undefined && !command.enabled(this);
+			if (command.pressed !== undefined) {
+				button.setAttribute("aria-pressed", command.pressed(this) ? "true" : "false");
+			}
+		}
+		// Proof mode has three states on one button, and which of the two
+		// on-states it is in is not a thing `aria-pressed` can say.
 		const proof = this.part("proof");
-		proof.setAttribute("aria-pressed", this.proof === "off" ? "false" : "true");
-		proof.dataset.proof = this.proof;
+		if (proof !== null) {
+			proof.dataset.proof = this.proof;
+		}
 	}
 
 	refreshTree() {
@@ -3129,9 +3194,15 @@ class CEditorPanels {
 			readout.textContent = `${tile.x}, ${tile.y}`;
 			return;
 		}
+		if (this.tileInfo === "off") {
+			readout.textContent = `${tile.x}, ${tile.y}`;
+			readout.title = "";
+			return;
+		}
 		const hex = index.toString(16).toUpperCase().padStart(2, "0");
+		const number = this.tileInfo === "hex" ? `${index} (0x${hex})` : String(index);
 		const said = this.editor.explain(where.group, where.layer, index);
-		readout.textContent = `${tile.x}, ${tile.y} · ${index} (0x${hex})${said === "" ? "" : ` · ${said}`}`;
+		readout.textContent = `${tile.x}, ${tile.y} · ${number}${said === "" ? "" : ` · ${said}`}`;
 		readout.title = said;
 	}
 
@@ -4298,7 +4369,7 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -4503,12 +4574,15 @@ function steerWithPointer(editor, options) {
 			return;
 		}
 		from = tile;
-		if (event.altKey) {
-			doing = "fill";
-		} else if (event.shiftKey) {
-			doing = "grab";
-		} else if (event.ctrlKey || event.metaKey) {
-			doing = "erase";
+		// A held modifier says what this one stroke is; without one it is
+		// whatever the brush has been set to, which is painting until somebody
+		// says otherwise.
+		const chosen = event.altKey ? "fill"
+			: event.shiftKey ? "grab"
+				: (event.ctrlKey || event.metaKey) ? "erase"
+					: (settings.mode === null ? "paint" : settings.mode());
+		if (chosen !== "paint") {
+			doing = chosen;
 		} else {
 			doing = "paint";
 			touched = null;
@@ -4927,6 +5001,14 @@ class CEditorElement extends ELEMENT_BASE {
 		// The map takes the keyboard, so it has to be able to hold it.
 		this.editorCanvas.tabIndex = 0;
 		this.mapBox.append(this.editorCanvas);
+		// The way a map is chosen from the disc. The element keeps it, because
+		// opening one is a command of the editor's and not of whatever page
+		// happens to hold it.
+		this.fileInput = document.createElement("input");
+		this.fileInput.type = "file";
+		this.fileInput.accept = ".map";
+		this.fileInput.hidden = true;
+		this.fileInput.dataset.role = "open-file";
 		// One box per area the panels are spread into. Each carries
 		// `editor-panels` as well, because that is the class the stylesheet
 		// dresses everything inside a panel by.
@@ -4972,6 +5054,11 @@ class CEditorElement extends ELEMENT_BASE {
 		return this.querySelector(which) || this.shadowRoot.querySelector(which);
 	}
 
+	/** Asks for a map file, and opens whatever comes back. */
+	openFile() {
+		this.fileInput.click();
+	}
+
 	connectedCallback() {
 		// Moving an element within a page takes it out and puts it back, and a
 		// program is too dear to throw away for that.
@@ -4981,7 +5068,7 @@ class CEditorElement extends ELEMENT_BASE {
 		boxes.add(this);
 		this.stopping = new AbortController();
 		if (!this.contains(this.mapBox)) {
-			this.append(this.mapBox, ...Object.values(this.areaBoxes));
+			this.append(this.mapBox, this.fileInput, ...Object.values(this.areaBoxes));
 		}
 		this.watchAreas();
 		this.ready = this.start();
@@ -5093,6 +5180,7 @@ class CEditorElement extends ELEMENT_BASE {
 		steerWithPointer(instance, {
 			canvas: this.editorCanvas,
 			target: () => panels.selection,
+			mode: () => panels.tool,
 			onChange: () => panels.refresh(),
 			// Panning and zooming change nothing about the map, so the panels
 			// are left alone - but what is drawn over the canvas is now over
@@ -5122,6 +5210,15 @@ class CEditorElement extends ELEMENT_BASE {
 		// A map let go of over the box is a map to open. The box is the whole
 		// element, so a file dropped on the panels counts as much as one
 		// dropped on the map.
+		this.fileInput.addEventListener("change", () => {
+			const file = this.fileInput.files[0];
+			// The same file twice is still a choice; without this the second
+			// time would go unnoticed.
+			this.fileInput.value = "";
+			if (file !== undefined && file !== null) {
+				instance.loadFile(file).catch(error => console.error(error));
+			}
+		}, { signal: signal });
 		this.addEventListener("dragover", event => event.preventDefault(), { signal: signal });
 		this.addEventListener("drop", event => {
 			const file = event.dataTransfer === null ? null : event.dataTransfer.files[0];

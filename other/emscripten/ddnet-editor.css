@@ -165,6 +165,7 @@ ddnet-editor[data-theme="light"],
 /* What says it is not there is not there. A class that sets `display` beats
    the browser's own rule for the `hidden` attribute, and half the rows in
    here are flex rows - so a row that was switched off was still drawn. */
+.editor-panels[hidden],
 .editor-panels [hidden] {
 	display: none !important;
 }

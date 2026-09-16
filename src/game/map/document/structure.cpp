@@ -735,6 +735,49 @@ namespace map_document
 		}
 	}
 
+	std::vector<size_t> UnusedEnvelopes(const CMapState &Map)
+	{
+		std::vector<bool> vUsed(Map.NumEnvelopes(), false);
+		const auto Mark = [&vUsed](int Bound) {
+			if(Bound >= 0 && (size_t)Bound < vUsed.size())
+				vUsed[(size_t)Bound] = true;
+		};
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Layer = 0; Layer < Map.NumLayers(Group); ++Layer)
+			{
+				const CLayer &Which = *Map.Layer(Group, Layer);
+				if(const CTileLayer *pTiles = std::get_if<CTileLayer>(&Which); pTiles != nullptr)
+				{
+					Mark(pTiles->m_ColorEnvelope);
+				}
+				else if(const CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Which); pQuads != nullptr)
+				{
+					for(size_t Index = 0; Index < pQuads->m_Quads.Size(); ++Index)
+					{
+						Mark(pQuads->m_Quads[Index].m_ColorEnv);
+						Mark(pQuads->m_Quads[Index].m_PosEnv);
+					}
+				}
+				else if(const CSoundLayer *pSounds = std::get_if<CSoundLayer>(&Which); pSounds != nullptr)
+				{
+					for(size_t Index = 0; Index < pSounds->m_Sources.Size(); ++Index)
+					{
+						Mark(pSounds->m_Sources[Index].m_SoundEnv);
+						Mark(pSounds->m_Sources[Index].m_PosEnv);
+					}
+				}
+			}
+		}
+		std::vector<size_t> vUnused;
+		for(size_t Envelope = Map.NumEnvelopes(); Envelope > 0; --Envelope)
+		{
+			if(!vUsed[Envelope - 1])
+				vUnused.push_back(Envelope - 1);
+		}
+		return vUnused;
+	}
+
 	namespace
 	{
 		/** Where a point of that time belongs, after any point at the same time. */

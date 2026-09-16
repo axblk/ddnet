@@ -306,6 +306,18 @@ export const COMMANDS = [
 		run: p => p.editor.save(),
 	},
 	{
+		// The maps in the browser's storage: what autosave wrote, and what
+		// "Save" always writes on its way out to the downloads.
+		id: "file.openSaved", label: "Open from this browser…", group: "File", menu: "File",
+		keys: ["Ctrl+Alt+O"],
+		run: p => p.askOpenSaved(),
+	},
+	{
+		id: "file.saveCopy", label: "Save a copy…", group: "File", menu: "File",
+		enabled: p => p.map !== null,
+		run: p => p.askSaveCopy(),
+	},
+	{
 		id: "file.saveAs", label: "Save as…", group: "File", menu: "File",
 		keys: ["Ctrl+Shift+S"],
 		enabled: p => p.map !== null,
@@ -482,6 +494,19 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "tiles.border", label: "A border round the layer", group: "Brush", menu: "Tools",
+		enabled: p => {
+			const layer = p.selectedLayer();
+			return layer !== null && layer.type === "tiles" && !p.editor.brushEmpty();
+		},
+		run: p => p.makeBorder(),
+	},
+	{
+		id: "envelope.deleteUnused", label: "Take out unused envelopes", group: "Envelopes", menu: "Tools",
+		enabled: p => p.map !== null && p.map.envelopes !== undefined && p.map.envelopes.length > 0,
+		run: p => p.deleteUnusedEnvelopes(),
+	},
+	{
 		id: "tiles.nextFree", label: "The next unused number", group: "Brush", menu: "Tools",
 		keys: ["Ctrl+F"],
 		enabled: p => p.part("next-free") !== null && !p.part("next-free").disabled,
@@ -567,6 +592,13 @@ export const COMMANDS = [
 		keys: ["Ctrl+Alt+W"],
 		enabled: p => p.map !== null,
 		run: p => {
+			// Through the panels rather than straight into the program: with
+			// more than one map open this is the tab's cross, and a map with
+			// changes in it asks before it goes.
+			if (p.editor.maps.length > 1) {
+				p.closeMap(p.editor.map);
+				return;
+			}
 			p.editor.close();
 			p.refresh();
 		},
@@ -655,6 +687,14 @@ export const COMMANDS = [
 			p.say(next === "auto" ? "Big targets: as the browser says"
 				: next === "big" ? "Big targets: on" : "Big targets: off");
 		},
+	},
+	{
+		// Not configurable - the keys are the table's, and the table is one
+		// place. What this is, is the sheet one looks at to find out what the
+		// keys are, which is what one actually wants from a shortcut dialogue.
+		id: "help.keys", label: "What the keys do", group: "Help", safe: true, menu: "Settings",
+		keys: ["Ctrl+/"],
+		run: p => p.showKeys(),
 	},
 	{
 		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", safe: true, menu: "Help",

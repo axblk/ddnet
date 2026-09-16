@@ -1054,6 +1054,22 @@ namespace map_document
 			Document.Commit();
 			return Succeeded();
 		}
+		if(str_comp(pOp, "envelope.deleteUnused") == 0)
+		{
+			const std::vector<size_t> vUnused = UnusedEnvelopes(Map);
+			if(vUnused.empty())
+				return Failed("every envelope is used by something");
+			// One entry for all of them: taking six envelopes out is one
+			// thing somebody did, and six steps to undo would be six times
+			// the surprise.
+			Document.Begin(Arguments.Str("label", "Delete unused envelopes"), pMerge);
+			// Highest first, so that the places of the ones still to go do
+			// not move under the loop.
+			for(const size_t Envelope : vUnused)
+				DeleteEnvelope(Document, Envelope);
+			Document.Commit();
+			return Succeeded("envelopes", (int)vUnused.size());
+		}
 		if(str_comp(pOp, "envelope.setProp") == 0)
 		{
 			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());

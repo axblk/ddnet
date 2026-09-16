@@ -278,6 +278,28 @@ All of that floats in a layer of its own over the six areas, so that a menu
 opened from the tree is not cut off by the edge of the column the tree stands
 in.
 
+### Files, and the tools that work on a whole map
+
+**Open from this browser** lists what lies in the browser's own storage -
+what autosave wrote and what every Save writes on its way to the downloads -
+with the size of each, because a name alone says nothing about which of two
+maps it is. The list comes from the program: the files are in its file
+system, and a page cannot look into that. **Save a copy** writes the map
+under another name and leaves the map one is working on as it was: its
+name, and the dot that says it has unsaved changes. Closing a map that has
+such changes asks first, in the editor's own dialogue rather than
+`confirm()`, which would stop the page - and the map being drawn - dead.
+
+**A border round the layer** stamps what is in hand along the four edges of
+the selected tile layer, stepping by the brush's size, as one entry in the
+history. **Take out unused envelopes** asks the program which envelopes
+nothing is bound to - a layer, a quad or a sound source - and takes all of
+them out in one step; the bindings above them come down with them.
+
+**What the keys do** (Ctrl+/) is every shortcut on one sheet, grouped the way
+the palette groups them, and every key a command answers to rather than only
+the first.
+
 ## What it is made of
 
 * **The map is asked, not told.** `editor.structure()` answers what the map is

@@ -310,6 +310,58 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSettingNames(const char *pPrefix)
 	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SettingNamesJson(pPrefix));
 }
 
+/** The maps that are in the browser's own storage, with their sizes. */
+EMSCRIPTEN_KEEPALIVE const char *MapEditorSaved()
+{
+	return g_pEditor == nullptr ? "[]" : Answer(g_pEditor->SavedJson(SAVE_DIRECTORY, IStorage::TYPE_SAVE));
+}
+
+/** Opens one of them by the name the list gave. */
+EMSCRIPTEN_KEEPALIVE int MapEditorOpenSaved(const char *pName)
+{
+	if(g_pEditor == nullptr || pName == nullptr || pName[0] == '\0')
+		return -1;
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s/%s.map", SAVE_DIRECTORY, pName);
+	const int Id = g_pEditor->Open(aFilename, IStorage::TYPE_SAVE);
+	if(Id < 0)
+	{
+		Say("error", "{\"what\":\"open\"}");
+		return -1;
+	}
+	Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
+	return Id;
+}
+
+/**
+ * Writes the map out under another name without becoming that map.
+ *
+ * What "save a copy" means: the copy is made and the map one is working on
+ * is the one one was working on, with the name it had and the place in the
+ * history it had. Saving *as* is a rename and then a save, and that is a
+ * different thing.
+ */
+EMSCRIPTEN_KEEPALIVE int MapEditorSaveCopy(int Id, const char *pName, int Handout)
+{
+	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr || pName == nullptr || pName[0] == '\0')
+		return 0;
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s/%s.map", SAVE_DIRECTORY, pName);
+	g_pEditor->Storage()->CreateFolder(SAVE_DIRECTORY, IStorage::TYPE_SAVE);
+	if(!g_pEditor->Save(Id, aFilename, IStorage::TYPE_SAVE))
+	{
+		Say("error", "{\"what\":\"save\",\"map\":" + std::to_string(Id) + "}");
+		return 0;
+	}
+	g_pEditor->Storage()->SyncPersistentStorage();
+	if(Handout != 0)
+		g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+	// Not `saved`: the map is as changed as it was, and a dot that went away
+	// because a copy was written would be a lie.
+	Say("copied", "{\"map\":" + std::to_string(Id) + "}");
+	return 1;
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
 {
 	return g_pEditor == nullptr ? -1 : g_pEditor->AddTileArt(Id, pName, Width, Height, pPixels);

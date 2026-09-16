@@ -503,6 +503,23 @@ TEST(Command, AnEnvelopeThatIsTakenAwayIsTakenOffWhatUsedIt)
 	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, -1);
 }
 
+TEST(Command, TheEnvelopesNothingUsesGoInOneStep)
+{
+	CCommands Commands(WithAnEnvelope());
+	// The layer is bound to the first; the two after it are bound to nothing,
+	// and the one in the middle has the layer's binding above it to keep.
+	Commands.Ok(R"({"op":"envelope.add","name":"second"})");
+	Commands.Ok(R"({"op":"envelope.add","name":"third"})");
+	Commands.Ok(R"({"op":"layer.setProp","group":0,"layer":0,"prop":"colorEnvelope","value":2})");
+	const size_t Before = Commands.m_Document.History().NumEntries();
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.deleteUnused"})"), "envelopes"), 2);
+	ASSERT_EQ(Commands.m_Document.Map().NumEnvelopes(), 1u);
+	EXPECT_EQ(Commands.m_Document.Map().Envelope(0)->m_Name, "third");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, 0) << "the binding came down with it";
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), Before + 1) << "one entry, not two";
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.deleteUnused"})"), "every envelope is used by something");
+}
+
 TEST(Command, AnEnvelopeCommandThatMakesNoSenseIsRefused)
 {
 	CCommands Commands(WithAnEnvelope());

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace map_document
 {
@@ -373,6 +374,17 @@ namespace map_document
 	 * @param Envelope Which envelope to take out.
 	 */
 	void DeleteEnvelope(CDocument &Doc, size_t Envelope);
+
+	/**
+	 * Which envelopes nothing is bound to, highest place first.
+	 *
+	 * Whether an envelope is used is the map's knowledge and not the page's:
+	 * a binding may sit on a layer, on any of a quad layer's quads or on any
+	 * of a sound layer's sources, and a page that worked it out for itself
+	 * would be a second copy of that rule. Highest first, because deleting
+	 * one moves the places of those above it.
+	 */
+	std::vector<size_t> UnusedEnvelopes(const CMapState &Map);
 
 	/**
 	 * Puts a point into an envelope, in the place its time gives it.

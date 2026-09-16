@@ -1426,6 +1426,84 @@ circle.editor-source-dot.editor-source-picked {
 	width: 12ch;
 }
 
+/* A choice is wider than a number: it holds a name, and a name cut off in
+   the middle is not a name one can choose by. */
+.editor-dialog-field select {
+	width: 22ch;
+	min-height: var(--control);
+	padding: 0 var(--space-1);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: var(--bg-2);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-1);
+}
+
+/* What a question says before it is asked. */
+.editor-dialog-note {
+	margin: 0;
+	color: var(--text-2);
+	font: var(--type-sm);
+}
+
+/* A sheet is read across, not down a column: three hundred and sixty pixels
+   of dialogue would be ninety lines of scrolling. */
+.editor-dialog-wide .editor-dialog-body {
+	width: min(760px, calc(100% - 2 * var(--space-3)));
+	max-height: calc(100% - 2 * var(--space-3));
+}
+
+.editor-keys {
+	overflow-y: auto;
+	columns: 2;
+	column-gap: var(--space-4);
+}
+
+.editor-keys-group {
+	margin: 0 0 var(--space-1);
+	color: var(--text-2);
+	font: var(--type-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	break-after: avoid;
+}
+
+.editor-keys-group + .editor-keys-list {
+	margin: 0 0 var(--space-3);
+}
+
+.editor-keys-list {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 0 var(--space-2);
+	margin: 0;
+}
+
+.editor-keys-list dt {
+	overflow: hidden;
+	color: var(--text-1);
+	font: var(--type-sm);
+	line-height: var(--row);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.editor-keys-list dd {
+	margin: 0;
+	color: var(--text-2);
+	font: var(--type-xs);
+	line-height: var(--row);
+	text-align: right;
+	white-space: nowrap;
+}
+
+/* Two columns need the width for two columns, and how much width there is is
+   the box's answer, not the window's. */
+ddnet-editor[data-size="phone"] .editor-keys,
+ddnet-editor[data-size="small"] .editor-keys {
+	columns: 1;
+}
+
 .editor-dialog-buttons {
 	display: flex;
 	justify-content: flex-end;

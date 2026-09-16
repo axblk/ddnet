@@ -110,6 +110,9 @@ export type Command =
 	| { op: "quad.setPoint"; group: number; layer: number; quad: number; point: number; x: number; y: number; label?: string }
 	| { op: "quad.setColor"; group: number; layer: number; quad: number; corner: number; value: number[]; label?: string }
 	| { op: "quad.setProp"; group: number; layer: number; quad: number; prop: string; value: number; label?: string }
+	| { op: "image.add"; name: string; width?: number; height?: number; label?: string }
+	| { op: "image.delete"; image: number; label?: string }
+	| { op: "image.setProp"; image: number; prop: "name" | "external"; value: string | boolean; label?: string }
 	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
 	| { op: "envelope.delete"; envelope: number; label?: string }
 	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
@@ -150,6 +153,10 @@ export declare class MapEditor {
 	showQuad(group?: number, layer?: number, quad?: number, id?: MapId): void;
 	/** Where a canvas point is in one group's coordinates, in world units. */
 	groupWorldAt(group: number, x: number, y: number, id?: MapId): { x: number; y: number } | null;
+	/** Puts a picture with its pixels into the map; answers which picture it became, or -1. */
+	addImage(name: string, pixels: ImageData, id?: MapId): number;
+	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */
+	setImagePixels(index: number, pixels: ImageData, id?: MapId): boolean;
 	/** The lowest number a physics layer is not using yet, or -1 when all are taken. */
 	nextFreeNumber(group: number, layer: number, checkpoint?: boolean, id?: MapId): number;
 	/** Moves the view to the `which`-th place a number is used; answers how many there are. */

@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <tuple>
+
 using namespace map_document;
 
 // The shape of a map: which groups there are, which layers are in them and in
@@ -245,7 +247,88 @@ namespace
 		Map.ReplaceLayer(1, 0, std::move(Above));
 		return Map;
 	}
+	CMapState WithImages()
+	{
+		CMapState Map = TwoGroups();
+		for(const char *pName : {"first", "second", "third"})
+		{
+			CImage Image;
+			Image.m_Name = pName;
+			Image.m_Width = 4;
+			Image.m_Height = 4;
+			Map.AddImage(std::move(Image));
+		}
+		// Each of the three layers drawn with another of the three pictures.
+		for(const auto &[Group, Layer, Index] : {std::tuple{0, 0, 0}, std::tuple{0, 1, 1}, std::tuple{1, 0, 2}})
+		{
+			CTileLayer Bound = *Map.TileLayer(Group, Layer);
+			Bound.m_Image = Index;
+			Map.ReplaceLayer(Group, Layer, std::move(Bound));
+		}
+		return Map;
+	}
 } // namespace
+
+TEST(Structure, APictureIsAddedAtTheEnd)
+{
+	CDocument Document(WithImages());
+	CImage Image;
+	Image.m_Name = "fourth";
+	Document.Begin("Add");
+	EXPECT_EQ(AddImage(Document, std::move(Image)), 3u);
+	Document.Commit();
+	ASSERT_EQ(Document.Map().NumImages(), 4u);
+	EXPECT_EQ(Document.Map().Image(3)->m_Name, "fourth");
+}
+
+TEST(Structure, TakingAPictureOutTakesItOffEveryLayerDrawnWithIt)
+{
+	CDocument Document(WithImages());
+	const CLayer *pUntouched = Document.Map().Layer(0, 0);
+	Document.Begin("Delete");
+	DeleteImage(Document, 1);
+	Document.Commit();
+
+	const CMapState &Map = Document.Map();
+	ASSERT_EQ(Map.NumImages(), 2u);
+	EXPECT_EQ(Map.Image(0)->m_Name, "first");
+	EXPECT_EQ(Map.Image(1)->m_Name, "third");
+	// Below it: unchanged, and the same node, because nothing about that
+	// layer is different.
+	EXPECT_EQ(Map.TileLayer(0, 0)->m_Image, 0);
+	EXPECT_EQ(Map.Layer(0, 0), pUntouched) << "a layer drawn with another picture is the node it was";
+	// Drawn with the one that is gone: drawn with none.
+	EXPECT_EQ(Map.TileLayer(0, 1)->m_Image, -1);
+	// Above it: one place down, and still the same picture.
+	EXPECT_EQ(Map.TileLayer(1, 0)->m_Image, 1);
+	EXPECT_EQ(Map.Image(Map.TileLayer(1, 0)->m_Image)->m_Name, "third");
+}
+
+TEST(Structure, ReplacingAPictureKeepsTheLayersDrawnWithIt)
+{
+	CDocument Document(WithImages());
+	CImage Other;
+	Other.m_Name = "other";
+	Other.m_External = false;
+	Other.m_Width = 2;
+	Other.m_Height = 2;
+	Other.m_Data.Mutable().assign(2 * 2 * 4, 0x7f);
+	Document.Begin("Replace");
+	SetImage(Document, 1, std::move(Other));
+	Document.Commit();
+
+	const CMapState &Map = Document.Map();
+	ASSERT_EQ(Map.NumImages(), 3u);
+	EXPECT_EQ(Map.Image(1)->m_Name, "other");
+	EXPECT_EQ(Map.Image(1)->m_Width, 2);
+	EXPECT_FALSE(Map.Image(1)->m_External);
+	// The layer still points at place one; what is in that place changed.
+	EXPECT_EQ(Map.TileLayer(0, 1)->m_Image, 1);
+
+	// And a version before it still has the picture that was there.
+	Document.Undo();
+	EXPECT_EQ(Document.Map().Image(1)->m_Name, "second");
+}
 
 TEST(Structure, APointGoesWhereItsTimeBelongs)
 {

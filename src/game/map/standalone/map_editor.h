@@ -271,6 +271,38 @@ public:
 	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
 
 	/**
+	 * Puts a picture into the map with its pixels, and says where it went.
+	 *
+	 * Not a command like the rest, because the pixels are bytes: a picture
+	 * of a thousand by a thousand is four megabytes, and four megabytes of
+	 * JSON is a text nobody should have to write or read. The page decodes
+	 * the PNG - browsers do that - and hands over what came out.
+	 *
+	 * @param Id The number of the map.
+	 * @param pName What to call it.
+	 * @param Width How wide the pixels are.
+	 * @param Height How tall.
+	 * @param pPixels RGBA, `Width * Height * 4` bytes.
+	 *
+	 * @return Which picture of the map it became, or -1 where it was refused.
+	 */
+	int AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
+
+	/**
+	 * Puts other pixels into a picture the map already has, keeping every
+	 * layer that is drawn with it.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which picture of the map.
+	 * @param Width How wide the pixels are.
+	 * @param Height How tall.
+	 * @param pPixels RGBA, `Width * Height * 4` bytes.
+	 *
+	 * @return Whether it was done.
+	 */
+	bool SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels);
+
+	/**
 	 * The lowest number no tile of a physics layer is using yet - see
 	 * `map_document::NextFreeNumber`.
 	 *

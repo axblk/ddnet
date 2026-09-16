@@ -6,6 +6,7 @@
 #include <engine/storage.h>
 
 #include <game/map/document/map_file.h>
+#include <game/map/document/structure.h>
 #include <game/mapitems.h>
 #include <game/mapitems_ex.h>
 
@@ -436,6 +437,52 @@ TEST(MapFile, AMapWrittenTheWayThisWritesComesOutAsItWentIn)
 	const std::vector<uint8_t> vOurs = WriteAndRead(Map.m_pStorage.get(), aPath, Map.m_State);
 	ASSERT_FALSE(vOurs.empty());
 	EXPECT_EQ(vOurs, FileBytes(Map.m_pStorage.get(), "data/maps/coverage.map", IStorage::TYPE_ALL));
+	Map.m_pStorage->RemoveFile(aPath, IStorage::TYPE_ABSOLUTE);
+}
+
+TEST(MapFile, APictureAddedInTheEditorSurvivesBeingWritten)
+{
+	// A picture that the editor put in has pixels that were never in a file,
+	// which is the one case the maps that ship with the game cannot cover:
+	// they were all written by an editor that had already written them once.
+	CMapFile Map;
+	ASSERT_TRUE(Map.Read("coverage"));
+	CDocument Document(Map.m_State);
+	CImage Image;
+	Image.m_Name = "added";
+	Image.m_External = false;
+	Image.m_Width = 4;
+	Image.m_Height = 2;
+	std::vector<uint8_t> &vPixels = Image.m_Data.Mutable();
+	vPixels.resize(4 * 2 * 4);
+	for(size_t Byte = 0; Byte < vPixels.size(); ++Byte)
+		vPixels[Byte] = (uint8_t)Byte;
+	Document.Begin("Add image");
+	const size_t Index = AddImage(Document, std::move(Image));
+	Document.Commit();
+
+	CTestInfo Info;
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "%s.map", Info.m_aFilenamePrefix);
+	ASSERT_FALSE(WriteAndRead(Map.m_pStorage.get(), aPath, Document.Map()).empty());
+
+	CDataFileReader Again;
+	ASSERT_TRUE(Again.Open(Map.m_pStorage.get(), aPath, IStorage::TYPE_ABSOLUTE));
+	CMapState Read;
+	std::vector<std::string> vWarnings;
+	ASSERT_TRUE(ReadMapState(Again, &Read, &vWarnings));
+	EXPECT_TRUE(vWarnings.empty()) << (vWarnings.empty() ? "" : vWarnings[0]);
+
+	ASSERT_EQ(Read.NumImages(), Index + 1);
+	const CImage *pBack = Read.Image(Index);
+	EXPECT_EQ(pBack->m_Name, "added");
+	EXPECT_FALSE(pBack->m_External);
+	EXPECT_EQ(pBack->m_Width, 4);
+	EXPECT_EQ(pBack->m_Height, 2);
+	ASSERT_EQ(pBack->m_Data.Size(), 4u * 2u * 4u);
+	for(size_t Byte = 0; Byte < pBack->m_Data.Size(); ++Byte)
+		ASSERT_EQ(pBack->m_Data[Byte], (uint8_t)Byte) << "byte " << Byte;
+
 	Map.m_pStorage->RemoveFile(aPath, IStorage::TYPE_ABSOLUTE);
 }
 

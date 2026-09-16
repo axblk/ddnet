@@ -171,6 +171,51 @@ namespace map_document
 		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Layers));
 	}
 
+	size_t AddImage(CDocument &Doc, CImage Image)
+	{
+		CMapState &Map = Doc.Edit();
+		Map.AddImage(std::move(Image));
+		return Map.NumImages() - 1;
+	}
+
+	void DeleteImage(CDocument &Doc, size_t Image)
+	{
+		CMapState &Map = Doc.Edit();
+		dbg_assert(Image < Map.NumImages(), "Image out of range");
+		Map.m_vpImages.erase(Map.m_vpImages.begin() + Image);
+
+		// A layer names a picture by its place, so the places have to be read
+		// again - the same sum as for an envelope that is taken away.
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Layer = 0; Layer < Map.NumLayers(Group); ++Layer)
+			{
+				CLayer Changed = *Map.Layer(Group, Layer);
+				int *pBound = nullptr;
+				if(CTileLayer *pTiles = std::get_if<CTileLayer>(&Changed); pTiles != nullptr)
+					pBound = &pTiles->m_Image;
+				else if(CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Changed); pQuads != nullptr)
+					pBound = &pQuads->m_Image;
+				if(pBound == nullptr)
+					continue;
+				const int Was = *pBound;
+				if(*pBound == (int)Image)
+					*pBound = -1;
+				else if(*pBound > (int)Image)
+					--*pBound;
+				// A layer that used another picture is the node it was, which
+				// is what keeps this from costing the whole map.
+				if(*pBound != Was)
+					Map.ReplaceLayer(Group, Layer, std::move(Changed));
+			}
+		}
+	}
+
+	void SetImage(CDocument &Doc, size_t Index, CImage Changed)
+	{
+		Doc.Edit().ReplaceImage(Index, std::move(Changed));
+	}
+
 	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope)
 	{
 		Doc.Edit().AddEnvelope(std::move(Envelope));

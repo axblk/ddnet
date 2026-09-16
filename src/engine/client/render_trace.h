@@ -38,7 +38,7 @@ public:
 
 	void BeginFrame();
 	void RecordFrame(CFrame Frame);
-	void RecordEvent(const char *pName, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation);
+	void RecordEvent(const char *pName, IGraphics::EGpuRenderZone Zone, uint64_t StartNanoseconds, uint64_t DurationNanoseconds, uint64_t Generation);
 
 private:
 	class CEvent
@@ -53,13 +53,17 @@ private:
 	static constexpr size_t MAX_FRAMES = 131072;
 	static constexpr size_t MAX_EVENTS = 1048576;
 
-	uint32_t NameId(const char *pName);
+	uint32_t NameId(const char *pName, IGraphics::EGpuRenderZone Zone);
 	bool Save() const;
 	void Clear();
 
 	IStorage *m_pStorage = nullptr;
 	std::string m_Filename;
 	std::vector<std::string> m_vNames;
+	// Which GPU zone each name draws into, so a report can put the two halves of
+	// one component side by side. Several components share a zone, so this is a
+	// many-to-one map and not a pairing.
+	std::vector<IGraphics::EGpuRenderZone> m_vNameZones;
 	std::vector<CFrame> m_vFrames;
 	std::vector<CEvent> m_vEvents;
 	size_t m_FrameWriteIndex = 0;
@@ -78,11 +82,12 @@ class CRenderTraceScope
 {
 	CRenderTrace *m_pTrace = nullptr;
 	const char *m_pName = nullptr;
+	IGraphics::EGpuRenderZone m_Zone = IGraphics::EGpuRenderZone::COUNT;
 	uint64_t m_StartNanoseconds = 0;
 	uint64_t m_Generation = 0;
 
 public:
-	CRenderTraceScope(CRenderTrace *pTrace, const char *pName);
+	CRenderTraceScope(CRenderTrace *pTrace, const char *pName, IGraphics::EGpuRenderZone Zone = IGraphics::EGpuRenderZone::COUNT);
 	~CRenderTraceScope();
 
 	CRenderTraceScope(const CRenderTraceScope &) = delete;

@@ -822,6 +822,19 @@ void CGameState::RebuildGameWorld()
 	m_GameWorld.NetObjEnd();
 }
 
+void CGameState::ClearPrediction()
+{
+	// Only the flags are cleared. Assigning a fresh array would run a
+	// CCharacterCore constructor for every client twice over, and each of those
+	// builds a std::set, so a frame would start with a hundred allocations that
+	// nothing reads: the cores are written before anyone looks at them.
+	for(CPredictedClient &PredictedClient : m_aPredictedClients)
+	{
+		PredictedClient.m_HasPrev = false;
+		PredictedClient.m_HasCurrent = false;
+	}
+}
+
 void CGameState::Predict(const IClient &Client, CSessionId SessionId, CStreamId StreamId)
 {
 	PredictTo(Client.PredGameTick(SessionId, StreamId), [&Client, SessionId, StreamId](int Tick) {
@@ -832,15 +845,7 @@ void CGameState::Predict(const IClient &Client, CSessionId SessionId, CStreamId 
 void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt)
 {
 	m_PredictionTick = TargetTick;
-	// Only the flags are cleared. Assigning a fresh array would run a
-	// CCharacterCore constructor for every client twice over, and each of those
-	// builds a std::set, so a frame would start with a hundred allocations that
-	// nothing reads: the cores below are written before anyone looks at them.
-	for(CPredictedClient &PredictedClient : m_aPredictedClients)
-	{
-		PredictedClient.m_HasPrev = false;
-		PredictedClient.m_HasCurrent = false;
-	}
+	ClearPrediction();
 	if(m_FullyPredicted)
 		return;
 	if(!m_PredictionInitialized || m_LocalClientId < 0 || m_LocalClientId >= MAX_CLIENTS || !m_aClients[m_LocalClientId].m_HasCharacter)

@@ -53,6 +53,8 @@ all of it and a page may reach any of it.
 | `urlparam` | The name of a parameter of the page's *own* address to take a map from - `urlparam="map"` reads `#map=…`. Left out, the element does not read the address at all, because two editors on one page could not both be what it is about. |
 | `theme="light"` | The light set of colours. |
 | `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
+| `controls="none\|compact\|full"` | How much tool bar. Left out, the size of the box decides. |
+| `readonly` | Nothing may be changed: no inspector, no brush, and the tool bar keeps only what is about looking. The pointer pans and zooms and paints nothing. |
 
 `box.ready` is a promise for the running program, `box.editor` and
 `box.panels` are it and its panels once there are any, and `box.part("tree")`
@@ -64,6 +66,31 @@ The keyboard works the same way. An editor answers a key when the focus is
 inside it; with the focus nowhere at all it answers only when it is the one
 editor on the page, because with two there would be no way to say which was
 meant.
+
+### The shape it takes
+
+The editor answers to the size of its **box**, not of the window: an editor in
+an 800-pixel hole in a wide page is a narrow editor. `box.layout` says what it
+decided and the element says the same thing in `data-` attributes, which is
+what the stylesheet reads - the widths are written down once, in `BOX_WIDTHS`
+in `map-editor.js`, because the same numbers also decide what the panels *do*.
+
+| Box width | Left | Right | Tool bar |
+|---|---|---|---|
+| < 600 | sheet from the floor | sheet | six buttons |
+| 600–899 | drawer | drawer | icons |
+| 900–1199 | drawer | column | icons |
+| 1200 and up | column | column | icons with the modes' names |
+
+| Box height | Above the map | Status | Dock |
+|---|---|---|---|
+| < 600 | one row: the page's header goes, the tools stay | a chip in the corner of the map | over the map's foot |
+| 600 and up | two rows | a line of its own | a strip beside the map |
+
+A drawer is the same box of panels in the same place in the grid, laid *over*
+the map rather than beside it; it starts shut, and a press on the map shuts an
+open one without painting - the hand that reached past the drawer was reaching
+for its edge, not for the tile behind it.
 
 ## One list of everything it can do
 

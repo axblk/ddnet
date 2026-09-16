@@ -85,6 +85,7 @@ function looking(id, label, icon, keys, read, write) {
 		menu: "View",
 		icon: icon,
 		bar: true,
+		safe: true,
 		keys: keys,
 		pressed: p => read(p),
 		run: p => {
@@ -139,6 +140,11 @@ function tools() {
 		group: "Brush",
 		icon: mode,
 		bar: true,
+		text: true,
+		// Not `safe`: choosing a mode changes nothing by itself, but the four
+		// of them are the four ways of changing the map, and an editor that is
+		// only to be looked at has no use for a choice between them.
+		always: ["paint", "grab", "erase"].includes(mode),
 		keys: [key],
 		pressed: p => p.tool === mode,
 		run: p => {
@@ -191,6 +197,7 @@ function structureTabs() {
 		label: name,
 		group: "Areas",
 		menu: "View/The map's parts",
+		safe: true,
 		keys: [`Ctrl+Alt+${index + 1}`],
 		pressed: p => p.areaShown("left") && p.tab.left === tab,
 		run: p => {
@@ -259,7 +266,7 @@ function panelButtons() {
 export const COMMANDS = [
 	...tools(),
 	{
-		id: "edit.undo", label: "Undo", group: "Edit", menu: "Edit", icon: "undo", bar: true,
+		id: "edit.undo", label: "Undo", group: "Edit", always: true, menu: "Edit", icon: "undo", bar: true,
 		keys: ["Ctrl+Z"],
 		enabled: p => {
 			const history = p.editor.history();
@@ -268,7 +275,7 @@ export const COMMANDS = [
 		run: p => p.stepHistory(() => p.editor.undo()),
 	},
 	{
-		id: "edit.redo", label: "Redo", group: "Edit", menu: "Edit", icon: "redo", bar: true,
+		id: "edit.redo", label: "Redo", group: "Edit", always: true, menu: "Edit", icon: "redo", bar: true,
 		keys: ["Ctrl+Y", "Ctrl+Shift+Z"],
 		enabled: p => {
 			const history = p.editor.history();
@@ -288,7 +295,7 @@ export const COMMANDS = [
 		run: p => p.askNewMap(),
 	},
 	{
-		id: "file.save", label: "Save", group: "File", icon: "save", bar: true, menu: "File",
+		id: "file.save", label: "Save", group: "File", safe: true, icon: "save", bar: true, menu: "File",
 		keys: ["Ctrl+S"],
 		enabled: p => p.map !== null,
 		run: p => p.editor.save(),
@@ -306,22 +313,22 @@ export const COMMANDS = [
 		run: p => p.part("append-file").click(),
 	},
 	{
-		id: "view.fit", label: "The whole map", group: "View", menu: "View", icon: "fit", bar: true,
+		id: "view.fit", label: "The whole map", group: "View", safe: true, menu: "View", icon: "fit", bar: true,
 		keys: ["Home"],
 		run: p => p.editor.fit(),
 	},
 	{
-		id: "view.zoomIn", label: "Closer", group: "View", menu: "View",
+		id: "view.zoomIn", label: "Closer", group: "View", safe: true, menu: "View",
 		keys: ["NumpadAdd", "+"],
 		run: p => p.editor.zoom(p.editor.zoom() / ZOOM_STEP),
 	},
 	{
-		id: "view.zoomOut", label: "Further away", group: "View", menu: "View",
+		id: "view.zoomOut", label: "Further away", group: "View", safe: true, menu: "View",
 		keys: ["NumpadSubtract", "-"],
 		run: p => p.editor.zoom(p.editor.zoom() * ZOOM_STEP),
 	},
 	{
-		id: "view.zoomReset", label: "Back to one to one", group: "View", menu: "View",
+		id: "view.zoomReset", label: "Back to one to one", group: "View", safe: true, menu: "View",
 		keys: ["NumpadMultiply"],
 		run: p => p.editor.zoom(1),
 	},
@@ -331,10 +338,10 @@ export const COMMANDS = [
 		p => p.editor.entities() > 0, (p, on) => p.editor.entities(on ? 100 : 0)),
 	looking("view.animate", "Let the envelopes run", "play", ["Ctrl+M"],
 		p => p.editor.animate(), (p, on) => p.editor.animate(on)),
-	looking("view.grid", "A grid on the tiles", "grid", ["G", "Ctrl+G"],
-		p => p.editor.grid() > 0, (p, on) => p.editor.grid(on ? GRID_SPACING : 0)),
+	Object.assign(looking("view.grid", "A grid on the tiles", "grid", ["G", "Ctrl+G"],
+		p => p.editor.grid() > 0, (p, on) => p.editor.grid(on ? GRID_SPACING : 0)), { always: true }),
 	{
-		id: "view.proof", label: "What a player would see", group: "View", menu: "View", icon: "proof", bar: true,
+		id: "view.proof", label: "What a player would see", group: "View", safe: true, menu: "View", icon: "proof", bar: true,
 		keys: ["P"],
 		pressed: p => p.proof !== "off",
 		run: p => {
@@ -344,7 +351,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "view.tileInfo", label: "What the tile under the pointer is", group: "View", menu: "View",
+		id: "view.tileInfo", label: "What the tile under the pointer is", group: "View", safe: true, menu: "View",
 		icon: "info", bar: true,
 		keys: ["Ctrl+I"],
 		pressed: p => p.tileInfo !== "off",
@@ -398,12 +405,12 @@ export const COMMANDS = [
 	},
 	...layerKinds(),
 	{
-		id: "layer.next", label: "The layer below", group: "Layer",
+		id: "layer.next", label: "The layer below", group: "Layer", safe: true,
 		keys: ["ArrowDown"],
 		run: p => p.stepSelection(1),
 	},
 	{
-		id: "layer.previous", label: "The layer above", group: "Layer",
+		id: "layer.previous", label: "The layer above", group: "Layer", safe: true,
 		keys: ["ArrowUp"],
 		run: p => p.stepSelection(-1),
 	},
@@ -418,7 +425,7 @@ export const COMMANDS = [
 		run: p => p.moveSelected(1),
 	},
 	{
-		id: "layer.hide", label: "Draw it, or do not", group: "Layer", menu: "Layer", for: "layer",
+		id: "layer.hide", label: "Draw it, or do not", group: "Layer", safe: true, menu: "Layer", for: "layer",
 		keys: ["V"],
 		enabled: p => p.selection.layer >= 0,
 		run: p => {
@@ -476,43 +483,43 @@ export const COMMANDS = [
 		run: p => p.part("next-free").click(),
 	},
 	{
-		id: "dock.envelopes", label: "Envelopes", group: "Areas", menu: "View/Below the map",
+		id: "dock.envelopes", label: "Envelopes", group: "Areas", safe: true, menu: "View/Below the map",
 		keys: ["Ctrl+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "envelopes",
 		run: p => p.showTab("dock", "envelopes"),
 	},
 	{
-		id: "dock.history", label: "History", group: "Areas", menu: "View/Below the map",
+		id: "dock.history", label: "History", group: "Areas", safe: true, menu: "View/Below the map",
 		keys: ["Ctrl+Shift+H"],
 		pressed: p => p.dockOpen && p.tab.dock === "history",
 		run: p => p.showTab("dock", "history"),
 	},
 	{
-		id: "dock.settings", label: "Server settings", group: "Areas", menu: "View/Below the map",
+		id: "dock.settings", label: "Server settings", group: "Areas", safe: true, menu: "View/Below the map",
 		keys: ["Ctrl+Shift+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "settings",
 		run: p => p.showTab("dock", "settings"),
 	},
 	{
-		id: "dock.rules", label: "The rules file", group: "Areas", menu: "View/Below the map",
+		id: "dock.rules", label: "The rules file", group: "Areas", safe: true, menu: "View/Below the map",
 		keys: ["Ctrl+Shift+R"],
 		pressed: p => p.dockOpen && p.tab.dock === "rules",
 		run: p => p.showTab("dock", "rules"),
 	},
 	{
-		id: "area.left", label: "The map's parts", group: "Areas", menu: "View",
+		id: "area.left", label: "The map's parts", group: "Areas", safe: true, menu: "View",
 		keys: ["["],
 		pressed: p => p.areaShown("left"),
 		run: p => p.showArea("left", !p.areaShown("left")),
 	},
 	{
-		id: "area.right", label: "The inspector", group: "Areas", menu: "View",
+		id: "area.right", label: "The inspector", group: "Areas", safe: true, menu: "View",
 		keys: ["]"],
 		pressed: p => p.areaShown("right"),
 		run: p => p.showArea("right", !p.areaShown("right")),
 	},
 	{
-		id: "area.mapOnly", label: "Nothing but the map", group: "Areas", menu: "View",
+		id: "area.mapOnly", label: "Nothing but the map", group: "Areas", safe: true, menu: "View",
 		keys: ["Tab"],
 		// Only from the map itself: everywhere else Tab is how somebody walks
 		// through the buttons, and taking that away would be worse than the
@@ -561,7 +568,7 @@ export const COMMANDS = [
 	},
 	...structureTabs(),
 	{
-		id: "picker.show", label: "The big tile chooser", group: "Brush",
+		id: "picker.show", label: "The big tile chooser", group: "Brush", safe: true,
 		keys: ["Space"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -571,7 +578,7 @@ export const COMMANDS = [
 		run: p => p.showPicker(p.picker === null || p.picker.hidden),
 	},
 	{
-		id: "picker.pin", label: "Leave the tile chooser open", group: "Brush",
+		id: "picker.pin", label: "Leave the tile chooser open", group: "Brush", safe: true,
 		keys: ["Ctrl+Space"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -585,32 +592,36 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "palette.open", label: "Everything, by its name", group: "Help",
+		id: "palette.open", label: "Everything, by its name", group: "Help", safe: true, always: true,
+		// Its own name for its button: `commandRole` would call it "open",
+		// and so would the menu's, and two buttons cannot share one name.
+		role: "palette",
 		icon: "search", bar: true, menu: "Help", palette: false,
 		keys: ["Ctrl+P"],
 		pressed: p => p.palette !== null && !p.palette.hidden,
 		run: p => p.showPalette(p.palette === null || p.palette.hidden),
 	},
 	{
-		id: "menu.open", label: "The menu", group: "Help",
+		id: "menu.open", label: "The menu", group: "Help", safe: true, always: true,
+		role: "menu",
 		icon: "menu", bar: true, palette: false,
 		keys: ["Alt+M"],
 		pressed: p => p.menu !== null && !p.menu.hidden,
 		run: p => p.showMenu(p.menu === null || p.menu.hidden),
 	},
 	{
-		id: "view.scheme", label: "The light scheme", group: "View", menu: "Settings",
+		id: "view.scheme", label: "The light scheme", group: "View", safe: true, menu: "Settings",
 		keys: ["Ctrl+Alt+L"],
 		pressed: p => p.scheme() === "light",
 		run: p => p.scheme(p.scheme() === "light" ? "dark" : "light"),
 	},
 	{
-		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", menu: "Help",
+		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", safe: true, menu: "Help",
 		keys: ["F1"],
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
 	},
 	{
-		id: "edit.escape", label: "Back to the map", group: "Edit",
+		id: "edit.escape", label: "Back to the map", group: "Edit", safe: true,
 		keys: ["Escape"],
 		run: p => p.escape(),
 	},

@@ -951,6 +951,36 @@ const TABBED_AREAS = { left: "structure", dock: "dock" };
 // be pointed at by an id that is the page's alone.
 let overCount = 0;
 
+/**
+ * Which shape the editor takes at which size of its box, widest first.
+ *
+ * One table rather than a handful of container queries, because the same
+ * numbers decide two things: what the stylesheet draws, and what the panels
+ * do - a drawer is not a column that moved, it also shuts when somebody
+ * touches the map, and a tool bar that shows six of its buttons has to be
+ * told which six. Two copies of six numbers would drift apart; the stylesheet
+ * answers to the attribute this sets.
+ *
+ * The widths are of the *box*, not of the window: an editor in an 800-pixel
+ * hole in somebody's page is a narrow editor on a wide screen.
+ */
+const BOX_WIDTHS = [
+	{ from: 2560, name: "huge", left: "column", right: "column", bar: "labels" },
+	{ from: 1600, name: "desk", left: "column", right: "column", bar: "labels" },
+	{ from: 1200, name: "wide", left: "column", right: "column", bar: "labels" },
+	{ from: 900, name: "medium", left: "drawer", right: "column", bar: "icons" },
+	{ from: 600, name: "small", left: "drawer", right: "drawer", bar: "icons" },
+	{ from: 0, name: "phone", left: "sheet", right: "sheet", bar: "few" },
+];
+
+/** And by height: what there is room for above and below the map. */
+const BOX_HEIGHTS = [
+	{ from: 1400, name: "high", head: "two", status: "line", dock: "strip" },
+	{ from: 600, name: "tall", head: "two", status: "line", dock: "strip" },
+	{ from: 480, name: "low", head: "one", status: "chip", dock: "overlay" },
+	{ from: 0, name: "short", head: "one", status: "chip", dock: "overlay" },
+];
+
 // The order the menu puts its headings in: what a map is, then what was just
 // done to it, then what one is looking at, then the things one reaches for.
 const MENU_ORDER = ["File", "Edit", "View", "Layer", "Tools", "Settings", "Help"];
@@ -1371,6 +1401,11 @@ class CEditorPanels {
 		// The big tile chooser over the map, and whether it stays open when
 		// the key that opened it is let go of.
 		this.picker = null;
+		// Which shape the box is in, once something tells us. Without a box
+		// there are no areas to reshape and the panels stand in one column.
+		this.shape = null;
+		this.readonly = false;
+		this.drawer = { left: false, right: false };
 		// What floats over the whole box, and where it floats in.
 		this.over = null;
 		this.overId = `ed${++overCount}`;
@@ -1691,6 +1726,79 @@ class CEditorPanels {
 			this.applyTilesTab();
 		}
 		return found;
+	}
+
+	/**
+	 * Takes the shape the box says it is in.
+	 *
+	 * A side that became a drawer is shut, because a drawer lies over the map
+	 * and an editor that opened with its map covered would be an editor whose
+	 * first act is in the way. A side that became a column again is opened,
+	 * because a column takes room of its own and an empty one is a stripe of
+	 * nothing.
+	 */
+	applyShape(shape) {
+		const before = this.shape;
+		this.shape = shape;
+		this.readonly = shape.readonly;
+		for (const side of ["left", "right"]) {
+			const drawer = shape[side] !== "column";
+			if (before === null || drawer !== (before[side] !== "column")) {
+				this.drawer[side] = drawer;
+				this.showArea(side, !drawer);
+			}
+			if (shape[side] === "none") {
+				this.showArea(side, false);
+			}
+		}
+		this.refreshBar();
+	}
+
+	/**
+	 * Whether this shape of box shows that button.
+	 *
+	 * `none` shows none of them, `looking` only what does not change the map,
+	 * `few` only what the plan calls the six a phone has room for, and the two
+	 * wide shapes show all of them - with the modes' names written out only
+	 * where there is room for the words.
+	 */
+	barShows(command) {
+		const how = this.shape === null ? "labels" : this.shape.bar;
+		if (how === "none") {
+			return false;
+		}
+		if (how === "looking") {
+			return command.safe === true;
+		}
+		if (how === "few") {
+			return command.always === true;
+		}
+		return true;
+	}
+
+	/**
+	 * A press on the map shuts an open drawer, and does not go on to the map.
+	 *
+	 * A click that puts something away does not also paint: the hand that
+	 * reached past the drawer was reaching for the drawer's edge, not for the
+	 * tile behind it.
+	 */
+	wireDrawers() {
+		const canvas = this.editor.canvas;
+		if (canvas === null || canvas === undefined) {
+			return;
+		}
+		canvas.addEventListener("pointerdown", event => {
+			const open = ["left", "right"].filter(side => this.drawer[side] && this.areaShown(side));
+			if (open.length === 0) {
+				return;
+			}
+			for (const side of open) {
+				this.showArea(side, false);
+			}
+			event.stopPropagation();
+			event.preventDefault();
+		}, { capture: true, signal: this.stopping.signal });
 	}
 
 	/** Which of the two schemes the editor is drawn in. */
@@ -2441,6 +2549,15 @@ class CEditorPanels {
 			if (command.pressed !== undefined) {
 				button.setAttribute("aria-pressed", "false");
 			}
+			// The name beside the icon, for the shapes of box that have room
+			// for words. Only the modes carry one: they are the four that are
+			// a choice rather than an action, and a choice wants a name.
+			if (command.text === true) {
+				const name = document.createElement("span");
+				name.className = "editor-button-text";
+				name.textContent = command.label;
+				button.append(name);
+			}
 			button.addEventListener("click", () => this.run(command.id), { signal: this.stopping.signal });
 			bar.insertBefore(button, status);
 		}
@@ -2450,6 +2567,12 @@ class CEditorPanels {
 	run(id) {
 		const command = this.commands.find(which => which.id === id);
 		if (command === undefined || (command.enabled !== undefined && !command.enabled(this))) {
+			return false;
+		}
+		// One place says no, rather than a hundred commands each remembering
+		// to ask: an editor that is only to be looked at does the things that
+		// are about looking and none of the rest.
+		if (this.readonly && command.safe !== true) {
 			return false;
 		}
 		command.run(this);
@@ -2695,6 +2818,7 @@ class CEditorPanels {
 		this.wireInfo();
 		this.wireContextMenus();
 		this.wireClickAway();
+		this.wireDrawers();
 		on("delete", () => this.run("layer.delete"));
 		on("up", () => this.run("layer.up"));
 		on("down", () => this.run("layer.down"));
@@ -3105,16 +3229,28 @@ class CEditorPanels {
 		say("status-zoom", zoom === null ? "" : `${Math.round(100 / zoom)} %`);
 	}
 
+	/** The tool bar's button for a command, by the command's own name. */
+	barButton(command) {
+		const bar = this.part("bar");
+		return bar === null ? null : bar.querySelector(`[data-command="${command.id}"]`);
+	}
+
 	refreshBar() {
 		for (const command of this.commands) {
 			if (command.bar !== true) {
 				continue;
 			}
-			const button = this.part(commandRole(command));
+			// By the command's own name, not by the role its button carries:
+			// two commands can end up with the same role - `palette.open` and
+			// `menu.open` are both "open" - and then one of them would be
+			// refreshed twice and the other never.
+			const button = this.barButton(command);
 			if (button === null) {
 				continue;
 			}
-			button.disabled = command.enabled !== undefined && !command.enabled(this);
+			button.hidden = !this.barShows(command);
+			button.disabled = (command.enabled !== undefined && !command.enabled(this))
+				|| (this.readonly && command.safe !== true);
 			if (command.pressed !== undefined) {
 				button.setAttribute("aria-pressed", command.pressed(this) ? "true" : "false");
 			}
@@ -5962,6 +6098,61 @@ const BOX_STYLE = `
 	overflow: hidden;
 }
 
+/* A side that is a drawer keeps its place in the grid but is laid over the map
+   rather than beside it: the same box, the same panels, the same names - only
+   "grid-area: map" instead of its own column, which takes no arithmetic and
+   cannot be off by the height of a tool bar. A side that is shut holds a box
+   that is switched off, so it takes no width and lies over nothing. */
+:host([data-left="drawer"]) .area.left,
+:host([data-right="drawer"]) .area.right {
+	grid-area: map;
+	width: min(288px, 80%);
+	z-index: 2;
+}
+
+:host([data-left="drawer"]) .area.left {
+	justify-self: start;
+}
+
+:host([data-right="drawer"]) .area.right {
+	justify-self: end;
+}
+
+/* Narrower than a drawer is worth: from the floor, half the height, because
+   288 pixels of drawer on a 390-pixel phone leave 102 pixels of map. */
+:host([data-left="sheet"]) .area.left,
+:host([data-right="sheet"]) .area.right {
+	grid-area: map;
+	align-self: end;
+	width: 100%;
+	height: 50%;
+	z-index: 2;
+}
+
+/* Too short for two rows above the map: the page's own header is the one that
+   goes. Ours carries the tools, and the tools are the editor. */
+:host([data-head="one"]) .area.head {
+	display: none;
+}
+
+/* Too short for a line of its own: the status becomes a chip in the corner of
+   the map, and the row it had collapses because the box left it. */
+:host([data-status="chip"]) .area.status {
+	grid-area: map;
+	align-self: end;
+	justify-self: start;
+	max-width: 60%;
+	z-index: 2;
+}
+
+/* And the dock lies over the foot of the map instead of pushing it up. */
+:host([data-dock="overlay"]) .area.dock {
+	grid-area: map;
+	align-self: end;
+	height: 200px;
+	z-index: 2;
+}
+
 /* Above the six areas and over all of them: a menu opened from a row of the
    tree would otherwise be cut off by the edge of the column the tree stands
    in, and the column is the narrowest thing on the screen. The layer itself
@@ -6051,7 +6242,7 @@ const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement
  * it - which is what lets two of them stand on one page.
  */
 class CEditorElement extends ELEMENT_BASE {
-	static observedAttributes = ["src", "theme"];
+	static observedAttributes = ["src", "theme", "controls", "readonly"];
 
 	constructor() {
 		super();
@@ -6113,6 +6304,76 @@ class CEditorElement extends ELEMENT_BASE {
 	}
 
 	/**
+	 * What shape the editor is in, and what decided it.
+	 *
+	 * Everything in here is worked out from the size of the box and from what
+	 * the page asked for, and nothing else is remembered - so a page that asks
+	 * gets the answer for the box as it stands, not for the box as it was when
+	 * something last changed.
+	 */
+	get layout() {
+		const box = this.getBoundingClientRect();
+		const last = BOX_WIDTHS[BOX_WIDTHS.length - 1];
+		const wide = BOX_WIDTHS.find(step => box.width >= step.from) || last;
+		const tall = BOX_HEIGHTS.find(step => box.height >= step.from) || BOX_HEIGHTS[BOX_HEIGHTS.length - 1];
+		const readonly = this.hasAttribute("readonly");
+		// What the page asked for beats what the size would have chosen - a
+		// page that says `controls="none"` wants its own buttons, whatever
+		// room there is for ours.
+		const said = this.getAttribute("controls");
+		const bar = readonly ? "looking"
+			: said === "none" ? "none"
+				: said === "compact" ? "icons"
+					: said === "full" ? "labels" : wide.bar;
+		return {
+			width: Math.round(box.width),
+			height: Math.round(box.height),
+			size: wide.name,
+			tallness: tall.name,
+			left: wide.left,
+			right: readonly ? "none" : wide.right,
+			bar: bar,
+			head: tall.head,
+			status: tall.status,
+			dock: tall.dock,
+			readonly: readonly,
+		};
+	}
+
+	/**
+	 * Says the shape out loud, on the element itself.
+	 *
+	 * The stylesheet reads these rather than asking the box its width a second
+	 * time: the numbers are in `BOX_WIDTHS`, and a container query would be a
+	 * second copy of them.
+	 */
+	applyLayout() {
+		const now = this.layout;
+		this.dataset.size = now.size;
+		this.dataset.tall = now.tallness;
+		this.dataset.left = now.left;
+		this.dataset.right = now.right;
+		this.dataset.bar = now.bar;
+		this.dataset.head = now.head;
+		this.dataset.status = now.status;
+		this.dataset.dock = now.dock;
+		this.dataset.readonly = now.readonly ? "yes" : "no";
+		if (this.editorPanels !== null) {
+			this.editorPanels.applyShape(now);
+		}
+	}
+
+	// The box can change size without the window doing anything at all - a
+	// page that folds a sidebar away makes the editor wider - so the box is
+	// what is watched.
+	watchSize() {
+		this.applyLayout();
+		const watcher = new ResizeObserver(() => this.applyLayout());
+		watcher.observe(this);
+		this.stopping.signal.addEventListener("abort", () => watcher.disconnect(), { once: true });
+	}
+
+	/**
 	 * One of the element's parts by the name it carries. Its own first, the
 	 * frame's after - `data-role` names are this element's, not the page's,
 	 * which is what lets two editors stand on one page and both be asked.
@@ -6139,6 +6400,7 @@ class CEditorElement extends ELEMENT_BASE {
 			this.append(this.mapBox, this.fileInput, ...Object.values(this.areaBoxes));
 		}
 		this.watchAreas();
+		this.watchSize();
 		this.ready = this.start();
 	}
 
@@ -6164,6 +6426,10 @@ class CEditorElement extends ELEMENT_BASE {
 		}
 		if (name === "theme") {
 			this.applyTheme();
+		} else if (name === "controls" || name === "readonly") {
+			if (this.stopping !== null) {
+				this.applyLayout();
+			}
 		} else if (name === "src" && this.editorInstance !== null && now !== null && now !== "") {
 			this.editorInstance.loadUrl(now);
 		}
@@ -6245,9 +6511,15 @@ class CEditorElement extends ELEMENT_BASE {
 		// the history below, the bar above, the status line at the bottom.
 		panels.spread(this.areaBoxes, this);
 		this.editorPanels = panels;
+		// The box already knows its shape - it worked it out before there was
+		// anything to shape - so the panels are told once, now that they exist.
+		this.applyLayout();
 		steerWithPointer(instance, {
 			canvas: this.editorCanvas,
-			target: () => panels.selection,
+			// An editor that is only to be looked at has no layer to paint in,
+			// which is the one place that has to say so - the pointer does not
+			// go through `run`, where everything else is refused.
+			target: () => (panels.readonly ? null : panels.selection),
 			mode: () => panels.tool,
 			onChange: () => panels.refresh(),
 			// Panning and zooming change nothing about the map, so the panels

@@ -41,10 +41,7 @@ void CMotd::InvalidateRenderCache()
 	Graphics()->DeleteQuadContainer(m_RectQuadContainer);
 	TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	m_TouchRect.reset();
-	m_RenderedSessionId = CSessionId();
-	m_RenderedViewId = 0;
-	m_RenderedViewportWidth = 0;
-	m_RenderedViewportHeight = 0;
+	m_RenderedLayoutKey = {};
 }
 
 bool CMotd::IsActive() const
@@ -81,17 +78,12 @@ void CMotd::OnRender(const CRenderContext &Context)
 		return;
 
 	const CGameSessionContext &Session = Context.m_Session;
-	const CViewport &Viewport = Context.m_View.Viewport();
-	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Session.Motd().Revision() ||
-		m_RenderedViewId != Context.m_View.Id().Value() ||
-		m_RenderedViewportWidth != Viewport.m_Width || m_RenderedViewportHeight != Viewport.m_Height)
+	const CLayoutKey LayoutKey = Context.LayoutKey(false);
+	if(!(m_RenderedLayoutKey == LayoutKey) || m_RenderedRevision != Session.Motd().Revision())
 	{
 		InvalidateRenderCache();
-		m_RenderedSessionId = Session.Id();
+		m_RenderedLayoutKey = LayoutKey;
 		m_RenderedRevision = Session.Motd().Revision();
-		m_RenderedViewId = Context.m_View.Id().Value();
-		m_RenderedViewportWidth = Viewport.m_Width;
-		m_RenderedViewportHeight = Viewport.m_Height;
 	}
 
 	if(GameClient()->m_ImportantAlert.IsActive())

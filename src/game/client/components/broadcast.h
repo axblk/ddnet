@@ -7,6 +7,7 @@
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 
 #include <cstdint>
 
@@ -14,14 +15,16 @@ class CSessionBroadcastState;
 
 class CBroadcast : public CComponent
 {
-	float m_BroadcastRenderOffset;
-	STextContainerIndex m_TextContainerIndex;
-	CSessionId m_RenderedSessionId;
-	uint64_t m_RenderedRevision = 0;
-	uint64_t m_RenderedViewId = 0;
-	int m_RenderedViewportWidth = 0;
-	int m_RenderedViewportHeight = 0;
+	class CLayout
+	{
+	public:
+		float m_RenderOffset = -1.0f;
+		STextContainerIndex m_TextContainerIndex;
+		uint64_t m_Revision = 0;
+	};
+	CLayoutCache<CLayout> m_Layouts;
 
+	void ClearLayout(CLayout &Layout);
 	void InvalidateRenderCache();
 	void RenderServerBroadcast(const CRenderContext &Context);
 

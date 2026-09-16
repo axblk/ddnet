@@ -44,10 +44,7 @@ void CChat::CCachedLine::Invalidate(CChat &This)
 	This.TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	This.Graphics()->DeleteQuadContainer(m_QuadContainerIndex);
 	m_Revision = 0;
-	m_StateId = CGameStateId();
-	m_ViewId = CGameViewId();
-	m_Viewport = {};
-	m_OutputCacheKey = 0;
+	m_LayoutKey = {};
 	m_ScoreboardOpen = false;
 	m_ShowLargeArea = false;
 	m_YOffset = -1.0f;
@@ -988,16 +985,15 @@ void CChat::OnPrepareLines(const CRenderContext &Context, float y)
 		if(Now > Line.m_Time + 16 * Context.m_Time.m_PresentationTimeFrequency && !ShowLargeArea)
 			break;
 
-		const CViewport &Viewport = Context.m_View.Viewport();
-		const bool CacheMatches = Cached.m_Revision == Line.m_Revision && Cached.m_StateId == Context.m_State.Id() && Cached.m_ViewId == Context.m_View.Id() && Cached.m_Viewport == Viewport && Cached.m_OutputCacheKey == Context.m_OutputCacheKey && Cached.m_ScoreboardOpen == IsScoreBoardOpen && Cached.m_ShowLargeArea == ShowLargeArea;
+		// A line reads the same in every game state of its session, so the
+		// player and the dummy side by side share it.
+		const CLayoutKey LayoutKey = Context.LayoutKey(false);
+		const bool CacheMatches = Cached.m_Revision == Line.m_Revision && Cached.m_LayoutKey == LayoutKey && Cached.m_ScoreboardOpen == IsScoreBoardOpen && Cached.m_ShowLargeArea == ShowLargeArea;
 		if(!CacheMatches)
 		{
 			Cached.Invalidate(*this);
 			Cached.m_Revision = Line.m_Revision;
-			Cached.m_StateId = Context.m_State.Id();
-			Cached.m_ViewId = Context.m_View.Id();
-			Cached.m_Viewport = Viewport;
-			Cached.m_OutputCacheKey = Context.m_OutputCacheKey;
+			Cached.m_LayoutKey = LayoutKey;
 			Cached.m_ScoreboardOpen = IsScoreBoardOpen;
 			Cached.m_ShowLargeArea = ShowLargeArea;
 		}

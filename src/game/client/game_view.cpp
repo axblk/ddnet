@@ -132,6 +132,18 @@ float CRenderContext::AspectRatio(float DefaultAspectRatio) const
 	return Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : DefaultAspectRatio;
 }
 
+CLayoutKey CRenderContext::LayoutKey(bool PerState) const
+{
+	CLayoutKey Key;
+	Key.m_SessionId = m_Session.Id();
+	if(PerState)
+		Key.m_StateId = m_State.Id();
+	Key.m_Width = m_View.Viewport().m_Width;
+	Key.m_Height = m_View.Viewport().m_Height;
+	Key.m_Output = m_OutputCacheKey;
+	return Key;
+}
+
 bool CRenderContext::IsOtherTeam(int ClientId) const
 {
 	const int LocalClientId = m_State.LocalClientId();

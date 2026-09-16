@@ -625,28 +625,12 @@ public:
 class CNamePlates::CNamePlatesData
 {
 public:
-	CNamePlate m_aNamePlates[MAX_CLIENTS];
-	CSessionId m_SessionId;
-	CGameStateId m_StateId;
-	CGameViewId m_ViewId;
-	CViewport m_Viewport;
-	uint64_t m_OutputCacheKey = 0;
-	bool m_CacheKeyValid = false;
-
-	bool Matches(const CRenderContext &Context) const
+	class CLayout
 	{
-		return m_CacheKeyValid && m_SessionId == Context.m_Session.Id() && m_StateId == Context.m_State.Id() && m_ViewId == Context.m_View.Id() && m_Viewport == Context.m_View.Viewport() && m_OutputCacheKey == Context.m_OutputCacheKey;
-	}
-
-	void Bind(const CRenderContext &Context)
-	{
-		m_SessionId = Context.m_Session.Id();
-		m_StateId = Context.m_State.Id();
-		m_ViewId = Context.m_View.Id();
-		m_Viewport = Context.m_View.Viewport();
-		m_OutputCacheKey = Context.m_OutputCacheKey;
-		m_CacheKeyValid = true;
-	}
+	public:
+		CNamePlate m_aNamePlates[MAX_CLIENTS];
+	};
+	CLayoutCache<CLayout> m_Layouts;
 };
 
 void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Position, int ClientId, const CClientPresentation &Client, float Alpha)
@@ -770,13 +754,11 @@ void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Positi
 		}
 	}
 
-	// Check if the nameplate is actually on screen
-	if(!m_pData->Matches(Context))
-	{
-		ResetNamePlates();
-		m_pData->Bind(Context);
-	}
-	CNamePlate &NamePlate = m_pData->m_aNamePlates[ClientId];
+	CNamePlatesData::CLayout &Layout = m_pData->m_Layouts.Find(Context.LayoutKey(true), [this](CNamePlatesData::CLayout &Old) {
+		for(CNamePlate &OldNamePlate : Old.m_aNamePlates)
+			OldNamePlate.Reset(*GameClient());
+	});
+	CNamePlate &NamePlate = Layout.m_aNamePlates[ClientId];
 	NamePlate.Update(*GameClient(), Data);
 	NamePlate.Render(*GameClient(), Position - vec2(0.0f, (float)g_Config.m_ClNamePlatesOffset));
 }
@@ -864,9 +846,10 @@ void CNamePlates::RenderNamePlatePreview(vec2 Position, int Dummy)
 
 void CNamePlates::ResetNamePlates()
 {
-	for(CNamePlate &NamePlate : m_pData->m_aNamePlates)
-		NamePlate.Reset(*GameClient());
-	m_pData->m_CacheKeyValid = false;
+	m_pData->m_Layouts.ClearAll([this](CNamePlatesData::CLayout &Layout) {
+		for(CNamePlate &NamePlate : Layout.m_aNamePlates)
+			NamePlate.Reset(*GameClient());
+	});
 }
 
 void CNamePlates::OnRender(const CRenderContext &Context)

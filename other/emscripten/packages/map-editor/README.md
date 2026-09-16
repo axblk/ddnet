@@ -76,6 +76,15 @@ physics layers of a map are all the size of its game layer - that is the size
 the game plays - so resizing one of them resizes all of them, and a layer that
 is only drawn is resized by itself.
 
+Under the properties of such a layer stand the thirteen construct operations:
+pick a physics tile and every tile the layer draws gets one under it. That is
+how a map is built - the shape is drawn once and the physics follow it. The row
+is only there for a layer the operation means anything for, and whether it does
+is the program's answer (`layer.construct`), not the page's: it depends on the
+group lying over the game layer tile for tile, and a group that moves with the
+camera is somewhere else at every moment. The two checkpoints are tele tiles,
+so they go into the tele layer - and a map without one gets one.
+
 ## The automapper
 
 A rules file belongs to a picture, not to a layer: a layer drawn with

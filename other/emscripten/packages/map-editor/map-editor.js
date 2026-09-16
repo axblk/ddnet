@@ -710,6 +710,10 @@ const PANELS_HTML = `
 	<section class="editor-panel" data-role="props-panel">
 		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2></header>
 		<div class="editor-props" data-role="props"></div>
+		<div class="editor-construct" data-role="construct" hidden>
+			<select class="editor-small" data-role="construct-tile"></select>
+			<button class="editor-small" data-role="construct-run" title="Put this physics tile under every tile this layer draws">construct</button>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="tiles-panel" hidden>
 		<header class="editor-panel-head">
@@ -827,6 +831,25 @@ const LAYER_PROPS = {
 	quads: [{ prop: "image", label: "Image", kind: "number" }],
 	sounds: [{ prop: "sound", label: "Sound", kind: "number" }],
 };
+
+// The thirteen physics tiles a layer's tiles can be turned into, in the order
+// the editor in the client offers them. The names are the command's; what
+// stands beside them is what a person reads.
+const GAME_TILES = [
+	["hookable", "Hookable"],
+	["unhookable", "Unhookable"],
+	["hookthrough", "Hookthrough"],
+	["death", "Death"],
+	["freeze", "Freeze"],
+	["unfreeze", "Unfreeze"],
+	["deepFreeze", "Deep freeze"],
+	["deepUnfreeze", "Deep unfreeze"],
+	["liveFreeze", "Live freeze"],
+	["liveUnfreeze", "Live unfreeze"],
+	["blueCheckTele", "Blue check tele"],
+	["redCheckTele", "Red check tele"],
+	["air", "Air"],
+];
 
 // How large a tile layer is. Not a property like the others: it goes through
 // `layer.resize`, because a physics layer is not resized on its own.
@@ -994,6 +1017,7 @@ class CEditorPanels {
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
 		this.wireAutomap();
+		this.wireConstruct();
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
@@ -1394,6 +1418,7 @@ class CEditorPanels {
 	refreshProps() {
 		const props = this.part("props");
 		props.textContent = "";
+		this.part("construct").hidden = true;
 		if (this.map === null || this.map.groups.length === 0) {
 			this.part("props-title").textContent = "Properties";
 			return;
@@ -1417,6 +1442,7 @@ class CEditorPanels {
 				op: "layer.setProp", group: where.group, layer: where.layer, prop: field.prop, value: value,
 			})));
 		}
+		this.part("construct").hidden = layer.construct !== true;
 		if (layer.type === "tiles") {
 			for (const size of SIZE_PROPS) {
 				props.append(this.field(layer, size, value => ({
@@ -1780,6 +1806,32 @@ class CEditorPanels {
 			this.change(() => this.editor.apply({
 				op: "layer.setProp", group: where.group, layer: where.layer,
 				prop: "automapperAutomatic", value: this.part("automap-auto").checked,
+			}));
+		}, { signal: this.stopping.signal });
+	}
+
+	/**
+	 * The thirteen construct operations: a physics tile under every tile the
+	 * layer draws.
+	 *
+	 * Whether a layer can be built from at all is the program's answer
+	 * (`layer.construct` in the structure), not the page's - it depends on
+	 * where the group lies over the game layer, and the page does not know
+	 * that rule.
+	 */
+	wireConstruct() {
+		const choice = this.part("construct-tile");
+		for (const [name, label] of GAME_TILES) {
+			const option = document.createElement("option");
+			option.value = name;
+			option.textContent = label;
+			choice.append(option);
+		}
+		this.part("construct-run").addEventListener("click", () => {
+			const where = this.selection;
+			this.change(() => this.editor.apply({
+				op: "layer.constructGameTiles", group: where.group, layer: where.layer,
+				tile: choice.value,
 			}));
 		}, { signal: this.stopping.signal });
 	}

@@ -6,6 +6,7 @@
 #include <engine/shared/jsonwriter.h>
 
 #include <game/map/document/document.h>
+#include <game/map/document/edit.h>
 #include <game/map/document/structure.h>
 
 #include <algorithm>
@@ -373,6 +374,39 @@ namespace map_document
 			return false;
 		}
 
+		/**
+		 * The thirteen construct operations by name, in the order the editor
+		 * in the client offers them.
+		 */
+		bool ReadGameTile(const char *pName, EGameTile *pOut)
+		{
+			static const struct
+			{
+				const char *m_pName;
+				EGameTile m_Tile;
+			} s_aTiles[] = {
+				{"air", EGameTile::AIR},
+				{"hookable", EGameTile::HOOKABLE},
+				{"death", EGameTile::DEATH},
+				{"unhookable", EGameTile::UNHOOKABLE},
+				{"hookthrough", EGameTile::HOOKTHROUGH},
+				{"freeze", EGameTile::FREEZE},
+				{"unfreeze", EGameTile::UNFREEZE},
+				{"deepFreeze", EGameTile::DEEP_FREEZE},
+				{"deepUnfreeze", EGameTile::DEEP_UNFREEZE},
+				{"blueCheckTele", EGameTile::BLUE_CHECK_TELE},
+				{"redCheckTele", EGameTile::RED_CHECK_TELE},
+				{"liveFreeze", EGameTile::LIVE_FREEZE},
+				{"liveUnfreeze", EGameTile::LIVE_UNFREEZE},
+			};
+			const auto *pFound = std::find_if(std::begin(s_aTiles), std::end(s_aTiles),
+				[pName](const auto &Known) { return str_comp(pName, Known.m_pName) == 0; });
+			if(pFound == std::end(s_aTiles))
+				return false;
+			*pOut = pFound->m_Tile;
+			return true;
+		}
+
 		/** How long a side of a tile layer may be, as in the client. */
 		constexpr int MAX_LAYER_SIDE = 100000;
 
@@ -579,6 +613,25 @@ namespace map_document
 			ResizeLayer(Document, CLayerAddress{Group, Layer}, Width, Height);
 			Document.Commit();
 			return Succeeded();
+		}
+		if(str_comp(pOp, "layer.constructGameTiles") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			const char *pTile = Arguments.Str("tile", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pTile == nullptr)
+				return Failed("The command has no 'tile'");
+			EGameTile Tile;
+			if(!ReadGameTile(pTile, &Tile))
+				return Failed(std::string("there is no game tile called '") + pTile + "'");
+			if(!CanConstructGameTiles(Map, Group, Layer))
+				return Failed("this layer does not lie over the game layer tile for tile");
+			Document.Begin(Arguments.Str("label", "Construct game tiles"), pMerge);
+			const int Written = ConstructGameTiles(Document, Group, Layer, Tile);
+			Document.Commit();
+			return Succeeded("tiles", Written);
 		}
 		if(str_comp(pOp, "layer.setProp") == 0)
 		{

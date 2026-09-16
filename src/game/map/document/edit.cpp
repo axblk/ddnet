@@ -1,4 +1,5 @@
 #include <game/map/document/edit.h>
+#include <game/map/document/structure.h>
 #include <game/mapitems.h>
 
 #include <algorithm>
@@ -463,6 +464,119 @@ namespace map_document
 		},
 			Layer.m_ExtraTiles);
 		return vPlaces;
+	}
+
+	namespace
+	{
+		/** Which tile index one of the thirteen construct operations writes. */
+		int GameTileIndex(EGameTile Tile)
+		{
+			switch(Tile)
+			{
+			case EGameTile::AIR: return TILE_AIR;
+			case EGameTile::HOOKABLE: return TILE_SOLID;
+			case EGameTile::DEATH: return TILE_DEATH;
+			case EGameTile::UNHOOKABLE: return TILE_NOHOOK;
+			case EGameTile::HOOKTHROUGH: return TILE_THROUGH_CUT;
+			case EGameTile::FREEZE: return TILE_FREEZE;
+			case EGameTile::UNFREEZE: return TILE_UNFREEZE;
+			case EGameTile::DEEP_FREEZE: return TILE_DFREEZE;
+			case EGameTile::DEEP_UNFREEZE: return TILE_DUNFREEZE;
+			case EGameTile::BLUE_CHECK_TELE: return TILE_TELECHECKIN;
+			case EGameTile::RED_CHECK_TELE: return TILE_TELECHECKINEVIL;
+			case EGameTile::LIVE_FREEZE: return TILE_LFREEZE;
+			case EGameTile::LIVE_UNFREEZE: return TILE_LUNFREEZE;
+			}
+			dbg_assert(false, "There is no such game tile: %d", (int)Tile);
+			return TILE_AIR;
+		}
+
+		/**
+		 * Where the tele layer is, making one if the map has none.
+		 *
+		 * A new one goes at the end of the group the game layer is in and is
+		 * that layer's size, because that is what a physics layer is.
+		 */
+		CLayerAddress TeleLayer(CDocument &Doc)
+		{
+			const CMapState &Map = Doc.Edit();
+			const CLayerAddress Game = *FindGameLayer(Map);
+			for(size_t Layer = 0; Layer < Map.NumLayers(Game.m_Group); ++Layer)
+			{
+				const CTileLayer *pLayer = std::get_if<CTileLayer>(Map.Layer(Game.m_Group, Layer));
+				if(pLayer != nullptr && pLayer->m_Kind == ETileLayerKind::TELE)
+					return CLayerAddress{Game.m_Group, Layer};
+			}
+			const CTileLayer *pGame = Map.TileLayer(Game.m_Group, Game.m_Layer);
+			CTileLayer Made(ETileLayerKind::TELE, pGame->Width(), pGame->Height());
+			Made.m_Name = "Tele";
+			return AddLayer(Doc, Game.m_Group, std::move(Made));
+		}
+	} // namespace
+
+	bool CanConstructGameTiles(const CMapState &Map, size_t Group, size_t Layer)
+	{
+		if(!FindGameLayer(Map).has_value())
+			return false;
+		const CTileLayer *pDesign = std::get_if<CTileLayer>(Map.Layer(Group, Layer));
+		if(pDesign == nullptr || pDesign->m_Kind != ETileLayerKind::TILES)
+			return false;
+		const CGroup *pGroup = Map.Group(Group);
+		// The group has to sit still and sit on the grid, or "under this tile"
+		// is not a place.
+		return pGroup->m_ParallaxX == 100 && pGroup->m_ParallaxY == 100 &&
+		       pGroup->m_OffsetX % 32 == 0 && pGroup->m_OffsetY % 32 == 0;
+	}
+
+	int ConstructGameTiles(CDocument &Doc, size_t Group, size_t Layer, EGameTile Tile)
+	{
+		dbg_assert(CanConstructGameTiles(Doc.Edit(), Group, Layer), "This layer does not lie over the game layer");
+		const int Index = GameTileIndex(Tile);
+		const bool Checkpoint = Tile == EGameTile::BLUE_CHECK_TELE || Tile == EGameTile::RED_CHECK_TELE;
+
+		// Where the design layer's top left corner is in the game layer: the
+		// group moves the layer, and it moves it in whole tiles.
+		const CGroup *pGroup = Doc.Edit().Group(Group);
+		const int OffsetX = -pGroup->m_OffsetX / 32;
+		const int OffsetY = -pGroup->m_OffsetY / 32;
+		const int Width = Doc.Edit().TileLayer(Group, Layer)->Width();
+		const int Height = Doc.Edit().TileLayer(Group, Layer)->Height();
+
+		const CLayerAddress Target = Checkpoint ? TeleLayer(Doc) : *FindGameLayer(Doc.Edit());
+		const CTileLayer *pTarget = Doc.Edit().TileLayer(Target.m_Group, Target.m_Layer);
+		if(pTarget->Width() < Width + OffsetX || pTarget->Height() < Height + OffsetY)
+		{
+			ResizeLayer(Doc, Target, std::max(pTarget->Width(), Width + OffsetX),
+				std::max(pTarget->Height(), Height + OffsetY));
+		}
+
+		int Written = 0;
+		const CTileLayer Design = *Doc.Edit().TileLayer(Group, Layer);
+		EditTileLayer(Doc, Target.m_Group, Target.m_Layer, [&](CTileLayer &Changed) {
+			for(int y = std::max(-OffsetY, 0); y < Height; ++y)
+			{
+				for(int x = std::max(-OffsetX, 0); x < Width; ++x)
+				{
+					if(Design.m_Tiles.Get(x, y).m_Index == 0)
+						continue;
+					if(Checkpoint)
+					{
+						CTeleTile Check = {};
+						Check.m_Number = 1;
+						Check.m_Type = (unsigned char)Index;
+						std::get<CTileStore<CTeleTile>>(Changed.m_ExtraTiles).Set(x + OffsetX, y + OffsetY, Check);
+					}
+					else
+					{
+						CTile Wall = {};
+						Wall.m_Index = (unsigned char)Index;
+						Changed.m_Tiles.Set(x + OffsetX, y + OffsetY, Wall);
+					}
+					++Written;
+				}
+			}
+		});
+		return Written;
 	}
 
 	void PaintTiles(CDocument &Doc, size_t Group, size_t Layer, int x, int y, const CBrush &Brush)

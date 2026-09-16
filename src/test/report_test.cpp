@@ -149,6 +149,36 @@ TEST(Report, ATileLayerSaysWhichKindItIsAndHowItIsDrawn)
 	EXPECT_STREQ(json_string_get(json_object_get(pGame, "kind")), "game");
 }
 
+TEST(Report, ALayerSaysWhetherGameTilesCanBeBuiltFromIt)
+{
+	// Whether they can means knowing where the group lies over the game
+	// layer, which is the document's business rather than a page's - so the
+	// answer comes with the layer.
+	CMapState Map;
+	CGroup Design;
+	Design.m_vpLayers.push_back(std::make_shared<const CLayer>(CTileLayer(ETileLayerKind::TILES, 4, 4)));
+	Map.AddGroup(std::move(Design));
+	CGroup Moving;
+	Moving.m_ParallaxX = 50;
+	Moving.m_vpLayers.push_back(std::make_shared<const CLayer>(CTileLayer(ETileLayerKind::TILES, 4, 4)));
+	Map.AddGroup(std::move(Moving));
+	CGroup Game;
+	Game.m_vpLayers.push_back(std::make_shared<const CLayer>(CTileLayer(ETileLayerKind::GAME, 8, 8)));
+	Map.AddGroup(std::move(Game));
+
+	const CJson pJson = Parse(StructureJson(Map));
+	ASSERT_NE(pJson, nullptr);
+	const json_value *pGroups = json_object_get(pJson.get(), "groups");
+	const auto &&Construct = [pGroups](int Group) {
+		return json_boolean_get(json_object_get(json_array_get(json_object_get(json_array_get(pGroups, Group), "layers"), 0), "construct"));
+	};
+	EXPECT_TRUE(Construct(0));
+	// A group that moves with the camera is somewhere else at every moment.
+	EXPECT_FALSE(Construct(1));
+	// And the game layer is not built from itself.
+	EXPECT_FALSE(Construct(2));
+}
+
 TEST(Report, AQuadLayerSaysHowManyQuadsItHasAndNotWhichOnes)
 {
 	const CJson pJson = Parse(StructureJson(SmallMap()));

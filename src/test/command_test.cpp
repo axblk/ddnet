@@ -200,6 +200,34 @@ TEST(Command, ALayerIsResizedAndTheRefusalsSayWhy)
 		"that layer holds no tiles");
 }
 
+TEST(Command, GameTilesAreConstructedUnderWhatIsDrawn)
+{
+	CCommands Commands(TwoGroups());
+	// The sky layer is 8 by 4 over a game layer of 16 by 9; two tiles in it.
+	Commands.Ok(R"({"op":"layer.resize","group":0,"layer":0,"width":8,"height":4})");
+	CTileLayer Drawn = *Commands.m_Document.Map().TileLayer(0, 0);
+	CTile Wall = {};
+	Wall.m_Index = 9;
+	Drawn.m_Tiles.Set(1, 1, Wall);
+	Drawn.m_Tiles.Set(2, 2, Wall);
+	Commands.m_Document.Begin("Paint");
+	Commands.m_Document.Edit().ReplaceLayer(0, 0, std::move(Drawn));
+	Commands.m_Document.Commit();
+
+	const CJson pAnswer = Commands.Ok(R"({"op":"layer.constructGameTiles","group":0,"layer":0,"tile":"freeze"})");
+	EXPECT_EQ(Number(pAnswer, "tiles"), 2);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(1, 0)->m_Tiles.Get(1, 1).m_Index, TILE_FREEZE);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(1, 0)->m_Tiles.Get(2, 2).m_Index, TILE_FREEZE);
+	EXPECT_EQ(Commands.m_Document.History().Entry(Commands.m_Document.History().NumEntries() - 1).m_Label,
+		"Construct game tiles");
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.constructGameTiles","group":0,"layer":0,"tile":"lava"})"),
+		"there is no game tile called 'lava'");
+	// The game layer is not constructed from itself.
+	EXPECT_EQ(Commands.Refused(R"({"op":"layer.constructGameTiles","group":1,"layer":0,"tile":"freeze"})"),
+		"this layer does not lie over the game layer tile for tile");
+}
+
 TEST(Command, AChangeThatIsRefusedLeavesTheMapWhereItWas)
 {
 	CCommands Commands(TwoGroups());

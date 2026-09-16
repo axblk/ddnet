@@ -69,9 +69,9 @@ meant.
 
 The tool bar is not a row of buttons somebody wrote out; it is what the list of
 commands says wants one. The keyboard is a lookup in the same list, the
-tooltips take their key from it, and the menus and the palette will read it
-too. A new thing the editor can do is an entry in `commands.js`, not a new
-button:
+tooltips take their key from it, and the menu, the palette and the menu of a
+layer are built out of it. A new thing the editor can do is an entry in
+`commands.js`, not a new button:
 
 ```js
 {
@@ -84,7 +84,21 @@ button:
 
 `panels.run("view.grid")` does one by name, and answers whether it could be
 done at all - a command that says `enabled` is false is not done and its button
-is grey. Eighty-one commands answer to eighty-seven keys today.
+is grey. A hundred and twelve commands answer to ninety-two keys today.
+
+Four more fields say where else a command shows up:
+
+| Field | What it does |
+|---|---|
+| `bar` | a button on the tool bar, with `icon` |
+| `menu` | a row in the menu; `Layer/Add a layer` is a row that opens onto more |
+| `for` | the kind of thing whose own menu it belongs in - `"layer"`, `"image"`, … |
+| `palette: false` | kept out of the palette; the ten brush slots are all there is |
+
+`part` names the button in a panel that a command presses, for the commands
+that are a button and nothing else. The tool bar holds only what the plan calls
+often used - the four brush modes, undo and redo, saving, the six view
+switches, the palette and the menu - and everything else is reached by name.
 
 Six of the native editor's keys cannot be had in a browser - Chrome keeps them
 whatever a page does - so they are said differently here:
@@ -97,6 +111,34 @@ whatever a page does - so they are said differently here:
 | Ctrl+Q (add a quad) | Q | Ctrl+Q quits, on Linux |
 | Ctrl+W, Ctrl+F4 (close the map) | Ctrl+Alt+W | both close the tab |
 | Ctrl+Shift+I (hex tile info) | Ctrl+I | Ctrl+Shift+I opens the developer tools |
+
+## Everything by its name, and the menus
+
+**Ctrl+P** opens the palette: every command there is, filtered by what is
+typed. What is called exactly that comes first, then what starts with it, then
+what has a word starting with it, then what merely holds it somewhere. Arrows
+walk it, Enter takes one, Escape gives up. A command that cannot be done right
+now is still listed, greyed: knowing that the editor can do a thing at all is
+most of what a palette is for.
+
+**Alt+M**, or the ☰ button, opens the menu - File, Edit, View, Layer, Tools,
+Settings, Help, in that order, out of the same list.
+
+**A right-click** on a row of the tree, of the pictures, of the sounds, of the
+quads, of the sources or of the settings opens the menu of that thing: what can
+be *done* to it, and nothing about what it *is* - properties live in the
+inspector, and a property with two homes is a property that disagrees with
+itself. A tile layer that lies over the game layer also gets the thirteen
+physics tiles as a submenu, which is the native editor's
+"Game tiles from this layer".
+
+Two things ask before they happen, because they cannot be undone into shape:
+**New map** wants a name and a size, and **Save as** wants a name. Everything
+else the editor does happens and can be undone.
+
+All of that floats in a layer of its own over the six areas, so that a menu
+opened from the tree is not cut off by the edge of the column the tree stands
+in.
 
 ## What it is made of
 

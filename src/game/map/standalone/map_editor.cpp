@@ -235,6 +235,16 @@ const char *CMapEditor::Name(int Id) const
 	return pMap == nullptr ? "" : pMap->m_Name.c_str();
 }
 
+bool CMapEditor::Rename(int Id, const char *pName)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return false;
+	pMap->m_Name = pName == nullptr || pName[0] == '\0' ? UNNAMED : pName;
+	Touch();
+	return true;
+}
+
 std::string CMapEditor::Apply(int Id, const char *pJson)
 {
 	CMap *pMap = Find(Id);

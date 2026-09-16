@@ -23,7 +23,7 @@
  */
 
 import DDNetBase, { addIcons, followSize, Program } from "@ddnet/base";
-import { COMMANDS, commandRole, commandTitle, keyName, keyTable } from "./commands.js";
+import { COMMANDS, commandRole, commandTitle, keyLabel, keyName, keyTable } from "./commands.js";
 
 // The pictures on the editor's own buttons. Named as the viewer names its
 // own, so that a page which shows both says the same thing twice rather than
@@ -42,6 +42,9 @@ addIcons({
 	erase: '<path d="M8.5 20.5 3 15a1.6 1.6 0 0 1 0-2.3l9.2-9.2a1.6 1.6 0 0 1 2.3 0l6.5 6.5a1.6 1.6 0 0 1 0 2.3l-8.2 8.2ZM8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
 	folder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
 	add: '<path d="M12 4.5v15M4.5 12h15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+	search: '<circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 15l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+	menu: '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
+	info: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.2" fill="currentColor"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -124,6 +127,16 @@ class CMapEditor extends Program {
 	/** What a map is called. */
 	name(id) {
 		return this.call("MapEditorName", "string", ["number"], [this.which(id)]) || "";
+	}
+
+	/**
+	 * Calls a map something else.
+	 *
+	 * The name is the name of the file the map is written to, so renaming and
+	 * then saving is what "save as" is.
+	 */
+	rename(id, name) {
+		return this.call("MapEditorRename", "number", ["number", "string"], [this.which(id), name]) === 1;
 	}
 
 	/** Puts a map in front. */
@@ -934,6 +947,14 @@ const PANEL_PLACES = [
 /** The two areas that show one panel at a time, and what they are called. */
 const TABBED_AREAS = { left: "structure", dock: "dock" };
 
+// Two editors on a page are two of everything, and a row of a list can only
+// be pointed at by an id that is the page's alone.
+let overCount = 0;
+
+// The order the menu puts its headings in: what a map is, then what was just
+// done to it, then what one is looking at, then the things one reaches for.
+const MENU_ORDER = ["File", "Edit", "View", "Layer", "Tools", "Settings", "Help"];
+
 const PANELS_HTML = `
 <div class="editor-bar" data-role="bar">
 	<span class="editor-status" data-role="status" role="status"></span>
@@ -1350,6 +1371,15 @@ class CEditorPanels {
 		// The big tile chooser over the map, and whether it stays open when
 		// the key that opened it is let go of.
 		this.picker = null;
+		// What floats over the whole box, and where it floats in.
+		this.over = null;
+		this.overId = `ed${++overCount}`;
+		this.palette = null;
+		this.paletteAt = 0;
+		this.paletteRows = [];
+		this.menu = null;
+		this.context = null;
+		this.dialog = null;
 		this.pickerPinned = false;
 		// The list of layers under a spot on the map.
 		this.chooser = null;
@@ -1600,6 +1630,770 @@ class CEditorPanels {
 			return;
 		}
 		this.paintTileset(this.picker.querySelector('[data-role="picker-tiles"]'));
+	}
+
+	/**
+	 * Where a thing that floats over everything goes.
+	 *
+	 * In a box that is a layer of its own above the six areas, so that a menu
+	 * opened from a row of the tree is not cut off by the edge of the column
+	 * the tree stands in. Without a box it is whatever holds the canvas,
+	 * which is then the only thing there is.
+	 */
+	overlayHome() {
+		const box = this.box;
+		if (box !== null && box !== undefined && box.shadowRoot !== null && box.shadowRoot !== undefined) {
+			if (this.over === null) {
+				this.over = document.createElement("div");
+				this.over.className = "editor-over";
+				this.over.slot = "over";
+				box.append(this.over);
+			}
+			return this.over;
+		}
+		const canvas = this.editor.canvas;
+		return canvas === null || canvas === undefined ? null : canvas.parentElement;
+	}
+
+	/**
+	 * Brings whatever carries that name into view and hands it back.
+	 *
+	 * A command that is a button in a panel has to open the panel first, or
+	 * it would press a button nobody can see and the page would change
+	 * somewhere the eye is not. Which tab a panel is in is not written down
+	 * twice: the panel says where it hangs, and `PANEL_PLACES` says which tab
+	 * that is.
+	 */
+	reveal(role) {
+		const found = this.part(role);
+		if (found === null) {
+			return null;
+		}
+		const panel = found.closest("[data-role$=\"-panel\"]");
+		const place = panel === null ? undefined : PANEL_PLACES.find(which => which.role === panel.dataset.role);
+		if (place !== undefined) {
+			// The dock opens by being told which tab it shows; the two
+			// columns are shown or not shown.
+			if (place.area === "left" || place.area === "right") {
+				this.showArea(place.area, true);
+			}
+			if (place.tab !== undefined && place.tab !== null) {
+				this.showTab(place.area, place.tab);
+			}
+		}
+		// The tiles panel has two tabs of its own, and some of the buttons
+		// live in the second one.
+		if (found.closest('[data-role="automap"]') !== null) {
+			this.tab.tiles = "automap";
+			this.applyTilesTab();
+		} else if (found.closest('[data-role="tiles-body"]') !== null) {
+			this.tab.tiles = "tiles";
+			this.applyTilesTab();
+		}
+		return found;
+	}
+
+	/** Which of the two schemes the editor is drawn in. */
+	scheme(next) {
+		const box = this.box;
+		const read = () => {
+			const said = box !== null && box !== undefined ? box.getAttribute("theme") : this.root.dataset.theme;
+			return said === "light" ? "light" : "dark";
+		};
+		if (next === undefined) {
+			return read();
+		}
+		if (box !== null && box !== undefined) {
+			box.setAttribute("theme", next);
+		} else {
+			this.root.dataset.theme = next;
+		}
+		this.refreshBar();
+		return read();
+	}
+
+	/**
+	 * Every command that a palette would show, with what it was asked about
+	 * in front.
+	 *
+	 * The order is: what is called exactly that, then what starts with what
+	 * was typed, then what has a word starting with it, then what merely
+	 * holds it somewhere, then what only the group is called. Within a rank
+	 * the order is the list's own, which is the order of the tool bar - so an
+	 * empty question answers with the things one does most.
+	 *
+	 * The exact rank is there because one name can be the beginning of
+	 * another: typing all of "Turn the brush over" would otherwise answer
+	 * with "Turn the brush over sideways", which stands earlier in the list.
+	 */
+	findCommands(question) {
+		const asked = question.trim().toLowerCase();
+		const out = [];
+		this.commands.forEach((command, index) => {
+			if (command.palette === false) {
+				return;
+			}
+			const label = command.label.toLowerCase();
+			const group = command.group.toLowerCase();
+			if (asked === "") {
+				out.push({ command: command, rank: 0, index: index });
+				return;
+			}
+			const at = label.indexOf(asked);
+			let rank = -1;
+			if (label === asked) {
+				rank = 0;
+			} else if (at === 0) {
+				rank = 1;
+			} else if (at > 0 && !/[a-z0-9]/.test(label[at - 1])) {
+				rank = 2;
+			} else if (at > 0) {
+				rank = 3;
+			} else if (group.includes(asked) || command.id.toLowerCase().includes(asked)) {
+				rank = 4;
+			}
+			if (rank >= 0) {
+				out.push({ command: command, rank: rank, index: index });
+			}
+		});
+		out.sort((one, other) => one.rank - other.rank || one.index - other.index);
+		return out.map(found => found.command);
+	}
+
+	/**
+	 * The palette: every command there is, by its name.
+	 *
+	 * The rows are built once and only shown or hidden afterwards. A hundred
+	 * rows built again on every keystroke would be work for nothing, and the
+	 * rows never change - only which of them are the answer does.
+	 */
+	buildPalette() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return false;
+		}
+		this.palette = document.createElement("div");
+		this.palette.className = "editor-palette";
+		this.palette.dataset.role = "palette";
+		this.palette.hidden = true;
+		this.palette.setAttribute("role", "dialog");
+		this.palette.setAttribute("aria-label", "Everything the editor can do");
+		const listId = `${this.overId}-palette`;
+		this.palette.innerHTML = `<input class="editor-palette-find" data-role="palette-find" type="text"
+	role="combobox" aria-expanded="true" aria-controls="${listId}" aria-autocomplete="list"
+	placeholder="What should happen?" aria-label="What should happen?" spellcheck="false">
+<ul class="editor-palette-list" data-role="palette-list" role="listbox" id="${listId}"
+	aria-label="Everything the editor can do"></ul>
+<p class="editor-palette-none" data-role="palette-none" hidden>Nothing is called that.</p>`;
+		const list = this.palette.querySelector('[data-role="palette-list"]');
+		this.paletteRows = this.commands.filter(command => command.palette !== false).map((command, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-palette-row";
+			row.id = `${listId}-${index}`;
+			row.dataset.command = command.id;
+			row.setAttribute("role", "option");
+			row.setAttribute("aria-selected", "false");
+			const what = document.createElement("span");
+			what.className = "editor-palette-what";
+			what.textContent = command.label;
+			const where = document.createElement("span");
+			where.className = "editor-palette-where";
+			where.textContent = command.group;
+			const key = document.createElement("kbd");
+			key.className = "editor-palette-key";
+			key.textContent = command.keys === undefined || command.keys.length === 0 ? "" : keyLabel(command.keys[0]);
+			row.append(what, where, key);
+			// The pointer is not allowed to take the focus off the field: the
+			// field is what the keyboard is talking to, and a click that
+			// blurred it would close the palette before the click arrived.
+			row.addEventListener("mousedown", event => event.preventDefault(), { signal: this.stopping.signal });
+			row.addEventListener("click", () => this.runFromPalette(command), { signal: this.stopping.signal });
+			list.append(row);
+			return { command: command, row: row };
+		});
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		find.addEventListener("input", () => this.refreshPalette(), { signal: this.stopping.signal });
+		this.palette.addEventListener("keydown", event => this.onPaletteKey(event), { signal: this.stopping.signal });
+		home.append(this.palette);
+		return true;
+	}
+
+	/** Arrows walk the answer, Enter takes one, Escape gives up. */
+	onPaletteKey(event) {
+		const shown = this.paletteRows.filter(row => !row.row.hidden);
+		if (event.key === "Escape") {
+			event.stopPropagation();
+			event.preventDefault();
+			this.showPalette(false);
+			return;
+		}
+		if (event.key === "Enter") {
+			event.stopPropagation();
+			event.preventDefault();
+			if (shown.length > 0) {
+				this.runFromPalette(shown[Math.min(this.paletteAt, shown.length - 1)].command);
+			}
+			return;
+		}
+		const step = event.key === "ArrowDown" ? 1 : (event.key === "ArrowUp" ? -1 : 0);
+		if (step === 0) {
+			// Anything else is typing, and typing is the field's business -
+			// but not the editor's, or `G` would turn the grid on.
+			event.stopPropagation();
+			return;
+		}
+		event.stopPropagation();
+		event.preventDefault();
+		if (shown.length === 0) {
+			return;
+		}
+		this.paletteAt = (this.paletteAt + step + shown.length) % shown.length;
+		this.markPalette(shown);
+	}
+
+	/** Which row is the one Enter would take. */
+	markPalette(shown) {
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		for (const row of this.paletteRows) {
+			row.row.classList.remove("editor-palette-at");
+			row.row.setAttribute("aria-selected", "false");
+		}
+		if (shown.length === 0) {
+			find.removeAttribute("aria-activedescendant");
+			return;
+		}
+		const at = shown[Math.min(this.paletteAt, shown.length - 1)].row;
+		at.classList.add("editor-palette-at");
+		at.setAttribute("aria-selected", "true");
+		find.setAttribute("aria-activedescendant", at.id);
+		at.scrollIntoView({ block: "nearest" });
+	}
+
+	/** Shows the rows that answer what was typed, and grays what cannot be done. */
+	refreshPalette() {
+		const question = this.palette.querySelector('[data-role="palette-find"]').value;
+		const answer = new Set(this.findCommands(question).map(command => command.id));
+		const order = this.findCommands(question);
+		const list = this.palette.querySelector('[data-role="palette-list"]');
+		for (const found of order) {
+			const row = this.paletteRows.find(which => which.command === found);
+			list.append(row.row);
+		}
+		let shown = [];
+		for (const row of this.paletteRows) {
+			const wanted = answer.has(row.command.id);
+			row.row.hidden = !wanted;
+			const can = row.command.enabled === undefined || row.command.enabled(this);
+			row.row.classList.toggle("editor-palette-cannot", !can);
+			row.row.setAttribute("aria-disabled", can ? "false" : "true");
+			if (wanted) {
+				shown.push(row);
+			}
+		}
+		shown = this.paletteRows.filter(row => !row.row.hidden);
+		this.palette.querySelector('[data-role="palette-none"]').hidden = shown.length > 0;
+		this.paletteAt = 0;
+		this.markPalette(shown);
+	}
+
+	/** Takes a row: the palette goes away first, so that what it does is seen. */
+	runFromPalette(command) {
+		this.showPalette(false);
+		this.run(command.id);
+	}
+
+	showPalette(on) {
+		if (this.palette === null && on === true && !this.buildPalette()) {
+			return;
+		}
+		if (this.palette === null) {
+			return;
+		}
+		this.showMenu(false);
+		this.closeContext();
+		this.palette.hidden = on !== true;
+		if (on !== true) {
+			this.refreshBar();
+			const canvas = this.editor.canvas;
+			if (canvas !== null && canvas !== undefined) {
+				canvas.focus();
+			}
+			return;
+		}
+		const find = this.palette.querySelector('[data-role="palette-find"]');
+		find.value = "";
+		this.refreshPalette();
+		find.focus();
+		this.refreshBar();
+	}
+
+	/**
+	 * The menu, out of the same list.
+	 *
+	 * A command says which heading it hangs under, and a heading with a slash
+	 * in it is a row that opens: `Layer/Add a layer` puts the eight kinds of
+	 * layer behind one row rather than eight rows in the way of everything
+	 * else.
+	 */
+	buildMenu() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return false;
+		}
+		this.menu = document.createElement("div");
+		this.menu.className = "editor-menu";
+		this.menu.dataset.role = "menu";
+		this.menu.hidden = true;
+		this.menu.setAttribute("role", "menu");
+		this.menu.setAttribute("aria-label", "The menu");
+		const heads = new Map();
+		for (const command of this.commands) {
+			if (command.menu === undefined) {
+				continue;
+			}
+			const [head, under] = command.menu.split("/");
+			if (!heads.has(head)) {
+				heads.set(head, { plain: [], under: new Map() });
+			}
+			const at = heads.get(head);
+			if (under === undefined) {
+				at.plain.push(command);
+			} else {
+				if (!at.under.has(under)) {
+					at.under.set(under, []);
+				}
+				at.under.get(under).push(command);
+			}
+		}
+		const named = [...heads.keys()].sort((one, other) => {
+			const a = MENU_ORDER.indexOf(one);
+			const b = MENU_ORDER.indexOf(other);
+			return (a < 0 ? MENU_ORDER.length : a) - (b < 0 ? MENU_ORDER.length : b);
+		});
+		for (const head of named) {
+			const section = document.createElement("section");
+			section.className = "editor-menu-part";
+			const title = document.createElement("h3");
+			title.className = "editor-menu-head";
+			title.textContent = head;
+			section.append(title);
+			for (const command of heads.get(head).plain) {
+				section.append(this.menuRow(command));
+			}
+			for (const [under, commands] of heads.get(head).under) {
+				section.append(this.menuFold(under, commands));
+			}
+			this.menu.append(section);
+		}
+		this.menu.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.showMenu(false);
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.menu);
+		return true;
+	}
+
+	/** One command as a row of a menu. */
+	menuRow(command) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = "editor-menu-row";
+		row.dataset.command = command.id;
+		row.setAttribute("role", "menuitem");
+		const what = document.createElement("span");
+		what.textContent = command.label;
+		const key = document.createElement("kbd");
+		key.className = "editor-menu-key";
+		key.textContent = command.keys === undefined || command.keys.length === 0 ? "" : keyLabel(command.keys[0]);
+		row.append(what, key);
+		row.addEventListener("click", () => {
+			this.showMenu(false);
+			this.closeContext();
+			this.run(command.id);
+		}, { signal: this.stopping.signal });
+		return row;
+	}
+
+	/** A row that opens onto more rows. */
+	menuFold(label, commands) {
+		const holder = document.createElement("div");
+		holder.className = "editor-menu-fold";
+		const open = document.createElement("button");
+		open.type = "button";
+		open.className = "editor-menu-row editor-menu-more";
+		open.setAttribute("aria-expanded", "false");
+		open.innerHTML = `<span></span><span class="editor-menu-arrow" aria-hidden="true">▸</span>`;
+		open.firstElementChild.textContent = label;
+		const under = document.createElement("div");
+		under.className = "editor-menu-under";
+		under.hidden = true;
+		for (const command of commands) {
+			under.append(this.menuRow(command));
+		}
+		open.addEventListener("click", () => {
+			const shown = under.hidden;
+			under.hidden = !shown;
+			open.setAttribute("aria-expanded", shown ? "true" : "false");
+			if (shown) {
+				this.refreshMenu();
+			}
+		}, { signal: this.stopping.signal });
+		holder.append(open, under);
+		return holder;
+	}
+
+	/** What can be done right now, and what is on. */
+	refreshMenu() {
+		if (this.menu === null) {
+			return;
+		}
+		for (const row of this.menu.querySelectorAll("[data-command]")) {
+			const command = this.commands.find(which => which.id === row.dataset.command);
+			if (command === undefined) {
+				continue;
+			}
+			row.disabled = command.enabled !== undefined && !command.enabled(this);
+			if (command.pressed !== undefined) {
+				row.setAttribute("aria-checked", command.pressed(this) ? "true" : "false");
+				row.setAttribute("role", "menuitemcheckbox");
+			}
+		}
+	}
+
+	showMenu(on) {
+		if (this.menu === null && on === true && !this.buildMenu()) {
+			return;
+		}
+		if (this.menu === null) {
+			return;
+		}
+		if (on === true) {
+			this.showPalette(false);
+			this.closeContext();
+			this.refreshMenu();
+		}
+		this.menu.hidden = on !== true;
+		if (on === true) {
+			this.placeAt(this.menu, this.part(commandRole(this.commands.find(which => which.id === "menu.open"))));
+			const first = this.menu.querySelector("button:not(:disabled)");
+			if (first !== null) {
+				first.focus();
+			}
+		}
+		this.refreshBar();
+	}
+
+	/**
+	 * Puts a thing that floats under the button it belongs to, or at a spot,
+	 * and keeps it inside the editor.
+	 *
+	 * Measured after it is shown, because a hidden box has no size and a menu
+	 * placed by the size it does not have yet would hang off the edge.
+	 */
+	placeAt(what, anchor) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		const room = home.getBoundingClientRect();
+		const size = what.getBoundingClientRect();
+		let left = room.width - size.width - 8;
+		let top = 8;
+		if (anchor instanceof Element) {
+			const at = anchor.getBoundingClientRect();
+			left = at.right - room.left - size.width;
+			top = at.bottom - room.top + 4;
+		} else if (anchor !== null && anchor !== undefined) {
+			left = anchor.x - room.left;
+			top = anchor.y - room.top;
+		}
+		what.style.left = `${Math.max(4, Math.min(left, room.width - size.width - 4))}px`;
+		what.style.top = `${Math.max(4, Math.min(top, room.height - size.height - 4))}px`;
+	}
+
+	/**
+	 * The menu of a thing: what can be done to the layer, the picture, the
+	 * quad that was clicked, and nothing about what it is - that is the
+	 * inspector's, and a property with two homes is a property that disagrees
+	 * with itself.
+	 */
+	showContext(kind, at) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeContext();
+		this.showMenu(false);
+		this.showPalette(false);
+		const commands = this.commands.filter(command => command.for !== undefined
+			&& [].concat(command.for).includes(kind)
+			&& (command.enabled === undefined || command.enabled(this)));
+		const layer = kind === "layer" ? this.selectedLayer() : null;
+		const physics = layer !== null && layer.construct === true;
+		if (commands.length === 0 && !physics) {
+			return;
+		}
+		this.context = document.createElement("div");
+		this.context.className = "editor-menu editor-context";
+		this.context.dataset.role = "context";
+		this.context.setAttribute("role", "menu");
+		this.context.setAttribute("aria-label", `What can be done with this ${kind}`);
+		for (const command of commands) {
+			this.context.append(this.menuRow(command));
+		}
+		if (physics) {
+			this.context.append(this.gameTilesFold());
+		}
+		this.context.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.closeContext();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.context);
+		this.placeAt(this.context, at);
+		const first = this.context.querySelector("button:not(:disabled)");
+		if (first !== null) {
+			first.focus();
+		}
+	}
+
+	/** The thirteen physics tiles, behind one row. */
+	gameTilesFold() {
+		const holder = document.createElement("div");
+		holder.className = "editor-menu-fold";
+		const open = document.createElement("button");
+		open.type = "button";
+		open.className = "editor-menu-row editor-menu-more";
+		open.dataset.role = "game-tiles";
+		open.setAttribute("aria-expanded", "false");
+		open.innerHTML = `<span>Physics tiles from this layer</span><span class="editor-menu-arrow" aria-hidden="true">▸</span>`;
+		const under = document.createElement("div");
+		under.className = "editor-menu-under";
+		under.hidden = true;
+		for (const [name, label] of GAME_TILES) {
+			const row = document.createElement("button");
+			row.type = "button";
+			row.className = "editor-menu-row";
+			row.dataset.tile = name;
+			row.setAttribute("role", "menuitem");
+			row.textContent = label;
+			row.addEventListener("click", () => {
+				const where = this.selection;
+				this.closeContext();
+				this.change(() => this.editor.apply({
+					op: "layer.constructGameTiles", group: where.group, layer: where.layer, tile: name,
+				}));
+			}, { signal: this.stopping.signal });
+			under.append(row);
+		}
+		open.addEventListener("click", () => {
+			under.hidden = !under.hidden;
+			open.setAttribute("aria-expanded", under.hidden ? "false" : "true");
+		}, { signal: this.stopping.signal });
+		holder.append(open, under);
+		return holder;
+	}
+
+	closeContext() {
+		if (this.context === null) {
+			return;
+		}
+		this.context.remove();
+		this.context = null;
+	}
+
+	/**
+	 * A press beside a thing that floats puts it away.
+	 *
+	 * The button that opened it is left out, or a press on it would close the
+	 * menu and the click that follows would open it again - and a button that
+	 * does nothing when pressed twice is a button nobody trusts. The dialogue
+	 * is left out too: it was asked a question and wants an answer.
+	 */
+	wireClickAway() {
+		document.addEventListener("pointerdown", event => {
+			if (this.dialog !== null) {
+				return;
+			}
+			const path = event.composedPath();
+			const inside = what => what !== null && what !== undefined && path.includes(what);
+			const onButtonFor = id => path.some(node => node instanceof Element
+				&& node.dataset !== undefined && node.dataset.command === id);
+			if (this.context !== null && !inside(this.context)) {
+				this.closeContext();
+			}
+			if (this.menu !== null && !this.menu.hidden && !inside(this.menu) && !onButtonFor("menu.open")) {
+				this.showMenu(false);
+			}
+			if (this.palette !== null && !this.palette.hidden && !inside(this.palette) && !onButtonFor("palette.open")) {
+				this.showPalette(false);
+			}
+		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	/**
+	 * A right-click on a row of a list opens the menu of what that row is.
+	 *
+	 * The row is picked first, because a menu that acted on something other
+	 * than what was clicked would be a menu nobody could trust; picking is
+	 * what a plain click does, so a plain click is what it is told to do.
+	 */
+	wireContextMenus() {
+		const lists = [
+			["tree", null],
+			["image-list", "image"],
+			["sound-list", "sound"],
+			["quad-list", "quad"],
+			["source-list", "source"],
+			["setting-list", "setting"],
+		];
+		for (const [role, kind] of lists) {
+			const list = this.part(role);
+			if (list === null) {
+				continue;
+			}
+			list.addEventListener("contextmenu", event => {
+				// Ctrl and the right button together is the layer chooser's,
+				// and that one is about the map, not about a list.
+				const row = kind === null
+					? event.target.closest('[data-role="layer"], [data-role="group"]')
+					: event.target.closest("li");
+				if (row === null) {
+					return;
+				}
+				event.preventDefault();
+				row.click();
+				const what = kind === null ? row.dataset.role : kind;
+				this.showContext(what, { x: event.clientX, y: event.clientY });
+			}, { signal: this.stopping.signal });
+		}
+	}
+
+	/**
+	 * A dialogue: the few things that need an answer before they can happen.
+	 *
+	 * It is one box with a heading, some fields and two buttons, built from a
+	 * list of what to ask, because a new map and a new name are the same
+	 * shape and only differ in what is asked.
+	 */
+	askFor(title, fields, done) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeDialog();
+		this.dialog = document.createElement("div");
+		this.dialog.className = "editor-dialog";
+		this.dialog.dataset.role = "dialog";
+		this.dialog.setAttribute("role", "dialog");
+		this.dialog.setAttribute("aria-modal", "true");
+		this.dialog.setAttribute("aria-label", title);
+		const form = document.createElement("form");
+		form.className = "editor-dialog-body";
+		const head = document.createElement("h2");
+		head.className = "editor-dialog-head";
+		head.textContent = title;
+		form.append(head);
+		const inputs = new Map();
+		for (const field of fields) {
+			const label = document.createElement("label");
+			label.className = "editor-dialog-field";
+			const name = document.createElement("span");
+			name.textContent = field.label;
+			const input = document.createElement("input");
+			input.type = field.kind === "number" ? "number" : "text";
+			input.dataset.role = `dialog-${field.name}`;
+			input.value = String(field.value);
+			if (field.kind === "number") {
+				input.min = String(field.min);
+				input.max = String(field.max);
+			}
+			label.append(name, input);
+			form.append(label);
+			inputs.set(field.name, input);
+		}
+		const row = document.createElement("div");
+		row.className = "editor-dialog-buttons";
+		const cancel = document.createElement("button");
+		cancel.type = "button";
+		cancel.className = "editor-small";
+		cancel.dataset.role = "dialog-cancel";
+		cancel.textContent = "Never mind";
+		const go = document.createElement("button");
+		go.type = "submit";
+		go.className = "editor-small editor-dialog-go";
+		go.dataset.role = "dialog-go";
+		go.textContent = title;
+		row.append(cancel, go);
+		form.append(row);
+		this.dialog.append(form);
+		cancel.addEventListener("click", () => this.closeDialog(), { signal: this.stopping.signal });
+		form.addEventListener("submit", event => {
+			event.preventDefault();
+			const answer = {};
+			for (const [name, input] of inputs) {
+				answer[name] = input.type === "number" ? Number(input.value) : input.value;
+			}
+			this.closeDialog();
+			done(answer);
+		}, { signal: this.stopping.signal });
+		this.dialog.addEventListener("keydown", event => {
+			event.stopPropagation();
+			if (event.key === "Escape") {
+				event.preventDefault();
+				this.closeDialog();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.dialog);
+		const first = this.dialog.querySelector("input");
+		if (first !== null) {
+			first.focus();
+			first.select();
+		}
+	}
+
+	closeDialog() {
+		if (this.dialog === null) {
+			return;
+		}
+		this.dialog.remove();
+		this.dialog = null;
+		const canvas = this.editor.canvas;
+		if (canvas !== null && canvas !== undefined) {
+			canvas.focus();
+		}
+	}
+
+	/** How big, and called what. */
+	askNewMap() {
+		this.askFor("New map", [
+			{ name: "name", label: "Name", kind: "text", value: "untitled" },
+			{ name: "width", label: "Tiles across", kind: "number", value: 100, min: 2, max: 1000 },
+			{ name: "height", label: "Tiles down", kind: "number", value: 50, min: 2, max: 1000 },
+		], answer => {
+			this.editor.create(Math.max(2, answer.width), Math.max(2, answer.height), answer.name || "untitled");
+			this.refresh();
+		});
+	}
+
+	/** Called what, from now on - the name is the name of the file. */
+	askSaveAs() {
+		this.askFor("Save as", [
+			{ name: "name", label: "Name", kind: "text", value: this.editor.name() },
+		], answer => {
+			const name = (answer.name || "").trim();
+			if (name === "") {
+				return;
+			}
+			this.editor.rename(undefined, name);
+			this.editor.save();
+			this.refresh();
+		});
 	}
 
 	/**
@@ -1862,6 +2656,18 @@ class CEditorPanels {
 			this.overlay.remove();
 			this.overlay = null;
 		}
+		for (const floating of [this.picker, this.chooser, this.over]) {
+			if (floating !== null && floating !== undefined) {
+				floating.remove();
+			}
+		}
+		this.picker = null;
+		this.chooser = null;
+		this.over = null;
+		this.palette = null;
+		this.menu = null;
+		this.context = null;
+		this.dialog = null;
 		this.root.remove();
 	}
 
@@ -1887,6 +2693,8 @@ class CEditorPanels {
 		this.wireQuads();
 		this.wireImages();
 		this.wireInfo();
+		this.wireContextMenus();
+		this.wireClickAway();
 		on("delete", () => this.run("layer.delete"));
 		on("up", () => this.run("layer.up"));
 		on("down", () => this.run("layer.down"));
@@ -2014,6 +2822,22 @@ class CEditorPanels {
 	 * focus, which always ends up on the map.
 	 */
 	escape() {
+		if (this.dialog !== null) {
+			this.closeDialog();
+			return;
+		}
+		if (this.context !== null) {
+			this.closeContext();
+			return;
+		}
+		if (this.menu !== null && !this.menu.hidden) {
+			this.showMenu(false);
+			return;
+		}
+		if (this.palette !== null && !this.palette.hidden) {
+			this.showPalette(false);
+			return;
+		}
 		if (this.carving !== null) {
 			this.knife();
 			return;
@@ -5138,6 +5962,18 @@ const BOX_STYLE = `
 	overflow: hidden;
 }
 
+/* Above the six areas and over all of them: a menu opened from a row of the
+   tree would otherwise be cut off by the edge of the column the tree stands
+   in, and the column is the narrowest thing on the screen. The layer itself
+   catches nothing - only what is put in it does, or the map under it would
+   stop hearing the pointer. */
+.over {
+	position: absolute;
+	inset: 0;
+	z-index: 5;
+	pointer-events: none;
+}
+
 /* An area nobody filled takes no room at all - not a line, not a gap. The
    class is set from a slotchange, because a slot with nothing in it is still
    a box as far as the grid is concerned. */
@@ -5164,6 +6000,7 @@ const BOX_HTML = `
 	<div class="area dock"><slot name="dock"></slot></div>
 	<div class="area status"><slot name="status"></slot></div>
 </div>
+<div class="over"><slot name="over"></slot></div>
 `;
 
 /**

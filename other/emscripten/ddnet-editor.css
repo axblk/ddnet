@@ -1377,3 +1377,58 @@ ddnet-editor .editor-dialog-go:focus,
 	background: var(--accent);
 	border-color: var(--accent);
 }
+
+/* The name beside the icon on the four mode buttons. Whether there is room
+   for the words is the box's answer, not the window's: `data-bar` is set from
+   the table in `map-editor.js`, which is the only place the widths are
+   written down. */
+.editor-button-text {
+	display: none;
+	margin-left: var(--space-1);
+}
+
+ddnet-editor[data-bar="labels"] .editor-button-text {
+	display: inline;
+}
+
+ddnet-editor[data-bar="labels"] .editor-bar .editor-button {
+	width: auto;
+	padding: 0 var(--space-2);
+}
+
+/* A side that lies over the map says so: it is over something, so it needs a
+   back of its own and an edge that shows where it ends. */
+ddnet-editor[data-left="drawer"] .editor-left,
+ddnet-editor[data-right="drawer"] .editor-right,
+ddnet-editor[data-left="sheet"] .editor-left,
+ddnet-editor[data-right="sheet"] .editor-right {
+	background: var(--bg-1);
+	box-shadow: var(--shadow);
+}
+
+ddnet-editor[data-left="drawer"] .editor-left,
+ddnet-editor[data-left="sheet"] .editor-left {
+	border-right: 1px solid var(--line-strong);
+}
+
+ddnet-editor[data-right="drawer"] .editor-right,
+ddnet-editor[data-right="sheet"] .editor-right {
+	border-left: 1px solid var(--line-strong);
+}
+
+/* The status as a chip: the same line, in a box of its own with a back, so
+   that it can be read over whatever the map happens to be drawing there. */
+ddnet-editor[data-status="chip"] .editor-statusbar {
+	margin: var(--space-2);
+	padding: 0 var(--space-2);
+	background: var(--bg-1);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-2);
+	box-shadow: var(--shadow);
+}
+
+ddnet-editor[data-dock="overlay"] .editor-dock {
+	background: var(--bg-1);
+	border-top: 1px solid var(--line-strong);
+	box-shadow: var(--shadow);
+}

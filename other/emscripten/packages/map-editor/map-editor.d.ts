@@ -400,6 +400,10 @@ export declare class EditorPanels {
 	showTab(area: "left" | "dock", tab: string): void;
 	/** Brings whatever carries that name into view, and hands it back. */
 	reveal(role: string): Element | null;
+	/** Whether nothing may be changed - what `readonly` on the element sets. */
+	readonly readonly: boolean;
+	/** Takes the shape the box says it is in. */
+	applyShape(shape: EditorLayout): void;
 	/** Which of the two schemes the editor is drawn in. */
 	scheme(next?: "dark" | "light"): "dark" | "light";
 	/** Shows or hides the palette of everything the editor can do. */
@@ -458,6 +462,33 @@ export declare class EditorElement extends HTMLElement {
 	readonly ready: Promise<MapEditor> | null;
 	/** One of this editor's parts by the name it carries in `data-role`. */
 	part(role: string): Element | null;
+	/**
+	 * What shape the editor is in, worked out from the size of its box and
+	 * from `controls` and `readonly`. Read it; it is not settable.
+	 */
+	readonly layout: EditorLayout;
+}
+
+/** The shape of an editor: what it decided, at the size it is. */
+export interface EditorLayout {
+	width: number;
+	height: number;
+	/** `phone`, `small`, `medium`, `wide`, `desk`, `huge`. */
+	size: string;
+	/** `short`, `low`, `tall`, `high`. */
+	tallness: string;
+	/** `column`, `drawer`, `sheet`, or `none` for the inspector when read-only. */
+	left: string;
+	right: string;
+	/** `none`, `looking`, `few`, `icons`, `labels`. */
+	bar: string;
+	/** `one` or `two` rows above the map. */
+	head: string;
+	/** `line` or `chip`. */
+	status: string;
+	/** `strip` beside the map's foot, or `overlay` over it. */
+	dock: string;
+	readonly: boolean;
 }
 
 export declare const programUrl: string;

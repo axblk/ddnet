@@ -11,6 +11,7 @@
 
 #include <game/map/document/map_file.h>
 #include <game/map/document/structure.h>
+#include <game/map/document/view.h>
 #include <game/map/document_images.h>
 #include <game/map/document_render.h>
 #include <game/map/standalone/map_view.h>
@@ -160,11 +161,22 @@ int main(int argc, const char **argv)
 		const map_document::CTileLayer *pGame = pMap->TileLayer(Game->m_Group, Game->m_Layer);
 		WorldSize = vec2(pGame->Width() * 32.0f, pGame->Height() * 32.0f);
 	}
-	const vec2 ViewSize = View.ViewSize();
+
+	// The camera is the editor's, so that what this draws is what the editor
+	// would draw - and so that the sums the page does to turn a click into a
+	// tile are held against a picture rather than only against themselves.
+	map_document::CView Camera;
+	Camera.SetSurface(View.Width(), View.Height());
+	Camera.Fit(WorldSize);
+	if(!AutoPosition)
+		Camera.SetCenter(Position * 32.0f);
+	if(!AutoZoom)
+		Camera.SetZoom(Zoom);
 
 	CDocumentRenderer::CParams Params;
-	Params.m_Center = AutoPosition ? WorldSize / 2.0f : Position * 32.0f;
-	Params.m_Zoom = AutoZoom ? std::max(WorldSize.x / ViewSize.x, WorldSize.y / ViewSize.y) : Zoom;
+	Params.m_Center = Camera.Center();
+	Params.m_Zoom = Camera.Zoom();
+	Params.m_ViewSize = Camera.ViewSize();
 	Params.m_TimeOffsetMillis = TimeOffsetMillis;
 	Params.m_EntityOverlayVal = EntityOverlay;
 

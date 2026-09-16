@@ -279,6 +279,15 @@ void CDocumentRenderer::RenderTileLayer(const CTileLayer &Layer, CLayerCache &Ca
 		m_pGraphics->TextureSet(Texture);
 	else
 		m_pGraphics->TextureClear();
+	// Same as for quads: the tiles went up with a textured layout if the layer
+	// has a picture, so until that picture is there the pipeline would be
+	// handed texture coordinates with nothing bound. The graphics refuse that
+	// draw, and rightly - what would come out is a rectangle of flat colour
+	// where a wall belongs. In an editor the picture may still be on its way,
+	// so this is the ordinary case for the first few frames rather than a
+	// fault.
+	if(Cache.m_TileSource.m_Textured && !Texture.IsValid())
+		return;
 
 	ColorRGBA Color = LayerColor(Layer, Params.m_EntityOverlayVal);
 	if(!Physics)

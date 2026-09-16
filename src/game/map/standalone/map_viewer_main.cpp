@@ -17,8 +17,6 @@
 #include <engine/client/viewer_fullscreen.h>
 #include <engine/client/window_sdl.h>
 #endif
-#include <engine/config.h>
-#include <engine/console.h>
 #include <engine/graphics.h>
 #include <engine/graphics_window.h>
 #include <engine/input.h>
@@ -717,16 +715,6 @@ static int ViewerMain(int ArgumentCount, const char **ppArguments)
 	CStandaloneMapView View(TOOL_NAME);
 	if(!View.Init(ArgumentCount, ppArguments))
 		return 1;
-
-	// The input reads the settings and talks to the console, so both are in
-	// the kernel before the window opens; registering the settings puts their
-	// defaults in place.
-	IConsole *pConsole = CreateConsole(CFGFLAG_CLIENT).release();
-	View.Kernel()->RegisterInterface(pConsole);
-	IConfigManager *pConfigManager = CreateConfigManager();
-	View.Kernel()->RegisterInterface(pConfigManager);
-	pConsole->Init();
-	pConfigManager->Init();
 
 #if defined(CONF_WEB_PLATFORM)
 	IEngineGraphicsWindow *pWindow = CreateWebGraphicsWindow();

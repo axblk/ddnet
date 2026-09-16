@@ -55,7 +55,7 @@ void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 		Layout.m_Revision = Broadcast.Revision();
 	}
 
-	if(GameClient()->m_Scoreboard.IsActive() ||
+	if(GameClient()->m_Scoreboard.IsActive(Context) ||
 		Context.m_View.Motd().IsActive(Session.Id(), Session.Motd().Revision(), time()) ||
 		GameClient()->m_ImportantAlert.IsActive() ||
 		!g_Config.m_ClShowBroadcasts)

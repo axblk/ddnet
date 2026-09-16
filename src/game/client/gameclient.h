@@ -892,12 +892,18 @@ private:
 
 	CTuningParams *TuningList() { return MapContext().TuningList(); }
 
-	float m_LastShowDistanceZoom;
-	float m_LastZoom;
-	vec2 m_LastShowDistance;
-	float m_LastDeadzone;
-	float m_LastFollowFactor;
-	bool m_LastDummyConnected;
+	// What each connection was last told about the view it is shown in.
+	class CCameraSent
+	{
+	public:
+		bool m_Sent = false;
+		float m_ShowDistanceZoom = 0.0f;
+		vec2 m_ShowDistance = vec2(0.0f, 0.0f);
+		float m_Zoom = 0.0f;
+		float m_Deadzone = 0.0f;
+		float m_FollowFactor = 0.0f;
+	};
+	std::array<CCameraSent, NUM_DUMMIES> m_aCameraSent;
 
 	void HandleMultiView(const CGameState &State, float LocalTime);
 	bool IsMultiViewIdSet();

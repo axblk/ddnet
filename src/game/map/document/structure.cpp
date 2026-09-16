@@ -2,6 +2,7 @@
 
 #include <game/map/document/structure.h>
 
+#include <algorithm>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -110,5 +111,125 @@ namespace map_document
 		Right.m_vpLayers.insert(Right.m_vpLayers.begin() + To.m_Layer, pMoved);
 		Doc.Edit().ReplaceGroup(To.m_Group, std::move(Right));
 		return To;
+	}
+
+	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope)
+	{
+		Doc.Edit().AddEnvelope(std::move(Envelope));
+		return Doc.Edit().NumEnvelopes() - 1;
+	}
+
+	void DeleteEnvelope(CDocument &Doc, size_t Envelope)
+	{
+		CMapState &Map = Doc.Edit();
+		dbg_assert(Envelope < Map.NumEnvelopes(), "Envelope out of range");
+		Map.m_vpEnvelopes.erase(Map.m_vpEnvelopes.begin() + Envelope);
+
+		// Whatever was bound to an envelope named it by its place, so the
+		// places have to be read again: what pointed past the one that is
+		// gone comes down one, and what pointed at it points at nothing.
+		const auto Rebind = [Envelope](int &Bound) {
+			if(Bound == (int)Envelope)
+				Bound = -1;
+			else if(Bound > (int)Envelope)
+				--Bound;
+		};
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Layer = 0; Layer < Map.NumLayers(Group); ++Layer)
+			{
+				CLayer Changed = *Map.Layer(Group, Layer);
+				bool Touched = false;
+				if(CTileLayer *pTiles = std::get_if<CTileLayer>(&Changed); pTiles != nullptr)
+				{
+					const int Was = pTiles->m_ColorEnvelope;
+					Rebind(pTiles->m_ColorEnvelope);
+					Touched = pTiles->m_ColorEnvelope != Was;
+				}
+				else if(CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Changed); pQuads != nullptr)
+				{
+					for(size_t Index = 0; Index < pQuads->m_Quads.Size(); ++Index)
+					{
+						CQuad Quad = pQuads->m_Quads[Index];
+						const int WasColor = Quad.m_ColorEnv;
+						const int WasPosition = Quad.m_PosEnv;
+						Rebind(Quad.m_ColorEnv);
+						Rebind(Quad.m_PosEnv);
+						if(Quad.m_ColorEnv == WasColor && Quad.m_PosEnv == WasPosition)
+							continue;
+						pQuads->m_Quads.Mutable()[Index] = Quad;
+						Touched = true;
+					}
+				}
+				else if(CSoundLayer *pSounds = std::get_if<CSoundLayer>(&Changed); pSounds != nullptr)
+				{
+					for(size_t Index = 0; Index < pSounds->m_Sources.Size(); ++Index)
+					{
+						CSoundSource Source = pSounds->m_Sources[Index];
+						const int WasSound = Source.m_SoundEnv;
+						const int WasPosition = Source.m_PosEnv;
+						Rebind(Source.m_SoundEnv);
+						Rebind(Source.m_PosEnv);
+						if(Source.m_SoundEnv == WasSound && Source.m_PosEnv == WasPosition)
+							continue;
+						pSounds->m_Sources.Mutable()[Index] = Source;
+						Touched = true;
+					}
+				}
+				// A layer that was bound to nothing is left as the node it is,
+				// which is the whole point of the design: taking an envelope
+				// out of a large map costs the layers that used it.
+				if(Touched)
+					Map.ReplaceLayer(Group, Layer, std::move(Changed));
+			}
+		}
+	}
+
+	namespace
+	{
+		/** Where a point of that time belongs, after any point at the same time. */
+		size_t PlaceFor(const CSharedList<CEnvPoint_runtime> &Points, CFixedTime Time)
+		{
+			size_t Place = 0;
+			while(Place < Points.Size() && !(Time < Points[Place].m_Time))
+				++Place;
+			return Place;
+		}
+	} // namespace
+
+	size_t AddEnvelopePoint(CDocument &Doc, size_t Envelope, const CEnvPoint_runtime &Point)
+	{
+		CEnvelope Changed = *Doc.Edit().Envelope(Envelope);
+		const size_t Place = PlaceFor(Changed.m_Points, Point.m_Time);
+		std::vector<CEnvPoint_runtime> &vPoints = Changed.m_Points.Mutable();
+		vPoints.insert(vPoints.begin() + Place, Point);
+		Doc.Edit().ReplaceEnvelope(Envelope, std::move(Changed));
+		return Place;
+	}
+
+	void DeleteEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point)
+	{
+		CEnvelope Changed = *Doc.Edit().Envelope(Envelope);
+		dbg_assert(Point < Changed.m_Points.Size(), "Envelope point out of range");
+		std::vector<CEnvPoint_runtime> &vPoints = Changed.m_Points.Mutable();
+		vPoints.erase(vPoints.begin() + Point);
+		Doc.Edit().ReplaceEnvelope(Envelope, std::move(Changed));
+	}
+
+	size_t SetEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point, const CEnvPoint_runtime &Changed)
+	{
+		CEnvelope Envelopes = *Doc.Edit().Envelope(Envelope);
+		dbg_assert(Point < Envelopes.m_Points.Size(), "Envelope point out of range");
+		std::vector<CEnvPoint_runtime> &vPoints = Envelopes.m_Points.Mutable();
+		vPoints.erase(vPoints.begin() + Point);
+		// Taken out first and put back where its new time belongs, so that
+		// dragging a point past its neighbour is the ordinary case rather
+		// than a list that is quietly out of order.
+		size_t Place = 0;
+		while(Place < vPoints.size() && !(Changed.m_Time < vPoints[Place].m_Time))
+			++Place;
+		vPoints.insert(vPoints.begin() + Place, Changed);
+		Doc.Edit().ReplaceEnvelope(Envelope, std::move(Envelopes));
+		return Place;
 	}
 } // namespace map_document

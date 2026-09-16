@@ -207,3 +207,108 @@ TEST(Structure, APropertyPutBackWhereItWasIsNoChange)
 	EXPECT_EQ(Document.History().NumEntries(), 1u);
 	EXPECT_FALSE(Document.CanUndo());
 }
+
+// Envelopes. The points of one are in time order because the sum that reads
+// them counts on it, so where a point goes is its time's business and not the
+// caller's - and taking an envelope out has to put right everything that was
+// bound to it, or the map comes back with its colours from somewhere else.
+
+namespace
+{
+	CEnvPoint_runtime Point(int Millis, int Value)
+	{
+		CEnvPoint_runtime Made = {};
+		Made.m_Time = CFixedTime(Millis);
+		Made.m_aValues[0] = Value;
+		return Made;
+	}
+
+	CMapState WithEnvelopes()
+	{
+		CMapState Map = TwoGroups();
+		for(const char *pName : {"first", "second", "third"})
+		{
+			CEnvelope Envelope;
+			Envelope.m_Name = pName;
+			Map.AddEnvelope(std::move(Envelope));
+		}
+		// The game layer is coloured by the middle one, the other two layers
+		// by the ones on either side of it.
+		CTileLayer Bound = *Map.TileLayer(0, 0);
+		Bound.m_ColorEnvelope = 0;
+		Map.ReplaceLayer(0, 0, std::move(Bound));
+		CTileLayer Middle = *Map.TileLayer(0, 1);
+		Middle.m_ColorEnvelope = 1;
+		Map.ReplaceLayer(0, 1, std::move(Middle));
+		CTileLayer Above = *Map.TileLayer(1, 0);
+		Above.m_ColorEnvelope = 2;
+		Map.ReplaceLayer(1, 0, std::move(Above));
+		return Map;
+	}
+} // namespace
+
+TEST(Structure, APointGoesWhereItsTimeBelongs)
+{
+	CDocument Document(WithEnvelopes());
+	Document.Begin("Points");
+	EXPECT_EQ(AddEnvelopePoint(Document, 0, Point(1000, 10)), 0u);
+	EXPECT_EQ(AddEnvelopePoint(Document, 0, Point(3000, 30)), 1u);
+	// In between the two that are there, not at the end.
+	EXPECT_EQ(AddEnvelopePoint(Document, 0, Point(2000, 20)), 1u);
+	// At the same time as one that is there, and after it.
+	EXPECT_EQ(AddEnvelopePoint(Document, 0, Point(2000, 25)), 2u);
+	Document.Commit();
+
+	const CEnvelope *pEnvelope = Document.Map().Envelope(0);
+	ASSERT_EQ(pEnvelope->m_Points.Size(), 4u);
+	EXPECT_EQ(pEnvelope->m_Points[0].m_aValues[0], 10);
+	EXPECT_EQ(pEnvelope->m_Points[1].m_aValues[0], 20);
+	EXPECT_EQ(pEnvelope->m_Points[2].m_aValues[0], 25);
+	EXPECT_EQ(pEnvelope->m_Points[3].m_aValues[0], 30);
+}
+
+TEST(Structure, APointDraggedPastItsNeighbourChangesPlaces)
+{
+	CDocument Document(WithEnvelopes());
+	Document.Begin("Points");
+	AddEnvelopePoint(Document, 0, Point(1000, 10));
+	AddEnvelopePoint(Document, 0, Point(2000, 20));
+	AddEnvelopePoint(Document, 0, Point(3000, 30));
+	// The first one dragged to the far end.
+	EXPECT_EQ(SetEnvelopePoint(Document, 0, 0, Point(4000, 10)), 2u);
+	Document.Commit();
+
+	const CEnvelope *pEnvelope = Document.Map().Envelope(0);
+	ASSERT_EQ(pEnvelope->m_Points.Size(), 3u);
+	EXPECT_EQ(pEnvelope->m_Points[0].m_aValues[0], 20);
+	EXPECT_EQ(pEnvelope->m_Points[2].m_aValues[0], 10);
+
+	Document.Begin("Delete");
+	DeleteEnvelopePoint(Document, 0, 1);
+	Document.Commit();
+	ASSERT_EQ(Document.Map().Envelope(0)->m_Points.Size(), 2u);
+	EXPECT_EQ(Document.Map().Envelope(0)->m_Points[1].m_aValues[0], 10);
+}
+
+TEST(Structure, TakingAnEnvelopeOutTakesEverythingOffIt)
+{
+	CDocument Document(WithEnvelopes());
+	const CLayer *pUntouched = Document.Map().Layer(0, 0);
+	Document.Begin("Delete");
+	DeleteEnvelope(Document, 1);
+	Document.Commit();
+
+	const CMapState &Map = Document.Map();
+	ASSERT_EQ(Map.NumEnvelopes(), 2u);
+	EXPECT_EQ(Map.Envelope(0)->m_Name, "first");
+	EXPECT_EQ(Map.Envelope(1)->m_Name, "third");
+	// Bound below it: unchanged, and the same node, because nothing about
+	// that layer is different.
+	EXPECT_EQ(Map.TileLayer(0, 0)->m_ColorEnvelope, 0);
+	EXPECT_EQ(Map.Layer(0, 0), pUntouched) << "a layer that was bound to nothing is the node it was";
+	// Bound to the one that is gone: bound to nothing.
+	EXPECT_EQ(Map.TileLayer(0, 1)->m_ColorEnvelope, -1);
+	// Bound above it: one place down, and still the same envelope.
+	EXPECT_EQ(Map.TileLayer(1, 0)->m_ColorEnvelope, 1);
+	EXPECT_EQ(Map.Envelope(Map.TileLayer(1, 0)->m_ColorEnvelope)->m_Name, "third");
+}

@@ -244,6 +244,11 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->HistoryJson(Id));
 }
 
+EMSCRIPTEN_KEEPALIVE const char *MapEditorEnvelope(int Id, int Index)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->EnvelopeJson(Id, Index));
+}
+
 // The pixels of a picture that is packed into the map file, so that a page can
 // show a tileset it cannot fetch. They lie in the version, already unpacked,
 // and this hands out where - no copy is made, because the one the page makes

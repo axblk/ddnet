@@ -189,6 +189,66 @@ namespace map_document
 			return true;
 		}
 
+		bool SetEnvelopeProp(CEnvelope &Envelope, const char *pProp, const json_value *pValue, std::string *pError)
+		{
+			if(str_comp(pProp, "name") == 0)
+				return ReadString(pValue, &Envelope.m_Name, pError);
+			if(str_comp(pProp, "synchronized") == 0)
+				return ReadBool(pValue, &Envelope.m_Synchronized, pError);
+			*pError = std::string("an envelope has no '") + pProp + "'";
+			return false;
+		}
+
+		/**
+		 * Reads what a command says about an envelope point onto one.
+		 *
+		 * Everything is optional, so that moving a point in time and changing
+		 * what it is worth are the same command with different parts of it
+		 * filled in. Times are whole milliseconds and values are the map's own
+		 * 22.10 fixed point, because that is what the file holds - what a value
+		 * means is a question about the envelope's channels, and belongs to
+		 * whoever knows that.
+		 */
+		bool ReadEnvelopePoint(const json_value *pCommand, int Channels, CEnvPoint_runtime *pPoint, std::string *pError)
+		{
+			const json_value *pTime = json_object_get(pCommand, "time");
+			if(pTime->type != json_none)
+			{
+				int Millis = 0;
+				if(!ReadInt(pTime, &Millis, pError))
+					return false;
+				pPoint->m_Time = CFixedTime(std::max(0, Millis));
+			}
+			const json_value *pCurve = json_object_get(pCommand, "curve");
+			if(pCurve->type != json_none)
+			{
+				int Curve = 0;
+				if(!ReadInt(pCurve, &Curve, pError))
+					return false;
+				if(Curve < 0 || Curve >= NUM_CURVETYPES)
+				{
+					*pError = "that is not a kind of curve";
+					return false;
+				}
+				pPoint->m_Curvetype = Curve;
+			}
+			const json_value *pValues = json_object_get(pCommand, "values");
+			if(pValues->type != json_none)
+			{
+				if(pValues->type != json_array || json_array_length(pValues) != Channels)
+				{
+					*pError = "a point carries one value for each of the envelope's channels";
+					return false;
+				}
+				for(int Channel = 0; Channel < Channels; ++Channel)
+				{
+					if(!ReadInt(json_array_get(pValues, Channel), &pPoint->m_aValues[Channel], pError))
+						return false;
+				}
+			}
+			return true;
+		}
+
 		bool SetGroupProp(CGroup &Group, const char *pProp, const json_value *pValue, std::string *pError)
 		{
 			if(str_comp(pProp, "name") == 0)
@@ -450,6 +510,95 @@ namespace map_document
 			Document.Edit().ReplaceLayer(Group, Layer, std::move(Changed));
 			Document.Commit();
 			return Succeeded();
+		}
+
+		if(str_comp(pOp, "envelope.add") == 0)
+		{
+			const char *pName = Arguments.Str("name");
+			// One channel is a sound, three are a position, four a colour;
+			// nothing else is an envelope any renderer knows how to read.
+			const int Channels = Arguments.Int("channels", 4);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(Channels != 1 && Channels != 3 && Channels != 4)
+				return Failed("an envelope has one, three or four channels");
+			CEnvelope Envelope;
+			Envelope.m_Name = pName;
+			Envelope.m_Channels = Channels;
+			Document.Begin(Arguments.Str("label", "Add envelope"), pMerge);
+			const size_t Index = AddEnvelope(Document, std::move(Envelope));
+			Document.Commit();
+			return Succeeded("envelope", (int)Index);
+		}
+		if(str_comp(pOp, "envelope.delete") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete envelope"), pMerge);
+			DeleteEnvelope(Document, Envelope);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.setProp") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CEnvelope Changed = *Map.Envelope(Envelope);
+			std::string Error;
+			if(!SetEnvelopeProp(Changed, pProp, json_object_get(pParsed.get(), "value"), &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			Document.Edit().ReplaceEnvelope(Envelope, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.point.add") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			CEnvPoint_runtime Point = {};
+			Point.m_Curvetype = CURVETYPE_LINEAR;
+			std::string Error;
+			if(!ReadEnvelopePoint(pParsed.get(), Map.Envelope(Envelope)->m_Channels, &Point, &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", "Add point"), pMerge);
+			const size_t Index = AddEnvelopePoint(Document, Envelope, Point);
+			Document.Commit();
+			return Succeeded("point", (int)Index);
+		}
+		if(str_comp(pOp, "envelope.point.delete") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const size_t Point = Arguments.Index("point", Arguments.Failed() ? 0 : Map.Envelope(Envelope)->m_Points.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete point"), pMerge);
+			DeleteEnvelopePoint(Document, Envelope, Point);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.point.set") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const size_t Point = Arguments.Index("point", Arguments.Failed() ? 0 : Map.Envelope(Envelope)->m_Points.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			// Read onto the point as it stands, so that a command which says
+			// only a time leaves the values where they were.
+			CEnvPoint_runtime Changed = Map.Envelope(Envelope)->m_Points[Point];
+			std::string Error;
+			if(!ReadEnvelopePoint(pParsed.get(), Map.Envelope(Envelope)->m_Channels, &Changed, &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", "Move point"), pMerge);
+			const size_t Index = SetEnvelopePoint(Document, Envelope, Point, Changed);
+			Document.Commit();
+			return Succeeded("point", (int)Index);
 		}
 
 		// Stepping through the versions is not a change to the map, so it is

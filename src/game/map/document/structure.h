@@ -88,6 +88,62 @@ namespace map_document
 	CLayerAddress MoveLayer(CDocument &Doc, const CLayerAddress &From, const CLayerAddress &To);
 
 	/**
+	 * Adds an envelope at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope The envelope to add.
+	 *
+	 * @return Which envelope it became.
+	 */
+	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope);
+
+	/**
+	 * Takes an envelope out of the map, and takes it off whatever was bound
+	 * to it.
+	 *
+	 * A layer or a quad names an envelope by its place, so the ones after it
+	 * move up - which means every binding above it has to come down by one,
+	 * and a binding to the one being taken away becomes no binding at all.
+	 * Leaving that to the caller would mean a map whose colours come from the
+	 * wrong envelope, which is worse than one that is slower to save.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope to take out.
+	 */
+	void DeleteEnvelope(CDocument &Doc, size_t Envelope);
+
+	/**
+	 * Puts a point into an envelope, in the place its time gives it.
+	 *
+	 * The points of an envelope are in time order and the sum that reads them
+	 * counts on it, so where a point goes is not the caller's to choose: it
+	 * goes where its time puts it, after any point at the same time.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope.
+	 * @param Point The point to put in.
+	 *
+	 * @return Which point of that envelope it became.
+	 */
+	size_t AddEnvelopePoint(CDocument &Doc, size_t Envelope, const CEnvPoint_runtime &Point);
+
+	/** Takes one point out of an envelope. */
+	void DeleteEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point);
+
+	/**
+	 * Changes one point, and puts it back in time order if it moved.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope.
+	 * @param Point Which point of it.
+	 * @param Changed What the point is to be.
+	 *
+	 * @return Where that point is now, which is somewhere else if its time
+	 * moved it past one of its neighbours.
+	 */
+	size_t SetEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point, const CEnvPoint_runtime &Changed);
+
+	/**
 	 * Changes the properties of a group - its name, its parallax, its offset,
 	 * its clipping - or the order of its layers.
 	 *

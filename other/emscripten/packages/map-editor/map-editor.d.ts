@@ -57,6 +57,22 @@ export interface Structure {
 	sounds: { name: string; external: boolean; bytes: number }[];
 }
 
+export interface Envelope {
+	name: string;
+	channels: number;
+	synchronized: boolean;
+	points: {
+		/** Whole milliseconds. */
+		time: number;
+		curve: number;
+		/** One per channel, in the map's 22.10 fixed point. */
+		values: number[];
+		/** Tangents, two numbers per channel. */
+		in: number[];
+		out: number[];
+	}[];
+}
+
 export interface History {
 	current: number;
 	canUndo: boolean;
@@ -78,6 +94,12 @@ export type Command =
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
+	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
+	| { op: "envelope.delete"; envelope: number; label?: string }
+	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
+	| { op: "envelope.point.add"; envelope: number; time: number; values: number[]; curve?: number; label?: string }
+	| { op: "envelope.point.delete"; envelope: number; point: number; label?: string }
+	| { op: "envelope.point.set"; envelope: number; point: number; time?: number; values?: number[]; curve?: number; label?: string }
 	| { op: "history.undo" }
 	| { op: "history.redo" }
 	| { op: "history.jump"; index: number };
@@ -106,6 +128,8 @@ export declare class MapEditor {
 	structure(id?: MapId): Structure | null;
 	/** The pixels of a picture packed into the map file, or null for one beside it. */
 	imageData(index: number, id?: MapId): ImageData | null;
+	/** The points of one envelope; times in ms, values in 22.10 fixed point. */
+	envelope(index: number, id?: MapId): Envelope | null;
 	history(id?: MapId): History | null;
 	apply(command: Command, id?: MapId): Answer;
 	undo(id?: MapId): Answer;

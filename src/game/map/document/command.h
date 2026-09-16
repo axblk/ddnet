@@ -36,12 +36,23 @@ namespace map_document
 	 * | `layer.delete` | `group`, `layer` |
 	 * | `layer.move` | `group`, `layer`, `toGroup`, `to` |
 	 * | `layer.setProp` | `group`, `layer`, `prop`, `value` |
+	 * | `envelope.add` | `name`, `channels` (1, 3 or 4) |
+	 * | `envelope.delete` | `envelope` |
+	 * | `envelope.setProp` | `envelope`, `prop`, `value` |
+	 * | `envelope.point.add` | `envelope`, `time`, `values`, `curve` |
+	 * | `envelope.point.delete` | `envelope`, `point` |
+	 * | `envelope.point.set` | `envelope`, `point`, and what of `time`, `values`, `curve` is to change |
 	 * | `history.undo` | - |
 	 * | `history.redo` | - |
 	 * | `history.jump` | `index` |
 	 *
 	 * Anything may carry a `label`, which is what the history entry is
 	 * called; every command has one it falls back on.
+	 *
+	 * An envelope point carries its time in whole milliseconds and its values
+	 * in the map's own 22.10 fixed point, because that is what the file holds.
+	 * What a value means is a question about the envelope's channels - a
+	 * colour, a place, a volume - and belongs to whoever knows that.
 	 *
 	 * Anything may also carry a `merge`, which names what is being changed
 	 * rather than what is being done: two changes carrying the same `merge`,

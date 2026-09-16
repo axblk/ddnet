@@ -222,6 +222,19 @@ class CMapEditor extends Program {
 		return this.json("MapEditorStructure", [this.which(id)]);
 	}
 
+	/**
+	 * The points of one envelope.
+	 *
+	 * Not in `structure()`, which says only how many there are: a long
+	 * envelope has hundreds of points and nearly nothing wants them. Times
+	 * are whole milliseconds and values the map's own 22.10 fixed point -
+	 * whole numbers out and whole numbers back in, so nothing is lost on the
+	 * way. What a value means is a question about the channels.
+	 */
+	envelope(index, id) {
+		return this.json("MapEditorEnvelope", [this.which(id), index]);
+	}
+
 	/** What was done to the map, and where in it the map stands. */
 	history(id) {
 		return this.json("MapEditorHistory", [this.which(id)]);
@@ -543,6 +556,18 @@ const PANELS_HTML = `
 		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
 		<div class="editor-numbers" data-role="numbers"></div>
 	</section>
+	<section class="editor-panel" data-role="envelopes-panel">
+		<header class="editor-panel-head">
+			<h2>Envelopes</h2>
+			<span class="editor-panel-tools">
+				<select class="editor-small" data-role="envelope-list"></select>
+				<button class="editor-small" data-role="add-envelope" title="Add a colour envelope">+</button>
+				<button class="editor-small" data-role="delete-envelope" title="Delete this envelope">-</button>
+			</span>
+		</header>
+		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+		<div class="editor-props" data-role="point-props"></div>
+	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
 			<h2>History</h2>
@@ -640,6 +665,9 @@ class CEditorPanels {
 		// Where the panels stood when each history entry was made, so that
 		// stepping back through them takes the panels along.
 		this.snapshots = new Map();
+		// Which envelope is being drawn, and which of its points is picked.
+		this.envelope = 0;
+		this.point = -1;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -701,6 +729,7 @@ class CEditorPanels {
 		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
+		this.wireEnvelopes();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -979,6 +1008,7 @@ class CEditorPanels {
 		this.refreshTree();
 		this.refreshProps();
 		this.refreshTiles();
+		this.refreshEnvelopes();
 		this.refreshHistory();
 	}
 
@@ -1412,6 +1442,355 @@ class CEditorPanels {
 		return this.map.groups[this.selection.group].layers[this.selection.layer] || null;
 	}
 
+	/**
+	 * The envelope panel: which envelope, its curve, and the point that is
+	 * picked out of it.
+	 *
+	 * The curve is an SVG rather than a canvas because that is what an SVG is
+	 * for - a few dozen points that are dragged one at a time, each of them a
+	 * thing the browser can hit-test and give a pointer to. This is the place
+	 * the plan meant when it said web technology is most clearly ahead of the
+	 * painted editor.
+	 */
+	wireEnvelopes() {
+		const signal = this.stopping.signal;
+		this.part("envelope-list").addEventListener("change", event => {
+			this.envelope = Number.parseInt(event.target.value, 10);
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: signal });
+		this.part("add-envelope").addEventListener("click", () => {
+			const answer = this.change(() => this.editor.apply({ op: "envelope.add", name: "envelope" }));
+			if (answer && answer.ok) {
+				this.envelope = answer.envelope;
+				this.point = -1;
+				this.refreshEnvelopes();
+			}
+		}, { signal: signal });
+		this.part("delete-envelope").addEventListener("click", () => {
+			if (this.envelopeCount() === 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "envelope.delete", envelope: this.envelope }));
+			this.envelope = Math.max(0, Math.min(this.envelope, this.envelopeCount() - 1));
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: signal });
+		this.wireCurve();
+	}
+
+	envelopeCount() {
+		return this.map === null ? 0 : this.map.envelopes.length;
+	}
+
+	/**
+	 * The rectangle of the envelope that the curve is drawn in: all of its
+	 * time, and enough of its values to show them.
+	 *
+	 * Worked out from the points rather than fixed, because a colour envelope
+	 * runs 0 to 1024 and a position envelope runs wherever the map goes, and
+	 * a drawing that fits one would be a flat line for the other.
+	 */
+	curveBounds(envelope) {
+		let last = 1000;
+		let low = 0;
+		let high = ENVELOPE_ONE;
+		for (const point of envelope.points) {
+			last = Math.max(last, point.time);
+			for (const value of point.values) {
+				low = Math.min(low, value);
+				high = Math.max(high, value);
+			}
+		}
+		// A little air above and below, or a point at the very top is drawn
+		// half outside the box.
+		const air = Math.max(1, (high - low) * 0.08);
+		return { time: last, low: low - air, high: high + air };
+	}
+
+	refreshEnvelopes() {
+		const panel = this.part("envelopes-panel");
+		const count = this.envelopeCount();
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		this.envelope = count === 0 ? 0 : Math.min(this.envelope, count - 1);
+		const list = this.part("envelope-list");
+		list.textContent = "";
+		this.map.envelopes.forEach((envelope, index) => {
+			const option = document.createElement("option");
+			option.value = String(index);
+			option.textContent = `${index}: ${envelope.name || "envelope"} (${envelope.channels})`;
+			option.selected = index === this.envelope;
+			list.append(option);
+		});
+		this.part("delete-envelope").disabled = count === 0;
+		this.paintCurve();
+		this.refreshPoint();
+	}
+
+	/** The envelope being drawn, with its points, or `null`. */
+	shownEnvelope() {
+		return this.envelopeCount() === 0 ? null : this.editor.envelope(this.envelope);
+	}
+
+	paintCurve() {
+		const svg = this.part("curve");
+		svg.textContent = "";
+		const envelope = this.shownEnvelope();
+		if (envelope === null) {
+			return;
+		}
+		const bounds = this.curveBounds(envelope);
+		svg.dataset.time = String(bounds.time);
+		svg.dataset.low = String(bounds.low);
+		svg.dataset.high = String(bounds.high);
+		const make = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+		const x = time => (bounds.time === 0 ? 0 : (time / bounds.time) * 100);
+		// Upside down, because a value that grows should go up and an SVG
+		// counts downwards.
+		const y = value => 100 - ((value - bounds.low) / (bounds.high - bounds.low)) * 100;
+
+		// The line at zero, so that a value which turns negative is visible
+		// as such rather than as a line that happens to be lower.
+		if (bounds.low < 0 && bounds.high > 0) {
+			const zero = make("line");
+			zero.setAttribute("x1", "0");
+			zero.setAttribute("x2", "100");
+			zero.setAttribute("y1", String(y(0)));
+			zero.setAttribute("y2", String(y(0)));
+			zero.setAttribute("class", "editor-curve-zero");
+			svg.append(zero);
+		}
+
+		const channels = ENVELOPE_CHANNELS[envelope.channels] || [];
+		channels.forEach((channel, index) => {
+			if (envelope.points.length > 0) {
+				const line = make("polyline");
+				line.setAttribute("points", envelope.points.map(p => `${x(p.time)},${y(p.values[index])}`).join(" "));
+				line.setAttribute("fill", "none");
+				line.setAttribute("stroke", channel.colour);
+				line.setAttribute("vector-effect", "non-scaling-stroke");
+				line.setAttribute("stroke-width", "1.5");
+				svg.append(line);
+			}
+			envelope.points.forEach((point, at) => {
+				const dot = make("circle");
+				dot.setAttribute("cx", String(x(point.time)));
+				dot.setAttribute("cy", String(y(point.values[index])));
+				// Not scaled with the box, which is stretched to fill the
+				// panel: a circle in it would be an egg.
+				dot.setAttribute("r", "1.6");
+				dot.setAttribute("fill", channel.colour);
+				dot.setAttribute("class", at === this.point ? "editor-curve-point editor-curve-picked" : "editor-curve-point");
+				dot.dataset.point = String(at);
+				dot.dataset.channel = String(index);
+				svg.append(dot);
+			});
+		});
+	}
+
+	/**
+	 * Dragging a point, and clicking where there is none to make one.
+	 *
+	 * A drag is one transaction from the button going down to it coming up,
+	 * so the history gets one entry however far the point travelled - and
+	 * every step of the way is already drawn, which is the preview.
+	 */
+	wireCurve() {
+		const svg = this.part("curve");
+		const signal = this.stopping.signal;
+		let dragging = -1;
+		let channel = 0;
+
+		// Holding on to the pointer, or letting go of it. Either may be
+		// refused - a pointer that has already gone is not there to be caught
+		// - and neither is worth giving up a drag over.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					svg.setPointerCapture(pointerId);
+				} else {
+					svg.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The drag still works; it just stops when the pointer leaves.
+			}
+		};
+
+		// Where a pointer is, in the envelope's own numbers.
+		const at = event => {
+			const box = svg.getBoundingClientRect();
+			const time = Number.parseFloat(svg.dataset.time) || 1000;
+			const low = Number.parseFloat(svg.dataset.low) || 0;
+			const high = Number.parseFloat(svg.dataset.high) || ENVELOPE_ONE;
+			const across = box.width === 0 ? 0 : (event.clientX - box.left) / box.width;
+			const down = box.height === 0 ? 0 : (event.clientY - box.top) / box.height;
+			return {
+				time: Math.max(0, Math.round(across * time)),
+				value: Math.round(low + (1 - down) * (high - low)),
+			};
+		};
+
+		svg.addEventListener("pointerdown", event => {
+			const envelope = this.shownEnvelope();
+			if (envelope === null) {
+				return;
+			}
+			const picked = event.target.dataset && event.target.dataset.point;
+			if (picked === undefined) {
+				// Nowhere in particular: a new point there, on every channel
+				// at once so that the envelope keeps its shape.
+				const where = at(event);
+				const values = new Array(envelope.channels).fill(where.value);
+				const answer = this.change(() => this.editor.apply({
+					op: "envelope.point.add", envelope: this.envelope, time: where.time, values: values,
+				}));
+				if (answer && answer.ok) {
+					this.point = answer.point;
+					this.refreshEnvelopes();
+				}
+				return;
+			}
+			dragging = Number.parseInt(picked, 10);
+			channel = Number.parseInt(event.target.dataset.channel, 10);
+			this.point = dragging;
+			// The change is opened before the pointer is caught, and catching
+			// it is allowed to fail: a browser refuses for a pointer that is
+			// no longer there, and a drag without a transaction would write
+			// an entry per step.
+			this.editor.begin("Move point");
+			capture(event.pointerId, true);
+			this.refreshEnvelopes();
+		}, { signal: signal });
+
+		svg.addEventListener("pointermove", event => {
+			if (dragging < 0) {
+				return;
+			}
+			const envelope = this.shownEnvelope();
+			if (envelope === null || dragging >= envelope.points.length) {
+				return;
+			}
+			const where = at(event);
+			// Only the channel whose dot was taken hold of moves; the others
+			// stay where they are, which is what somebody dragging a red dot
+			// means by it.
+			const values = envelope.points[dragging].values.slice();
+			values[channel] = where.value;
+			const answer = this.editor.apply({
+				op: "envelope.point.set", envelope: this.envelope, point: dragging, time: where.time, values: values,
+			});
+			if (answer && answer.ok) {
+				dragging = answer.point;
+				this.point = answer.point;
+			}
+			this.paintCurve();
+			this.refreshPoint();
+		}, { signal: signal });
+
+		const release = event => {
+			if (dragging < 0) {
+				return;
+			}
+			dragging = -1;
+			this.editor.commit();
+			capture(event.pointerId, false);
+			this.refresh();
+		};
+		svg.addEventListener("pointerup", release, { signal: signal });
+		svg.addEventListener("pointercancel", release, { signal: signal });
+	}
+
+	/** The point that is picked, as fields: its time, its values, its curve. */
+	refreshPoint() {
+		const box = this.part("point-props");
+		box.textContent = "";
+		const envelope = this.shownEnvelope();
+		if (envelope === null || this.point < 0 || this.point >= envelope.points.length) {
+			return;
+		}
+		const point = envelope.points[this.point];
+		const send = command => this.change(() => this.editor.apply(command));
+
+		const time = document.createElement("label");
+		time.className = "editor-prop";
+		const timeName = document.createElement("span");
+		timeName.textContent = "Time (ms)";
+		const timeInput = document.createElement("input");
+		timeInput.type = "number";
+		timeInput.dataset.role = "point-time";
+		timeInput.value = String(point.time);
+		timeInput.addEventListener("change", () => {
+			const value = Number.parseInt(timeInput.value, 10);
+			if (Number.isFinite(value)) {
+				const answer = send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, time: value });
+				if (answer && answer.ok) {
+					this.point = answer.point;
+				}
+				this.refreshEnvelopes();
+			}
+		}, { signal: this.stopping.signal });
+		time.append(timeName, timeInput);
+		box.append(time);
+
+		const channels = ENVELOPE_CHANNELS[envelope.channels] || [];
+		channels.forEach((channel, index) => {
+			const row = document.createElement("label");
+			row.className = "editor-prop";
+			const name = document.createElement("span");
+			name.textContent = channel.name;
+			const input = document.createElement("input");
+			input.type = "number";
+			input.dataset.role = `point-value-${index}`;
+			input.value = String(point.values[index]);
+			input.addEventListener("change", () => {
+				const value = Number.parseInt(input.value, 10);
+				if (!Number.isFinite(value)) {
+					return;
+				}
+				const values = point.values.slice();
+				values[index] = value;
+				send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, values: values });
+				this.refreshEnvelopes();
+			}, { signal: this.stopping.signal });
+			row.append(name, input);
+			box.append(row);
+		});
+
+		const curve = document.createElement("label");
+		curve.className = "editor-prop";
+		const curveName = document.createElement("span");
+		curveName.textContent = "Curve";
+		const select = document.createElement("select");
+		select.dataset.role = "point-curve";
+		CURVES.forEach((label, index) => {
+			const option = document.createElement("option");
+			option.value = String(index);
+			option.textContent = label;
+			option.selected = index === point.curve;
+			select.append(option);
+		});
+		select.addEventListener("change", () => {
+			send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, curve: Number.parseInt(select.value, 10) });
+			this.refreshEnvelopes();
+		}, { signal: this.stopping.signal });
+		curve.append(curveName, select);
+		box.append(curve);
+
+		const remove = document.createElement("button");
+		remove.className = "editor-small";
+		remove.dataset.role = "delete-point";
+		remove.textContent = "Delete point";
+		remove.addEventListener("click", () => {
+			send({ op: "envelope.point.delete", envelope: this.envelope, point: this.point });
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: this.stopping.signal });
+		box.append(remove);
+	}
+
 	refreshHistory() {
 		const list = this.part("history");
 		list.textContent = "";
@@ -1622,6 +2001,27 @@ function steerWithPointer(editor, options) {
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
+
+// What the channels of an envelope are called and what colour each is drawn
+// in. Which of them an envelope has is its channel count: four are a colour,
+// three a place and a turn, one a volume.
+const ENVELOPE_CHANNELS = {
+	1: [{ name: "Volume", colour: "#e8b84a" }],
+	3: [{ name: "X", colour: "#e8615a" }, { name: "Y", colour: "#5ad07a" }, { name: "Rotation", colour: "#5a9ce8" }],
+	4: [
+		{ name: "Red", colour: "#e8615a" },
+		{ name: "Green", colour: "#5ad07a" },
+		{ name: "Blue", colour: "#5a9ce8" },
+		{ name: "Alpha", colour: "#cccccc" },
+	],
+};
+
+// What the curve between two points does. The numbers are the map's own.
+const CURVES = ["Step", "Linear", "Slow", "Fast", "Smooth", "Bezier"];
+
+// One unit of an envelope value, as the file counts: 22.10 fixed point, so a
+// colour channel runs 0 to 1024 and a place is in world units times this.
+const ENVELOPE_ONE = 1024;
 
 // What goes beside a physics tile, and which kinds of layer take which.
 // A tile index says what the tile does; these say to which of them - and a

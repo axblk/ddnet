@@ -246,3 +246,47 @@ TEST(Report, AHalfMadeChangeIsReportedAsOne)
 	EXPECT_EQ(json_array_length(json_object_get(Parse(StructureJson(Document.Map())).get(), "groups")), 1);
 	Document.Abort();
 }
+
+// The points of one envelope. They are whole numbers in the file and whole
+// numbers here, so what goes out is what comes back - an editor that saves
+// the map again writes the same bytes it read.
+TEST(Report, AnEnvelopeSaysWhatItsPointsAre)
+{
+	CMapState Map;
+	CEnvelope Envelope;
+	Envelope.m_Name = "colour";
+	Envelope.m_Channels = 4;
+	std::vector<CEnvPoint_runtime> vPoints(2);
+	vPoints[0].m_Time = CFixedTime(0);
+	vPoints[0].m_Curvetype = CURVETYPE_LINEAR;
+	vPoints[0].m_aValues[0] = 1024;
+	vPoints[1].m_Time = CFixedTime(1500);
+	vPoints[1].m_Curvetype = CURVETYPE_BEZIER;
+	vPoints[1].m_aValues[0] = 512;
+	vPoints[1].m_Bezier.m_aOutTangentDeltaX[0] = CFixedTime(200);
+	vPoints[1].m_Bezier.m_aOutTangentDeltaY[0] = -64;
+	Envelope.m_Points = CSharedList<CEnvPoint_runtime>(std::move(vPoints));
+	Map.AddEnvelope(std::move(Envelope));
+
+	const std::string Json = EnvelopeJson(Map, 0);
+	const CJson pRead(JsonParse(Json.c_str(), Json.size()), json_value_free);
+	ASSERT_NE(pRead, nullptr) << Json;
+	EXPECT_STREQ(json_string_get(json_object_get(pRead.get(), "name")), "colour");
+	EXPECT_EQ(json_int_get(json_object_get(pRead.get(), "channels")), 4);
+	const json_value *pPoints = json_object_get(pRead.get(), "points");
+	ASSERT_EQ(json_array_length(pPoints), 2u);
+
+	const json_value *pSecond = json_array_get(pPoints, 1);
+	EXPECT_EQ(json_int_get(json_object_get(pSecond, "time")), 1500);
+	EXPECT_EQ(json_int_get(json_object_get(pSecond, "curve")), CURVETYPE_BEZIER);
+	EXPECT_EQ(json_int_get(json_array_get(json_object_get(pSecond, "values"), 0)), 512);
+	// The tangents go out as pairs, one pair per channel.
+	const json_value *pOut = json_object_get(pSecond, "out");
+	ASSERT_EQ(json_array_length(pOut), 8u);
+	EXPECT_EQ(json_int_get(json_array_get(pOut, 0)), 200);
+	EXPECT_EQ(json_int_get(json_array_get(pOut, 1)), -64);
+
+	// Only four channels' worth of values, whatever the point holds room for.
+	EXPECT_EQ(json_array_length(json_object_get(json_array_get(pPoints, 0), "values")), 4u);
+	EXPECT_STREQ(EnvelopeJson(Map, 1).c_str(), "null");
+}

@@ -123,6 +123,9 @@ jobs:
     - name: Check config variables
       run: scripts/check_config_variables.py
 
+    - name: Self-test trace report
+      run: scripts/trace_report.py --self-test
+
     - name: Check commands & settings export
       run: |
         echo "<!DOCTYPE html><html><head><title></title></head><body>" > settingscommands.html

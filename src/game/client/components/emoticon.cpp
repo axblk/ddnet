@@ -139,7 +139,7 @@ void CEmoticon::UpdateController(CGameView &View, const CRenderContext &Context)
 	Ui()->UpdateTouchState(m_TouchState);
 	if(m_TouchState.m_AnyPressed)
 	{
-		const vec2 TouchPos = (m_TouchState.m_PrimaryPosition - vec2(0.5f, 0.5f)) * Screen.Size();
+		const vec2 TouchPos = (View.ScreenFractionToView(m_TouchState.m_PrimaryPosition, Graphics()->ScreenSize()) - vec2(0.5f, 0.5f)) * Screen.Size();
 		const float TouchCenterDistance = length(TouchPos);
 		if(TouchCenterDistance <= 170.0f)
 		{
@@ -167,7 +167,7 @@ void CEmoticon::OnRender(const CRenderContext &Context)
 	const CUIRect Screen = {0.0f, 0.0f, 600.0f * Context.AspectRatio(Graphics()->ScreenAspect()), 600.0f};
 	const vec2 ScreenCenter = Screen.Center();
 
-	Ui()->MapScreen();
+	Graphics()->MapScreenToSize(Screen.w, Screen.h);
 
 	Graphics()->TextureClear();
 	Graphics()->QuadsBegin();

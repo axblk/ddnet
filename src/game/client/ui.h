@@ -471,6 +471,8 @@ private:
 	std::function<void(const CUIRect &, int, float)> m_RenderPopupMenuBackdropFunction;
 
 	CUIRect m_Screen;
+	CUIRect m_Viewport = {0.0f, 0.0f, 0.0f, 0.0f};
+	void ViewportInWindow(vec2 &Offset, vec2 &Size) const;
 
 	std::vector<CUIRect> m_vClips;
 	void UpdateClipping();
@@ -633,6 +635,11 @@ public:
 	const CUIRect *Screen();
 	void MapScreen();
 	float PixelSize();
+	// Lays the UI out in a part of the screen, given in pixels, instead of all of
+	// it: one view of several that share the window. Empty for all of it again.
+	void SetViewport(const CUIRect &Viewport) { m_Viewport = Viewport; }
+	// Puts the mouse where the UI laid out something, in UI units.
+	void SetMousePos(vec2 Pos);
 
 	void ClipEnable(const CUIRect *pRect);
 	void ClipDisable();

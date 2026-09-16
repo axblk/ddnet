@@ -1,5 +1,6 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
+#include "render.h"
 #include "ui.h"
 #include "ui_scrollregion.h"
 
@@ -72,6 +73,8 @@ void CUi::RenderPopupMenus()
 		}
 
 		CUIRect PopupRect = PopupMenu.m_Rect;
+		if(m_RenderPopupMenuBackdropFunction)
+			m_RenderPopupMenuBackdropFunction(PopupRect);
 		PopupRect.Draw(PopupMenu.m_Props.m_BorderColor, PopupMenu.m_Props.m_Corners, 3.0f);
 		PopupRect.Margin(SPopupMenu::POPUP_BORDER, &PopupRect);
 		PopupRect.Draw(PopupMenu.m_Props.m_BackgroundColor, PopupMenu.m_Props.m_Corners, 3.0f);
@@ -291,6 +294,7 @@ CUi::EPopupMenuFunctionResult CUi::PopupSelection(void *pContext, CUIRect View, 
 
 void CUi::ShowPopupSelection(float X, float Y, SSelectionPopupContext *pContext)
 {
+	dbg_assert(pContext->m_pScrollRegion != nullptr, "selection popup needs a scroll region");
 	const STextBoundingBox TextBoundingBox = TextRender()->TextBoundingBox(pContext->m_FontSize, pContext->m_aMessage, -1, pContext->m_Width);
 	const float PopupHeight = std::min((pContext->m_aMessage[0] == '\0' ? -pContext->m_EntrySpacing : TextBoundingBox.m_H) + pContext->m_vEntries.size() * (pContext->m_EntryHeight + pContext->m_EntrySpacing) + (SPopupMenu::POPUP_BORDER + SPopupMenu::POPUP_MARGIN) * 2, Screen()->h * 0.4f);
 	pContext->m_pUI = this;
@@ -597,9 +601,9 @@ CUi::EPopupMenuFunctionResult CUi::PopupColorPicker(void *pContext, CUIRect View
 	pUI->Graphics()->TextureClear();
 	pUI->Graphics()->QuadsBegin();
 	pUI->Graphics()->SetColor(MarkerOutline);
-	pUI->Graphics()->DrawCircle(MarkerX, MarkerY, 4.5f, 32);
+	pUI->RenderTools()->DrawCircle(MarkerX, MarkerY, 4.5f, 32);
 	pUI->Graphics()->SetColor(PickerColorRGB);
-	pUI->Graphics()->DrawCircle(MarkerX, MarkerY, 3.5f, 32);
+	pUI->RenderTools()->DrawCircle(MarkerX, MarkerY, 3.5f, 32);
 	pUI->Graphics()->QuadsEnd();
 
 	// Marker Hue Area

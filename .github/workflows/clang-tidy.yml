@@ -22,6 +22,9 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Fetch wgpu-native
+      run: python scripts/fetch_wgpu_native.py
+
     - name: Prepare Linux
       run: |
         sudo apt-get update -y
@@ -87,6 +90,7 @@ jobs:
           -DUPNP=ON \
           -DVIDEORECORDER=ON \
           -DVULKAN=ON \
+          -DWEBGPU_BACKEND_PROTOTYPE=ON \
           -DWEBSOCKETS=ON \
           -Werror=dev ..
         cmake --build . --config Debug --target everything testrunner -- -k 0

@@ -25,6 +25,7 @@
 #include <game/client/components/skins.h>
 #include <game/client/components/sounds.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 #include <game/localization.h>
 
 char CChat::ms_aDisplayText[MAX_CHAT_LENGTH] = "";
@@ -1165,7 +1166,7 @@ void CChat::OnPrepareLines(const CRenderContext &Context, float y)
 				FullWidth += std::max(LineCursor.m_LongestLineWidth, AppendCursor.m_LongestLineWidth);
 			}
 			Graphics()->SetColor(1, 1, 1, 1);
-			Cached.m_QuadContainerIndex = Graphics()->CreateRectQuadContainer(Begin, y, FullWidth, Cached.m_YOffset, MessageRounding(), IGraphics::CORNER_ALL);
+			Cached.m_QuadContainerIndex = RenderTools()->CreateRectQuadContainer(Begin, y, FullWidth, Cached.m_YOffset, MessageRounding(), IGraphics::CORNER_ALL);
 		}
 
 		TextRender()->SetRenderFlags(CurRenderFlags);

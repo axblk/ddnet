@@ -62,11 +62,11 @@ class CHud : public CComponent
 	STextContainerIndex m_FPSTextContainerIndex;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
 
-	void RenderCursor(const CRenderContext &Context);
 	void ResetScoreHudContainers();
 
 	void RenderTextInfo(const CRenderContext &Context);
 	void RenderConnectionWarning(const CRenderContext &Context);
+	void RenderViewEdgeFade(const CRenderContext &Context);
 	void RenderTeambalanceWarning(const CRenderContext &Context);
 
 	void PrepareAmmoHealthAndArmorQuads();
@@ -108,6 +108,10 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void ResetHudContainers();
+	// Drawn after the backdrop was taken rather than as part of the scene: it
+	// is the thing on screen that moves most, and a blurred cursor is the one
+	// thing nobody wants to look at.
+	void RenderCursor(const CRenderContext &Context);
 	void OnWindowResize() override;
 	void OnReset() override;
 	void OnRender(const CRenderContext &Context) override;

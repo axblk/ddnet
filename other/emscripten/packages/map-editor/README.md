@@ -290,6 +290,16 @@ name, and the dot that says it has unsaved changes. Closing a map that has
 such changes asks first, in the editor's own dialogue rather than
 `confirm()`, which would stop the page - and the map being drawn - dead.
 
+**Export as a picture** (Ctrl+Shift+E) writes the whole map as a PNG at
+32 pixels a tile - or smaller in the same shape, where the map is bigger
+than a picture can be: 16384 pixels a side and 64 million in all, which is a
+poster. It is the map as it is looked at, with the detail layers if those
+are shown and without the hidden ones, and without the grid, the marks or a
+quad's handles. It is drawn a band at a time over the frames that follow,
+with the same sweep the map viewer uses, so the editor goes on answering; a
+picture that takes longer than a second says how far it has got over the
+map, and the program says when it is in the downloads.
+
 **A border round the layer** stamps what is in hand along the four edges of
 the selected tile layer, stepping by the brush's size, as one entry in the
 history. **Take out unused envelopes** asks the program which envelopes

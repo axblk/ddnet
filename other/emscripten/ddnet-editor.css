@@ -1855,6 +1855,13 @@ ddnet-editor[data-size="huge"] .editor-toasts {
 
 /* A mistake is marked down its edge rather than by being red all over: red
    text on a dark box is the one thing the contrast rules never forgive. */
+/* Work still going on is marked in the accent: it is the editor's own
+   business, not a mistake, and it goes away by itself when it is done. */
+.editor-toast[data-kind="progress"] {
+	border-left: 3px solid var(--accent);
+	font-variant-numeric: tabular-nums;
+}
+
 .editor-toast[data-kind="error"] {
 	border-left: 3px solid var(--danger);
 }

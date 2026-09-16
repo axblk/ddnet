@@ -603,6 +603,22 @@ class CMapEditor extends Program {
 		}
 	}
 
+	/**
+	 * Asks for a picture of the whole map, drawn a band at a time over the
+	 * frames that follow and handed out as a PNG when it is done.
+	 */
+	picture(id) {
+		return this.ask("MapEditorPicture", "number", [this.which(id)]) === 1;
+	}
+	/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+	pictureState() {
+		return this.call("MapEditorPictureState", "number") || 0;
+	}
+	/** How far the picture has got, from 0 to 1. */
+	pictureProgress() {
+		return this.call("MapEditorPictureProgress", "number") || 0;
+	}
+
 	/** Opens one of them by name, and puts it in front. */
 	openSaved(name) {
 		return this.call("MapEditorOpenSaved", "number", ["string"], [name || ""]);
@@ -3152,6 +3168,45 @@ class CEditorPanels {
 	}
 
 	/**
+	 * A picture of the whole map, handed out as a PNG.
+	 *
+	 * A large map is hundreds of pieces and takes seconds; the plan's rule for
+	 * anything longer than a second is that it says so over the map while it
+	 * runs. So a note stands and counts, and goes when the picture is done -
+	 * which the program then says itself.
+	 */
+	exportPicture() {
+		if (!this.editor.picture()) {
+			this.say("A picture is already being made", "error");
+			return false;
+		}
+		const started = performance.now();
+		let note = null;
+		const watch = setInterval(() => {
+			const state = this.editor.pictureState();
+			if (state !== 1) {
+				clearInterval(watch);
+				if (note !== null) {
+					note.remove();
+				}
+				return;
+			}
+			if (performance.now() - started < 1000) {
+				return;
+			}
+			const percent = Math.round(this.editor.pictureProgress() * 100);
+			if (note === null) {
+				note = this.tell("Drawing the picture", "progress");
+			}
+			if (note !== null) {
+				note.firstElementChild.textContent = `Drawing the picture \u2026 ${percent} %`;
+			}
+		}, 250);
+		this.stopping.signal.addEventListener("abort", () => clearInterval(watch), { once: true });
+		return true;
+	}
+
+	/**
 	 * The outer ring of the layer, drawn with what is in hand.
 	 *
 	 * One entry in the history for the whole ring: the brush is stamped
@@ -3818,7 +3873,7 @@ class CEditorPanels {
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
-		for (const type of ["document", "loaded", "closed", "saved", "error"]) {
+		for (const type of ["document", "loaded", "closed", "saved", "copied", "picture", "error"]) {
 			this.editor.addEventListener(type, event => this.onProgram(type, event.detail), { signal: signal });
 		}
 		// Whoever put the panels on the page may hand out the keyboard
@@ -3833,6 +3888,8 @@ class CEditorPanels {
 	onProgram(type, detail) {
 		if (type === "saved") {
 			this.say("Saved");
+		} else if (type === "picture") {
+			this.say("The picture is in your downloads");
 		} else if (type === "error") {
 			this.say(`Failed: ${detail && detail.what ? detail.what : "something"}`, "error");
 		} else if (type === "loaded") {
@@ -4007,7 +4064,7 @@ class CEditorPanels {
 		const note = document.createElement("div");
 		note.className = "editor-toast";
 		note.dataset.role = "toast";
-		note.dataset.kind = kind === "error" ? "error" : "note";
+		note.dataset.kind = kind === "error" || kind === "progress" ? kind : "note";
 		// What went wrong interrupts; what merely happened does not.
 		note.setAttribute("role", kind === "error" ? "alert" : "status");
 		const what = document.createElement("span");
@@ -4022,7 +4079,9 @@ class CEditorPanels {
 			away.setAttribute("aria-label", "Dismiss");
 			away.addEventListener("click", () => note.remove(), { signal: this.stopping.signal });
 			note.append(away);
-		} else {
+		} else if (kind !== "progress") {
+			// Work that is still going on says so until it is over; whoever
+			// started it takes the note away.
 			setTimeout(() => note.remove(), TOAST_MS);
 		}
 		this.toasts.append(note);

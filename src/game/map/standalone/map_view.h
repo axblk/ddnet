@@ -13,6 +13,7 @@
 #include <game/map/standalone/map_view_support.h>
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -178,6 +179,25 @@ public:
 	 */
 	bool BeginFullImage(const char *pPath, int TimeOffsetMillis, size_t PixelBudget = 0);
 
+	/** What draws one piece of a picture, for whoever draws a map of their own. */
+	using FDrawPiece = std::function<void(const SRenderParams &Params)>;
+
+	/**
+	 * The same sweep for a map this view does not hold.
+	 *
+	 * The editor keeps its maps as documents and draws them with a renderer
+	 * of its own; what it does not have is the sweep - the bands, the pieces,
+	 * the rows going out as they are drawn. So it hands over how big its map
+	 * is and how to draw a piece of it, and the sweep is the one sweep there
+	 * is.
+	 *
+	 * @param WorldSize How big the map is, in world units.
+	 * @param Draw Draws one piece for the parameters given, into the surface
+	 * as it is at that moment: the view sets the surface to the piece's size
+	 * before it calls.
+	 */
+	bool BeginFullImageOf(const char *pPath, int TimeOffsetMillis, size_t PixelBudget, vec2 WorldSize, FDrawPiece Draw);
+
 	/**
 	 * How large a picture of the whole map a viewer asks for when somebody
 	 * presses the button. A map is drawn at 32 pixels per tile, so abyss at
@@ -286,6 +306,8 @@ private:
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
 	bool RenderAsideAndRead(const SRenderParams &Params, CImageInfo &Image, int Width = 0, int Height = 0);
+	/** Draws a frame of a picture with whoever draws that picture's pieces. */
+	void DrawAside(const SRenderParams &Params);
 	/**
 	 * Creates the texture `RenderAsideAndRead` draws into, once and again
 	 * whenever what is drawn has another size.
@@ -319,6 +341,8 @@ private:
 		size_t m_PieceHeight = 0;
 		size_t m_Top = 0;
 		size_t m_Left = 0;
+		/** Who draws the pieces, or nothing for this view's own map. */
+		FDrawPiece m_Draw;
 	};
 	SFullImage m_FullImage;
 

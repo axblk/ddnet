@@ -224,6 +224,12 @@ export declare class MapEditor {
 	dirty(id?: MapId): boolean;
 	/** The maps in the browser's own storage, by name, with their size in bytes. */
 	saved(): { name: string; size: number }[];
+	/** Asks for a PNG of the whole map, drawn over the next frames and handed out. */
+	picture(id?: MapId): boolean;
+	/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
+	pictureState(): 0 | 1 | 2 | 3;
+	/** How far the picture has got, from 0 to 1. */
+	pictureProgress(): number;
 	/** Opens one of those by name; the number of the map, or -1. */
 	openSaved(name: string): number;
 	/** Writes the map under another name without renaming it or marking it saved. */
@@ -437,7 +443,7 @@ export declare class EditorPanels {
 	 * Says something over the map, and hands the note back. A note goes by
 	 * itself after four seconds; `kind: "error"` stays until it is dismissed.
 	 */
-	tell(text: string, kind?: "note" | "error"): Element | null;
+	tell(text: string, kind?: "note" | "error" | "progress"): Element | null;
 	/** Writes it into the status line and says it over the map as well. */
 	say(text: string, kind?: "note" | "error"): void;
 	/** Shows what that button is called, where a pointer would have hovered. */
@@ -461,6 +467,8 @@ export declare class EditorPanels {
 	askYesNo(title: string, text: string, yes: string, done: () => void): void;
 	/** Every key the editor answers to, on one sheet. */
 	showKeys(): void;
+	/** A picture of the whole map, with a note that counts while it is drawn. */
+	exportPicture(): boolean;
 	/** The outer ring of the selected tile layer, drawn with the brush. */
 	makeBorder(): boolean;
 	/** Takes out every envelope nothing is bound to, as one step. */

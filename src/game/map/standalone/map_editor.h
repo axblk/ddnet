@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -759,6 +760,29 @@ public:
 
 	/** Whether the pictures of the map in front are all here yet. */
 	bool Loading() const;
+
+	/**
+	 * Begins a picture of a whole map, written as a PNG a band at a time.
+	 *
+	 * What is in it is the map as it is looked at - the detail layers if
+	 * those are shown, the layers that are hidden left out - and none of the
+	 * working aids: no grid, no marks, no handles on a quad. It is drawn over
+	 * the frames that follow by `StepPicture`, because the whole of a large
+	 * map is hundreds of pieces and a browser has one thread.
+	 *
+	 * @param Id The number of the map.
+	 * @param pPath The file to write, as a path of the operating system.
+	 * @param PixelBudget How many pixels the picture may have at most.
+	 *
+	 * @return `true` when there is a picture to step through.
+	 */
+	bool BeginPicture(int Id, const char *pPath, size_t PixelBudget);
+
+	/** Draws pieces of it for that long; `false` once it is done or failed. */
+	bool StepPicture(std::chrono::nanoseconds Budget) { return m_View.StepFullImage(Budget); }
+	bool PictureRunning() const { return m_View.FullImageRunning(); }
+	bool PictureFailed() const { return m_View.FullImageFailed(); }
+	float PictureProgress() const { return m_View.FullImageProgress(); }
 
 	/** Says that the next frame has to be drawn. */
 	void Touch() { m_NeedsRedraw = true; }

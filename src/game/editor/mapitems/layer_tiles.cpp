@@ -8,6 +8,8 @@
 #include <engine/keys.h>
 #include <engine/shared/config.h>
 
+#include <generated/client_data.h>
+
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
 #include <game/editor/enums.h>
@@ -73,6 +75,7 @@ CLayerTiles::CLayerTiles(const CLayerTiles &Other) :
 
 CLayerTiles::~CLayerTiles()
 {
+	m_TileChunkCache.Clear();
 	delete[] m_pTiles;
 }
 
@@ -113,6 +116,7 @@ void CLayerTiles::SetTile(int x, int y, CTile Tile)
 void CLayerTiles::SetTileIgnoreHistory(int x, int y, CTile Tile) const
 {
 	m_pTiles[y * m_Width + x] = Tile;
+	m_TileChunkCache.InvalidateArea(x, y, 1, 1);
 }
 
 void CLayerTiles::RecordStateChange(int x, int y, CTile Previous, CTile Tile)
@@ -135,6 +139,7 @@ void CLayerTiles::PrepareForSave()
 			for(int x = 0; x < m_Width; x++)
 				m_pTiles[y * m_Width + x].m_Flags |= Map()->m_vpImages[m_Image]->m_aTileFlags[m_pTiles[y * m_Width + x].m_Index];
 	}
+	m_TileChunkCache.Invalidate();
 }
 
 void CLayerTiles::MakePalette() const
@@ -142,6 +147,7 @@ void CLayerTiles::MakePalette() const
 	for(int y = 0; y < m_Height; y++)
 		for(int x = 0; x < m_Width; x++)
 			m_pTiles[y * m_Width + x].m_Index = y * 16 + x;
+	m_TileChunkCache.Invalidate();
 }
 
 void CLayerTiles::Render(const CEditorMap *pRenderMap)
@@ -185,10 +191,38 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 	pRenderMap->m_EnvelopeEvaluator.EnvelopeEval(m_ColorEnvOffset, m_ColorEnv, ColorEnv, 4);
 	const ColorRGBA Color = ColorRGBA(m_Color.r / 255.0f, m_Color.g / 255.0f, m_Color.b / 255.0f, m_Color.a / 255.0f).Multiply(ColorEnv);
 
-	Graphics()->BlendNone();
-	Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, LAYERRENDERFLAG_OPAQUE);
-	Graphics()->BlendNormal();
-	Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, LAYERRENDERFLAG_TRANSPARENT);
+	if(IsEntitiesLayer())
+	{
+		Graphics()->BlendNormal();
+		Editor()->RenderMap()->RenderTilemap(m_pTiles, m_Width, m_Height, 32.0f, Color, Texture.IsValid(), TILERENDERFLAG_FORCE_TRANSPARENT | LAYERRENDERFLAG_TRANSPARENT);
+	}
+	else
+	{
+		const bool ForceTransparent = IsEntitiesLayer();
+		// Layers are created, copied and deserialized in too many places to hand
+		// the graphics over in each of them, and nothing before the first render
+		// needs it. The reader goes through the layer, so it survives every
+		// resize and never has to be built again.
+		if(!m_ChunkSource.m_ReadTile)
+		{
+			m_TileChunkCache.OnInit(Graphics());
+			m_ChunkSource.m_ReadTile = [this](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
+				const CTile &Tile = m_pTiles[(size_t)y * m_Width + x];
+				*pIndex = Tile.m_Index;
+				*pFlags = Tile.m_Flags;
+			};
+		}
+		m_ChunkSource.m_Width = m_Width;
+		m_ChunkSource.m_Height = m_Height;
+		m_ChunkSource.m_Textured = Texture.IsValid();
+		if(!ForceTransparent)
+		{
+			Graphics()->BlendNone();
+			m_TileChunkCache.Render(m_ChunkSource, Color, false, false);
+		}
+		Graphics()->BlendNormal();
+		m_TileChunkCache.Render(m_ChunkSource, Color, true, ForceTransparent);
+	}
 
 	// Render DDRace Layers
 	if(m_RenderOverlays)
@@ -197,7 +231,19 @@ void CLayerTiles::Render(const CEditorMap *pRenderMap)
 		if(m_HasTele)
 			Editor()->RenderMap()->RenderTeleOverlay(static_cast<CLayerTele *>(this)->m_pTeleTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
 		if(m_HasSpeedup)
-			Editor()->RenderMap()->RenderSpeedupOverlay(static_cast<CLayerSpeedup *>(this)->m_pSpeedupTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
+		{
+			Editor()->RenderMap()->RenderSpeedupOverlay(
+				static_cast<CLayerSpeedup *>(this)->m_pSpeedupTile, m_Width, m_Height, 32.0f, OverlayRenderFlags,
+				[this](float X, float Y, float AngleDegrees, float Alpha) {
+					Editor()->Graphics()->TextureSet(g_pData->m_aImages[IMAGE_SPEEDUP_ARROW].m_Id);
+					Editor()->Graphics()->QuadsBegin();
+					Editor()->Graphics()->SetColor(1.0f, 1.0f, 1.0f, Alpha);
+					Editor()->RenderTools()->SelectSprite(SPRITE_SPEEDUP_ARROW);
+					Editor()->Graphics()->QuadsSetRotation(AngleDegrees * (pi / 180.0f));
+					Editor()->RenderTools()->DrawSprite(X, Y, 35.0f);
+					Editor()->Graphics()->QuadsEnd();
+				});
+		}
 		if(m_HasSwitch)
 			Editor()->RenderMap()->RenderSwitchOverlay(static_cast<CLayerSwitch *>(this)->m_pSwitchTile, m_Width, m_Height, 32.0f, OverlayRenderFlags);
 		if(m_HasTune)
@@ -599,6 +645,7 @@ void CLayerTiles::BrushDraw(CLayer *pBrush, vec2 WorldPos)
 
 void CLayerTiles::BrushFlipX()
 {
+	m_TileChunkCache.Invalidate();
 	BrushFlipXImpl(m_pTiles);
 
 	if(m_HasTele || m_HasSpeedup || m_HasTune)
@@ -615,6 +662,7 @@ void CLayerTiles::BrushFlipX()
 
 void CLayerTiles::BrushFlipY()
 {
+	m_TileChunkCache.Invalidate();
 	BrushFlipYImpl(m_pTiles);
 
 	if(m_HasTele || m_HasSpeedup || m_HasTune)
@@ -631,6 +679,7 @@ void CLayerTiles::BrushFlipY()
 
 void CLayerTiles::BrushRotate(float Amount)
 {
+	m_TileChunkCache.Invalidate();
 	int Rotation = (round_to_int(360.0f * Amount / (pi * 2)) / 90) % 4; // 0=0°, 1=90°, 2=180°, 3=270°
 	if(Rotation < 0)
 		Rotation += 4;
@@ -679,6 +728,7 @@ const char *CLayerTiles::TypeName() const
 
 void CLayerTiles::Resize(int NewW, int NewH)
 {
+	m_TileChunkCache.Clear();
 	CTile *pNewData = new CTile[NewW * NewH];
 	mem_zero(pNewData, (size_t)NewW * NewH * sizeof(CTile));
 
@@ -716,6 +766,7 @@ void CLayerTiles::Resize(int NewW, int NewH)
 void CLayerTiles::Shift(EShiftDirection Direction)
 {
 	ShiftImpl(m_pTiles, Direction, Map()->m_ShiftBy);
+	m_TileChunkCache.Invalidate();
 }
 
 void CLayerTiles::ShowInfo()
@@ -1353,6 +1404,7 @@ CUi::EPopupMenuFunctionResult CLayerTiles::RenderCommonProperties(SCommonPropSta
 
 void CLayerTiles::FlagModified(int x, int y, int w, int h)
 {
+	m_TileChunkCache.InvalidateArea(x, y, w, h);
 	Map()->OnModify();
 	if(m_Seed != 0 && m_AutomapperConfig != -1 && m_AutoAutomapper && m_Image >= 0)
 	{

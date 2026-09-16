@@ -4,7 +4,10 @@
 
 #include <engine/graphics.h>
 
+#include <game/client/render.h>
+
 IGraphics *CUIRect::ms_pGraphics = nullptr;
+CRenderTools *CUIRect::ms_pRenderTools = nullptr;
 
 void CUIRect::HSplitMid(CUIRect *pTop, CUIRect *pBottom, float Spacing) const
 {
@@ -168,12 +171,12 @@ bool CUIRect::Inside(vec2 Point) const
 
 void CUIRect::Draw(ColorRGBA Color, int Corners, float Rounding) const
 {
-	ms_pGraphics->DrawRect(x, y, w, h, Color, Corners, Rounding);
+	ms_pRenderTools->DrawRect(x, y, w, h, Color, Corners, Rounding);
 }
 
 void CUIRect::Draw4(ColorRGBA ColorTopLeft, ColorRGBA ColorTopRight, ColorRGBA ColorBottomLeft, ColorRGBA ColorBottomRight, int Corners, float Rounding) const
 {
-	ms_pGraphics->DrawRect4(x, y, w, h, ColorTopLeft, ColorTopRight, ColorBottomLeft, ColorBottomRight, Corners, Rounding);
+	ms_pRenderTools->DrawRect4(x, y, w, h, ColorTopLeft, ColorTopRight, ColorBottomLeft, ColorBottomRight, Corners, Rounding);
 }
 
 void CUIRect::DrawOutline(ColorRGBA Color) const

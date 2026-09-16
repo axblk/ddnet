@@ -18,6 +18,7 @@
 #include <engine/client/updater.h>
 #include <engine/editor.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/http.h>
 #include <engine/shared/config.h>
 #include <engine/shared/demo.h>
@@ -67,6 +68,7 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	IEngine *m_pEngine = nullptr;
 	IFavorites *m_pFavorites = nullptr;
 	IGameClient *m_pGameClient = nullptr;
+	IEngineGraphicsWindow *m_pWindow = nullptr;
 	IEngineGraphics *m_pGraphics = nullptr;
 	IEngineHttp *m_pHttp = nullptr;
 	IEngineInput *m_pInput = nullptr;
@@ -275,6 +277,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	IOHANDLE m_BenchmarkFile = nullptr;
 	int64_t m_BenchmarkStopTime = 0;
+	uint64_t m_RenderWallTimeNanoseconds = 0;
+	ITextRender::CTextRenderStats m_BenchmarkPreviousTextRenderStats;
 
 	CChecksum m_Checksum;
 	int64_t m_OwnExecutableSize = 0;
@@ -372,6 +376,7 @@ public:
 	IEngine *Engine() { return m_pEngine; }
 	IGameClient *GameClient() { return m_pGameClient; }
 	const IGameClient *GameClient() const { return m_pGameClient; }
+	IEngineGraphicsWindow *Window() { return m_pWindow; }
 	IEngineGraphics *Graphics() { return m_pGraphics; }
 	IEngineInput *Input() { return m_pInput; }
 	IEngineSound *Sound() { return m_pSound; }
@@ -547,6 +552,7 @@ public:
 	static void Con_Restart(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoPlay(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoSpeed(IConsole::IResult *pResult, void *pUserData);
+	static void Con_DemoSeek(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Minimize(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Ping(IConsole::IResult *pResult, void *pUserData);
 	static void ConNetReset(IConsole::IResult *pResult, void *pUserData);
@@ -557,7 +563,15 @@ public:
 	static void Con_Screenshot(IConsole::IResult *pResult, void *pUserData);
 
 #if defined(CONF_VIDEORECORDER)
+	/**
+	 * The video that is being recorded. It reaches the rest of the client
+	 * through `IVideo::Current()`, which does not own it, so this is what frees
+	 * it when the recording ends.
+	 */
+	std::unique_ptr<class IVideo> m_pVideo;
+
 	void StartVideo(const char *pFilename, bool WithTimestamp);
+	void StopVideo();
 	static void Con_StartVideo(IConsole::IResult *pResult, void *pUserData);
 	static void Con_StopVideo(IConsole::IResult *pResult, void *pUserData);
 	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, int SpeedIndex, bool StartPaused = false) override;
@@ -604,6 +618,7 @@ public:
 	IDemoRecorder *DemoRecorder(int Recorder) override;
 	CDemoRecorder (&DemoRecorders())[RECORDER_MAX];
 
+	void TakeScreenshot(const char *pFilename);
 	void AutoScreenshot_Start() override;
 	void AutoStatScreenshot_Start() override;
 	void AutoScreenshot_Cleanup();

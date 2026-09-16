@@ -32,7 +32,6 @@ public:
 	void ClampMousePos();
 	void ClampMousePos(CGameState::CInputState &Input) const;
 	void ResetInput(int Conn);
-	void ResetInput(CStreamId StreamId);
 
 private:
 	static void ConKeyInputState(IConsole::IResult *pResult, void *pUserData);

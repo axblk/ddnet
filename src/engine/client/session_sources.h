@@ -58,12 +58,6 @@ public:
 	virtual CConnection *StreamConnection(CStreamId Id) = 0;
 	virtual const CConnection *StreamConnection(CStreamId Id) const = 0;
 	/**
-	 * The stream at a position, counted the way the legacy connection numbers
-	 * count, and the position of a stream.
-	 */
-	virtual CStreamId StreamIdForIndex(int Index) const = 0;
-	virtual int IndexForStream(CStreamId Id) const = 0;
-	/**
 	 * The snapshot delta this source unpacks with, so that a static size
 	 * registered by the game reaches every session the same way.
 	 */

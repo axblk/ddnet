@@ -589,12 +589,11 @@ void CChat::EnableMode(int Team)
 		const CGameView &View = GameClient()->InputView();
 		CGameSessionContext *pSession = GameClient()->FindSessionContext(View.SessionId());
 		CGameState *pState = pSession != nullptr ? pSession->GameStates().Find(View.StateId()) : nullptr;
-		if(pSession == nullptr || pState == nullptr || pSession->Id() != Client()->NetworkSessionId())
+		if(pSession == nullptr || pState == nullptr || !Client()->IsNetworkSeat(pSession->Id()))
 			return;
 		m_InputViewId = View.Id();
 		m_InputSessionId = pSession->Id();
 		m_InputStateId = pState->Id();
-		m_InputStreamId = pState->StreamId();
 		if(Team)
 			m_Mode = MODE_TEAM;
 		else
@@ -615,7 +614,6 @@ void CChat::DisableMode()
 		m_InputViewId = CGameViewId();
 		m_InputSessionId = CSessionId();
 		m_InputStateId = CGameStateId();
-		m_InputStreamId = CStreamId();
 	}
 }
 
@@ -754,10 +752,10 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 			return;
 		const CGameState::CClientIdentityState &Identity = State.ClientIdentity(ClientId);
 		AuthorActive = Identity.m_Active && IntsToStr(Identity.m_ClientInfo.m_aName, std::size(Identity.m_ClientInfo.m_aName), aAuthorName, std::size(aAuthorName));
-		if(!AuthorActive || aAuthorName[0] == '\0' || GameClient()->SessionPresentation(Session.Id()).ChatIgnored(ClientId))
+		if(!AuthorActive || aAuthorName[0] == '\0' || GameClient()->SessionPresentation(Session.ServerId()).ChatIgnored(ClientId))
 			return;
 		IntsToStr(Identity.m_ClientInfo.m_aClan, std::size(Identity.m_ClientInfo.m_aClan), aAuthorClan, std::size(aAuthorClan));
-		AuthorLocal = std::any_of(Session.GameStates().States().begin(), Session.GameStates().States().end(), [ClientId](const auto &pState) { return pState->LocalClientId() == ClientId; });
+		AuthorLocal = Session.FindLocal(ClientId) != nullptr;
 		AuthorFriend = !AuthorLocal && GameClient()->Friends()->IsFriend(aAuthorName, aAuthorClan, true);
 		AuthorFoe = !AuthorLocal && GameClient()->Foes()->IsFriend(aAuthorName, aAuthorClan, true);
 		const int LocalClientId = State.LocalClientId();
@@ -780,7 +778,7 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 	bool Highlighted = false;
 	if(ClientId >= 0 && !AuthorLocal)
 	{
-		for(const auto &pSessionState : Session.GameStates().States())
+		for(const CGameState *pSessionState : Session.LocalStates())
 		{
 			const int LocalId = pSessionState->LocalClientId();
 			if(!in_range(LocalId, MAX_CLIENTS - 1))
@@ -842,9 +840,9 @@ void CChat::AddLine(CGameSessionContext &Session, const CGameState &State, int64
 	const uint64_t PreviousLastId = Session.Chat().LastId();
 	const CSessionChatState::CLine &StoredLine = Session.Chat().Add(NewLine);
 	if(StoredLine.m_Id != PreviousLastId)
-		CacheAppearance(Session.Id(), State, StoredLine);
+		CacheAppearance(Session.ServerId(), State, StoredLine);
 	else
-		CachedLine(Session.Id(), StoredLine.m_Id).Invalidate(*this);
+		CachedLine(Session.ServerId(), StoredLine.m_Id).Invalidate(*this);
 
 	auto &&FChatMsgCheckAndPrint = [](const CSessionChatState::CLine &Line) {
 		ColorRGBA ChatLogColor = ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
@@ -981,7 +979,7 @@ void CChat::OnPrepareLines(const CRenderContext &Context, float y)
 	for(int i = 0; i < Chat.Count(); i++)
 	{
 		const CSessionChatState::CLine &Line = Chat.LineFromNewest(i);
-		CCachedLine &Cached = CachedLine(Context.m_Session.Id(), Line.m_Id);
+		CCachedLine &Cached = CachedLine(Context.m_Session.ServerId(), Line.m_Id);
 		if(Now > Line.m_Time + 16 * Context.m_Time.m_PresentationTimeFrequency && !ShowLargeArea)
 			break;
 
@@ -1193,7 +1191,7 @@ void CChat::UpdateController(const CRenderContext &Context)
 	if(pSession == nullptr || !pSession->Chat().HasPending() || pSession->Chat().LastSend() + time_freq() >= Now)
 		return;
 	const CSessionChatState::CPendingMessage Pending = pSession->Chat().Pending();
-	SendChat(Pending.m_Team, Pending.m_Text.c_str(), pSession->Id(), Pending.m_StreamId);
+	SendChat(Pending.m_Team, Pending.m_Text.c_str(), Pending.m_SessionId);
 	pSession->Chat().PopPending();
 }
 
@@ -1279,7 +1277,7 @@ void CChat::RenderLines(const CRenderContext &Context, float y)
 	for(int i = 0; i < Chat.Count(); ++i)
 	{
 		const CSessionChatState::CLine &Line = Chat.LineFromNewest(i);
-		CCachedLine &Cached = CachedLine(Context.m_Session.Id(), Line.m_Id);
+		CCachedLine &Cached = CachedLine(Context.m_Session.ServerId(), Line.m_Id);
 		if(Now > Line.m_Time + 16 * Frequency && !ShowLargeArea)
 			break;
 		y -= Cached.m_YOffset;
@@ -1352,19 +1350,15 @@ void CChat::EnsureCoherentWidth() const
 
 void CChat::SendChat(int Team, const char *pLine)
 {
-	const CGameView &View = GameClient()->InputView();
-	const CGameSessionContext *pSession = GameClient()->FindSessionContext(View.SessionId());
-	const CGameState *pState = pSession != nullptr ? pSession->GameStates().Find(View.StateId()) : nullptr;
-	if(pState != nullptr)
-		SendChat(Team, pLine, pSession->Id(), pState->StreamId());
+	SendChat(Team, pLine, GameClient()->InputView().SessionId());
 }
 
-void CChat::SendChat(int Team, const char *pLine, CSessionId SessionId, CStreamId StreamId)
+void CChat::SendChat(int Team, const char *pLine, CSessionId SessionId)
 {
 	CGameSessionContext *pSession = GameClient()->FindSessionContext(SessionId);
-	const int Conn = static_cast<int>(StreamId.Value()) - 1;
-	if(*str_utf8_skip_whitespaces(pLine) == '\0' || pSession == nullptr || SessionId != Client()->NetworkSessionId() || pSession->GameStates().FindByStream(StreamId) == nullptr || Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
+	if(*str_utf8_skip_whitespaces(pLine) == '\0' || pSession == nullptr || !Client()->IsNetworkSeat(SessionId))
 		return;
+	const int Conn = Client()->SeatOf(SessionId);
 
 	pSession->Chat().SetLastSend(time());
 
@@ -1396,12 +1390,12 @@ void CChat::SendChatQueued(const char *pLine)
 		return;
 	if(!pSession->Chat().HasPending() && pSession->Chat().LastSend() + time_freq() < time())
 	{
-		SendChat(m_Mode == MODE_ALL ? 0 : 1, pLine, m_InputSessionId, m_InputStreamId);
+		SendChat(m_Mode == MODE_ALL ? 0 : 1, pLine, m_InputSessionId);
 		AddEntry = true;
 	}
 	else
 	{
-		AddEntry = pSession->Chat().Enqueue(m_InputStreamId, m_Mode == MODE_ALL ? 0 : 1, pLine);
+		AddEntry = pSession->Chat().Enqueue(m_InputSessionId, m_Mode == MODE_ALL ? 0 : 1, pLine);
 	}
 
 	if(AddEntry)

@@ -96,14 +96,7 @@ bool CCamera::IsDemoSession() const
 // which is what the camera info from the server is not meant for.
 bool CCamera::IsLocalClientId(int ClientId) const
 {
-	if(ClientId < 0)
-		return false;
-	for(const auto &pState : Session().GameStates().States())
-	{
-		if(pState->LocalClientId() == ClientId)
-			return true;
-	}
-	return false;
+	return Session().FindLocal(ClientId) != nullptr;
 }
 
 float CCamera::CameraSmoothingProgress(float CurrentTime) const

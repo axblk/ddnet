@@ -13,8 +13,8 @@ class CStreamId
 	uint64_t m_Value = 0;
 
 public:
-	CStreamId() = default;
-	explicit CStreamId(uint64_t Value) :
+	constexpr CStreamId() = default;
+	constexpr explicit CStreamId(uint64_t Value) :
 		m_Value(Value)
 	{
 	}
@@ -24,6 +24,10 @@ public:
 	bool operator==(const CStreamId &Other) const { return m_Value == Other.m_Value; }
 	bool operator!=(const CStreamId &Other) const { return !(*this == Other); }
 };
+
+// Every session is one stream, its connection or its demo, so the id of a
+// session's stream is the same in all of them.
+inline constexpr CStreamId SESSION_STREAM_ID(1);
 
 template<typename T>
 class CStreamStorage

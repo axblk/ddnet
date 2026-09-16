@@ -88,7 +88,6 @@ class CChat : public CComponent
 	CGameViewId m_InputViewId;
 	CSessionId m_InputSessionId;
 	CGameStateId m_InputStateId;
-	CStreamId m_InputStreamId;
 	bool m_CompletionUsed;
 	int m_CompletionChosen;
 	char m_aCompletionBuffer[MAX_CHAT_LENGTH];
@@ -181,7 +180,7 @@ public:
 	// @param Team MODE_ALL=0 MODE_TEAM=1
 	// @param pLine the chat message
 	void SendChat(int Team, const char *pLine);
-	void SendChat(int Team, const char *pLine, CSessionId SessionId, CStreamId StreamId);
+	void SendChat(int Team, const char *pLine, CSessionId SessionId);
 
 	// Sends a chat message to the server.
 	//

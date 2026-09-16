@@ -246,7 +246,7 @@ void CInfoMessages::OnTeamKillMessage(CSessionInfoMessageState &InfoMessages, co
 		if(Kill.m_TeamSize == CSessionInfoMessageState::MAX_TEAM_MEMBERS)
 			break;
 	}
-	AddInfoMsg(InfoMessages, Session.Id(), Kill, std::move(Cached));
+	AddInfoMsg(InfoMessages, Session.ServerId(), Kill, std::move(Cached));
 }
 
 void CInfoMessages::OnKillMessage(CSessionInfoMessageState &InfoMessages, const CGameSessionContext &Session, const CGameState &State, int SourceTick, const CNetMsg_Sv_KillMsg *pMsg)
@@ -281,7 +281,7 @@ void CInfoMessages::OnKillMessage(CSessionInfoMessageState &InfoMessages, const 
 	Kill.m_FlagCarrierBlue = State.GameData() ? State.GameData()->m_FlagCarrierBlue : -1;
 	if(Kill.m_TeamSize == 0 && Kill.m_KillerId == -1 && Kill.m_Weapon < 0)
 		return;
-	AddInfoMsg(InfoMessages, Session.Id(), Kill, std::move(Cached));
+	AddInfoMsg(InfoMessages, Session.ServerId(), Kill, std::move(Cached));
 }
 
 void CInfoMessages::OnRaceFinishMessage(CSessionInfoMessageState &InfoMessages, const CGameSessionContext &Session, const CGameState &State, int SourceTick, const CNetMsg_Sv_RaceFinish *pMsg)
@@ -308,7 +308,7 @@ void CInfoMessages::OnRaceFinishMessage(CSessionInfoMessageState &InfoMessages, 
 		str_format(Finish.m_aDiffText, sizeof(Finish.m_aDiffText), "(%c%s)", Finish.m_Diff < 0 ? '-' : '+', aBuf);
 	}
 	str_time_float(pMsg->m_Time / 1000.0f, ETimeFormat::HOURS_CENTISECS, Finish.m_aTimeText, sizeof(Finish.m_aTimeText));
-	AddInfoMsg(InfoMessages, Session.Id(), Finish, std::move(Cached));
+	AddInfoMsg(InfoMessages, Session.ServerId(), Finish, std::move(Cached));
 }
 
 void CInfoMessages::RenderKillMsg(const CRenderContext &Context, const CSessionInfoMessageState::CMessage &InfoMsg, const CCachedInfoMsg &Cached, float x, float y)
@@ -417,7 +417,7 @@ void CInfoMessages::OnRender(const CRenderContext &Context)
 		const CSessionInfoMessageState::CMessage &InfoMsg = InfoMessages.Message(i);
 		if(Context.m_Time.m_GameTick > InfoMsg.m_Tick + Context.m_Time.m_GameTickSpeed * 10)
 			continue;
-		CCachedInfoMsg *pCached = FindCachedInfoMsg(Context.m_Session.Id(), InfoMsg.m_Id);
+		CCachedInfoMsg *pCached = FindCachedInfoMsg(Context.m_Session.ServerId(), InfoMsg.m_Id);
 		if(pCached == nullptr)
 			continue;
 		CreateTextContainersIfNotCreated(Context, InfoMsg, *pCached);

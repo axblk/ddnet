@@ -114,7 +114,7 @@ void CGameClient::ApplySkin7InfoFromGameMsg(CSessionId SessionId, const T *pMsg,
 	m_Skins7.ValidateSkinParts(apSkinPartsPtr, Protocol7Client.m_aUseCustomColors, Protocol7Client.m_aSkinPartColors, Client()->TranslationContext(SessionId).m_GameFlags);
 }
 
-void CGameClient::ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, CStreamId StreamId)
+void CGameClient::ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId)
 {
 	char aSkinPartNames[protocol7::NUM_SKINPARTS][protocol7::MAX_SKIN_ARRAY_SIZE];
 	protocol7::CNetMsg_Sv_SkinChange Msg;
@@ -131,8 +131,7 @@ void CGameClient::ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol
 		Msg.m_aSkinPartColors[Part] = pObj->m_aSkinPartColors[Part];
 	}
 	CGameSessionContext *pSession = FindSessionContext(SessionId);
-	dbg_assert(pSession != nullptr, "missing snapshot skin session context");
-	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
+	CGameState *pState = pSession != nullptr ? pSession->State() : nullptr;
 	dbg_assert(pState != nullptr, "missing snapshot skin game state");
 	ApplySkin7InfoFromGameMsg(SessionId, &Msg, ClientId, *pState);
 }
@@ -189,10 +188,10 @@ void CGameClient::CClientData::UpdateSkin7BotDecoration(const CGameState::CProto
 
 void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn)
 {
-	const bool AdditionalStream = Client()->SessionType(SessionId) == ESessionSourceType::NETWORK && Client()->StreamId(SessionId, Conn) != Client()->PrimaryStreamId(SessionId);
+	const bool AdditionalStream = Conn == IClient::CONN_DUMMY;
 	CGameSessionContext *pSourceSession = m_SessionContexts.Find(SessionId);
 	dbg_assert(pSourceSession != nullptr, "missing translation session context");
-	CGameState *pSourceState = pSourceSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	CGameState *pSourceState = FindGameState(SessionId, Conn);
 	dbg_assert(pSourceState != nullptr, "missing translation game state");
 	if(pSourceSession->Protocol() != EGameProtocol::SIXUP)
 	{

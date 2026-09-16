@@ -265,7 +265,7 @@ bool CStatboard::BuildObservedMatch(const CRenderContext &Context, CStoredMatch 
 		Metric.m_Value = Value;
 		Metric.m_Aggregation = Aggregation;
 	};
-	const CServerInfo &ServerInfo = Client()->ServerInfo(Context.m_Session.Id());
+	const CServerInfo &ServerInfo = Client()->ServerInfo(Context.m_Session.ServerId());
 	Report.m_ModeId = ServerInfo.m_aGameType;
 	Report.m_MapName = ServerInfo.m_aMap;
 	Report.m_TickRate = Context.m_Time.m_GameTickSpeed;

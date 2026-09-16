@@ -108,16 +108,12 @@ CSessionId CClientWithConnection::CreateNetworkSession()
 		return {};
 	if(m_NetworkInitialized)
 	{
-		for(const auto &pStream : pSourceRaw->Streams())
+		int Port = 0;
+		char aName[64];
+		str_format(aName, sizeof(aName), "session %" PRIu64, SessionId.Value());
+		char aError[256];
+		if(!InitNetworkStream(m_NetworkBindAddr, pSourceRaw->NetClient(), Port, aName, aError, sizeof(aError)))
 		{
-			int Port = 0;
-			char aName[64];
-			str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), pStream->m_Id.Value());
-			char aError[256];
-			if(InitNetworkStream(m_NetworkBindAddr, pStream->m_NetClient, Port, aName, aError, sizeof(aError)))
-				continue;
-			for(const auto &pOpenedStream : pSourceRaw->Streams())
-				pOpenedStream->m_NetClient.Close();
 			m_SessionManager.Destroy(SessionId);
 			AddWarning(SWarning(Localize("Network error"), aError));
 			return {};
@@ -133,84 +129,10 @@ CSessionId CClientWithConnection::CreateNetworkSession()
 	return SessionId;
 }
 
-CStreamId CClientWithConnection::ConnectAdditionalStream(CSessionId SessionId)
-{
-	CGameSession *pSession = m_SessionManager.Find(SessionId);
-	if(pSession == nullptr || SessionId == m_NetworkSessionId || pSession->Source().Type() != ESessionSourceType::NETWORK)
-		return {};
-	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	if(Source.State() != ESessionState::READY)
-		return {};
-
-	CStreamId StreamId;
-	for(const auto &pStream : Source.Streams())
-	{
-		if(pStream->m_Id != Source.PrimaryStreamId() && pStream->m_NetClient.State() == NETSTATE_OFFLINE)
-		{
-			StreamId = pStream->m_Id;
-			break;
-		}
-	}
-	if(!StreamId.IsValid())
-	{
-		StreamId = Source.CreateStream();
-		CNetClient *pNetClient = Source.NetClient(StreamId);
-		dbg_assert(pNetClient != nullptr, "failed to create Network stream");
-		int Port = 0;
-		char aName[64];
-		str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
-		char aError[256];
-		if(!InitNetworkStream(m_NetworkBindAddr, *pNetClient, Port, aName, aError, sizeof(aError)))
-		{
-			Source.DestroyStream(StreamId);
-			AddWarning(SWarning(Localize("Network error"), aError));
-			return {};
-		}
-		GameClient()->OnSessionStreamsChanged(SessionId);
-	}
-
-	CNetworkSessionSource::CStreamConnection *pStream = nullptr;
-	for(const auto &pCandidate : Source.Streams())
-	{
-		if(pCandidate->m_Id == StreamId)
-		{
-			pStream = pCandidate.get();
-			break;
-		}
-	}
-	dbg_assert(pStream != nullptr, "missing additional Network stream");
-	const NETADDR ServerAddress = SessionServerAddress(SessionId);
-	if(IsSixup(SessionId))
-		pStream->m_NetClient.Connect7(&ServerAddress, 1);
-	else
-		pStream->m_NetClient.Connect(&ServerAddress, 1);
-	pStream->m_NetClient.RefreshStun();
-	pStream->m_Connection.m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
-	pStream->m_Connection.m_GametimeMarginGraph.Init(-150.0f, 150.0f);
-	pStream->m_SendConnectionInfo = true;
-	Source.SetActiveStream(StreamId);
-	GenerateTimeoutCodes(SessionId, &ServerAddress, 1);
-	return StreamId;
-}
-
-bool CClientWithConnection::DestroyNetworkStream(CSessionId SessionId, CStreamId StreamId)
-{
-	CGameSession *pSession = m_SessionManager.Find(SessionId);
-	if(pSession == nullptr || pSession->Source().Type() != ESessionSourceType::NETWORK)
-		return false;
-	if(SessionId == m_NetworkSessionId && StreamId == this->StreamId(SessionId, CONN_DUMMY))
-		return false;
-	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	if(!Source.DestroyStream(StreamId))
-		return false;
-	GameClient()->OnSessionStreamsChanged(SessionId);
-	return true;
-}
-
 bool CClientWithConnection::DestroyNetworkSession(CSessionId SessionId)
 {
 	CGameSession *pSession = m_SessionManager.Find(SessionId);
-	if(pSession == nullptr || SessionId == m_NetworkSessionId || pSession->Source().Type() != ESessionSourceType::NETWORK)
+	if(pSession == nullptr || IsNetworkSeat(SessionId) || pSession->Source().Type() != ESessionSourceType::NETWORK)
 		return false;
 	CSessionSourceBase &Source = SessionSource(SessionId);
 	if(Source.State() != ESessionState::OFFLINE)
@@ -301,14 +223,14 @@ int CClientWithConnection::SendMsg(CSessionId SessionId, CStreamId StreamId, CMs
 	if(Flags & MSGFLAG_FLUSH)
 		Packet.m_Flags |= NETSENDFLAG_FLUSH;
 
-	if((Flags & MSGFLAG_RECORD) && SessionId == m_NetworkSessionId && StreamId == ActiveStreamId(SessionId))
+	if((Flags & MSGFLAG_RECORD) && SessionId == SeatSessionId(m_NetworkSessionId, ActiveConnection()))
 	{
 		RecordMessage(Pack.Data(), Pack.Size());
 	}
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		if(m_UseQuic && SessionId == m_NetworkSessionId && StreamId == PrimaryStreamId(SessionId))
+		if(m_UseQuic && SessionId == m_NetworkSessionId)
 		{
 			const bool Vital = (Flags & MSGFLAG_VITAL) != 0;
 			if(!m_QuicTransport.Send(m_QuicSession, Packet.m_pData, Packet.m_DataSize, Vital) && Vital)
@@ -318,7 +240,7 @@ int CClientWithConnection::SendMsg(CSessionId SessionId, CStreamId StreamId, CMs
 			}
 		}
 		else
-			NetworkSource(SessionId).NetClient(StreamId)->Send(&Packet);
+			NetworkSource(SessionId).NetClient().Send(&Packet);
 	}
 
 	return 0;
@@ -349,20 +271,10 @@ void CClientWithConnection::SendInfo(CSessionId SessionId, CStreamId StreamId)
 	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 }
 
-void CClientWithConnection::SendEnterGame(int Conn)
-{
-	SendEnterGame(m_NetworkSessionId, StreamId(m_NetworkSessionId, Conn));
-}
-
 void CClientWithConnection::SendEnterGame(CSessionId SessionId, CStreamId StreamId)
 {
 	CMsgPacker Msg(NETMSG_ENTERGAME, true);
 	SendMsg(SessionId, StreamId, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
-}
-
-void CClientWithConnection::SendReady(int Conn)
-{
-	SendReady(m_NetworkSessionId, StreamId(m_NetworkSessionId, Conn));
 }
 
 void CClientWithConnection::SendReady(CSessionId SessionId, CStreamId StreamId)
@@ -379,13 +291,13 @@ void CClientWithConnection::SendMapRequest(CSessionId SessionId)
 	if(IsSixup(SessionId))
 	{
 		CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
-		SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		SendMsg(SessionId, SESSION_STREAM_ID, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 	}
 	else
 	{
 		CMsgPacker Msg(NETMSG_REQUEST_MAP_DATA, true);
 		Msg.AddInt(Source.m_MapdownloadChunk);
-		SendMsg(SessionId, Source.PrimaryStreamId(), &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+		SendMsg(SessionId, SESSION_STREAM_ID, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 	}
 }
 
@@ -453,69 +365,61 @@ bool CClientWithConnection::ConnectionProblems(CSessionId SessionId, CStreamId S
 	// the last packet came in reports trouble for the whole session.
 	if(SessionId == m_NetworkSessionId && m_UseQuic && m_QuicConnected)
 		return time_get() - m_QuicLastRecvTime > MaxLatency;
-	return NetworkSource(SessionId).NetClient(StreamId)->GotProblems(MaxLatency);
+	return NetworkSource(SessionId).NetClient().GotProblems(MaxLatency);
 }
 
 void CClientWithConnection::SendInput(CSessionId SessionId)
 {
-	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	const CStreamId ActiveStreamId = Source.ActiveStreamId();
-	if(!ActiveStreamId.IsValid() || Connection(SessionId, ActiveStreamId).m_PredTick <= 0)
+	CConnection &GameConnection = NetworkSource(SessionId).Connection();
+	if(GameConnection.m_PredTick <= 0)
 		return;
 
+	// The seat without the controls sends its input anyway after the one with
+	// them did, so that its prediction time does not reset.
+	const bool Partner = IsNetworkSeat(SessionId) && SessionId != SeatSessionId(m_NetworkSessionId, ActiveConnection());
+	const bool Force = Partner && m_ForcePartnerInput;
+	if(Partner)
+		m_ForcePartnerInput = false;
 	const int64_t Now = time_get();
-	bool Force = false;
-	auto SendStreamInput = [&](CStreamId StreamId) {
-		CConnection &GameConnection = Connection(SessionId, StreamId);
-		if(GameConnection.m_PredTick <= 0)
-			return;
-		int Size = GameClient()->OnSnapInput(SessionId, GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData, StreamId, Force);
+	int Size = GameClient()->OnSnapInput(SessionId, GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData, SESSION_STREAM_ID, Force);
+	if(!Size)
+		return;
 
-		if(Size)
-		{
-			// pack input
-			CMsgPacker Msg(NETMSG_INPUT, true);
-			Msg.AddInt(GameConnection.m_AckGameTick);
-			Msg.AddInt(GameConnection.m_PredTick);
-			Msg.AddInt(Size);
+	// pack input
+	CMsgPacker Msg(NETMSG_INPUT, true);
+	Msg.AddInt(GameConnection.m_AckGameTick);
+	Msg.AddInt(GameConnection.m_PredTick);
+	Msg.AddInt(Size);
 
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Tick = GameConnection.m_PredTick;
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictedTime = GameConnection.m_PredictedTime.Get(Now);
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictionMargin = PredictionMargin(SessionId) * time_freq() / 1000;
-			GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Time = Now;
+	GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Tick = GameConnection.m_PredTick;
+	GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictedTime = GameConnection.m_PredictedTime.Get(Now);
+	GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_PredictionMargin = PredictionMargin(SessionId) * time_freq() / 1000;
+	GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_Time = Now;
 
-			// pack it
-			for(int k = 0; k < Size / 4; k++)
-			{
-				static const int FlagsOffset = offsetof(CNetObj_PlayerInput, m_PlayerFlags) / sizeof(int);
-				if(k == FlagsOffset && IsSixup(SessionId))
-				{
-					int PlayerFlags = GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData[k];
-					Msg.AddInt(PlayerFlags_SixToSeven(PlayerFlags));
-				}
-				else
-				{
-					Msg.AddInt(GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData[k]);
-				}
-			}
-
-			GameConnection.m_CurrentInput++;
-			GameConnection.m_CurrentInput %= 200;
-
-			SendMsg(SessionId, StreamId, &Msg, MSGFLAG_FLUSH);
-			// ugly workaround for dummy. we need to send input with dummy to prevent
-			// prediction time resets. but if we do it too often, then it's
-			// impossible to use grenade with frozen dummy that gets hammered...
-			if(g_Config.m_ClDummyCopyMoves || GameConnection.m_CurrentInput % 2)
-				Force = true;
-		}
-	};
-	SendStreamInput(ActiveStreamId);
-	for(const auto &pStream : Source.Streams())
+	// pack it
+	for(int k = 0; k < Size / 4; k++)
 	{
-		if(pStream->m_Id != ActiveStreamId && pStream->m_NetClient.State() == NETSTATE_ONLINE)
-			SendStreamInput(pStream->m_Id);
+		static const int FlagsOffset = offsetof(CNetObj_PlayerInput, m_PlayerFlags) / sizeof(int);
+		if(k == FlagsOffset && IsSixup(SessionId))
+		{
+			int PlayerFlags = GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData[k];
+			Msg.AddInt(PlayerFlags_SixToSeven(PlayerFlags));
+		}
+		else
+		{
+			Msg.AddInt(GameConnection.m_aInputs[GameConnection.m_CurrentInput].m_aData[k]);
+		}
 	}
+
+	GameConnection.m_CurrentInput++;
+	GameConnection.m_CurrentInput %= 200;
+
+	SendMsg(SessionId, SESSION_STREAM_ID, &Msg, MSGFLAG_FLUSH);
+	// ugly workaround for dummy. we need to send input with dummy to prevent
+	// prediction time resets. but if we do it too often, then it's
+	// impossible to use grenade with frozen dummy that gets hammered...
+	if(!Partner && (g_Config.m_ClDummyCopyMoves || GameConnection.m_CurrentInput % 2))
+		m_ForcePartnerInput = true;
 }
 
 // TODO: OPT: do this a lot smarter!
@@ -534,22 +438,6 @@ int *CClientWithConnection::GetInput(CSessionId SessionId, CStreamId StreamId, i
 	return nullptr;
 }
 
-// ------ state handling -----
-// called when the map is loaded and we should init for a new round
-void CClientWithConnection::OnEnterGame(int Conn)
-{
-	CConnection &GameConnection = Connection(Conn);
-	GameConnection.ResetGameplay();
-	// Also make gameclient aware that snapshots have been purged
-	GameClient()->InvalidateSnapshot(m_NetworkSessionId);
-	if(Conn == CONN_MAIN)
-	{
-		m_LastDummyConnectTime = 0.0f;
-	}
-
-	GameClient()->OnEnterGame(m_NetworkSessionId);
-}
-
 void CClientWithConnection::EnterGame(CSessionId SessionId, CStreamId StreamId)
 {
 	if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
@@ -564,7 +452,9 @@ void CClientWithConnection::EnterGame(CSessionId SessionId, CStreamId StreamId)
 	GameClient()->InvalidateSnapshot(SessionId);
 	GameClient()->OnEnterGame(SessionId);
 
-	if(StreamId == NetworkSource(SessionId).PrimaryStreamId())
+	// The dummy plays on the server of the network session, which already
+	// pings it and asks for its info.
+	if(SessionId != m_DummySessionId)
 	{
 		CNetworkSessionSource &Source = NetworkSource(SessionId);
 		if(SessionId == m_NetworkSessionId)
@@ -574,8 +464,9 @@ void CClientWithConnection::EnterGame(CSessionId SessionId, CStreamId StreamId)
 	}
 }
 
-void CClientWithConnection::OnPostConnect(int Conn)
+void CClientWithConnection::OnPostConnect(CSessionId SessionId)
 {
+	const int Conn = SeatOf(SessionId);
 	if(!m_pNetworkSessionSource->m_ServerCapabilities.m_ChatTimeoutCode)
 		return;
 
@@ -664,13 +555,9 @@ void CClientWithConnection::GenerateTimeoutCodes(CSessionId SessionId, const NET
 	{
 		GenerateTimeoutSeed();
 	}
-	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	for(size_t StreamIndex = 0; StreamIndex < Source.NumStreams(); ++StreamIndex)
-	{
-		CConnection &GameConnection = Source.ConnectionAt(StreamIndex);
-		GenerateTimeoutCode(GameConnection.m_aTimeoutCode, sizeof(GameConnection.m_aTimeoutCode), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, StreamIndex != 0);
-		log_debug("client", "timeout code '%s' (stream %" PRIu64 ")", GameConnection.m_aTimeoutCode, Source.StreamIdAt(StreamIndex).Value());
-	}
+	CConnection &GameConnection = NetworkSource(SessionId).Connection();
+	GenerateTimeoutCode(GameConnection.m_aTimeoutCode, sizeof(GameConnection.m_aTimeoutCode), g_Config.m_ClTimeoutSeed, pAddrs, NumAddrs, SessionId == m_DummySessionId);
+	log_debug("client", "timeout code '%s' (session %" PRIu64 ")", GameConnection.m_aTimeoutCode, SessionId.Value());
 }
 
 void CClientWithConnection::StartLegacyConnection(CSessionId SessionId, const NETADDR *pAddrs, int NumAddrs, bool Sixup)
@@ -682,12 +569,12 @@ void CClientWithConnection::StartLegacyConnection(CSessionId SessionId, const NE
 	}
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	Source.SetSixup(Sixup);
-	CNetClient &PrimaryNetClient = Source.PrimaryNetClient();
+	CNetClient &SessionNetClient = Source.NetClient();
 	if(Sixup)
-		PrimaryNetClient.Connect7(pAddrs, NumAddrs);
+		SessionNetClient.Connect7(pAddrs, NumAddrs);
 	else
-		PrimaryNetClient.Connect(pAddrs, NumAddrs);
-	PrimaryNetClient.RefreshStun();
+		SessionNetClient.Connect(pAddrs, NumAddrs);
+	SessionNetClient.RefreshStun();
 }
 
 void CClientWithConnection::ClearQuicTrust()
@@ -846,8 +733,8 @@ void CClientWithConnection::ConnectSession(CSessionId SessionId, const char *pAd
 	// IPv6 is the preference and not a demand, so it is left to the resolver,
 	// which already takes IPv6 where a hostname has it and IPv4 where it does
 	// not. IPv4 is the one that rules a family out.
-	CNetClient &PrimaryNetClient = Source.PrimaryNetClient();
-	int LookupNetType = PrimaryNetClient.NetType();
+	CNetClient &SessionNetClient = Source.NetClient();
+	int LookupNetType = SessionNetClient.NetType();
 	if((EConnectAddressFamily)g_Config.m_ClConnectAddressFamily == EConnectAddressFamily::IPV4)
 		LookupNetType &= ~(NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
 	EModernTransportTrust DirectQuicTrust = EModernTransportTrust::INVALID;
@@ -958,7 +845,7 @@ void CClientWithConnection::ConnectSession(CSessionId SessionId, const char *pAd
 			continue;
 		}
 		if((NextAddr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0 &&
-			(PrimaryNetClient.NetType() & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
+			(SessionNetClient.NetType() & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0)
 		{
 			log_error("client", "websockets (ddnet-20+ws://) are not supported by this client");
 			continue;
@@ -1061,9 +948,8 @@ void CClientWithConnection::ConnectSession(CSessionId SessionId, const char *pAd
 	if(SessionId == m_NetworkSessionId)
 		ClearQuicTrust();
 
-	CConnection &PrimaryConnection = *Source.Connection(Source.PrimaryStreamId());
-	PrimaryConnection.m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
-	PrimaryConnection.m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+	Source.Connection().m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	Source.Connection().m_GametimeMarginGraph.Init(-150.0f, 150.0f);
 
 	GenerateTimeoutCodes(SessionId, aConnectAddrs, NumConnectAddrs);
 	const auto SetConnectingState = [&]() {
@@ -1281,7 +1167,7 @@ void CClientWithConnection::ConnectSession(CSessionId SessionId, const char *pAd
 			return;
 		}
 		m_UseQuic = true;
-		Source.PrimaryNetClient().SetPacketFilter(
+		Source.NetClient().SetPacketFilter(
 			[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
 			&m_QuicTransport);
 		m_QuicConnected = false;
@@ -1351,7 +1237,7 @@ void CClientWithConnection::ConnectSession(CSessionId SessionId, const char *pAd
 		if(Started)
 		{
 			m_UseQuic = true;
-			Source.PrimaryNetClient().SetPacketFilter(
+			Source.NetClient().SetPacketFilter(
 				[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
 				&m_QuicTransport);
 			m_QuicConnected = false;
@@ -1386,7 +1272,7 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 {
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	char aReconnectError[256];
-	str_copy(aReconnectError, Source.PrimaryNetClient().ErrorString());
+	str_copy(aReconnectError, Source.NetClient().ErrorString());
 	const bool Focused = m_SessionManager.FocusedId() == SessionId;
 	if(pReason != nullptr && pReason[0] == '\0')
 		pReason = nullptr;
@@ -1396,18 +1282,20 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 		str_copy(aReconnectError, pReason);
 	if(SessionId != m_NetworkSessionId)
 	{
+		const bool Dummy = SessionId == m_DummySessionId;
 		char aBuf[512];
-		str_format(aBuf, sizeof(aBuf), "disconnecting session %" PRIu64 ". reason='%s'", SessionId.Value(), pReason ? pReason : "unknown");
+		str_format(aBuf, sizeof(aBuf), "disconnecting %s %" PRIu64 ". reason='%s'", Dummy ? "dummy session" : "session", SessionId.Value(), pReason ? pReason : "unknown");
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_COLOR);
-		for(const auto &pStream : Source.Streams())
-		{
-			pStream->m_NetClient.Disconnect(pReason);
-			pStream->m_Connection.ResetSnapshots();
-		}
+		Source.NetClient().Disconnect(pReason);
+		Source.Connection().ResetSnapshots();
 		ResetMapDownload(SessionId, true);
-		GameClient()->OnSessionClosed(SessionId);
-		Source.ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
+		if(m_State < IClient::STATE_QUITTING)
+			GameClient()->OnSessionClosed(SessionId);
+		// The dummy follows the network session and never reconnects on its own.
+		Source.ResetAfterDisconnect(aReconnectError, Dummy ? 0 : g_Config.m_ClReconnectFull, Dummy ? 0 : g_Config.m_ClReconnectTimeout, time_get(), time_freq());
 		Source.SetState(ESessionState::OFFLINE);
+		if(Dummy)
+			ResetDummySeat();
 		if(Focused && m_State < IClient::STATE_QUITTING)
 			FocusSession(m_NetworkSessionId);
 		return;
@@ -1430,7 +1318,7 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 	mem_zero(m_aRconPassword, sizeof(m_aRconPassword));
 	m_pConsole->DeregisterTempAll();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
-	CNetClient &PrimaryNetClient = Source.PrimaryNetClient();
+	CNetClient &SessionNetClient = Source.NetClient();
 	if(m_UseQuic && !m_UseWebTransport && m_QuicConnected && m_QuicSession.IsValid() &&
 		m_QuicTransport.Close(m_QuicSession, pReason ? pReason : "application disconnect"))
 	{
@@ -1439,17 +1327,17 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 		bool Closed = false;
 		while(!Closed && std::chrono::steady_clock::now() < Deadline)
 		{
-			PrimaryNetClient.Update();
+			SessionNetClient.Update();
 			CNetChunk Packet;
 			SECURITY_TOKEN ResponseToken;
-			while(PrimaryNetClient.Recv(&Packet, &ResponseToken, IsSixup(SessionId)))
+			while(SessionNetClient.Recv(&Packet, &ResponseToken, IsSixup(SessionId)))
 			{
 			}
 			NETADDR Address;
 			unsigned char *pData;
 			int DataSize;
 			while((DataSize = m_QuicTransport.PollUdpSend(&Address, &pData)) > 0)
-				PrimaryNetClient.SendRaw(&Address, pData, DataSize);
+				SessionNetClient.SendRaw(&Address, pData, DataSize);
 			CQuicEvent Event;
 			while(m_QuicTransport.Poll(Event))
 			{
@@ -1477,13 +1365,13 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 			static_cast<unsigned long long>(Metrics.m_PathChanges));
 	}
 	m_QuicTransport.Shutdown();
-	PrimaryNetClient.SetPacketFilter(nullptr, nullptr);
+	SessionNetClient.SetPacketFilter(nullptr, nullptr);
 	m_QuicSession = CQuicSessionId();
 	m_UseQuic = false;
 	m_UseWebTransport = false;
 	m_QuicConnected = false;
 	ClearQuicTrust();
-	PrimaryNetClient.Disconnect(pReason);
+	SessionNetClient.Disconnect(pReason);
 	if(Focused && m_State < IClient::STATE_QUITTING)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
 	else
@@ -1497,8 +1385,7 @@ void CClientWithConnection::StopNetworkSession(CSessionId SessionId, const char 
 	m_pNetworkSessionSource->ResetAfterDisconnect(aReconnectError, g_Config.m_ClReconnectFull, g_Config.m_ClReconnectTimeout, time_get(), time_freq());
 
 	// clear snapshots
-	Connection(m_NetworkSessionId, CONN_MAIN).ResetSnapshots();
-	SetActiveConnection(CONN_MAIN);
+	Source.Connection().ResetSnapshots();
 }
 
 void CClientWithConnection::Disconnect()
@@ -1544,20 +1431,20 @@ void CClientWithConnection::SwitchSessionFocus()
 void CClientWithConnection::FocusSessionWithSnapshot(CSessionId SessionId)
 {
 	FocusSession(SessionId);
-	const CStreamId StreamId = ActiveStreamId(SessionId);
-	const CConnection &Conn = Connection(SessionId, StreamId);
-	if(SessionSource(SessionId).State() == ESessionState::READY && Conn.m_apSnapshots[SNAP_PREV] && Conn.m_apSnapshots[SNAP_CURRENT])
-		GameClient()->OnNewSnapshot(SessionId, StreamId);
+	const CSessionId PlayedId = InputSessionId();
+	const CConnection &Conn = Connection(PlayedId, SESSION_STREAM_ID);
+	if(SessionSource(PlayedId).State() == ESessionState::READY && Conn.m_apSnapshots[SNAP_PREV] && Conn.m_apSnapshots[SNAP_CURRENT])
+		GameClient()->OnNewSnapshot(PlayedId, SESSION_STREAM_ID);
 }
 
 bool CClientWithConnection::DummyConnected() const
 {
-	return m_DummyConnected;
+	return m_pDummySessionSource->State() == ESessionState::READY;
 }
 
 bool CClientWithConnection::DummyConnecting() const
 {
-	return m_DummyConnecting;
+	return m_pDummySessionSource->State() == ESessionState::CONNECTING || m_pDummySessionSource->State() == ESessionState::LOADING_MAP;
 }
 
 bool CClientWithConnection::DummyConnectingDelayed() const
@@ -1600,37 +1487,46 @@ void CClientWithConnection::DummyConnect()
 		log_info("client", "Wait before connecting dummy again.");
 		return;
 	}
+	if(m_pDummySessionSource->State() != ESessionState::OFFLINE)
+		return;
 
 	m_LastDummyConnectTime = GlobalTime();
-	Connection(CONN_DUMMY).m_RconAuthed = 0;
-	m_DummySendConnInfo = true;
-
 	g_Config.m_ClDummyCopyMoves = 0;
 	g_Config.m_ClDummyHammer = 0;
+	m_DummyActivateOnReady = true;
 
-	m_DummyConnecting = true;
-	// connect to the server
-	if(IsSixup(m_NetworkSessionId))
-		NetClient(CONN_DUMMY).Connect7(NetClient(CONN_MAIN).ServerAddress(), 1);
-	else
-		NetClient(CONN_DUMMY).Connect(NetClient(CONN_MAIN).ServerAddress(), 1);
-
-	Connection(CONN_DUMMY).m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
-	Connection(CONN_DUMMY).m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+	// The dummy joins the server of the network session as it is: same
+	// address, same password, same connection.
+	CNetworkSessionSource &Source = *m_pDummySessionSource;
+	const NETADDR Address = ServerAddress();
+	Source.m_ConnectAddress = m_pNetworkSessionSource->m_ConnectAddress;
+	Source.m_Password = m_pNetworkSessionSource->m_Password;
+	Source.m_ConnectionId = m_pNetworkSessionSource->m_ConnectionId;
+	Source.m_CanReceiveServerCapabilities = true;
+	Source.Connection().m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
+	Source.Connection().m_GametimeMarginGraph.Init(-150.0f, 150.0f);
+	GenerateTimeoutCodes(m_DummySessionId, &Address, 1);
+	Source.SetState(ESessionState::CONNECTING);
+	StartLegacyConnection(m_DummySessionId, &Address, 1, IsSixup(m_NetworkSessionId));
 }
 
 void CClientWithConnection::DummyDisconnect(const char *pReason)
 {
-	NetClient(CONN_DUMMY).Disconnect(pReason);
+	if(m_pDummySessionSource->State() == ESessionState::OFFLINE)
+	{
+		ResetDummySeat();
+		return;
+	}
+	m_SessionManager.Close(m_DummySessionId, pReason);
+	if(!m_pDummySessionSource->IsUpdating())
+		m_SessionManager.Update(m_DummySessionId);
+}
+
+void CClientWithConnection::ResetDummySeat()
+{
 	g_Config.m_ClDummy = 0;
 	SetActiveConnection(CONN_MAIN);
-
-	Connection(CONN_DUMMY).m_RconAuthed = 0;
-	Connection(CONN_DUMMY).ResetSnapshots();
-	m_DummyConnected = false;
-	m_DummyConnecting = false;
-	m_DummyReconnectOnReload = false;
-	m_DummyDeactivateOnReconnect = false;
+	m_DummyActivateOnReady = false;
 #if defined(CONF_PLATFORM_IOS)
 	m_DummyReconnectOnResume = false;
 #endif
@@ -1682,23 +1578,19 @@ void CClientWithConnection::ResetSocket()
 	{
 		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 			continue;
-		CNetworkSessionSource &Source = NetworkSource(SessionId);
-		for(size_t StreamIndex = 0; StreamIndex < Source.NumStreams(); ++StreamIndex)
+		char aError[256];
+		if(IsNetworkSeat(SessionId))
 		{
-			char aError[256];
-			if(SessionId == m_NetworkSessionId && StreamIndex <= CONN_DUMMY)
-			{
-				if(!InitNetworkClientImpl(BindAddr, static_cast<int>(StreamIndex), aError, sizeof(aError)))
-					log_error("client", "%s", aError);
-			}
-			else
-			{
-				int Port = 0;
-				char aName[64];
-				str_format(aName, sizeof(aName), "session %" PRIu64 " stream %" PRIu64, SessionId.Value(), Source.StreamIdAt(StreamIndex).Value());
-				if(!InitNetworkStream(BindAddr, Source.NetClientAt(StreamIndex), Port, aName, aError, sizeof(aError)))
-					log_error("client", "%s", aError);
-			}
+			if(!InitNetworkClientImpl(BindAddr, SeatOf(SessionId), aError, sizeof(aError)))
+				log_error("client", "%s", aError);
+		}
+		else
+		{
+			int Port = 0;
+			char aName[64];
+			str_format(aName, sizeof(aName), "session %" PRIu64, SessionId.Value());
+			if(!InitNetworkStream(BindAddr, NetworkSource(SessionId).NetClient(), Port, aName, aError, sizeof(aError)))
+				log_error("client", "%s", aError);
 		}
 	}
 	char aContactError[256];
@@ -1706,7 +1598,7 @@ void CClientWithConnection::ResetSocket()
 		log_error("client", "%s", aContactError);
 	if(m_UseQuic && !m_UseWebTransport)
 	{
-		NetworkSource(m_NetworkSessionId).PrimaryNetClient().SetPacketFilter([](void *pUser, const NETADDR *pAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddress, pData, DataSize); }, &m_QuicTransport);
+		NetworkSource(m_NetworkSessionId).NetClient().SetPacketFilter([](void *pUser, const NETADDR *pAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddress, pData, DataSize); }, &m_QuicTransport);
 		m_QuicTransport.LocalAddressChanged();
 	}
 }
@@ -1727,8 +1619,7 @@ void CClientWithConnection::RecreateBrokenSockets()
 	// The address belongs to the session, which the disconnect below closes.
 	const std::string ConnectAddress = ConnectAddressString();
 	const bool Reconnect = m_State != IClient::STATE_OFFLINE && m_State < IClient::STATE_QUITTING;
-	const bool ReconnectDummy = Reconnect && m_DummyConnected;
-	const bool DeactivateDummy = g_Config.m_ClDummy == 0;
+	const bool ReconnectDummy = Reconnect && DummyConnected();
 
 	Disconnect();
 	ResetSocket();
@@ -1742,7 +1633,6 @@ void CClientWithConnection::RecreateBrokenSockets()
 		{
 			// The dummy is connected again when the main connection is ready.
 			m_DummyReconnectOnResume = true;
-			m_DummyDeactivateOnReconnect = DeactivateDummy;
 		}
 	}
 }
@@ -1815,11 +1705,11 @@ static CServerCapabilities GetServerCapabilities(int Version, int Flags, bool Si
 void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId StreamId, CNetChunk *pPacket)
 {
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	CConnection &GameConnection = Connection(SessionId, StreamId);
-	const int Conn = Source.StreamIndex(StreamId);
-	dbg_assert(Conn >= 0, "missing packet stream index");
-	const bool PrimaryStream = StreamId == Source.PrimaryStreamId();
-	const bool InactiveStream = StreamId != Source.ActiveStreamId();
+	CConnection &GameConnection = Source.Connection();
+	const bool Dummy = SessionId == m_DummySessionId;
+	// The seat of the pair that takes the controls is the one whose snapshots
+	// are recorded and whose rcon lines are shown.
+	const bool InputSeat = SessionId == SeatSessionId(m_NetworkSessionId, ActiveConnection());
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
 	CMsgPacker Packer(NETMSG_EX, true);
@@ -1857,7 +1747,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 	if(Sys)
 	{
 		// system message
-		if(PrimaryStream && Vital && Msg == NETMSG_MAP_DETAILS)
+		if(Vital && Msg == NETMSG_MAP_DETAILS)
 		{
 			const char *pMap = Unpacker.GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 			SHA256_DIGEST *pMapSha256 = (SHA256_DIGEST *)Unpacker.GetRaw(sizeof(*pMapSha256));
@@ -1882,7 +1772,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			MapDetails.m_Sha256 = *pMapSha256;
 			str_copy(MapDetails.m_aUrl, pMapUrl);
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_CAPABILITIES)
+		else if(Vital && Msg == NETMSG_CAPABILITIES)
 		{
 			if(!Source.m_CanReceiveServerCapabilities)
 			{
@@ -1898,7 +1788,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			Source.m_CanReceiveServerCapabilities = false;
 			Source.m_ServerSentCapabilities = true;
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_MAP_CHANGE)
+		else if(Vital && Msg == NETMSG_MAP_CHANGE)
 		{
 			if(Source.m_CanReceiveServerCapabilities)
 			{
@@ -1927,9 +1817,13 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				return;
 			}
 
-			if(SessionId == m_NetworkSessionId && m_DummyConnected && !m_DummyReconnectOnReload)
+			// The dummy loads the map again with the network session. While it
+			// does, the network session takes the controls.
+			if(Dummy && ActiveConnection() == CONN_DUMMY)
 			{
-				DummyDisconnect(nullptr);
+				m_DummyActivateOnReady = true;
+				g_Config.m_ClDummy = 0;
+				SetActiveConnection(CONN_MAIN);
 			}
 
 			ResetMapDownload(SessionId, true);
@@ -1950,7 +1844,13 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
 				if(m_SessionManager.FocusedId() == SessionId)
 					SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_SENDING_READY);
-				SendReady(SessionId, Source.PrimaryStreamId());
+				SendReady(SessionId, SESSION_STREAM_ID);
+			}
+			else if(Dummy)
+			{
+				// The dummy plays the map the network session has and never
+				// downloads one of its own.
+				m_SessionManager.Close(SessionId, "map not available");
 			}
 			else
 			{
@@ -1996,7 +1896,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				}
 			}
 		}
-		else if(PrimaryStream && Msg == NETMSG_MAP_DATA)
+		else if(Msg == NETMSG_MAP_DATA)
 		{
 			if(!Source.m_MapdownloadFileTemp)
 			{
@@ -2058,13 +1958,13 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				if(IsSixup(SessionId) && (Source.m_MapdownloadChunk % TranslationContext.m_MapDownloadChunksPerRequest == 0))
 				{
 					CMsgPacker MsgP(protocol7::NETMSG_REQUEST_MAP_DATA, true, true);
-					SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+					SendMsg(SessionId, SESSION_STREAM_ID, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 				}
 				else
 				{
 					CMsgPacker MsgP(NETMSG_REQUEST_MAP_DATA, true);
 					MsgP.AddInt(Source.m_MapdownloadChunk);
-					SendMsg(SessionId, Source.PrimaryStreamId(), &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+					SendMsg(SessionId, SESSION_STREAM_ID, &MsgP, MSGFLAG_VITAL | MSGFLAG_FLUSH);
 				}
 
 				if(g_Config.m_Debug)
@@ -2075,49 +1975,28 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				}
 			}
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_MAP_RELOAD)
-		{
-			if(SessionId == m_NetworkSessionId && m_DummyConnected)
-			{
-				m_DummyReconnectOnReload = true;
-				m_DummyDeactivateOnReconnect = ActiveConnection() == CONN_MAIN;
-				g_Config.m_ClDummy = 0;
-				SetActiveConnection(CONN_MAIN);
-			}
-			else if(SessionId == m_NetworkSessionId)
-			{
-				m_DummyDeactivateOnReconnect = false;
-			}
-		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_CON_READY)
+		else if(Vital && Msg == NETMSG_CON_READY)
 		{
 			if(!GameClient()->Map(SessionId)->IsLoaded())
 			{
 				return;
 			}
 			GameClient()->OnConnected(SessionId);
-			if(SessionId == m_NetworkSessionId && m_DummyReconnectOnReload)
+			if(Dummy)
 			{
-				m_DummySendConnInfo = true;
-				m_DummyReconnectOnReload = false;
+				CMsgPacker MsgP(NETMSG_RCON_CMD, true);
+				MsgP.AddString("crashmeplx");
+				SendMsg(SessionId, StreamId, &MsgP, MSGFLAG_VITAL);
+				if(Connection(CONN_MAIN).m_RconAuthed)
+					RconAuth(CONN_DUMMY, m_aRconUsername, m_aRconPassword);
 			}
 #if defined(CONF_PLATFORM_IOS)
-			else if(m_DummyReconnectOnResume)
+			else if(SessionId == m_NetworkSessionId && m_DummyReconnectOnResume)
 			{
 				m_DummyReconnectOnResume = false;
 				DummyConnect();
 			}
 #endif
-		}
-		else if(SessionId == m_NetworkSessionId && Conn == CONN_DUMMY && Msg == NETMSG_CON_READY)
-		{
-			m_DummyConnected = true;
-			m_DummyConnecting = false;
-			g_Config.m_ClDummy = 1;
-			SetActiveConnection(CONN_DUMMY);
-			Rcon("crashmeplx");
-			if(Connection(CONN_MAIN).m_RconAuthed && !Connection(CONN_DUMMY).m_RconAuthed)
-				RconAuth(ActiveConnection(), m_aRconUsername, m_aRconPassword);
 		}
 		else if(Msg == NETMSG_PING)
 		{
@@ -2135,7 +2014,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			MsgP.AddRaw(pId, sizeof(*pId));
 			SendMsg(SessionId, StreamId, &MsgP, (Vital ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH);
 		}
-		else if(PrimaryStream && Msg == NETMSG_PONGEX)
+		else if(Msg == NETMSG_PONGEX)
 		{
 			CUuid *pId = (CUuid *)Unpacker.GetRaw(sizeof(*pId));
 			if(Unpacker.Error())
@@ -2171,18 +2050,19 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 		}
 		else if(Msg == NETMSG_RECONNECT)
 		{
-			if(PrimaryStream)
+			if(Dummy)
+			{
+				// Connecting again waits for the stop, which runs after this update.
+				Source.ScheduleServerConnect("", "");
+				m_SessionManager.Close(SessionId, "reconnect");
+				// Reset dummy connect time to allow immediate reconnect
+				m_LastDummyConnectTime = 0.0f;
+			}
+			else
 			{
 				const std::string ConnectAddress = Source.m_ConnectAddress;
 				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
 				ConnectSession(SessionId, ConnectAddress.c_str(), Password.c_str());
-			}
-			else if(SessionId == m_NetworkSessionId)
-			{
-				DummyDisconnect("reconnect");
-				// Reset dummy connect time to allow immediate reconnect
-				m_LastDummyConnectTime = 0.0f;
-				DummyConnect();
 			}
 		}
 		else if(Msg == NETMSG_REDIRECT)
@@ -2192,7 +2072,20 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			{
 				return;
 			}
-			if(PrimaryStream)
+			if(Dummy)
+			{
+				m_SessionManager.Close(SessionId, "redirect");
+				// Only allow redirecting to the same port to reconnect. The dummy
+				// should not be connected to a different server than the main, as
+				// the client assumes that main and dummy use the same map.
+				if(ServerAddress().port == RedirectPort)
+				{
+					Source.ScheduleServerConnect("", "");
+					// Reset dummy connect time to allow immediate reconnect
+					m_LastDummyConnectTime = 0.0f;
+				}
+			}
+			else
 			{
 				NETADDR ServerAddr = SessionServerAddress(SessionId);
 				ServerAddr.port = RedirectPort;
@@ -2201,22 +2094,8 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
 				ConnectSession(SessionId, aAddr, Password.c_str());
 			}
-			else if(SessionId == m_NetworkSessionId)
-			{
-				DummyDisconnect("redirect");
-				if(ServerAddress().port != RedirectPort)
-				{
-					// Only allow redirecting to the same port to reconnect. The dummy
-					// should not be connected to a different server than the main, as
-					// the client assumes that main and dummy use the same map.
-					return;
-				}
-				// Reset dummy connect time to allow immediate reconnect
-				m_LastDummyConnectTime = 0.0f;
-				DummyConnect();
-			}
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_RCON_CMD_ADD)
+		else if(Vital && Msg == NETMSG_RCON_CMD_ADD)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			const char *pHelp = Unpacker.GetString(CUnpacker::SANITIZE_CC);
@@ -2228,7 +2107,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			}
 			Source.m_GotRconCommands++;
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_RCON_CMD_REM)
+		else if(Vital && Msg == NETMSG_RCON_CMD_REM)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
@@ -2244,10 +2123,9 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			{
 				GameConnection.m_RconAuthed = ResultInt;
 
-				if(SessionId == m_NetworkSessionId && GameConnection.m_RconAuthed)
-					RconAuth(ActiveConnection() == CONN_MAIN ? CONN_DUMMY : CONN_MAIN, m_aRconUsername, m_aRconPassword);
+				if((SessionId == m_NetworkSessionId || Dummy) && GameConnection.m_RconAuthed)
+					RconAuth(Dummy ? CONN_MAIN : CONN_DUMMY, m_aRconUsername, m_aRconPassword);
 			}
-			if(PrimaryStream)
 			{
 				const int Old = Source.m_UseTempRconCommands;
 				Source.m_UseTempRconCommands = Unpacker.GetInt();
@@ -2268,15 +2146,15 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				}
 			}
 		}
-		else if(!InactiveStream && Vital && Msg == NETMSG_RCON_LINE)
+		else if(InputSeat && Vital && Msg == NETMSG_RCON_LINE)
 		{
 			const char *pLine = Unpacker.GetString();
-			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
+			if(!Unpacker.Error())
 			{
 				GameClient()->OnRconLine(pLine);
 			}
 		}
-		else if(SessionId == m_NetworkSessionId && PrimaryStream && Msg == NETMSG_PING_REPLY)
+		else if(SessionId == m_NetworkSessionId && Msg == NETMSG_PING_REPLY)
 		{
 			char aBuf[256];
 			str_format(aBuf, sizeof(aBuf), "latency %.2f", (time_get() - m_PingStartTime) * 1000 / (float)time_freq());
@@ -2475,7 +2353,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 					// add new
 					GameConnection.m_SnapshotStorage.Add(GameTick, time_get(), SnapSize, TmpBuffer3.AsSnapshot(), AltSnapSize, AltSnapBuffer.AsSnapshot());
 
-					if(SessionId == m_NetworkSessionId && !InactiveStream)
+					if(InputSeat)
 					{
 						GameClient()->ProcessDemoSnapshot(TmpBuffer3.AsSnapshot());
 
@@ -2512,7 +2390,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 						GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_SnapshotStorage.m_pLast;
 						GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
 						GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
-						if(SessionId == m_NetworkSessionId && PrimaryStream)
+						if(SessionId == m_NetworkSessionId)
 						{
 							m_LocalStartTime = time_get();
 						}
@@ -2521,9 +2399,15 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 							SetFocusedState(IClient::STATE_ONLINE, false);
 						else
 							Source.SetState(ESessionState::READY);
-						if(SessionId == m_NetworkSessionId && PrimaryStream)
+						if(SessionId == m_NetworkSessionId)
 						{
 							DemoRecorder_HandleAutoStart();
+						}
+						else if(Dummy && m_DummyActivateOnReady)
+						{
+							m_DummyActivateOnReady = false;
+							g_Config.m_ClDummy = 1;
+							SetActiveConnection(CONN_DUMMY);
 						}
 					}
 
@@ -2538,8 +2422,8 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 
 					if(GameConnection.m_ReceivedSnapshots > GameTickSpeed() && !GameConnection.m_DidPostConnect)
 					{
-						if(SessionId == m_NetworkSessionId)
-							OnPostConnect(Conn);
+						if(SessionId == m_NetworkSessionId || Dummy)
+							OnPostConnect(SessionId);
 						GameConnection.m_DidPostConnect = true;
 					}
 
@@ -2548,7 +2432,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				}
 			}
 		}
-		else if(PrimaryStream && Msg == NETMSG_RCONTYPE)
+		else if(Msg == NETMSG_RCONTYPE)
 		{
 			const bool UsernameReq = (Unpacker.GetInt() & 1) != 0;
 			if(!Unpacker.Error() && SessionId == m_NetworkSessionId)
@@ -2556,7 +2440,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				GameClient()->OnRconType(UsernameReq);
 			}
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_RCON_CMD_GROUP_START)
+		else if(Vital && Msg == NETMSG_RCON_CMD_GROUP_START)
 		{
 			const int ExpectedRconCommands = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedRconCommands < 0)
@@ -2565,11 +2449,11 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			Source.m_ExpectedRconCommands = ExpectedRconCommands;
 			Source.m_GotRconCommands = 0;
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_RCON_CMD_GROUP_END)
+		else if(Vital && Msg == NETMSG_RCON_CMD_GROUP_END)
 		{
 			Source.m_ExpectedRconCommands = -1;
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_MAPLIST_ADD)
+		else if(Vital && Msg == NETMSG_MAPLIST_ADD)
 		{
 			while(true)
 			{
@@ -2586,7 +2470,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 				}
 			}
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_MAPLIST_GROUP_START)
+		else if(Vital && Msg == NETMSG_MAPLIST_GROUP_START)
 		{
 			const int ExpectedMaplistEntries = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedMaplistEntries < 0)
@@ -2597,7 +2481,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 			if(SessionId == m_NetworkSessionId)
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 		}
-		else if(PrimaryStream && Vital && Msg == NETMSG_MAPLIST_GROUP_END)
+		else if(Vital && Msg == NETMSG_MAPLIST_GROUP_END)
 		{
 			Source.m_ExpectedMaplistEntries = -1;
 		}
@@ -2606,7 +2490,7 @@ void CClientWithConnection::ProcessServerPacket(CSessionId SessionId, CStreamId 
 	else if(Vital || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
-		if(SessionId == m_NetworkSessionId && !InactiveStream && Msg != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
+		if(InputSeat && Msg != NETMSG_MATCH_REPORT_LOCAL_PARTICIPANT)
 		{
 			RecordMessage(pPacket->m_pData, pPacket->m_DataSize);
 		}
@@ -2666,7 +2550,7 @@ void CClientWithConnection::FinishMapDownload(CSessionId SessionId)
 	{
 		ResetMapDownload(SessionId, true);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
-		SendReady(SessionId, Source.PrimaryStreamId());
+		SendReady(SessionId, SESSION_STREAM_ID);
 	}
 	else if(Source.m_pMapdownloadTask) // fallback
 	{
@@ -2706,7 +2590,7 @@ const NETADDR &CClientWithConnection::ServerAddress() const
 
 const NETADDR &CClientWithConnection::SessionServerAddress(CSessionId SessionId) const
 {
-	return SessionId == m_NetworkSessionId && m_UseQuic ? m_QuicServerAddress : *NetworkSource(SessionId).PrimaryNetClient().ServerAddress();
+	return SessionId == m_NetworkSessionId && m_UseQuic ? m_QuicServerAddress : *NetworkSource(SessionId).NetClient().ServerAddress();
 }
 
 void CClientWithConnection::PumpNetwork(CSessionId SessionId)
@@ -2716,52 +2600,28 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 #endif
 
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
-	CNetClient &PrimaryNetClient = Source.PrimaryNetClient();
+	CNetClient &SessionNetClient = Source.NetClient();
 	const bool QuicSession = SessionId == m_NetworkSessionId && m_UseQuic;
-	for(const auto &pStream : Source.Streams())
-	{
-		pStream->m_NetClient.Update();
-	}
+	SessionNetClient.Update();
 	if(SessionId == m_NetworkSessionId)
 		m_ContactNetClient.Update();
 
 	// check for errors of main and dummy
 	if(Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
 	{
-		if(!QuicSession && PrimaryNetClient.State() == NETSTATE_OFFLINE)
+		if(!QuicSession && SessionNetClient.State() == NETSTATE_OFFLINE)
 		{
+			const bool Dummy = SessionId == m_DummySessionId;
+			if(Dummy && DummyConnecting())
+			{
+				char aError[256];
+				str_format(aError, sizeof(aError), "%s: %s", Localize("Could not connect dummy"), SessionNetClient.ErrorString());
+				GameClient()->Echo(aError);
+			}
 			m_SessionManager.Close(SessionId);
 			char aBuf[256];
-			str_format(aBuf, sizeof(aBuf), "offline error='%s'", PrimaryNetClient.ErrorString());
+			str_format(aBuf, sizeof(aBuf), "offline %serror='%s'", Dummy ? "dummy " : "", SessionNetClient.ErrorString());
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
-		}
-		else if(SessionId == m_NetworkSessionId && (DummyConnecting() || DummyConnected()) && NetClient(CONN_DUMMY).State() == NETSTATE_OFFLINE)
-		{
-			const bool WasConnecting = DummyConnecting();
-			DummyDisconnect(nullptr);
-			char aBuf[256];
-			str_format(aBuf, sizeof(aBuf), "offline dummy error='%s'", NetClient(CONN_DUMMY).ErrorString());
-			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
-			if(WasConnecting)
-			{
-				str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Could not connect dummy"), NetClient(CONN_DUMMY).ErrorString());
-				GameClient()->Echo(aBuf);
-			}
-		}
-		for(const auto &pStream : Source.Streams())
-		{
-			if(pStream->m_Id == Source.PrimaryStreamId() || (SessionId == m_NetworkSessionId && pStream->m_Id == Source.StreamIdAt(CONN_DUMMY)) || pStream->m_NetClient.State() != NETSTATE_OFFLINE || pStream->m_NetClient.ErrorString()[0] == '\0')
-				continue;
-			const CStreamId StreamId = pStream->m_Id;
-			char aError[256];
-			str_copy(aError, pStream->m_NetClient.ErrorString());
-			if(DestroyNetworkStream(SessionId, StreamId))
-			{
-				char aBuf[320];
-				str_format(aBuf, sizeof(aBuf), "offline stream %" PRIu64 " error='%s'", StreamId.Value(), aError);
-				m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aBuf, CLIENT_NETWORK_PRINT_ERROR_COLOR);
-			}
-			break;
 		}
 	}
 	if(SessionId == m_NetworkSessionId)
@@ -2770,7 +2630,7 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 		unsigned char *pQuicData;
 		int QuicDataSize;
 		while((QuicDataSize = m_QuicTransport.PollUdpSend(&QuicAddress, &pQuicData)) > 0)
-			PrimaryNetClient.SendRaw(&QuicAddress, pQuicData, QuicDataSize);
+			SessionNetClient.SendRaw(&QuicAddress, pQuicData, QuicDataSize);
 
 		CQuicEvent QuicEvent;
 		while(m_QuicTransport.Poll(QuicEvent))
@@ -2820,7 +2680,7 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 					GameClient()->OnSessionClosed(SessionId);
 					Source.SetState(ESessionState::LOADING_MAP);
 				}
-				SendInfo(SessionId, Source.PrimaryStreamId());
+				SendInfo(SessionId, SESSION_STREAM_ID);
 			}
 			else if(QuicEvent.m_Type == EQuicEventType::MESSAGE && QuicEvent.m_Message.m_Session == m_QuicSession)
 			{
@@ -2831,7 +2691,7 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 				Packet.m_Flags = QuicEvent.m_Message.m_Vital ? NET_CHUNKFLAG_VITAL : 0;
 				Packet.m_pData = QuicEvent.m_Message.m_pData;
 				Packet.m_DataSize = QuicEvent.m_Message.m_DataSize;
-				ProcessServerPacket(SessionId, Source.PrimaryStreamId(), &Packet);
+				ProcessServerPacket(SessionId, SESSION_STREAM_ID, &Packet);
 			}
 			else if(QuicEvent.m_Type == EQuicEventType::MAP_HEADER && QuicEvent.m_Message.m_Session == m_QuicSession)
 			{
@@ -2910,7 +2770,7 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 	}
 
 	// check if the primary legacy stream was connected
-	if(!QuicSession && Source.State() == ESessionState::CONNECTING && PrimaryNetClient.State() == NETSTATE_ONLINE)
+	if(!QuicSession && Source.State() == ESessionState::CONNECTING && SessionNetClient.State() == NETSTATE_ONLINE)
 	{
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
 		if(m_SessionManager.FocusedId() == SessionId)
@@ -2923,48 +2783,23 @@ void CClientWithConnection::PumpNetwork(CSessionId SessionId)
 			GameClient()->OnSessionClosed(SessionId);
 			Source.SetState(ESessionState::LOADING_MAP);
 		}
-		SendInfo(SessionId, Source.PrimaryStreamId());
-	}
-
-	// progress on dummy connect when the connection is online
-	if(SessionId == m_NetworkSessionId && m_DummySendConnInfo && NetClient(CONN_DUMMY).State() == NETSTATE_ONLINE)
-	{
-		m_DummySendConnInfo = false;
-		SendInfo(SessionId, Source.StreamIdAt(CONN_DUMMY));
-		NetClient(CONN_DUMMY).Update();
-		SendReady(CONN_DUMMY);
-		GameClient()->SendDummyInfo(true);
-		SendEnterGame(CONN_DUMMY);
-	}
-	for(const auto &pStream : Source.Streams())
-	{
-		if(!pStream->m_SendConnectionInfo || pStream->m_NetClient.State() != NETSTATE_ONLINE)
-			continue;
-		pStream->m_SendConnectionInfo = false;
-		SendInfo(SessionId, pStream->m_Id);
-		pStream->m_NetClient.Update();
-		SendReady(SessionId, pStream->m_Id);
-		GameClient()->SendStreamInfo(SessionId, pStream->m_Id, true);
-		SendEnterGame(SessionId, pStream->m_Id);
+		SendInfo(SessionId, SESSION_STREAM_ID);
 	}
 
 	// process packets
 	CNetChunk Packet;
 	SECURITY_TOKEN ResponseToken;
-	for(const auto &pStream : Source.Streams())
+	while(SessionNetClient.Recv(&Packet, &ResponseToken, IsSixup(SessionId)))
 	{
-		while(pStream->m_NetClient.Recv(&Packet, &ResponseToken, IsSixup(SessionId)))
+		if(Packet.m_ClientId == -1)
 		{
-			if(Packet.m_ClientId == -1)
-			{
-				if(ResponseToken != NET_SECURITY_TOKEN_UNKNOWN && !PreprocessConnlessPacket7(&Packet))
-					continue;
-
-				ProcessConnlessPacket(&Packet);
+			if(ResponseToken != NET_SECURITY_TOKEN_UNKNOWN && !PreprocessConnlessPacket7(&Packet))
 				continue;
-			}
-			ProcessServerPacket(SessionId, pStream->m_Id, &Packet);
+
+			ProcessConnlessPacket(&Packet);
+			continue;
 		}
+		ProcessServerPacket(SessionId, SESSION_STREAM_ID, &Packet);
 	}
 	if(SessionId == m_NetworkSessionId)
 	{
@@ -2985,29 +2820,30 @@ void CClientWithConnection::UpdateNetworkSession(CSessionId SessionId)
 	CNetworkSessionSource &Source = NetworkSource(SessionId);
 	if(Source.State() == ESessionState::READY)
 	{
-		const CStreamId ActiveStreamId = Source.ActiveStreamId();
-		const CStreamId LastActiveStreamId = Source.LastActiveStreamId();
-		const int ActiveConn = Source.StreamIndex(ActiveStreamId);
-		m_vRepredict.clear();
-		bool SendNewInput = false;
+		CConnection &GameConnection = Source.Connection();
+		const bool Input = SessionId == InputSessionId();
 		const int64_t ClockNow = time_get();
 
-		if(LastActiveStreamId != ActiveStreamId && m_SessionManager.FocusedId() == SessionId)
+		// The controls moved over to this session from the other seat of the pair.
+		const bool TookInput = IsNetworkSeat(SessionId) && SeatOf(SessionId) == ActiveConnection() && m_LastActiveConnection != ActiveConnection();
+		if(TookInput)
 		{
-			GameClient()->InvalidateSnapshot(SessionId);
-			GameClient()->OnConnectionFocusChanged(SessionId, LastActiveStreamId, ActiveStreamId);
+			m_LastActiveConnection = ActiveConnection();
+			if(m_SessionManager.FocusedId() == m_NetworkSessionId)
+			{
+				GameClient()->InvalidateSnapshot(SessionId);
+				GameClient()->OnConnectionFocusChanged(SeatSessionId(SessionId, ActiveConnection() == CONN_MAIN ? CONN_DUMMY : CONN_MAIN), SessionId);
+			}
 		}
 
-		auto AdvanceStream = [&](CStreamId StreamId) {
-			CConnection &GameConnection = Connection(SessionId, StreamId);
-			if(!GameConnection.m_apSnapshots[SNAP_CURRENT])
-				return;
-
-			bool Repredict = false;
+		bool Repredict = false;
+		bool SendNewInput = false;
+		if(GameConnection.m_apSnapshots[SNAP_CURRENT])
+		{
 			const int64_t Now = GameConnection.m_GameTime.Get(ClockNow);
-			if(StreamId == ActiveStreamId && LastActiveStreamId != ActiveStreamId && GameConnection.m_apSnapshots[SNAP_PREV])
+			if(TookInput && GameConnection.m_apSnapshots[SNAP_PREV])
 			{
-				GameClient()->OnNewSnapshot(SessionId, StreamId);
+				GameClient()->OnNewSnapshot(SessionId, SESSION_STREAM_ID);
 				Repredict = true;
 			}
 
@@ -3020,7 +2856,7 @@ void CClientWithConnection::UpdateNetworkSession(CSessionId SessionId)
 				GameConnection.m_apSnapshots[SNAP_CURRENT] = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_pNext;
 				GameConnection.m_CurGameTick = GameConnection.m_apSnapshots[SNAP_CURRENT]->m_Tick;
 				GameConnection.m_PrevGameTick = GameConnection.m_apSnapshots[SNAP_PREV]->m_Tick;
-				GameClient()->OnNewSnapshot(SessionId, StreamId);
+				GameClient()->OnNewSnapshot(SessionId, SESSION_STREAM_ID);
 				Repredict = true;
 			}
 
@@ -3037,34 +2873,19 @@ void CClientWithConnection::UpdateNetworkSession(CSessionId SessionId)
 				{
 					GameConnection.m_PredTick = NewPredTick;
 					Repredict = true;
-					SendNewInput |= StreamId == ActiveStreamId;
+					SendNewInput = true;
 				}
 			}
-
-			// Only the session that gets the input is predicted, the others are
-			// drawn from their snapshots.
-			if(Repredict && SessionId == m_SessionManager.FocusedId())
-				m_vRepredict.push_back(StreamId);
-		};
-
-		if(ActiveStreamId.IsValid())
-			AdvanceStream(ActiveStreamId);
-		for(const auto &pStream : Source.Streams())
-		{
-			if(pStream->m_Id != ActiveStreamId)
-				AdvanceStream(pStream->m_Id);
 		}
 
 		if(SendNewInput)
 			SendInput(SessionId);
-		for(CStreamId StreamId : m_vRepredict)
-		{
-			const CConnection &GameConnection = Connection(SessionId, StreamId);
-			if(GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks(SessionId))
-				GameClient()->OnPredict(SessionId, StreamId);
-		}
+		// Only the session that gets the input is predicted, the others are
+		// drawn from their snapshots.
+		if(Repredict && Input && GameConnection.m_PredTick > GameConnection.m_CurGameTick && GameConnection.m_PredTick < GameConnection.m_CurGameTick + MaxLatencyTicks(SessionId))
+			GameClient()->OnPredict(SessionId, SESSION_STREAM_ID);
 
-		if(ActiveStreamId.IsValid() && Connection(SessionId, ActiveStreamId).m_apSnapshots[SNAP_CURRENT])
+		if(GameConnection.m_apSnapshots[SNAP_CURRENT])
 		{
 			if(SessionId == m_NetworkSessionId && m_CurrentServerInfoRequestTime >= 0 && ClockNow > m_CurrentServerInfoRequestTime)
 			{
@@ -3083,25 +2904,12 @@ void CClientWithConnection::UpdateNetworkSession(CSessionId SessionId)
 				{
 					CMsgPacker Msg(NETMSG_PINGEX, true);
 					Msg.AddRaw(&Source.m_PingUuid, sizeof(Source.m_PingUuid));
-					SendMsg(SessionId, Source.PrimaryStreamId(), &Msg, MSGFLAG_FLUSH);
+					SendMsg(SessionId, SESSION_STREAM_ID, &Msg, MSGFLAG_FLUSH);
 				}
 				Source.m_CurrentPingTime = ClockNow;
 				Source.m_NextPingTime = ClockNow + 600 * time_freq();
 			}
 		}
-
-		if(SessionId == m_NetworkSessionId && m_DummyDeactivateOnReconnect && ActiveConn == CONN_DUMMY)
-		{
-			m_DummyDeactivateOnReconnect = false;
-			g_Config.m_ClDummy = 0;
-			SetActiveConnection(CONN_MAIN);
-		}
-		else if(SessionId == m_NetworkSessionId && !m_DummyConnected && !m_DummyConnecting && m_DummyDeactivateOnReconnect)
-		{
-			m_DummyDeactivateOnReconnect = false;
-		}
-
-		Source.SetLastActiveStreamId(ActiveStreamId);
 	}
 
 	if(Source.m_pMapdownloadTask)
@@ -3236,30 +3044,6 @@ void CClientWithConnection::Con_DbgConnectSession(IConsole::IResult *pResult, vo
 	pSelf->ConnectSession(SessionId, pResult->GetString(0), nullptr);
 }
 
-void CClientWithConnection::Con_DbgConnectStream(IConsole::IResult *pResult, void *pUserData)
-{
-	CClientWithConnection *pSelf = (CClientWithConnection *)pUserData;
-	const CSessionId SessionId(pResult->GetInteger(0));
-	const CStreamId StreamId = pSelf->ConnectAdditionalStream(SessionId);
-	if(!StreamId.IsValid())
-		return;
-	char aBuf[96];
-	str_format(aBuf, sizeof(aBuf), "connected session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
-	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
-}
-
-void CClientWithConnection::Con_DbgDestroyStream(IConsole::IResult *pResult, void *pUserData)
-{
-	CClientWithConnection *pSelf = (CClientWithConnection *)pUserData;
-	const CSessionId SessionId(pResult->GetInteger(0));
-	const CStreamId StreamId(pResult->GetInteger(1));
-	if(!pSelf->DestroyNetworkStream(SessionId, StreamId))
-		return;
-	char aBuf[96];
-	str_format(aBuf, sizeof(aBuf), "destroyed session %" PRIu64 " stream %" PRIu64, SessionId.Value(), StreamId.Value());
-	pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
-}
-
 void CClientWithConnection::Con_DbgDestroySession(IConsole::IResult *pResult, void *pUserData)
 {
 	CClientWithConnection *pSelf = (CClientWithConnection *)pUserData;
@@ -3276,12 +3060,9 @@ void CClientWithConnection::Con_DbgDumpSessions(IConsole::IResult *, void *pUser
 	CClientWithConnection *pSelf = (CClientWithConnection *)pUserData;
 	for(CSessionId SessionId : pSelf->m_SessionManager.SessionIds())
 	{
-		for(CStreamId StreamId : pSelf->SessionSource(SessionId).StreamIds())
-		{
-			char aBuf[192];
-			str_format(aBuf, sizeof(aBuf), "session=%" PRIu64 " type=%d state=%d stream=%" PRIu64 " active=%d tick=%d map=%s", SessionId.Value(), static_cast<int>(pSelf->SessionType(SessionId)), static_cast<int>(pSelf->SessionState(SessionId)), StreamId.Value(), StreamId == pSelf->ActiveStreamId(SessionId), pSelf->GameTick(SessionId, StreamId), pSelf->ServerInfo(SessionId).m_aMap);
-			pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
-		}
+		char aBuf[192];
+		str_format(aBuf, sizeof(aBuf), "session=%" PRIu64 " type=%d state=%d seat=%d input=%d tick=%d map=%s", SessionId.Value(), static_cast<int>(pSelf->SessionType(SessionId)), static_cast<int>(pSelf->SessionState(SessionId)), pSelf->SeatOf(SessionId), SessionId == pSelf->InputSessionId(), pSelf->GameTick(SessionId, SESSION_STREAM_ID), pSelf->ServerInfo(SessionId).m_aMap);
+		pSelf->m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client/session", aBuf);
 	}
 }
 

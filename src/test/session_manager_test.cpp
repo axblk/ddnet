@@ -24,7 +24,6 @@ public:
 	bool IsSink() const override { return m_Type == ESessionSourceType::NETWORK; }
 	std::vector<CStreamId> StreamIds() const override { return {CStreamId(1)}; }
 	CStreamId PrimaryStreamId() const override { return CStreamId(1); }
-	CStreamId ActiveStreamId() const override { return CStreamId(1); }
 	ESessionState State() const override { return m_State; }
 	const char *ErrorString() const override { return m_Error.c_str(); }
 	bool SetState(ESessionState State) override

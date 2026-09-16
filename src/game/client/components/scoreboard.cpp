@@ -59,6 +59,7 @@ CScoreboard::CInteractionLayout *CScoreboard::InteractionLayout(const CRenderCon
 
 bool CScoreboard::IsMatchReportDismissed(CSessionId SessionId, CUuid MatchId) const
 {
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
 	return std::any_of(m_vDismissedMatchReports.begin(), m_vDismissedMatchReports.end(), [SessionId, MatchId](const CDismissedMatchReport &Dismissed) {
 		return Dismissed.m_SessionId == SessionId && Dismissed.m_MatchId == MatchId;
 	});
@@ -66,6 +67,7 @@ bool CScoreboard::IsMatchReportDismissed(CSessionId SessionId, CUuid MatchId) co
 
 void CScoreboard::DismissMatchReport(CSessionId SessionId, CUuid MatchId)
 {
+	SessionId = Client()->SeatSessionId(SessionId, IClient::CONN_MAIN);
 	const auto It = std::find_if(m_vDismissedMatchReports.begin(), m_vDismissedMatchReports.end(), [SessionId](const CDismissedMatchReport &Dismissed) { return Dismissed.m_SessionId == SessionId; });
 	if(It != m_vDismissedMatchReports.end())
 		It->m_MatchId = MatchId;
@@ -1530,7 +1532,7 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 		}
 		if(ButtonResult != 0)
 		{
-			const bool IsLocal = std::any_of(Context.m_Session.GameStates().States().begin(), Context.m_Session.GameStates().States().end(), [ClientId](const auto &pState) { return pState->LocalClientId() == ClientId; });
+			const bool IsLocal = Context.m_Session.FindLocal(ClientId) != nullptr;
 			m_ScoreboardPopupContext.Bind(this, Context, ClientId, pClient->m_aName, pClient->m_aClan, IsLocal, Interaction.m_IsSpectating);
 			const float PopupHeight = m_ScoreboardPopupContext.m_IsLocal ? (Interaction.m_IsSpectating ? 30.0f : 58.5f) : (Interaction.m_IsSpectating ? 60.0f : 87.5f);
 			Ui()->DoPopupMenu(&m_ScoreboardPopupContext, Ui()->MouseX(), Ui()->MouseY(), 110.0f, PopupHeight, &m_ScoreboardPopupContext, CScoreboardPopupContext::Render);
@@ -1699,10 +1701,10 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 
 	CGameClient *pGameClient = pScoreboard->GameClient();
 	CGameView &OriginView = pGameClient->InputView();
-	CGameSessionContext &OriginSession = pGameClient->SessionContext();
-	if(!OriginView.MatchesBinding(pPopupContext->m_ViewId, pPopupContext->m_SessionId, pPopupContext->m_StateId) || OriginSession.Id() != pPopupContext->m_SessionId)
+	CGameSessionContext *pOriginSession = pGameClient->FindSessionContext(pPopupContext->m_SessionId);
+	if(!OriginView.MatchesBinding(pPopupContext->m_ViewId, pPopupContext->m_SessionId, pPopupContext->m_StateId) || pOriginSession == nullptr)
 		return CUi::POPUP_CLOSE_CURRENT;
-	const CGameState *pOriginState = OriginSession.GameStates().Find(pPopupContext->m_StateId);
+	const CGameState *pOriginState = pOriginSession->GameStates().Find(pPopupContext->m_StateId);
 	CSessionPresentation &Presentation = pGameClient->SessionPresentation(pPopupContext->m_SessionId);
 	const CClientPresentation *pClient = pOriginState == nullptr ? nullptr : Presentation.Client(pPopupContext->m_StateId, pPopupContext->m_ClientId);
 	if(pClient == nullptr || !pClient->m_Active || str_comp(pClient->m_aName, pPopupContext->m_aName) != 0 || str_comp(pClient->m_aClan, pPopupContext->m_aClan) != 0)
@@ -1750,10 +1752,11 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 		Container.VSplitLeft(ActionSpacing, nullptr, &Container);
 		Container.VSplitLeft(ActionSize, &Action, &Container);
 
-		bool ChatIgnored = Presentation.ChatIgnored(pPopupContext->m_ClientId);
+		CSessionPresentation &ServerPresentation = pGameClient->SessionPresentation(pOriginSession->ServerId());
+		bool ChatIgnored = ServerPresentation.ChatIgnored(pPopupContext->m_ClientId);
 		if(pUi->DoButton_FontIcon(&pPopupContext->m_MuteAction, FontIcon::BAN, ChatIgnored, &Action, BUTTONFLAG_LEFT, ActionCorners))
 		{
-			Presentation.ToggleChatIgnored(pPopupContext->m_ClientId);
+			ServerPresentation.ToggleChatIgnored(pPopupContext->m_ClientId);
 			ChatIgnored = !ChatIgnored;
 		}
 		pGameClient->m_Tooltips.DoToolTip(&pPopupContext->m_MuteAction, &Action, ChatIgnored ? Localize("Unmute") : Localize("Mute"));
@@ -1761,11 +1764,11 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 		Container.VSplitLeft(ActionSpacing, nullptr, &Container);
 		Container.VSplitLeft(ActionSize, &Action, &Container);
 
-		bool EmoticonIgnored = Presentation.EmoticonIgnored(pPopupContext->m_ClientId);
+		bool EmoticonIgnored = ServerPresentation.EmoticonIgnored(pPopupContext->m_ClientId);
 		const char *EmoticonActionIcon = EmoticonIgnored ? FontIcon::COMMENT_SLASH : FontIcon::COMMENT;
 		if(pUi->DoButton_FontIcon(&pPopupContext->m_EmoticonAction, EmoticonActionIcon, EmoticonIgnored, &Action, BUTTONFLAG_LEFT, ActionCorners))
 		{
-			Presentation.ToggleEmoticonIgnored(pPopupContext->m_ClientId);
+			ServerPresentation.ToggleEmoticonIgnored(pPopupContext->m_ClientId);
 			EmoticonIgnored = !EmoticonIgnored;
 		}
 		pGameClient->m_Tooltips.DoToolTip(&pPopupContext->m_EmoticonAction, &Action, EmoticonIgnored ? Localize("Unmute emoticons") : Localize("Mute emoticons"));

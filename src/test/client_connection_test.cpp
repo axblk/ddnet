@@ -71,45 +71,6 @@ TEST(ClientConnection, TimingUpdatesAreLocal)
 	EXPECT_FLOAT_EQ(First.m_PredIntraTick, 0.5f);
 }
 
-TEST(ClientConnection, DynamicStreamsKeepStableIdsAndStorage)
-{
-	CNetworkSessionSource Source;
-	ASSERT_EQ(Source.NumStreams(), 2U);
-	const CStreamId PrimaryId = Source.StreamIdAt(0);
-	const CStreamId RemovedId = Source.StreamIdAt(1);
-	EXPECT_EQ(Source.PrimaryStreamId(), PrimaryId);
-	EXPECT_EQ(Source.ActiveStreamId(), PrimaryId);
-	const CStreamId ThirdId = Source.CreateStream();
-	ASSERT_TRUE(ThirdId.IsValid());
-	ASSERT_TRUE(Source.SetActiveStream(ThirdId));
-	EXPECT_EQ(Source.ActiveStreamId(), ThirdId);
-	ASSERT_NE(Source.Connection(PrimaryId), nullptr);
-	ASSERT_NE(Source.Connection(ThirdId), nullptr);
-
-	Source.Connection(PrimaryId)->m_CurGameTick = 100;
-	Source.Connection(ThirdId)->m_CurGameTick = 300;
-	CConnection *pThirdConnection = Source.Connection(ThirdId);
-	EXPECT_TRUE(Source.DestroyStream(RemovedId));
-	EXPECT_EQ(Source.NumStreams(), 2U);
-	EXPECT_EQ(Source.Connection(ThirdId), pThirdConnection);
-	EXPECT_EQ(Source.Connection(PrimaryId)->m_CurGameTick, 100);
-	EXPECT_EQ(Source.Connection(ThirdId)->m_CurGameTick, 300);
-	EXPECT_EQ(Source.Connection(RemovedId), nullptr);
-	EXPECT_EQ(Source.StreamIds(), (std::vector<CStreamId>{PrimaryId, ThirdId}));
-	EXPECT_EQ(Source.StreamIndex(ThirdId), 1);
-	EXPECT_EQ(Source.StreamIdAt(1), ThirdId);
-	EXPECT_EQ(Source.ActiveStreamId(), ThirdId);
-	EXPECT_FALSE(Source.DestroyStream(PrimaryId));
-	EXPECT_EQ(Source.PrimaryStreamId(), PrimaryId);
-	EXPECT_FALSE(Source.SetActiveStream(RemovedId));
-	EXPECT_TRUE(Source.DestroyStream(ThirdId));
-	EXPECT_EQ(Source.ActiveStreamId(), PrimaryId);
-
-	const CStreamId FourthId = Source.CreateStream();
-	EXPECT_GT(FourthId.Value(), ThirdId.Value());
-	EXPECT_EQ(Source.NumStreams(), 2U);
-}
-
 TEST(ClientConnection, NetworkRuntimePolicyIsSourceLocalAndReset)
 {
 	CNetworkSessionSource First;
@@ -147,13 +108,9 @@ TEST(ClientConnection, NetworkRuntimePolicyIsSourceLocalAndReset)
 	EXPECT_EQ(Second.m_NextPingTime, 16);
 
 	Second.m_Password = "second-secret";
-	ASSERT_TRUE(Second.SetActiveStream(Second.StreamIdAt(1)));
-	Second.SetLastActiveStreamId(Second.StreamIdAt(1));
 	Second.ResetAfterDisconnect("Timeout", 3, 5, 200, 10);
 	EXPECT_EQ(Second.m_PingInfoType, -1);
 	EXPECT_EQ(Second.m_Password, "second-secret");
-	EXPECT_EQ(Second.ActiveStreamId(), Second.PrimaryStreamId());
-	EXPECT_EQ(Second.LastActiveStreamId(), Second.PrimaryStreamId());
 	EXPECT_FALSE(Second.ConsumeReconnect(250));
 	EXPECT_TRUE(Second.ConsumeReconnect(251));
 	EXPECT_EQ(Second.ReconnectTime(), 0);
@@ -212,7 +169,7 @@ TEST(ClientConnection, NetworkMetadataResetIsLocal)
 	ResetSource.m_GotRconCommands = 2;
 	ResetSource.m_ExpectedMaplistEntries = 1;
 	ResetSource.m_vMaplistEntries.emplace_back("dm1");
-	ResetSource.ConnectionAt(0).m_RconAuthed = 1;
+	ResetSource.Connection().m_RconAuthed = 1;
 	UntouchedSource.m_ExpectedRconCommands = 7;
 	UntouchedSource.m_vMaplistEntries.emplace_back("ctf1");
 
@@ -223,7 +180,7 @@ TEST(ClientConnection, NetworkMetadataResetIsLocal)
 	EXPECT_EQ(ResetSource.m_GotRconCommands, 0);
 	EXPECT_EQ(ResetSource.m_ExpectedMaplistEntries, -1);
 	EXPECT_TRUE(ResetSource.m_vMaplistEntries.empty());
-	EXPECT_EQ(ResetSource.ConnectionAt(0).m_RconAuthed, 0);
+	EXPECT_EQ(ResetSource.Connection().m_RconAuthed, 0);
 	EXPECT_EQ(UntouchedSource.m_ExpectedRconCommands, 7);
 	EXPECT_EQ(UntouchedSource.m_vMaplistEntries, (std::vector<std::string>{"ctf1"}));
 }
@@ -232,7 +189,7 @@ TEST(ClientConnection, DemoStateDoesNotAliasNetworkMain)
 {
 	CNetworkSessionSource Network;
 	CDemoSessionSource Demo(false, [](CDemoPlayer &) {});
-	CConnection &NetworkMain = Network.ConnectionAt(IClient::CONN_MAIN);
+	CConnection &NetworkMain = Network.Connection();
 	NetworkMain.m_CurGameTick = 123;
 	CSnapshotStorage::CHolder NetworkSnapshot;
 	NetworkMain.m_apSnapshots[IClient::SNAP_CURRENT] = &NetworkSnapshot;
@@ -310,54 +267,14 @@ TEST(ClientConnection, TranslationContextLocalIdsGrowAndReset)
 	EXPECT_EQ(Context.LocalClientId(2), -1);
 }
 
-TEST(ClientConnection, InputRoutesUseExplicitSourceAndTargetStreams)
-{
-	CStreamInputRouter Router;
-	const CStreamId Primary(1);
-	const CStreamId Second(2);
-	const CStreamId Third(3);
-	EXPECT_TRUE(Router.Set(Primary, Primary, EStreamInputPolicy::DIRECT));
-	EXPECT_TRUE(Router.Set(Second, Primary, EStreamInputPolicy::COPY_MOVES));
-	EXPECT_TRUE(Router.Set(Third, Primary, EStreamInputPolicy::HAMMER));
-	ASSERT_NE(Router.Find(Second), nullptr);
-	EXPECT_EQ(Router.Find(Second)->m_Source, Primary);
-	EXPECT_EQ(Router.Find(Second)->m_Policy, EStreamInputPolicy::COPY_MOVES);
-	EXPECT_EQ(Router.Find(Third)->m_Policy, EStreamInputPolicy::HAMMER);
-	Router.Find(Second)->m_HammerInput.m_Fire = 3;
-	Router.Find(Third)->m_HammerInput.m_Fire = 7;
-	Router.Find(Third)->m_HammerCounter = 24;
-
-	EXPECT_TRUE(Router.Set(Second, Third, EStreamInputPolicy::COPY_MOVES));
-	EXPECT_EQ(Router.NumRoutes(), 3U);
-	EXPECT_EQ(Router.Find(Second)->m_Source, Third);
-	EXPECT_EQ(Router.Find(Second)->m_HammerInput.m_Fire, 3);
-	EXPECT_EQ(Router.Find(Third)->m_HammerInput.m_Fire, 7);
-	EXPECT_EQ(Router.Find(Third)->m_HammerCounter, 24U);
-	EXPECT_FALSE(Router.Set(Second, Third, EStreamInputPolicy::DIRECT));
-	EXPECT_TRUE(Router.Remove(Primary));
-	EXPECT_EQ(Router.Find(Primary), nullptr);
-	EXPECT_NE(Router.Find(Second), nullptr);
-	EXPECT_EQ(Router.Find(Third), nullptr);
-	EXPECT_TRUE(Router.Remove(Third));
-	EXPECT_EQ(Router.Find(Second), nullptr);
-	EXPECT_FALSE(Router.Set({}, Primary, EStreamInputPolicy::DIRECT));
-	EXPECT_TRUE(Router.Set(Primary, Primary, EStreamInputPolicy::DIRECT));
-	Router.Reset();
-	EXPECT_EQ(Router.NumRoutes(), 0U);
-}
-
 TEST(ClientConnection, HammerInputCadenceAndReleaseAreRouteLocal)
 {
-	CStreamInputRouter Router;
-	const CStreamId Primary(1);
-	const CStreamId Second(2);
-	const CStreamId Third(3);
-	ASSERT_TRUE(Router.Set(Second, Primary, EStreamInputPolicy::HAMMER));
-	ASSERT_TRUE(Router.Set(Third, Primary, EStreamInputPolicy::HAMMER));
-	CStreamInputRoute *pSecond = Router.Find(Second);
-	CStreamInputRoute *pThird = Router.Find(Third);
-	ASSERT_NE(pSecond, nullptr);
-	ASSERT_NE(pThird, nullptr);
+	CStreamInputRoute Second;
+	CStreamInputRoute Third;
+	Second.m_Policy = EStreamInputPolicy::HAMMER;
+	Third.m_Policy = EStreamInputPolicy::HAMMER;
+	CStreamInputRoute *pSecond = &Second;
+	CStreamInputRoute *pThird = &Third;
 
 	for(int Tick = 0; Tick < 50; Tick++)
 		EXPECT_EQ(pSecond->AdvanceHammer(), Tick % 25 == 0);

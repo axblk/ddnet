@@ -136,6 +136,10 @@ CClient::CClient() :
 	m_VideoExportSessionId = m_SessionManager.Create(std::move(pVideoExportSource));
 	m_pVideoExportSessionSource->SetLifecycleCallbacks([this, SessionId = m_VideoExportSessionId]() { UpdateDemoSession(SessionId); }, [this, SessionId = m_VideoExportSessionId](const char *pReason) { StopDemoSession(SessionId, pReason); });
 #endif
+	auto pDummySource = std::make_unique<CNetworkSessionSource>();
+	m_pDummySessionSource = pDummySource.get();
+	m_DummySessionId = m_SessionManager.Create(std::move(pDummySource));
+	m_pDummySessionSource->SetLifecycleCallbacks([this, SessionId = m_DummySessionId]() { UpdateNetworkSession(SessionId); }, [this, SessionId = m_DummySessionId](const char *pReason) { StopNetworkSession(SessionId, pReason); });
 	m_SessionManager.SetFocused(m_NetworkSessionId);
 
 	m_StateStartTime = time_get();
@@ -641,12 +645,12 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 			if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 				continue;
 			CNetworkSessionSource &Source = NetworkSource(SessionId);
-			CNetClient &PrimaryNetClient = Source.PrimaryNetClient();
+			CNetClient &SessionNetClient = Source.NetClient();
 			// Over QUIC the legacy connection stays offline and the server is
 			// reached under the QUIC address instead.
 			const bool QuicSession = SessionId == m_NetworkSessionId && m_UseQuic;
-			const bool Online = QuicSession ? m_QuicConnected : PrimaryNetClient.State() == NETSTATE_ONLINE;
-			const NETADDR &SessionAddress = QuicSession ? m_QuicServerAddress : *PrimaryNetClient.ServerAddress();
+			const bool Online = QuicSession ? m_QuicConnected : SessionNetClient.State() == NETSTATE_ONLINE;
+			const NETADDR &SessionAddress = QuicSession ? m_QuicServerAddress : *SessionNetClient.ServerAddress();
 			if(!Online || SessionAddress != *pFrom || RawType == SERVERINFO_EXTENDED_MORE)
 				continue;
 			// Only accept server info that has a type that is
@@ -925,7 +929,10 @@ void CClient::Update()
 		std::string PendingPassword;
 		if(Source.ConsumePendingConnect(PendingAddress, PendingPassword))
 		{
-			ConnectSession(SessionId, PendingAddress.c_str(), PendingPassword.c_str());
+			if(SessionId == m_DummySessionId)
+				DummyConnect();
+			else
+				ConnectSession(SessionId, PendingAddress.c_str(), PendingPassword.c_str());
 		}
 		else if(Source.ConsumeReconnect(time_get()))
 		{
@@ -933,8 +940,7 @@ void CClient::Update()
 			const std::string Password = Source.m_SendPassword ? g_Config.m_Password : Source.m_Password;
 			ConnectSession(SessionId, ConnectAddress.c_str(), Password.c_str());
 		}
-		for(const auto &pStream : Source.Streams())
-			pStream->m_Connection.m_PredictedTime.UpdateMargin(PredictionMargin(SessionId) * time_freq() / 1000);
+		Source.Connection().m_PredictedTime.UpdateMargin(PredictionMargin(SessionId) * time_freq() / 1000);
 	}
 }
 
@@ -1536,13 +1542,9 @@ void CClient::Run()
 					WakeTime = std::min(WakeTime, NextRenderTime);
 				if(State() == IClient::STATE_ONLINE && !Inactive)
 				{
-					const CStreamId PredictionStreamId = ActiveStreamId(m_NetworkSessionId);
-					if(PredictionStreamId.IsValid())
-					{
-						const CConnection &PredictionConnection = Connection(m_NetworkSessionId, PredictionStreamId);
-						if(PredictionConnection.m_PredTick > 0)
-							WakeTime = std::min(WakeTime, Now + (PredictionConnection.m_PredTick * time_freq() / GameTickSpeed() - PredictionConnection.m_PredictedTime.Get(Now)));
-					}
+					const CConnection &PredictionConnection = Connection(m_NetworkSessionId, ActiveConnection());
+					if(PredictionConnection.m_PredTick > 0)
+						WakeTime = std::min(WakeTime, Now + (PredictionConnection.m_PredTick * time_freq() / GameTickSpeed() - PredictionConnection.m_PredictedTime.Get(Now)));
 				}
 			}
 		}
@@ -1644,8 +1646,7 @@ void CClient::Run()
 	{
 		if(SessionSource(SessionId).Type() != ESessionSourceType::NETWORK)
 			continue;
-		for(const auto &pStream : NetworkSource(SessionId).Streams())
-			pStream->m_NetClient.Close();
+		NetworkSource(SessionId).NetClient().Close();
 	}
 	m_ContactNetClient.Close();
 	CNetBase::CloseLog();
@@ -2924,8 +2925,6 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("minimize", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Minimize, this, "Minimize the client");
 	m_pConsole->Register("connect", "r[host|ip]", CFGFLAG_CLIENT, Con_Connect, this, "Connect to the specified host/ip");
 	m_pConsole->Register("dbg_connect_session", "r[host|ip]", CFGFLAG_CLIENT, Con_DbgConnectSession, this, "Connect an additional Network session");
-	m_pConsole->Register("dbg_connect_stream", "i[session]", CFGFLAG_CLIENT, Con_DbgConnectStream, this, "Connect an additional stream for a Network session");
-	m_pConsole->Register("dbg_destroy_stream", "i[session] i[stream]", CFGFLAG_CLIENT, Con_DbgDestroyStream, this, "Destroy an additional Network stream");
 	m_pConsole->Register("dbg_destroy_session", "i[session]", CFGFLAG_CLIENT, Con_DbgDestroySession, this, "Destroy an additional Network session");
 	m_pConsole->Register("dbg_dump_sessions", "", CFGFLAG_CLIENT, Con_DbgDumpSessions, this, "Print game session and stream ticks");
 	m_pConsole->Register("disconnect", "", CFGFLAG_CLIENT, Con_Disconnect, this, "Disconnect from the server");

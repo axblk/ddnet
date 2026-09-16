@@ -39,16 +39,10 @@ void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CGameSessionContext &Session = pSelf->GameClient()->SessionContext();
-	CGameState *pState = Session.GameStates().Find(View.StateId());
-	if(Session.Id() != View.SessionId() || Session.Id() != pSelf->Client()->NetworkSessionId() || View.IsSpectating() || !pState)
+	if(!pSelf->Client()->IsNetworkSeat(View.SessionId()) || View.IsSpectating())
 		return;
-
-	const int Conn = static_cast<int>(pState->StreamId().Value()) - 1;
-	if(Conn < IClient::CONN_MAIN || Conn >= IClient::NUM_CONNS)
-		return;
-	Selector.m_OriginSessionId = Session.Id();
-	Selector.m_OriginConnection = Conn;
+	Selector.m_OriginSessionId = pSelf->Client()->NetworkSessionId();
+	Selector.m_OriginConnection = pSelf->Client()->SeatOf(View.SessionId());
 	Selector.m_Active = true;
 }
 
@@ -284,5 +278,5 @@ void CEmoticon::EyeEmote(int Emote, CSessionId SessionId, int Conn)
 		str_format(aBuf, sizeof(aBuf), "/emote blink %d", g_Config.m_ClEyeDuration);
 		break;
 	}
-	GameClient()->m_Chat.SendChat(0, aBuf, SessionId, Client()->StreamId(SessionId, Conn));
+	GameClient()->m_Chat.SendChat(0, aBuf, Client()->SeatSessionId(SessionId, Conn));
 }

@@ -246,7 +246,7 @@ public:
 
 	struct CPendingMessage
 	{
-		CStreamId m_StreamId;
+		CSessionId m_SessionId;
 		int m_Team = 0;
 		std::string m_Text;
 	};
@@ -325,11 +325,11 @@ public:
 		return m_vCommands;
 	}
 	const std::vector<CCommand> &Commands() const { return m_vCommands; }
-	bool Enqueue(CStreamId StreamId, int Team, const char *pText)
+	bool Enqueue(CSessionId SessionId, int Team, const char *pText)
 	{
 		if(m_PendingMessages.size() >= MAX_PENDING)
 			return false;
-		m_PendingMessages.push_back({StreamId, Team, pText});
+		m_PendingMessages.push_back({SessionId, Team, pText});
 		return true;
 	}
 	bool HasPending() const { return !m_PendingMessages.empty(); }
@@ -491,7 +491,12 @@ class CGameSessionContext
 	bool m_ServerCapAnyPlayerFlag = false;
 	CMapContext m_MapContext;
 	CGameStateManager m_GameStates;
-	CStreamInputRouter m_InputRouter;
+	CStreamInputRoute m_InputRoute;
+	// The dummy plays on the server of the network session, so everything
+	// the server says to all of its players lives once, in the network
+	// session's context, and the dummy's context hands that out.
+	CGameSessionContext *m_pServer = this;
+	CGameSessionContext *m_pDummy = nullptr;
 	CLocalPlayerProfileBindings m_LocalPlayerProfiles;
 	CSessionBroadcastState m_Broadcast;
 	CSessionMotdState m_Motd;
@@ -513,8 +518,56 @@ public:
 		for(CStreamId StreamId : vStreamIds)
 			m_GameStates.Create(StreamId);
 	}
+	CGameSessionContext(const CGameSessionContext &) = delete;
+	CGameSessionContext &operator=(const CGameSessionContext &) = delete;
+
+	class CLocalStates
+	{
+		std::array<CGameState *, 2> m_apStates = {};
+		size_t m_NumStates = 0;
+
+	public:
+		void Add(CGameState *pState)
+		{
+			if(pState != nullptr)
+				m_apStates[m_NumStates++] = pState;
+		}
+		CGameState *const *begin() const { return m_apStates.data(); }
+		CGameState *const *end() const { return m_apStates.data() + m_NumStates; }
+	};
+
+	void LinkDummy(CGameSessionContext &Dummy)
+	{
+		m_pDummy = &Dummy;
+		Dummy.m_pServer = this;
+	}
+	bool IsDummy() const { return m_pServer != this; }
+	// The session's own player.
+	CGameState *State() { return m_GameStates.States().empty() ? nullptr : m_GameStates.States().front().get(); }
+	const CGameState *State() const { return m_GameStates.States().empty() ? nullptr : m_GameStates.States().front().get(); }
+	// Every local player on the server: the network session's and its dummy's.
+	CLocalStates LocalStates() const
+	{
+		CLocalStates States;
+		States.Add(m_pServer->State());
+		if(m_pServer->m_pDummy != nullptr)
+			States.Add(m_pServer->m_pDummy->State());
+		return States;
+	}
+	// The context of the local player on the server that has the client id.
+	const CGameSessionContext *FindLocal(int ClientId) const
+	{
+		if(ClientId < 0)
+			return nullptr;
+		for(const CGameSessionContext *pContext : {m_pServer, m_pServer->m_pDummy})
+			if(pContext != nullptr && pContext->State() != nullptr && pContext->State()->LocalClientId() == ClientId)
+				return pContext;
+		return nullptr;
+	}
 
 	CSessionId Id() const { return m_Id; }
+	// The network session of the server this context plays on; keys what all its players share.
+	CSessionId ServerId() const { return m_pServer->m_Id; }
 	const char *MapName() const { return m_MapName.c_str(); }
 	EGameProtocol Protocol() const { return m_Protocol; }
 	bool ServerCapAnyPlayerFlag() const { return m_ServerCapAnyPlayerFlag; }
@@ -528,29 +581,29 @@ public:
 	const CMapContext &MapContext() const { return m_MapContext; }
 	CGameStateManager &GameStates() { return m_GameStates; }
 	const CGameStateManager &GameStates() const { return m_GameStates; }
-	CStreamInputRouter &InputRouter() { return m_InputRouter; }
-	const CStreamInputRouter &InputRouter() const { return m_InputRouter; }
+	CStreamInputRoute &InputRoute() { return m_InputRoute; }
+	const CStreamInputRoute &InputRoute() const { return m_InputRoute; }
 	CLocalPlayerProfileBindings &LocalPlayerProfiles() { return m_LocalPlayerProfiles; }
-	CSessionBroadcastState &Broadcast() { return m_Broadcast; }
-	const CSessionBroadcastState &Broadcast() const { return m_Broadcast; }
-	CSessionMotdState &Motd() { return m_Motd; }
-	const CSessionMotdState &Motd() const { return m_Motd; }
-	CSessionMapMetadataState &MapMetadata() { return m_MapMetadata; }
-	const CSessionMapMetadataState &MapMetadata() const { return m_MapMetadata; }
-	CSessionInfoMessageState &InfoMessages() { return m_InfoMessages; }
-	const CSessionInfoMessageState &InfoMessages() const { return m_InfoMessages; }
-	CSessionChatState &Chat() { return m_Chat; }
-	const CSessionChatState &Chat() const { return m_Chat; }
-	CSessionStatsState &Stats() { return m_Stats; }
-	const CSessionStatsState &Stats() const { return m_Stats; }
-	CMatchReportAssembler &MatchReportAssembler() { return m_MatchReportAssembler; }
-	const CMatchReportAssembler &MatchReportAssembler() const { return m_MatchReportAssembler; }
-	CLiveStatsAssembler &LiveStatsAssembler() { return m_LiveStatsAssembler; }
-	const CLiveStatsAssembler &LiveStatsAssembler() const { return m_LiveStatsAssembler; }
-	int64_t LastLiveStatsRequest() const { return m_LastLiveStatsRequest; }
-	void SetLastLiveStatsRequest(int64_t Time) { m_LastLiveStatsRequest = Time; }
-	CSessionVoteState &Vote() { return m_Vote; }
-	const CSessionVoteState &Vote() const { return m_Vote; }
+	CSessionBroadcastState &Broadcast() { return m_pServer->m_Broadcast; }
+	const CSessionBroadcastState &Broadcast() const { return m_pServer->m_Broadcast; }
+	CSessionMotdState &Motd() { return m_pServer->m_Motd; }
+	const CSessionMotdState &Motd() const { return m_pServer->m_Motd; }
+	CSessionMapMetadataState &MapMetadata() { return m_pServer->m_MapMetadata; }
+	const CSessionMapMetadataState &MapMetadata() const { return m_pServer->m_MapMetadata; }
+	CSessionInfoMessageState &InfoMessages() { return m_pServer->m_InfoMessages; }
+	const CSessionInfoMessageState &InfoMessages() const { return m_pServer->m_InfoMessages; }
+	CSessionChatState &Chat() { return m_pServer->m_Chat; }
+	const CSessionChatState &Chat() const { return m_pServer->m_Chat; }
+	CSessionStatsState &Stats() { return m_pServer->m_Stats; }
+	const CSessionStatsState &Stats() const { return m_pServer->m_Stats; }
+	CMatchReportAssembler &MatchReportAssembler() { return m_pServer->m_MatchReportAssembler; }
+	const CMatchReportAssembler &MatchReportAssembler() const { return m_pServer->m_MatchReportAssembler; }
+	CLiveStatsAssembler &LiveStatsAssembler() { return m_pServer->m_LiveStatsAssembler; }
+	const CLiveStatsAssembler &LiveStatsAssembler() const { return m_pServer->m_LiveStatsAssembler; }
+	int64_t LastLiveStatsRequest() const { return m_pServer->m_LastLiveStatsRequest; }
+	void SetLastLiveStatsRequest(int64_t Time) { m_pServer->m_LastLiveStatsRequest = Time; }
+	CSessionVoteState &Vote() { return m_pServer->m_Vote; }
+	const CSessionVoteState &Vote() const { return m_pServer->m_Vote; }
 };
 
 class CGameSessionContextManager

@@ -105,15 +105,8 @@ float CPlayers::GetPlayerTargetAngle(
 	float Intra)
 {
 	const CGameState::CClientSnapshot *pSnapshotClient = in_range(ClientId, MAX_CLIENTS - 1) ? &GameState.Client(ClientId) : nullptr;
-	const CGameState *pInputState = nullptr;
-	for(const auto &pState : Session.GameStates().States())
-	{
-		if(pState->LocalClientId() == ClientId)
-		{
-			pInputState = pState.get();
-			break;
-		}
-	}
+	const CGameSessionContext *pInputContext = Session.FindLocal(ClientId);
+	const CGameState *pInputState = pInputContext != nullptr ? pInputContext->State() : nullptr;
 	const CGameState::CClientSnapshot *pInputClient = pInputState != nullptr ? &pInputState->Client(ClientId) : nullptr;
 	const bool LocalInput = pInputClient != nullptr && (pInputState == &GameState || g_Config.m_ClPredictDummy) && pInputClient->m_HasCharacter && !Time.m_IsDemoPlayback &&
 				(!pInputClient->m_HasPlayerInfo || pInputClient->m_PlayerInfo.m_Team != TEAM_SPECTATORS) &&
@@ -131,8 +124,8 @@ float CPlayers::GetPlayerTargetAngle(
 	}
 	else if(LocalInput)
 	{
-		const CStreamInputRoute *pRoute = Session.InputRouter().Find(pInputState->StreamId());
-		const CNetObj_PlayerInput &Input = pRoute != nullptr && pRoute->m_Policy == EStreamInputPolicy::HAMMER ? pRoute->m_HammerInput : pInputState->Input().m_InputData;
+		const CStreamInputRoute &Route = pInputContext->InputRoute();
+		const CNetObj_PlayerInput &Input = Route.m_Policy == EStreamInputPolicy::HAMMER ? Route.m_HammerInput : pInputState->Input().m_InputData;
 		return angle(vec2(Input.m_TargetX, Input.m_TargetY));
 	}
 
@@ -238,29 +231,10 @@ void CPlayers::RenderHookCollLine(
 		return;
 
 	bool Aim = (Player.m_PlayerFlags & PLAYERFLAG_AIM);
-	if(!Context.m_Session.ServerCapAnyPlayerFlag())
-	{
-		for(const auto &pState : Context.m_Session.GameStates().States())
-		{
-			if(ClientId == pState->LocalClientId())
-			{
-				Aim = pState->Input().m_ShowHookColl;
-				break;
-			}
-		}
-	}
-
-	const CGameState *pSessionLocalState = nullptr;
-	for(const auto &pState : Context.m_Session.GameStates().States())
-	{
-		if(pState->LocalClientId() == ClientId)
-		{
-			pSessionLocalState = pState.get();
-			break;
-		}
-	}
-	const CStreamInputRoute *pInputRoute = pSessionLocalState != nullptr ? Context.m_Session.InputRouter().Find(pSessionLocalState->StreamId()) : nullptr;
-	const bool CopyMoves = pInputRoute != nullptr && pInputRoute->m_Policy == EStreamInputPolicy::COPY_MOVES;
+	const CGameSessionContext *pLocalContext = Context.m_Session.FindLocal(ClientId);
+	if(!Context.m_Session.ServerCapAnyPlayerFlag() && pLocalContext != nullptr)
+		Aim = pLocalContext->State()->Input().m_ShowHookColl;
+	const bool CopyMoves = pLocalContext != nullptr && pLocalContext->InputRoute().m_Policy == EStreamInputPolicy::COPY_MOVES;
 	if(CopyMoves)
 		Aim = false;
 
@@ -1003,9 +977,7 @@ void CPlayers::RenderPlayer(
 		Graphics()->QuadsSetRotation(0);
 	}
 
-	bool SessionLocal = false;
-	for(const auto &pState : Context.m_Session.GameStates().States())
-		SessionLocal |= pState->LocalClientId() == ClientId;
+	const bool SessionLocal = Context.m_Session.FindLocal(ClientId) != nullptr;
 	if(g_Config.m_ClAfkEmote && Afk && !SessionLocal)
 	{
 		int CurEmoticon = (SPRITE_ZZZ - SPRITE_OOP);
@@ -1019,7 +991,7 @@ void CPlayers::RenderPlayer(
 	}
 
 	const CGameState::CClientEmoticonState &Emoticon = Context.m_State.ClientEmoticon(ClientId);
-	if(g_Config.m_ClShowEmotes && !GameClient()->SessionPresentation(Context.m_Session.Id()).EmoticonIgnored(ClientId) && Emoticon.m_StartTick != -1)
+	if(g_Config.m_ClShowEmotes && !GameClient()->SessionPresentation(Context.m_Session.ServerId()).EmoticonIgnored(ClientId) && Emoticon.m_StartTick != -1)
 	{
 		float SinceStart = (Context.m_Time.m_GameTick - Emoticon.m_StartTick) + (Context.m_Time.m_IntraGameTickSincePrev - Emoticon.m_StartFraction);
 		float FromEnd = (2 * Context.m_Time.m_GameTickSpeed) - SinceStart;

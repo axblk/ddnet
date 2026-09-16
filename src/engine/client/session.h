@@ -50,7 +50,6 @@ public:
 	virtual bool IsSink() const = 0;
 	virtual std::vector<CStreamId> StreamIds() const = 0;
 	virtual CStreamId PrimaryStreamId() const = 0;
-	virtual CStreamId ActiveStreamId() const = 0;
 	virtual ESessionState State() const = 0;
 	virtual const char *ErrorString() const = 0;
 	virtual bool SetState(ESessionState State) = 0;

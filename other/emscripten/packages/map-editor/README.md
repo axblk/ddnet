@@ -29,6 +29,14 @@ still work, they are just unpainted.
   as many commands as the dragging takes, `editor.commit()`. Every step in
   between is already what is drawn - that is the preview - and the history gets
   one line.
+* **And a run of changes of the same thing is one entry too.** A number field
+  stepped ten times with its arrows is ten changes, each with its own
+  `begin`/`commit`, but one thing to undo: they carry the same `merge` key and
+  fold into one entry while they keep coming. Nothing merges that does not say
+  so, so two brush strokes stay two.
+* **Going back takes the panels along.** The entry remembers what was selected
+  when it was made, so an undo puts the layer that was worked in back in front
+  instead of leaving it to be looked for.
 * **Nothing polls.** The program says when a map changed, and the editor is an
   `EventTarget`: `document`, `loaded`, `saved`, `closed`, `error`.
 * **Several maps, one editor.** Every call takes the number of the map it is

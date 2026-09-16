@@ -6,6 +6,7 @@
 #include <game/map/document/history.h>
 #include <game/map/document/map_state.h>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -58,13 +59,20 @@ namespace map_document
 		 * The label is the one the history will carry, and only the outermost
 		 * transaction gets to name it - the automapper that runs inside a
 		 * stroke does not rename the stroke.
+		 *
+		 * The merge key names *what* is being changed, for a change that
+		 * should fold into the one before it when it is the same thing again
+		 * a moment later - stepping a number field with its arrows. Nothing
+		 * merges unless it says so: a second brush stroke is a second thing
+		 * to undo, whatever it painted.
 		 */
-		void Begin(const char *pLabel)
+		void Begin(const char *pLabel, const char *pMergeKey = nullptr)
 		{
 			if(m_Depth == 0)
 			{
 				m_Edit = m_History.Current();
 				m_Label = pLabel;
+				m_MergeKey = pMergeKey == nullptr ? "" : pMergeKey;
 			}
 			++m_Depth;
 		}
@@ -91,7 +99,7 @@ namespace map_document
 			if(m_Depth > 0)
 				return;
 			if(!Same(*m_Edit, m_History.Current()))
-				m_History.Push(std::move(*m_Edit), m_Label.c_str());
+				m_History.Push(std::move(*m_Edit), m_Label.c_str(), m_MergeKey.c_str());
 			m_Edit.reset();
 		}
 
@@ -133,6 +141,9 @@ namespace map_document
 		}
 
 		void SetHistoryLimits(uint64_t MaxBytes, size_t MaxEntries) { m_History.SetLimits(MaxBytes, MaxEntries); }
+
+		/** How long a change stays open to be merged into - see `CHistory`. */
+		void SetMergeWindow(int64_t Nanos) { m_History.SetMergeWindow(Nanos); }
 
 	private:
 		/**
@@ -195,6 +206,7 @@ namespace map_document
 		// for as long as it is.
 		std::optional<CMapState> m_Edit;
 		std::string m_Label;
+		std::string m_MergeKey;
 		int m_Depth = 0;
 	};
 } // namespace map_document

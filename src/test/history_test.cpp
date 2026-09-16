@@ -275,3 +275,70 @@ TEST(History, TheRunningByteCountIsTheCountedOne)
 	EXPECT_EQ(Second.NumEntries(), 2u);
 	EXPECT_EQ(Second.Bytes(), Second.MeasureBytes()) << "after the limit ate the way forward";
 }
+
+// A number field stepped with its arrows sends a change per step. Ten steps
+// are one change of one property, so the entries fold into one - but only
+// while the change says what it is of, and only while it is the same thing.
+TEST(History, MergesARunOfChangesOfTheSameThing)
+{
+	CHistory History(OneLayer());
+	for(int i = 0; i < 10; ++i)
+	{
+		History.Push(Draw(History.Current(), 0, 1 + i), "Parallax", "group:0:parallaxX");
+	}
+	EXPECT_EQ(History.NumEntries(), 2u) << "ten steps of one property are one entry";
+	EXPECT_EQ(History.CurrentIndex(), 1u);
+	EXPECT_EQ(History.Entry(1).m_Label, "Parallax");
+	EXPECT_EQ(History.Current().TileLayer(0, 0)->m_Tiles.Get(0, 0).m_Index, 10) << "and the entry holds the last of them";
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes());
+
+	// The way back is where the run started, not where it was one step ago.
+	ASSERT_TRUE(History.Undo());
+	EXPECT_EQ(History.Current().TileLayer(0, 0)->m_Tiles.Get(0, 0).m_Index, 0);
+	EXPECT_FALSE(History.CanUndo());
+}
+
+TEST(History, DoesNotMergeWhatDoesNotSayItMay)
+{
+	CHistory History(OneLayer());
+	for(int i = 0; i < 4; ++i)
+	{
+		History.Push(Draw(History.Current(), 0, 1 + i), "Draw");
+	}
+	EXPECT_EQ(History.NumEntries(), 5u) << "a stroke is a stroke, however fast they come";
+}
+
+TEST(History, DoesNotMergeADifferentThing)
+{
+	CHistory History(OneLayer());
+	History.Push(Draw(History.Current(), 0, 1), "Parallax", "group:0:parallaxX");
+	History.Push(Draw(History.Current(), 0, 2), "Parallax", "group:1:parallaxX");
+	History.Push(Draw(History.Current(), 0, 3), "Parallax", "group:1:parallaxX");
+	EXPECT_EQ(History.NumEntries(), 3u) << "two groups' parallax are two things";
+	EXPECT_EQ(History.Bytes(), History.MeasureBytes());
+}
+
+TEST(History, DoesNotMergeWhenTheWindowIsClosed)
+{
+	CHistory History(OneLayer());
+	// A window of nothing is a window that has always just closed, which is
+	// what a change made long after the one before it meets.
+	History.SetMergeWindow(0);
+	History.Push(Draw(History.Current(), 0, 1), "Parallax", "group:0:parallaxX");
+	History.Push(Draw(History.Current(), 0, 2), "Parallax", "group:0:parallaxX");
+	EXPECT_EQ(History.NumEntries(), 3u);
+}
+
+TEST(History, DoesNotMergeIntoWhatWasOpened)
+{
+	CHistory History(OneLayer());
+	History.Push(Draw(History.Current(), 0, 1), "Parallax", "group:0:parallaxX");
+	History.Undo();
+	// Standing on the opened version, the next change starts a new entry
+	// rather than folding into the one it is about to throw away.
+	History.Push(Draw(History.Current(), 0, 2), "Parallax", "group:0:parallaxX");
+	EXPECT_EQ(History.NumEntries(), 2u);
+	EXPECT_TRUE(History.CanUndo()) << "the opened version is still there to go back to";
+	ASSERT_TRUE(History.Undo());
+	EXPECT_EQ(History.Current().TileLayer(0, 0)->m_Tiles.Get(0, 0).m_Index, 0);
+}

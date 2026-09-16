@@ -110,7 +110,7 @@ export declare class MapEditor {
 	redo(id?: MapId): Answer;
 	jump(index: number, id?: MapId): Answer;
 
-	begin(label?: string, id?: MapId): void;
+	begin(label?: string, id?: MapId, merge?: string): void;
 	commit(id?: MapId): void;
 	abort(id?: MapId): void;
 

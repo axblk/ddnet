@@ -240,9 +240,16 @@ class CMapEditor extends Program {
 	 * Opens a change that many commands make together, so that a slider being
 	 * dragged or a brush being drawn with is one entry in the history. Every
 	 * command in between is already what is drawn.
+	 *
+	 * `merge` names what is being changed rather than what is being done:
+	 * two changes carrying the same one, close enough together, become one
+	 * entry. That is a number field stepped with its arrows, where each step
+	 * is its own change but ten of them are one thing to undo. Leave it out
+	 * and the change stands alone, which is what a brush stroke wants.
 	 */
-	begin(label, id) {
-		return this.call("MapEditorBegin", null, ["number", "string"], [this.which(id), label || "Change"]);
+	begin(label, id, merge) {
+		return this.call("MapEditorBegin", null, ["number", "string", "string"],
+			[this.which(id), label || "Change", merge || ""]);
 	}
 	commit(id) {
 		return this.ask("MapEditorCommit", null, [this.which(id)]);
@@ -581,6 +588,9 @@ class CEditorPanels {
 		this.collapsed = new Set();
 		// What is being dragged in the layer list, while something is.
 		this.dragging = null;
+		// Where the panels stood when each history entry was made, so that
+		// stepping back through them takes the panels along.
+		this.snapshots = new Map();
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -615,8 +625,8 @@ class CEditorPanels {
 	wire() {
 		const signal = this.stopping.signal;
 		const on = (role, handler) => this.part(role).addEventListener("click", handler, { signal: signal });
-		on("undo", () => this.change(() => this.editor.undo()));
-		on("redo", () => this.change(() => this.editor.redo()));
+		on("undo", () => this.stepHistory(() => this.editor.undo()));
+		on("redo", () => this.stepHistory(() => this.editor.redo()));
 		on("fit", () => this.editor.fit());
 		on("save", () => this.editor.save());
 		on("detail", () => {
@@ -709,9 +719,9 @@ class CEditorPanels {
 		}
 		if (event.ctrlKey || event.metaKey) {
 			if (event.key === "z" && !event.shiftKey) {
-				this.change(() => this.editor.undo());
+				this.stepHistory(() => this.editor.undo());
 			} else if (event.key === "y" || (event.key === "z" && event.shiftKey)) {
-				this.change(() => this.editor.redo());
+				this.stepHistory(() => this.editor.redo());
 			} else {
 				return;
 			}
@@ -727,12 +737,53 @@ class CEditorPanels {
 	// program says so as well, and saying it twice costs a redraw of three
 	// panels - but a command that changed nothing sends no event, and a panel
 	// that then showed the old selection would be lying.
-	change(work) {
+	change(work, stepping) {
+		// Where the work was being done, so that going back to this version
+		// later puts the panels where they were. An undo that leaves the
+		// wrong layer selected is an undo that has to be looked for.
+		const before = this.editor.history();
+		const where = { group: this.selection.group, layer: this.selection.layer };
 		const answer = work();
 		if (answer && answer.ok === false) {
 			this.say(answer.error || "Refused");
 		}
+		const after = this.editor.history();
+		// Only a change that wrote an entry leaves a snapshot. Stepping
+		// through the history moves the same mark about and must not
+		// overwrite what is already written there, and a change that was
+		// folded into the entry before it keeps that entry's mark.
+		if (!stepping && before !== null && after !== null && after.current > before.current) {
+			this.snapshots.set(after.current, where);
+		}
 		this.refresh();
+		return answer;
+	}
+
+	/**
+	 * Steps through the history and takes the panels along.
+	 *
+	 * What is put back is what was selected when the entry being *left* was
+	 * made - going back over a change shows where that change was, not where
+	 * the one before it was.
+	 *
+	 * @param work What moves the history.
+	 */
+	stepHistory(work) {
+		const before = this.editor.history();
+		const answer = this.change(work, true);
+		const after = this.editor.history();
+		if (before === null || after === null || before.current === after.current) {
+			return answer;
+		}
+		const shown = after.current < before.current ? before.current : after.current;
+		const where = this.snapshots.get(shown);
+		if (where !== undefined) {
+			this.selection = { group: where.group, layer: where.layer };
+			this.clampSelection();
+			this.refreshTree();
+			this.refreshProps();
+			this.refreshTiles();
+		}
 		return answer;
 	}
 
@@ -1056,10 +1107,14 @@ class CEditorPanels {
 				this.say(answer.error || "Refused");
 			}
 		};
+		// What is being changed, for the history to fold a run of steps into
+		// one entry: this property, of this layer, of this group. Two
+		// different layers' names are two different things.
+		const what = JSON.stringify(command(null));
 		const open = () => {
 			if (!editing) {
 				editing = true;
-				this.editor.begin(description.label);
+				this.editor.begin(description.label, undefined, what);
 			}
 		};
 		const close = () => {
@@ -1259,7 +1314,7 @@ class CEditorPanels {
 			} else if (index > history.current) {
 				row.classList.add("editor-undone");
 			}
-			row.addEventListener("click", () => this.change(() => this.editor.jump(index)), { signal: this.stopping.signal });
+			row.addEventListener("click", () => this.stepHistory(() => this.editor.jump(index)), { signal: this.stopping.signal });
 			list.append(row);
 		});
 	}

@@ -245,10 +245,13 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 // A change that is made over many calls - a slider being dragged, a brush
 // being drawn with - is one entry in the history and many previews. The page
 // opens it, changes what it likes, and closes it when the pointer is let go.
-EMSCRIPTEN_KEEPALIVE void MapEditorBegin(int Id, const char *pLabel)
+// The merge key names what is being changed rather than what is being done:
+// two changes of the same thing, close enough together, become one history
+// entry. An empty one means this change stands alone, which is the usual case.
+EMSCRIPTEN_KEEPALIVE void MapEditorBegin(int Id, const char *pLabel, const char *pMerge)
 {
 	if(g_pEditor != nullptr && g_pEditor->Document(Id) != nullptr)
-		g_pEditor->Document(Id)->Begin(pLabel);
+		g_pEditor->Document(Id)->Begin(pLabel, pMerge);
 }
 
 EMSCRIPTEN_KEEPALIVE void MapEditorCommit(int Id)

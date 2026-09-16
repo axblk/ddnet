@@ -1525,9 +1525,20 @@ void CClientWithConnection::CloseDemo()
 
 void CClientWithConnection::SwitchSessionFocus()
 {
-	const CSessionId Target = FocusedSessionId() == DemoSessionId() ? m_NetworkSessionId : DemoSessionId();
-	if(SessionSource(FocusedSessionId()).State() == ESessionState::READY && SessionSource(Target).State() == ESessionState::READY)
-		FocusSessionWithSnapshot(Target);
+	if(SessionSource(FocusedSessionId()).State() != ESessionState::READY)
+		return;
+	// The next session there is something to look at in, in the order they were opened.
+	const std::vector<CSessionId> vIds = SessionIds();
+	const size_t Focused = std::find(vIds.begin(), vIds.end(), FocusedSessionId()) - vIds.begin();
+	for(size_t i = 1; i < vIds.size(); i++)
+	{
+		const CSessionId Target = vIds[(Focused + i) % vIds.size()];
+		if(IsSessionShowable(Target))
+		{
+			FocusSessionWithSnapshot(Target);
+			return;
+		}
+	}
 }
 
 void CClientWithConnection::FocusSessionWithSnapshot(CSessionId SessionId)

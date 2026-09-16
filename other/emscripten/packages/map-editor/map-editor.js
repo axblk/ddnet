@@ -905,6 +905,32 @@ class CMapEditor extends Program {
 // panels that know nothing about each other. Everything that can be got at
 // from outside carries `data-role`, which is also what the browser tests ask
 // for.
+/**
+ * Where each panel goes when the editor has areas to put it in, and under
+ * which tab it stands there.
+ *
+ * The panels themselves know nothing of this: they are built as one lot and
+ * then moved. A page that places them itself gets them all in one column, the
+ * way it always did.
+ */
+const PANEL_PLACES = [
+	{ role: "tree-panel", area: "left", tab: "layers", name: "Layers" },
+	{ role: "images-panel", area: "left", tab: "images", name: "Images" },
+	{ role: "audio-panel", area: "left", tab: "sounds", name: "Sounds" },
+	{ role: "info-panel", area: "left", tab: "map", name: "Map" },
+	{ role: "props-panel", area: "right" },
+	{ role: "tiles-panel", area: "right" },
+	{ role: "quads-panel", area: "right" },
+	{ role: "sounds-panel", area: "right" },
+	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes" },
+	{ role: "history-panel", area: "dock", tab: "history", name: "History" },
+	{ role: "settings-panel", area: "dock", tab: "settings", name: "Settings" },
+	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules" },
+];
+
+/** The two areas that show one panel at a time, and what they are called. */
+const TABBED_AREAS = { left: "structure", dock: "dock" };
+
 const PANELS_HTML = `
 <div class="editor-bar" data-role="bar">
 	<button class="editor-button" data-role="undo" data-icon="undo" title="Undo (Ctrl+Z)" aria-label="Undo"></button>
@@ -961,17 +987,23 @@ const PANELS_HTML = `
 				<span data-role="brush-size"></span>
 			</span>
 		</header>
-		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
-		<div class="editor-numbers" data-role="numbers"></div>
+		<div class="editor-tabs editor-subtabs" role="tablist">
+			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="tiles" role="tab" aria-selected="true">Tiles</button>
+			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="automap" role="tab" aria-selected="false">Automap</button>
+		</div>
+		<div data-role="tiles-body">
+			<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
+			<div class="editor-numbers" data-role="numbers"></div>
+			<div class="editor-type" data-role="type">
+				<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
+				<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
+			</div>
+		</div>
 		<div class="editor-automap" data-role="automap" hidden>
 			<select class="editor-small" data-role="automap-config"></select>
 			<select class="editor-small" data-role="automap-reference"></select>
 			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
 			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
-		</div>
-		<div class="editor-type" data-role="type">
-			<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
-			<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
 		</div>
 	</section>
 	<section class="editor-panel" data-role="audio-panel">
@@ -1063,15 +1095,22 @@ const PANELS_HTML = `
 			<h2>Map</h2>
 			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="append-map" title="Put another map's groups into this one">append&hellip;</button>
+			</span>
+		</header>
+		<div class="editor-props" data-role="info-props"></div>
+		<input type="file" accept=".map" data-role="append-file" hidden>
+	</section>
+	<section class="editor-panel" data-role="settings-panel">
+		<header class="editor-panel-head">
+			<h2>Server settings</h2>
+			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
 				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
 			</span>
 		</header>
-		<div class="editor-props" data-role="info-props"></div>
 		<ol class="editor-settings" data-role="setting-list"></ol>
 		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
 		<datalist data-role="setting-names"></datalist>
-		<input type="file" accept=".map" data-role="append-file" hidden>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -1327,6 +1366,21 @@ class CEditorPanels {
 		this.picked = null;
 		// Whether the panels listen for keys on the whole page themselves.
 		this.keys = settings.keys;
+		// The areas the panels were spread into, or null while they all stand
+		// in one column.
+		this.areas = null;
+		// The box the panels were spread into, if they were.
+		this.box = null;
+		// Which panel each area shows, for the two that show one at a time.
+		this.tab = { left: "layers", dock: "envelopes", tiles: "tiles" };
+		// Whether the strip at the bottom is open. It starts closed: what is
+		// in it - envelopes, the history, the server settings, the rules - is
+		// looked at now and then, and the map should not pay two hundred
+		// pixels for it the whole time.
+		this.dockOpen = false;
+		// Whether each panel has anything to show at all - a different
+		// question from whether its tab is the one in front.
+		this.panelShown = new Map();
 		this.root = document.createElement("div");
 		this.root.className = "editor-panels";
 		this.root.innerHTML = PANELS_HTML;
@@ -1359,13 +1413,212 @@ class CEditorPanels {
 		parent.append(this.overlay);
 	}
 
-	/** The panels themselves, for a page that wants to put them elsewhere. */
+	/**
+	 * What holds the panels: the one column while they stand in one, and the
+	 * box they were spread into once they are.
+	 */
 	get element() {
-		return this.root;
+		return this.box === null || this.box === undefined ? this.root : this.box;
 	}
 
 	part(role) {
-		return this.root.querySelector(`[data-role="${role}"]`);
+		const which = `[data-role="${role}"]`;
+		const here = this.root.querySelector(which);
+		if (here !== null || this.areas === null) {
+			return here;
+		}
+		for (const area of Object.values(this.areas)) {
+			const found = area.querySelector(which);
+			if (found !== null) {
+				return found;
+			}
+		}
+		return null;
+	}
+
+	/** Every part of that name, wherever the panels stand. */
+	parts(role) {
+		const which = `[data-role="${role}"]`;
+		const found = [...this.root.querySelectorAll(which)];
+		if (this.areas !== null) {
+			for (const area of Object.values(this.areas)) {
+				found.push(...area.querySelectorAll(which));
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * Moves the panels out of the one column and into the areas of a box -
+	 * the tree and the pictures to the left, the inspector to the right, the
+	 * envelopes and the history below, the bar above and the status line at
+	 * the bottom. Nothing about a panel changes; only where it stands.
+	 */
+	spread(areas, box) {
+		// Taken before anything moves: `part` looks in the column, and the
+		// column is about to be empty.
+		const bar = this.part("bar");
+		const status = this.part("status");
+		const hover = this.part("hover");
+		const panels = new Map(PANEL_PLACES.map(place => [place.role, this.part(place.role)]));
+		this.areas = areas;
+		// What now holds every panel, for whoever asks the panels where they
+		// are: with the panels spread over six areas there is no one node that
+		// is "the panels" any more - the box is.
+		this.box = box === undefined ? null : box;
+		areas.toolbar.append(bar);
+		areas.status.append(status, hover);
+		for (const area of ["left", "right", "dock"]) {
+			const here = PANEL_PLACES.filter(place => place.area === area);
+			if (TABBED_AREAS[area] !== undefined) {
+				areas[area].append(this.makeTabs(area, here));
+			}
+			const body = document.createElement("div");
+			body.className = "editor-area-body";
+			for (const place of here) {
+				const panel = panels.get(place.role);
+				if (panel !== null && panel !== undefined) {
+					body.append(panel);
+				}
+			}
+			areas[area].append(body);
+		}
+		this.applyTabs();
+	}
+
+	// The strip of names above an area that shows one panel at a time.
+	makeTabs(area, places) {
+		const strip = document.createElement("div");
+		strip.className = "editor-tabs";
+		strip.dataset.role = `${TABBED_AREAS[area]}-tabs`;
+		strip.setAttribute("role", "tablist");
+		for (const place of places) {
+			if (place.tab === undefined) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-tab";
+			button.dataset.role = `${TABBED_AREAS[area]}-tab`;
+			button.dataset.tab = place.tab;
+			button.setAttribute("role", "tab");
+			button.textContent = place.name;
+			button.addEventListener("click", () => this.showTab(area, place.tab), { signal: this.stopping.signal });
+			strip.append(button);
+		}
+		if (area === "dock") {
+			const toggle = document.createElement("button");
+			toggle.type = "button";
+			toggle.className = "editor-tab editor-dock-toggle";
+			toggle.dataset.role = "dock-toggle";
+			toggle.title = "Open or close the strip at the bottom";
+			toggle.addEventListener("click", () => {
+				this.dockOpen = !this.dockOpen;
+				this.applyTabs();
+			}, { signal: this.stopping.signal });
+			strip.append(toggle);
+		}
+		return strip;
+	}
+
+	/**
+	 * The two sides of the tile panel: the tileset one paints with, and the
+	 * rules that paint by themselves. They are one panel with two tabs rather
+	 * than two panels, because both are about the same layer and only one of
+	 * them is wanted at a time.
+	 */
+	applyTilesTab() {
+		const there = this.automapThere === true;
+		if (!there && this.tab.tiles === "automap") {
+			this.tab.tiles = "tiles";
+		}
+		const body = this.part("tiles-body");
+		if (body !== null) {
+			body.hidden = this.tab.tiles !== "tiles";
+		}
+		const automap = this.part("automap");
+		if (automap !== null) {
+			automap.hidden = !there || this.tab.tiles !== "automap";
+		}
+		for (const button of this.parts("tiles-tab")) {
+			button.disabled = button.dataset.tab === "automap" && !there;
+			button.setAttribute("aria-selected", button.dataset.tab === this.tab.tiles ? "true" : "false");
+		}
+	}
+
+	/** Puts one of an area's panels in front, and opens the area if it was shut. */
+	showTab(area, tab) {
+		this.tab[area] = tab;
+		if (area === "dock") {
+			this.dockOpen = true;
+		}
+		this.applyTabs();
+	}
+
+	/**
+	 * Which panel each tabbed area shows. A panel with nothing to show - no
+	 * map, a layer whose picture has no rules - makes its tab grey rather than
+	 * taking it away, so that the strip does not change shape underfoot; and
+	 * if the one in front is that panel, the area falls back to the first that
+	 * has something.
+	 */
+	applyTabs() {
+		if (this.areas === null) {
+			return;
+		}
+		for (const area of Object.keys(TABBED_AREAS)) {
+			const here = PANEL_PLACES.filter(place => place.area === area && place.tab !== undefined);
+			const has = place => this.panelShown.get(place.role) !== false;
+			if (!here.some(place => place.tab === this.tab[area] && has(place))) {
+				const first = here.find(has);
+				this.tab[area] = first === undefined ? null : first.tab;
+			}
+			for (const place of here) {
+				const panel = this.part(place.role);
+				if (panel !== null) {
+					panel.hidden = !has(place) || place.tab !== this.tab[area];
+				}
+				const button = this.areas[area].querySelector(`[data-tab="${place.tab}"]`);
+				if (button !== null) {
+					button.disabled = !has(place);
+					button.setAttribute("aria-selected", place.tab === this.tab[area] ? "true" : "false");
+				}
+			}
+		}
+		const dock = this.areas.dock;
+		if (dock !== undefined) {
+			dock.classList.toggle("editor-dock-shut", !this.dockOpen);
+			const toggle = dock.querySelector('[data-role="dock-toggle"]');
+			if (toggle !== null) {
+				toggle.setAttribute("aria-expanded", this.dockOpen ? "true" : "false");
+				toggle.textContent = this.dockOpen ? "\u25be" : "\u25b4";
+			}
+		}
+	}
+
+	/**
+	 * Whether a panel has anything to show. Said here rather than by setting
+	 * `hidden` straight away, because in a tabbed area the tab has a say too.
+	 */
+	showPanel(role, show) {
+		this.panelShown.set(role, show);
+		const panel = this.part(role);
+		if (panel !== null) {
+			panel.hidden = !show || !this.tabInFront(role);
+		}
+	}
+
+	// Whether the tab a panel stands under is the one in front. A panel in an
+	// area without tabs is always in front.
+	tabInFront(role) {
+		if (this.areas === null) {
+			return true;
+		}
+		const place = PANEL_PLACES.find(where => where.role === role);
+		if (place === undefined || place.tab === undefined) {
+			return true;
+		}
+		return this.tab[place.area] === place.tab;
 	}
 
 	destroy() {
@@ -1728,6 +1981,9 @@ class CEditorPanels {
 		this.refreshEnvelopes();
 		this.refreshInfo();
 		this.refreshHistory();
+		// Which panel each tabbed area shows can only be answered once every
+		// panel has said whether it has anything to show.
+		this.applyTabs();
 	}
 
 	clampSelection() {
@@ -2012,6 +2268,14 @@ class CEditorPanels {
 	// PNG that the map names, the browser reads PNGs, and a tileset drawn on
 	// a canvas costs the program nothing.
 	wireTileset() {
+		// The two tabs over the tileset: what is painted with, and what paints
+		// by itself.
+		for (const button of this.parts("tiles-tab")) {
+			button.addEventListener("click", () => {
+				this.tab.tiles = button.dataset.tab;
+				this.applyTilesTab();
+			}, { signal: this.stopping.signal });
+		}
 		const canvas = this.part("tileset");
 		let from = null;
 		// A refused capture must not take the pick with it; see the canvas
@@ -2072,10 +2336,9 @@ class CEditorPanels {
 	}
 
 	refreshTiles() {
-		const panel = this.part("tiles-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "tiles";
-		if (panel.hidden) {
+		this.showPanel("tiles-panel", !(layer === null || layer.type !== "tiles"));
+		if (!this.panelShown.get("tiles-panel")) {
 			return;
 		}
 		const size = this.editor.brushSize();
@@ -2317,9 +2580,9 @@ class CEditorPanels {
 	}
 
 	refreshAutomap(layer) {
-		const box = this.part("automap");
 		const name = this.rulesNameFor(layer);
-		box.hidden = name === null || this.rules.get(name) === null;
+		this.automapThere = !(name === null || this.rules.get(name) === null);
+		this.applyTilesTab();
 		if (name === null) {
 			return;
 		}
@@ -2347,7 +2610,10 @@ class CEditorPanels {
 			return;
 		}
 		const configs = this.editor.ruleConfigs(name);
-		box.hidden = configs.length === 0;
+		// A rules file that holds no configuration is a rules file with
+		// nothing to run, so the tab for it goes grey.
+		this.automapThere = configs.length > 0;
+		this.applyTilesTab();
 		const chooser = this.part("automap-config");
 		if (chooser.dataset.rules !== name) {
 			chooser.dataset.rules = name;
@@ -2548,10 +2814,9 @@ class CEditorPanels {
 	}
 
 	refreshQuads() {
-		const panel = this.part("quads-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "quads";
-		if (panel.hidden) {
+		this.showPanel("quads-panel", !(layer === null || layer.type !== "quads"));
+		if (!this.panelShown.get("quads-panel")) {
 			this.quad = -1;
 			this.editor.showQuad();
 			return;
@@ -2632,10 +2897,9 @@ class CEditorPanels {
 	}
 
 	refreshSounds() {
-		const panel = this.part("sounds-panel");
 		const layer = this.selectedLayer();
-		panel.hidden = layer === null || layer.type !== "sounds";
-		if (panel.hidden) {
+		this.showPanel("sounds-panel", !(layer === null || layer.type !== "sounds"));
+		if (!this.panelShown.get("sounds-panel")) {
 			this.source = -1;
 			this.refreshOverlay();
 			return;
@@ -3085,10 +3349,9 @@ class CEditorPanels {
 	}
 
 	refreshRules(layer) {
-		const panel = this.part("rules-panel");
 		const name = this.rulesNameFor(layer);
-		panel.hidden = name === null || this.rules.get(name) === null;
-		if (panel.hidden || this.rules.get(name) === undefined) {
+		this.showPanel("rules-panel", !(name === null || this.rules.get(name) === null));
+		if (!this.panelShown.get("rules-panel") || this.rules.get(name) === undefined) {
 			return;
 		}
 		const text = this.part("rules-text");
@@ -3354,9 +3617,8 @@ class CEditorPanels {
 	}
 
 	refreshImages() {
-		const panel = this.part("images-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("images-panel", this.map !== null);
+		if (!this.panelShown.get("images-panel")) {
 			return;
 		}
 		const images = this.map.images || [];
@@ -3490,9 +3752,8 @@ class CEditorPanels {
 	}
 
 	refreshAudio() {
-		const panel = this.part("audio-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("audio-panel", this.map !== null);
+		if (!this.panelShown.get("audio-panel")) {
 			return;
 		}
 		const sounds = this.map.sounds || [];
@@ -3594,9 +3855,8 @@ class CEditorPanels {
 	}
 
 	refreshInfo() {
-		const panel = this.part("info-panel");
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("info-panel", this.map !== null);
+		if (!this.panelShown.get("info-panel")) {
 			return;
 		}
 		const info = this.map.info;
@@ -3701,10 +3961,9 @@ class CEditorPanels {
 	}
 
 	refreshEnvelopes() {
-		const panel = this.part("envelopes-panel");
 		const count = this.envelopeCount();
-		panel.hidden = this.map === null;
-		if (panel.hidden) {
+		this.showPanel("envelopes-panel", this.map !== null);
+		if (!this.panelShown.get("envelopes-panel")) {
 			return;
 		}
 		this.envelope = count === 0 ? 0 : Math.min(this.envelope, count - 1);
@@ -4668,9 +4927,19 @@ class CEditorElement extends ELEMENT_BASE {
 		// The map takes the keyboard, so it has to be able to hold it.
 		this.editorCanvas.tabIndex = 0;
 		this.mapBox.append(this.editorCanvas);
-		this.sideBox = document.createElement("div");
-		this.sideBox.slot = "right";
-		this.sideBox.className = "editor-side";
+		// One box per area the panels are spread into. Each carries
+		// `editor-panels` as well, because that is the class the stylesheet
+		// dresses everything inside a panel by.
+		this.areaBoxes = {};
+		// `status` would collide with the status line's own class, so the box
+		// around it is called something else.
+		for (const [area, name] of [["toolbar", "toolbar"], ["left", "left"], ["right", "right"], ["dock", "dock"], ["status", "statusbar"]]) {
+			const box = document.createElement("div");
+			box.slot = area;
+			box.className = `editor-panels editor-${name}`;
+			box.dataset.role = `area-${area}`;
+			this.areaBoxes[area] = box;
+		}
 		this.editorInstance = null;
 		this.editorPanels = null;
 		this.stopping = null;
@@ -4712,7 +4981,7 @@ class CEditorElement extends ELEMENT_BASE {
 		boxes.add(this);
 		this.stopping = new AbortController();
 		if (!this.contains(this.mapBox)) {
-			this.append(this.mapBox, this.sideBox);
+			this.append(this.mapBox, ...Object.values(this.areaBoxes));
 		}
 		this.watchAreas();
 		this.ready = this.start();
@@ -4762,7 +5031,7 @@ class CEditorElement extends ELEMENT_BASE {
 	// page to find them.
 	applyTheme() {
 		const theme = this.getAttribute("theme");
-		for (const part of [this.sideBox, this.mapBox, ...this.querySelectorAll(".editor-panels, .editor-overlay")]) {
+		for (const part of [this.mapBox, ...this.querySelectorAll(".editor-panels, .editor-overlay")]) {
 			if (theme === null || theme === "") {
 				delete part.dataset.theme;
 			} else {
@@ -4813,11 +5082,13 @@ class CEditorElement extends ELEMENT_BASE {
 		// would tell the program when it changes shape.
 		followSize(this.mapBox, instance, { signal: signal });
 		const panels = new CEditorPanels(instance, {
-			container: this.sideBox,
 			// The keyboard is handed out by the element, below.
 			keys: false,
 			signal: signal,
 		});
+		// The tree to the left, the inspector to the right, the envelopes and
+		// the history below, the bar above, the status line at the bottom.
+		panels.spread(this.areaBoxes, this);
 		this.editorPanels = panels;
 		steerWithPointer(instance, {
 			canvas: this.editorCanvas,

@@ -352,9 +352,18 @@ export declare class EditorPanels {
 		keys?: boolean;
 		signal?: AbortSignal;
 	});
+	/** What holds the panels: the one column, or the box they were spread into. */
 	readonly element: HTMLElement;
 	/** Which group, and which layer of it, or `layer: -1` for the group. */
 	selection: { group: number; layer: number };
+	/** Which panel each area that shows one at a time has in front. */
+	readonly tab: { left: string; dock: string; tiles: string };
+	/** One of the panels' parts by the name it carries, wherever it stands. */
+	part(role: string): Element | null;
+	/** Every part of that name. */
+	parts(role: string): Element[];
+	/** Puts one of an area's panels in front, opening the area if it was shut. */
+	showTab(area: "left" | "dock", tab: string): void;
 	refresh(): void;
 	destroy(): void;
 }

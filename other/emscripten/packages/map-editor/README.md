@@ -32,7 +32,18 @@ panels, and lays them out in six areas around the map:
 ```
 
 The areas are `header`, `toolbar`, `left`, `right`, `dock` and `status`; an
-area nobody fills takes no room at all. What the element fills in itself - the
+area nobody fills takes no room at all. What the editor puts in them:
+
+| Area | What stands there |
+|---|---|
+| `toolbar` | Undo, redo, what is drawn, the grid, proof mode, saving. |
+| `left` | The map's parts, one tab at a time: the layer tree, the pictures, the sounds, the map's own fields. |
+| `right` | The inspector - what the selected thing is made of, and the tileset to paint with. The tile panel has two tabs of its own: the tileset, and the rules that paint by themselves. |
+| `dock` | The strip along the bottom: envelopes, the history, the server settings, the rules file. It starts shut, because what is in it is looked at now and then and the map should not pay two hundred pixels for it the whole time. |
+| `status` | One line: what is under the pointer, and what just happened. |
+
+`box.panels.showTab("dock", "envelopes")` puts one of them in front and opens
+the strip if it was shut. What the element fills in itself - the
 map and the panels - is light DOM as well, so the same one stylesheet dresses
 all of it and a page may reach any of it.
 

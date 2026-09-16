@@ -153,15 +153,6 @@ ddnet-editor[data-theme="light"],
 	touch-action: none;
 }
 
-.editor-side {
-	width: 320px;
-	height: 100%;
-	box-sizing: border-box;
-	padding: var(--space-2);
-	background: var(--bg-1);
-	overflow: auto;
-}
-
 .editor-panels {
 	display: flex;
 	flex-direction: column;
@@ -169,6 +160,155 @@ ddnet-editor[data-theme="light"],
 	min-height: 0;
 	color: var(--text-1);
 	font: var(--type-sm);
+}
+
+/* What says it is not there is not there. A class that sets `display` beats
+   the browser's own rule for the `hidden` attribute, and half the rows in
+   here are flex rows - so a row that was switched off was still drawn. */
+.editor-panels [hidden] {
+	display: none !important;
+}
+
+/* The five areas the panels are spread into. Each is a strip of its own, told
+   apart from the next by one line and nothing else. */
+.editor-toolbar {
+	padding: 0 var(--space-2);
+	background: var(--bg-0);
+	border-bottom: 1px solid var(--line);
+}
+
+.editor-left,
+.editor-right,
+.editor-dock {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	min-height: 0;
+	box-sizing: border-box;
+	background: var(--bg-1);
+}
+
+.editor-left {
+	width: 280px;
+	height: 100%;
+	border-right: 1px solid var(--line);
+}
+
+.editor-right {
+	width: 320px;
+	height: 100%;
+	border-left: 1px solid var(--line);
+}
+
+.editor-dock {
+	height: 220px;
+	border-top: 1px solid var(--line);
+}
+
+/* Shut, the strip is its names and nothing else - the map gets the room. */
+.editor-dock-shut {
+	height: auto;
+}
+
+.editor-dock-shut .editor-area-body {
+	display: none;
+}
+
+.editor-dock-toggle {
+	margin-left: auto;
+	min-width: var(--button-small);
+}
+
+/* What an area holds under its names. It is the one thing that scrolls: an
+   area that cannot show everything scrolls by itself rather than making the
+   whole side of the window long. */
+.editor-area-body {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--space-2);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+}
+
+/* A panel inside an area brings no background and no box of its own - the
+   area is the box. Between the panels of one area there are gaps, not lines. */
+.editor-area-body .editor-panel {
+	background: none;
+	border-radius: 0;
+	padding: 0;
+}
+
+/* In an area that shows one panel at a time the tab already says which one it
+   is; saying it twice is noise. */
+.editor-left .editor-panel-head h2,
+.editor-dock .editor-panel-head h2 {
+	display: none;
+}
+
+.editor-statusbar {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: var(--row);
+	padding: 0 var(--space-2);
+	background: var(--bg-0);
+	border-top: 1px solid var(--line);
+}
+
+.editor-statusbar .editor-hover {
+	flex-basis: auto;
+}
+
+/* The names above an area that shows one panel at a time. */
+.editor-tabs {
+	display: flex;
+	flex-wrap: wrap;
+	background: var(--bg-0);
+	border-bottom: 1px solid var(--line);
+}
+
+.editor-tab {
+	border: 0;
+	background: none;
+	color: var(--text-2);
+	font: var(--type-xs);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	min-height: var(--button);
+	padding: 0 var(--space-2);
+	cursor: pointer;
+}
+
+.editor-tab[aria-selected="true"] {
+	color: var(--text-1);
+	box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
+.editor-tab:disabled {
+	color: var(--text-3);
+	cursor: default;
+}
+
+/* The two tabs inside a panel - the tileset and the rules that paint by
+   themselves. Quieter than the ones over a whole area: they divide one panel,
+   not the window. */
+.editor-subtabs {
+	background: none;
+	margin-bottom: var(--space-1);
+}
+
+.editor-subtabs .editor-tab {
+	min-height: var(--row);
+	padding: 0 var(--space-1);
+}
+
+@media (hover: hover) {
+	.editor-tab:hover:not(:disabled) {
+		background: var(--bg-3);
+		color: var(--text-1);
+	}
 }
 
 /* Every text field, list and button of the editor is one of these, so what

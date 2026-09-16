@@ -83,9 +83,9 @@ ddnet-editor,
 
 /* A finger needs a bigger target than a pointer, and that is the whole
    difference: text, icons, gaps and radii stay where they are. */
-/* „Große Ziele: an" und „aus" — dieselben Zahlen wie unten und wie oben, nur
-   ohne die Abfrage. Ein Attributwähler schlägt den nackten Namen im Medienblock,
-   also gilt die Einstellung, wo es eine gibt, und die Abfrage sonst. */
+/* "Big targets: on" and "off" - the same numbers as below and above, without
+   the media query. An attribute selector beats the bare name in the media
+   block, so the setting counts where there is one and the query otherwise. */
 ddnet-editor[data-big="yes"],
 .editor-panels[data-big="yes"] {
 	--row: 40px;
@@ -122,9 +122,9 @@ ddnet-editor[data-big="no"],
 	display: none;
 }
 
-/* Und ohne Einstellung die Abfrage. `:not([data-big])` steht davor, weil das
-   Element und die Tafeln ihre Antwort selbst hinschreiben, sobald sie da sind
-   — bis dahin, und fuer Tafeln ohne Element, gilt dies hier. */
+/* And without a setting, the query. `:not([data-big])` stands in front because
+   the element and the panels write their answer down themselves once they are
+   there - until then, and for panels without an element, this is what counts. */
 @media (pointer: coarse) {
 	ddnet-editor:not([data-big]),
 	.editor-panels:not([data-big]),
@@ -1843,8 +1843,9 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	pointer-events: none;
 }
 
-/* Ab 2560 unten in der Mitte: dort ist der Blick beim Arbeiten, und die obere
-   rechte Ecke eines Vierzigzoellers ist achtzig Zentimeter weit weg. */
+/* From 2560 on, at the bottom in the middle: that is where the eyes are while
+   working, and the top right corner of a forty-inch screen is eighty
+   centimetres away. */
 ddnet-editor[data-size="huge"] .editor-toasts {
 	top: auto;
 	right: auto;
@@ -1855,8 +1856,8 @@ ddnet-editor[data-size="huge"] .editor-toasts {
 	transform: translateX(-50%);
 }
 
-/* 120 ms herein, 200 ms hinaus: lang genug, dass das Auge die Bewegung sieht
-   und ihr folgt, kurz genug, dass niemand darauf wartet. */
+/* 120 ms in, 200 ms out: long enough for the eye to see the movement and
+   follow it, short enough that nobody waits for it. */
 @keyframes editor-toast-in {
 	from { opacity: 0; transform: translateY(8px); }
 	to { opacity: 1; transform: translateY(0); }
@@ -2004,8 +2005,8 @@ ddnet-editor[data-right="sheet"] .editor-grip-right,
 	display: none;
 }
 
-/* Was ein Knopf heißt, für eine Hand, die nicht schweben kann. Dieselben
-   Worte wie im `title`, nur sichtbar gemacht: ein langer Druck fragt danach. */
+/* What a button is called, for a hand that cannot hover. The same words as
+   the `title`, made visible: a long press asks for them. */
 .editor-tip {
 	position: absolute;
 	z-index: 7;

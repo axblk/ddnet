@@ -68,6 +68,14 @@ changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.
 
+A tile layer's properties hold its width and its height. They are the one pair
+of fields that is only handed over when the field is left rather than at every
+keystroke: on the way from 8 to 150 the number is 1 and then 15, and for a size
+that would mean the tiles outside are gone before the number is finished. The
+physics layers of a map are all the size of its game layer - that is the size
+the game plays - so resizing one of them resizes all of them, and a layer that
+is only drawn is resized by itself.
+
 ## The automapper
 
 A rules file belongs to a picture, not to a layer: a layer drawn with

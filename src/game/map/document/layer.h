@@ -117,6 +117,26 @@ namespace map_document
 		int Height() const { return m_Tiles.Height(); }
 
 		/**
+		 * Gives the layer another size, both of its planes at once.
+		 *
+		 * What is still on the layer stays where it is - the top left corner
+		 * does not move - and what falls outside is gone. A physics layer
+		 * carries its second plane along, because a tele number without the
+		 * tile it belongs to is not a layer anybody could save.
+		 */
+		void Resize(int Width, int Height)
+		{
+			m_Tiles.Resize(Width, Height);
+			std::visit([Width, Height](auto &Extra) {
+				if constexpr(!std::is_same_v<std::decay_t<decltype(Extra)>, std::monostate>)
+				{
+					Extra.Resize(Width, Height);
+				}
+			},
+				m_ExtraTiles);
+		}
+
+		/**
 		 * Whether two layers are the same layer, everything about them
 		 * included. Two versions that share their blocks answer this without
 		 * looking into them - see `CTileStore::operator==`.

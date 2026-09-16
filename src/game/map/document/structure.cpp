@@ -70,6 +70,41 @@ namespace map_document
 		return To;
 	}
 
+	void ResizeLayer(CDocument &Doc, const CLayerAddress &Layer, int Width, int Height)
+	{
+		dbg_assert(Width > 0 && Height > 0, "A layer has to be at least one tile: %dx%d", Width, Height);
+		CMapState &Map = Doc.Edit();
+		const CTileLayer *pLayer = std::get_if<CTileLayer>(Map.Layer(Layer.m_Group, Layer.m_Layer));
+		dbg_assert(pLayer != nullptr, "Layer %d of group %d holds no tiles", (int)Layer.m_Layer, (int)Layer.m_Group);
+		if(pLayer->Width() == Width && pLayer->Height() == Height)
+			return;
+
+		if(pLayer->m_Kind == ETileLayerKind::TILES)
+		{
+			CTileLayer Changed = *pLayer;
+			Changed.Resize(Width, Height);
+			Map.ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Changed));
+			return;
+		}
+
+		// A physics layer is not resized by itself - the game plays one size,
+		// and that is the size all of them are.
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Index = 0; Index < Map.NumLayers(Group); ++Index)
+			{
+				const CLayer *pOther = Map.Layer(Group, Index);
+				if(!IsPhysicsLayer(*pOther))
+					continue;
+				CTileLayer Changed = std::get<CTileLayer>(*pOther);
+				if(Changed.Width() == Width && Changed.Height() == Height)
+					continue;
+				Changed.Resize(Width, Height);
+				Map.ReplaceLayer(Group, Index, std::move(Changed));
+			}
+		}
+	}
+
 	CLayerAddress AddLayer(CDocument &Doc, size_t Group, CLayer Layer)
 	{
 		CGroup Changed = *Doc.Edit().Group(Group);

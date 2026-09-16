@@ -197,3 +197,16 @@
 	width: 110px;
 	opacity: 0.6;
 }
+
+/* The picture of a layer's tiles. Drawn at its own size rather than smoothed:
+   a tileset that is blurred is a tileset nobody can pick out of. */
+.editor-tileset {
+	width: 100%;
+	height: auto;
+	display: block;
+	image-rendering: pixelated;
+	background: #1a1a1e;
+	border-radius: 4px;
+	cursor: crosshair;
+	touch-action: none;
+}

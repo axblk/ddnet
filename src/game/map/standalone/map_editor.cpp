@@ -10,6 +10,7 @@
 #include <engine/storage.h>
 
 #include <game/map/document/command.h>
+#include <game/map/document/edit.h>
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
 #include <game/map/document/structure.h>
@@ -17,12 +18,16 @@
 #include <algorithm>
 #include <optional>
 #include <utility>
+#include <variant>
 
 namespace
 {
 	constexpr LOG_COLOR ERROR_LOG_COLOR = LOG_COLOR{255, 0, 0};
 	// What a map is called that nobody has given a name.
 	constexpr const char *UNNAMED = "untitled";
+	// A tileset is sixteen by sixteen and a tile index is a place in it, so
+	// what is asked for outside it is not a tile.
+	constexpr int TILESET_SIDE = 16;
 } // namespace
 
 CMapEditor::CMapEditor(const char *pLogContext) :
@@ -298,6 +303,151 @@ void CMapEditor::Render()
 	pMap->m_DrawnCenter = pMap->m_View.Center();
 	pMap->m_DrawnZoom = pMap->m_View.Zoom();
 	m_NeedsRedraw = false;
+}
+
+CMapEditor::CMap *CMapEditor::ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return nullptr;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if(Group >= Map.NumGroups() || Layer >= Map.NumLayers(Group))
+		return nullptr;
+	const map_document::CLayer *pLayer = Map.Layer(Group, Layer);
+	if(!std::holds_alternative<map_document::CTileLayer>(*pLayer))
+		return nullptr;
+	if(NeedsBrush && !map_document::CanStamp(std::get<map_document::CTileLayer>(*pLayer).m_Kind, m_Brush.m_Kind))
+		return nullptr;
+	return pMap;
+}
+
+void CMapEditor::SetBrushTile(map_document::CBrush &Brush, int x, int y, int Index)
+{
+	const unsigned char Value = (unsigned char)std::clamp(Index, 0, 255);
+	// A physics layer says what it means in its second plane, so a brush for
+	// one carries the index there rather than in the plane that is drawn -
+	// the same way the file holds it. What goes beside it - a tele number, a
+	// speedup's force, a switch's delay - stays at zero: putting a number
+	// there is a tool's business, not a tile's.
+	if(map_document::DrawsOwnTiles(Brush.m_Kind))
+	{
+		CTile Tile;
+		Tile.m_Index = Value;
+		Brush.m_Tiles.Set(x, y, Tile);
+		return;
+	}
+	std::visit([x, y, Value](auto &Extra) {
+		if constexpr(!std::is_same_v<std::decay_t<decltype(Extra)>, std::monostate>)
+		{
+			auto PhysicsTile = Extra.Get(x, y);
+			PhysicsTile.m_Type = Value;
+			Extra.Set(x, y, PhysicsTile);
+		}
+	},
+		Brush.m_ExtraTiles);
+}
+
+bool CMapEditor::PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height)
+{
+	const CMap *pMap = ForTiles(Id, Group, Layer, false);
+	if(pMap == nullptr)
+		return false;
+	x = std::clamp(x, 0, TILESET_SIDE - 1);
+	y = std::clamp(y, 0, TILESET_SIDE - 1);
+	Width = std::clamp(Width, 1, TILESET_SIDE - x);
+	Height = std::clamp(Height, 1, TILESET_SIDE - y);
+
+	map_document::CBrush Brush(pMap->m_Document.Map().TileLayer(Group, Layer)->m_Kind, Width, Height);
+	for(int ty = 0; ty < Height; ++ty)
+	{
+		for(int tx = 0; tx < Width; ++tx)
+			SetBrushTile(Brush, tx, ty, (y + ty) * TILESET_SIDE + x + tx);
+	}
+	m_Brush = std::move(Brush);
+	return true;
+}
+
+bool CMapEditor::Grab(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height)
+{
+	const CMap *pMap = ForTiles(Id, Group, Layer, false);
+	if(pMap == nullptr)
+		return false;
+	m_Brush = map_document::GrabTiles(*pMap->m_Document.Map().TileLayer(Group, Layer), x, y, Width, Height);
+	return true;
+}
+
+bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
+{
+	CMap *pMap = ForTiles(Id, Group, Layer, true);
+	if(pMap == nullptr || m_Brush.Width() == 0 || m_Brush.Height() == 0)
+		return false;
+	// Its own transaction, which joins the one the page opened when the
+	// button went down - so a stroke is one entry and a single stamp is one
+	// as well.
+	pMap->m_Document.Begin("Draw");
+	map_document::PaintTiles(pMap->m_Document, Group, Layer, x, y, m_Brush);
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+bool CMapEditor::Fill(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height)
+{
+	CMap *pMap = ForTiles(Id, Group, Layer, true);
+	if(pMap == nullptr || m_Brush.Width() == 0 || m_Brush.Height() == 0)
+		return false;
+	pMap->m_Document.Begin("Fill");
+	map_document::EditTileLayer(pMap->m_Document, Group, Layer, [&](map_document::CTileLayer &Changed) {
+		map_document::FillTiles(Changed, x, y, Width, Height, m_Brush);
+	});
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+bool CMapEditor::Erase(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height)
+{
+	CMap *pMap = ForTiles(Id, Group, Layer, false);
+	if(pMap == nullptr)
+		return false;
+	pMap->m_Document.Begin("Erase");
+	map_document::EditTileLayer(pMap->m_Document, Group, Layer, [&](map_document::CTileLayer &Changed) {
+		map_document::EraseTiles(Changed, x, y, Width, Height);
+	});
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+void CMapEditor::FlipBrushX()
+{
+	map_document::FlipBrushX(m_Brush);
+}
+
+void CMapEditor::FlipBrushY()
+{
+	map_document::FlipBrushY(m_Brush);
+}
+
+void CMapEditor::RotateBrush()
+{
+	map_document::RotateBrush(m_Brush);
+}
+
+bool CMapEditor::StoreBrush(size_t Slot)
+{
+	if(Slot >= m_aStoredBrushes.size())
+		return false;
+	m_aStoredBrushes[Slot] = m_Brush;
+	return true;
+}
+
+bool CMapEditor::UseBrush(size_t Slot)
+{
+	if(Slot >= m_aStoredBrushes.size() || m_aStoredBrushes[Slot].Width() == 0)
+		return false;
+	m_Brush = m_aStoredBrushes[Slot];
+	return true;
 }
 
 void CMapEditor::OnResize(int Width, int Height)

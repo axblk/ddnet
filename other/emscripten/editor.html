@@ -121,8 +121,15 @@
 			// The canvas is a box of the page's, so the page measures it and
 			// says how big to draw; the program never asks the window.
 			followSize(document.getElementById("picture"), editor);
-			steerEditor(editor, { canvas: canvas });
 			const panels = new EditorPanels(editor, { container: document.getElementById("panels") });
+			// Which layer the pointer paints in is the panels' answer: the
+			// program holds no selection, because a selection is a thing
+			// about panels.
+			steerEditor(editor, {
+				canvas: canvas,
+				target: () => panels.selection,
+				onChange: () => panels.refresh(),
+			});
 
 			// The page's own handle on what it started, for whoever opens the
 			// console and for the browser tests that drive it from outside. A

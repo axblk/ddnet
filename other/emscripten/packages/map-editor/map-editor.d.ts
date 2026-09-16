@@ -121,6 +121,18 @@ export declare class MapEditor {
 	worldAt(x: number, y: number, id?: MapId): { x: number; y: number } | null;
 	tileAt(x: number, y: number, id?: MapId): { x: number; y: number } | null;
 
+	pickTiles(group: number, layer: number, x: number, y: number, width?: number, height?: number, id?: MapId): boolean;
+	grab(group: number, layer: number, x: number, y: number, width: number, height: number, id?: MapId): boolean;
+	paint(group: number, layer: number, x: number, y: number, id?: MapId): boolean;
+	fill(group: number, layer: number, x: number, y: number, width: number, height: number, id?: MapId): boolean;
+	erase(group: number, layer: number, x: number, y: number, width: number, height: number, id?: MapId): boolean;
+	flipBrushX(): void;
+	flipBrushY(): void;
+	rotateBrush(): void;
+	storeBrush(slot: number): boolean;
+	useBrush(slot: number): boolean;
+	brushSize(): { width: number; height: number } | null;
+
 	highDetail(on?: boolean, id?: MapId): boolean | void;
 	entities(value?: boolean | number, id?: MapId): number | void;
 	animate(on?: boolean, id?: MapId): boolean | void;
@@ -132,15 +144,23 @@ export declare class MapEditor {
 }
 
 export declare class EditorPanels {
-	constructor(editor: MapEditor, options?: { container?: Element | null; signal?: AbortSignal });
+	constructor(editor: MapEditor, options?: { container?: Element | null; dataBase?: string | null; signal?: AbortSignal });
 	readonly element: HTMLElement;
+	/** Which group, and which layer of it, or `layer: -1` for the group. */
+	selection: { group: number; layer: number };
 	refresh(): void;
 	destroy(): void;
 }
 
 export declare function steerEditor(
 	editor: MapEditor,
-	options?: { canvas?: HTMLCanvasElement | null; signal?: AbortSignal },
+	options?: {
+		canvas?: HTMLCanvasElement | null;
+		/** Which layer the pointer paints in - the panels know. */
+		target?: (() => { group: number; layer: number } | null) | null;
+		onChange?: (() => void) | null;
+		signal?: AbortSignal;
+	},
 ): { destroy(): void };
 
 export declare const programUrl: string;

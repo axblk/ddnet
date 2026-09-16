@@ -37,8 +37,23 @@ still work, they are just unpainted.
 * **The keyboard is the page's.** The program never listens at the document.
   Not a key reaches it that the page did not hand it.
 
+## The brush
+
+The left button paints, held shift it takes a piece of the layer into the
+brush instead, held control it rubs out; the right and middle buttons move the
+map. `X` and `Y` turn the brush over, `R` turns it a quarter, and the digits
+are ten slots to put one away in (`Shift` and a digit stores).
+
+A stroke is one change made of many stamps, which is why it costs what it
+touched rather than what the map is: a hundred strokes of eight stamps each
+take 72 ms on ctf1 and 104 ms on Tsunami, a map eight times its size, and both
+add the same 1.83 MiB to the history. Taking all hundred back again is 23 ms
+and 17 ms.
+
 ## What it is not, yet
 
-There is no brush: the map can be looked at, taken apart and put back
-together, but not yet painted on. That is the next thing to go in, and the
-place it goes is `steerEditor`.
+Quads, envelopes, images, sounds and the automapper are looked at but not
+changed; the numbers beside a tele or a switch tile cannot be set. The tileset
+of an image that is packed into the map file is shown as a grid of numbers
+rather than as a picture - the pixels are in the program, and nothing hands
+them out yet.

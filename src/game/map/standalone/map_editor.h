@@ -4,11 +4,13 @@
 #include <base/vmath.h>
 
 #include <game/map/document/document.h>
+#include <game/map/document/edit.h>
 #include <game/map/document/view.h>
 #include <game/map/document_images.h>
 #include <game/map/document_render.h>
 #include <game/map/standalone/map_view.h>
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -208,6 +210,123 @@ public:
 	CDisplay *Display(int Id);
 
 	/**
+	 * How many brushes the editor keeps beside the one in hand. Ten, and the
+	 * reason is the keyboard: that is how many digits there are.
+	 */
+	static constexpr size_t NUM_STORED_BRUSHES = 10;
+
+	/**
+	 * The tiles in hand - what a stamp puts down. A brush is a tile layer,
+	 * both planes of it, so a piece of a switch layer carries its numbers and
+	 * its delays with it.
+	 *
+	 * It belongs to the editor rather than to a map: somebody who copies a
+	 * piece of one map into another is doing the ordinary thing.
+	 */
+	const map_document::CBrush &Brush() const { return m_Brush; }
+
+	/**
+	 * A brush taken out of the tileset rather than out of the map: the
+	 * rectangle of tile indexes somebody dragged over the picture of the
+	 * tiles. The kind comes from the layer it is meant for, because what a
+	 * tile index means is a question about the layer.
+	 *
+	 * A tileset is sixteen by sixteen, which is where the numbers come from:
+	 * the index of a tile is its place in that square.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param x The left edge in the tileset, 0 to 15.
+	 * @param y The top edge in the tileset, 0 to 15.
+	 * @param Width How many tiles wide, clipped to the tileset.
+	 * @param Height How many tiles tall, clipped to the tileset.
+	 *
+	 * @return `true` if there was such a tile layer.
+	 */
+	bool PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height);
+
+	/**
+	 * Takes a rectangle of a layer into the brush, clipped to the layer.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param x The left edge of the rectangle, in tiles.
+	 * @param y The top edge of the rectangle, in tiles.
+	 * @param Width How many tiles wide.
+	 * @param Height How many tiles tall.
+	 *
+	 * @return `true` if there was such a tile layer.
+	 */
+	bool Grab(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height);
+
+	/**
+	 * One stamp of a stroke, with the brush's top left corner at `x`, `y`.
+	 *
+	 * A stroke is one transaction and many of these: the page opens it when
+	 * the button goes down, calls this on every move and closes it when the
+	 * button comes up, and the history gets one entry however many tiles were
+	 * touched.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param x Where the brush's left edge goes, in tiles.
+	 * @param y Where the brush's top edge goes, in tiles.
+	 *
+	 * @return `true` if the brush may go in that layer at all.
+	 */
+	bool Paint(int Id, size_t Group, size_t Layer, int x, int y);
+
+	/**
+	 * The brush repeated over a rectangle - what the editor calls filling a
+	 * selection.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param x The left edge of the rectangle, in tiles.
+	 * @param y The top edge of the rectangle, in tiles.
+	 * @param Width How many tiles wide.
+	 * @param Height How many tiles tall.
+	 *
+	 * @return `true` if the brush may go in that layer at all.
+	 */
+	bool Fill(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height);
+
+	/**
+	 * Air back in a rectangle, in whichever plane the layer draws.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param x The left edge of the rectangle, in tiles.
+	 * @param y The top edge of the rectangle, in tiles.
+	 * @param Width How many tiles wide.
+	 * @param Height How many tiles tall.
+	 *
+	 * @return `true` if there was such a tile layer.
+	 */
+	bool Erase(int Id, size_t Group, size_t Layer, int x, int y, int Width, int Height);
+
+	/** Turns the brush over, or a quarter turn clockwise. */
+	void FlipBrushX();
+	void FlipBrushY();
+	void RotateBrush();
+
+	/**
+	 * Puts the brush in hand into one of the slots, or takes one out again.
+	 *
+	 * @param Slot Which slot, below `NUM_STORED_BRUSHES`.
+	 *
+	 * @return Whether there was such a slot, and for `UseBrush` whether
+	 * anything was in it.
+	 */
+	bool StoreBrush(size_t Slot);
+	bool UseBrush(size_t Slot);
+
+	/**
 	 * How large a map is in world units, taken from its game layer, or the
 	 * size of the surface where it has none.
 	 *
@@ -278,12 +397,36 @@ private:
 	/** Puts a freshly read map in the list and in front. */
 	int Add(map_document::CMapState Opened, const char *pName);
 
+	/**
+	 * The one layer of a change, checked: which layer it is about, and
+	 * whether the brush may go in it.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group the layer is in.
+	 * @param Layer Which layer of that group.
+	 * @param NeedsBrush Whether the brush has to fit the layer as well.
+	 *
+	 * @return The map, or `nullptr` when any of that does not hold.
+	 */
+	CMap *ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush);
+	/**
+	 * Puts one tile index in a brush, in whichever plane the kind keeps it.
+	 *
+	 * @param Brush The brush to write to.
+	 * @param x Where in the brush, in tiles.
+	 * @param y Where in the brush, in tiles.
+	 * @param Index The tile index, 0 to 255.
+	 */
+	static void SetBrushTile(map_document::CBrush &Brush, int x, int y, int Index);
+
 	const char *m_pLogContext;
 	CStandaloneMapView m_View;
 	std::vector<std::unique_ptr<CMap>> m_vpMaps;
 	int m_Active = -1;
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
+	map_document::CBrush m_Brush;
+	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
 };
 
 #endif // GAME_MAP_STANDALONE_MAP_EDITOR_H

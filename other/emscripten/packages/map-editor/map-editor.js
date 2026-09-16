@@ -273,6 +273,55 @@ class CMapEditor extends Program {
 			: this.setNumbers("MapEditorSetAnimate", [map, on ? 1 : 0]);
 	}
 
+	/**
+	 * The brush: what is in hand and what putting it down does.
+	 *
+	 * A stroke is one change made of many stamps: open it with `begin` when
+	 * the button goes down, call `paint` on every move, close it with
+	 * `commit` when the button comes up. The history gets one entry, however
+	 * many tiles were touched, and every step in between is already drawn.
+	 *
+	 * Everything below answers `false` where the brush may not go in that
+	 * layer at all - a tele brush in a game layer, say.
+	 */
+	pickTiles(group, layer, x, y, width, height, id) {
+		return this.ask("MapEditorPickTiles", "number",
+			[this.which(id), group, layer, x, y, width === undefined ? 1 : width, height === undefined ? 1 : height]) === 1;
+	}
+	grab(group, layer, x, y, width, height, id) {
+		return this.ask("MapEditorGrab", "number", [this.which(id), group, layer, x, y, width, height]) === 1;
+	}
+	paint(group, layer, x, y, id) {
+		return this.ask("MapEditorPaint", "number", [this.which(id), group, layer, x, y]) === 1;
+	}
+	fill(group, layer, x, y, width, height, id) {
+		return this.ask("MapEditorFill", "number", [this.which(id), group, layer, x, y, width, height]) === 1;
+	}
+	erase(group, layer, x, y, width, height, id) {
+		return this.ask("MapEditorErase", "number", [this.which(id), group, layer, x, y, width, height]) === 1;
+	}
+	flipBrushX() {
+		return this.call("MapEditorFlipBrushX");
+	}
+	flipBrushY() {
+		return this.call("MapEditorFlipBrushY");
+	}
+	rotateBrush() {
+		return this.call("MapEditorRotateBrush");
+	}
+	/** Ten slots to put a brush in and take it out of again. */
+	storeBrush(slot) {
+		return this.ask("MapEditorStoreBrush", "number", [slot]) === 1;
+	}
+	useBrush(slot) {
+		return this.ask("MapEditorUseBrush", "number", [slot]) === 1;
+	}
+	/** How big the brush is, in tiles. */
+	brushSize() {
+		const width = this.call("MapEditorBrushWidth", "number");
+		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
+	}
+
 	/** Whether the pictures of the map in front are all here yet. */
 	loading() {
 		return this.call("MapEditorLoading", "number") === 1;
@@ -319,6 +368,18 @@ const PANELS_HTML = `
 	<section class="editor-panel" data-role="props-panel">
 		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2></header>
 		<div class="editor-props" data-role="props"></div>
+	</section>
+	<section class="editor-panel" data-role="tiles-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Tiles</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="flip-x" title="Turn the brush over sideways (X)">&harr;</button>
+				<button class="editor-small" data-role="flip-y" title="Turn the brush over (Y)">&updownarrow;</button>
+				<button class="editor-small" data-role="rotate" title="A quarter turn (R)">&#8635;</button>
+				<span data-role="brush-size"></span>
+			</span>
+		</header>
+		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -401,7 +462,7 @@ class CEditorPanels {
 	 * @param options.signal Takes them off again, the same as `destroy`.
 	 */
 	constructor(editor, options) {
-		const settings = Object.assign({ container: null, signal: undefined }, options || {});
+		const settings = Object.assign({ container: null, dataBase: null, signal: undefined }, options || {});
 		this.editor = editor;
 		this.stopping = new AbortController();
 		if (settings.signal) {
@@ -412,6 +473,12 @@ class CEditorPanels {
 		// panels and the program has no panels.
 		this.selection = { group: 0, layer: -1 };
 		this.collapsed = new Set();
+		// The picture of the tiles, what it was fetched from, and the
+		// rectangle that was taken out of it.
+		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
+		this.tileset = null;
+		this.tilesetSource = null;
+		this.picked = null;
 		this.root = document.createElement("div");
 		this.root.className = "editor-panels";
 		this.root.innerHTML = PANELS_HTML;
@@ -459,6 +526,10 @@ class CEditorPanels {
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
 		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
 		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
+		on("flip-x", () => { this.editor.flipBrushX(); this.refreshTiles(); });
+		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
+		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
+		this.wireTileset();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -489,6 +560,34 @@ class CEditorPanels {
 		const target = event.target;
 		if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
 			return;
+		}
+		// The brush, which is what an editor's keyboard is mostly for: turn it
+		// over, turn it round, and ten slots to put one away in.
+		if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+			const key = event.key.toLowerCase();
+			if (key === "x" || key === "y" || key === "r") {
+				if (key === "x") {
+					this.editor.flipBrushX();
+				} else if (key === "y") {
+					this.editor.flipBrushY();
+				} else {
+					this.editor.rotateBrush();
+				}
+				this.refreshTiles();
+				event.preventDefault();
+				return;
+			}
+			if (key >= "0" && key <= "9") {
+				const slot = Number.parseInt(key, 10);
+				if (event.shiftKey) {
+					this.editor.storeBrush(slot);
+				} else {
+					this.editor.useBrush(slot);
+				}
+				this.refreshTiles();
+				event.preventDefault();
+				return;
+			}
 		}
 		if (event.ctrlKey || event.metaKey) {
 			if (event.key === "z" && !event.shiftKey) {
@@ -570,6 +669,7 @@ class CEditorPanels {
 		this.refreshBar();
 		this.refreshTree();
 		this.refreshProps();
+		this.refreshTiles();
 		this.refreshHistory();
 	}
 
@@ -779,6 +879,135 @@ class CEditorPanels {
 		return row;
 	}
 
+	// The picture of a layer's tiles, and the rectangle somebody dragged over
+	// it. The picture is the page's doing rather than the program's: it is a
+	// PNG that the map names, the browser reads PNGs, and a tileset drawn on
+	// a canvas costs the program nothing.
+	wireTileset() {
+		const canvas = this.part("tileset");
+		let from = null;
+		const at = event => {
+			const box = canvas.getBoundingClientRect();
+			return {
+				x: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientX - box.left) / box.width * TILESET_SIDE))),
+				y: Math.min(TILESET_SIDE - 1, Math.max(0, Math.floor((event.clientY - box.top) / box.height * TILESET_SIDE))),
+			};
+		};
+		canvas.addEventListener("pointerdown", event => {
+			from = at(event);
+			canvas.setPointerCapture(event.pointerId);
+			this.pick(from, from);
+		}, { signal: this.stopping.signal });
+		canvas.addEventListener("pointermove", event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+			}
+		}, { signal: this.stopping.signal });
+		const release = event => {
+			if (from !== null) {
+				this.pick(from, at(event));
+				from = null;
+				canvas.releasePointerCapture(event.pointerId);
+			}
+		};
+		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
+		canvas.addEventListener("pointercancel", () => { from = null; }, { signal: this.stopping.signal });
+	}
+
+	// Takes the rectangle between two tiles of the tileset into the brush.
+	pick(one, other) {
+		const where = this.selection;
+		if (this.map === null || where.layer < 0) {
+			return;
+		}
+		this.picked = {
+			x: Math.min(one.x, other.x),
+			y: Math.min(one.y, other.y),
+			width: Math.abs(other.x - one.x) + 1,
+			height: Math.abs(other.y - one.y) + 1,
+		};
+		this.editor.pickTiles(where.group, where.layer, this.picked.x, this.picked.y, this.picked.width, this.picked.height);
+		this.refreshTiles();
+	}
+
+	refreshTiles() {
+		const panel = this.part("tiles-panel");
+		const layer = this.selectedLayer();
+		panel.hidden = layer === null || layer.type !== "tiles";
+		if (panel.hidden) {
+			return;
+		}
+		const size = this.editor.brushSize();
+		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
+
+		// The picture the layer is drawn with, where the map names one that
+		// lies beside it. A layer whose picture is inside the map file, or
+		// which has none at all, gets a grid of numbers: the tiles are still
+		// there to be picked, they just cannot be shown.
+		const image = layer.image >= 0 && layer.image < this.map.images.length ? this.map.images[layer.image] : null;
+		const source = image !== null && image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : null;
+		if (source !== this.tilesetSource) {
+			this.tilesetSource = source;
+			this.tileset = null;
+			if (source !== null) {
+				const picture = new Image();
+				picture.addEventListener("load", () => {
+					if (this.tilesetSource === source) {
+						this.tileset = picture;
+						this.refreshTiles();
+					}
+				}, { once: true });
+				picture.src = source;
+			}
+		}
+		this.paintTileset();
+	}
+
+	paintTileset() {
+		const canvas = this.part("tileset");
+		const paint = canvas.getContext("2d");
+		const side = canvas.width / TILESET_SIDE;
+		paint.clearRect(0, 0, canvas.width, canvas.height);
+		if (this.tileset !== null) {
+			paint.imageSmoothingEnabled = false;
+			paint.drawImage(this.tileset, 0, 0, canvas.width, canvas.height);
+		} else {
+			paint.fillStyle = "#1a1a1e";
+			paint.fillRect(0, 0, canvas.width, canvas.height);
+			paint.fillStyle = "#6a6a76";
+			paint.font = `${Math.round(side * 0.5)}px system-ui, sans-serif`;
+			paint.textAlign = "center";
+			paint.textBaseline = "middle";
+			for (let index = 0; index < TILESET_SIDE * TILESET_SIDE; ++index) {
+				paint.fillText(String(index), (index % TILESET_SIDE + 0.5) * side, (Math.floor(index / TILESET_SIDE) + 0.5) * side);
+			}
+		}
+		paint.strokeStyle = "#ffffff30";
+		paint.lineWidth = 1;
+		for (let line = 1; line < TILESET_SIDE; ++line) {
+			paint.beginPath();
+			paint.moveTo(line * side, 0);
+			paint.lineTo(line * side, canvas.height);
+			paint.moveTo(0, line * side);
+			paint.lineTo(canvas.width, line * side);
+			paint.stroke();
+		}
+		if (this.picked !== null) {
+			paint.strokeStyle = "#ffcc44";
+			paint.lineWidth = 2;
+			paint.strokeRect(this.picked.x * side + 1, this.picked.y * side + 1,
+				this.picked.width * side - 2, this.picked.height * side - 2);
+		}
+	}
+
+	/** The layer that is selected, or `null` when a group is. */
+	selectedLayer() {
+		if (this.map === null || this.map.groups.length === 0 || this.selection.layer < 0) {
+			return null;
+		}
+		return this.map.groups[this.selection.group].layers[this.selection.layer] || null;
+	}
+
 	refreshHistory() {
 		const list = this.part("history");
 		list.textContent = "";
@@ -806,61 +1035,170 @@ class CEditorPanels {
 }
 
 /**
- * Pointer and wheel on the canvas: dragging moves the map, the wheel zooms
- * about whatever is under it. That is all the editor does with a pointer so
- * far; a brush is the next thing that goes here.
+ * Pointer and wheel on the canvas.
+ *
+ * What each does is what the editor in the client does, because somebody who
+ * knows one should not have to learn the other: the left button paints with
+ * the brush, held shift it takes a piece of the layer into the brush instead,
+ * held control it rubs out. The right button and the middle button move the
+ * map, and so does the left one while there is no layer to paint in. The
+ * wheel zooms about whatever is under the pointer.
+ *
+ * A stroke is one change: it opens when the button goes down and closes when
+ * it comes up, so the history gets one entry however far the pointer
+ * travelled.
  *
  * @param editor The editor to steer.
  * @param options.canvas What to listen on, or the editor's own canvas.
+ * @param options.target A function answering which layer to paint in, as
+ * `{group, layer}` - the panels know, and this is how they say so. Without
+ * one the pointer only moves the map.
+ * @param options.onChange Called after anything was painted, for a page that
+ * wants to show it.
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
 		settings.signal.addEventListener("abort", () => stopping.abort(), { once: true });
 	}
 	const signal = stopping.signal;
-	let dragging = 0;
+	// Which pointer is doing something, and what it is doing. One at a time:
+	// a second finger on a map being painted is a mistake, not a tool.
+	let doing = null;
+	let pointer = 0;
 	let last = { x: 0, y: 0 };
+	let from = { x: 0, y: 0 };
+
 	// The canvas is measured in the units the page lays out in and drawn in
 	// the pixels the screen has; a pointer that ignored the difference would
-	// move the map at half speed on a screen with more of the latter.
+	// move the map at half the speed of the hand.
 	const scale = () => (canvas.width || 1) / (canvas.getBoundingClientRect().width || 1);
-	canvas.addEventListener("pointerdown", event => {
-		dragging = event.pointerId;
-		last = { x: event.clientX, y: event.clientY };
-		canvas.setPointerCapture(event.pointerId);
-	}, { signal: signal });
-	canvas.addEventListener("pointermove", event => {
-		if (dragging !== event.pointerId) {
-			return;
-		}
-		const factor = scale();
-		editor.moveByPixels(-(event.clientX - last.x) * factor, -(event.clientY - last.y) * factor);
-		last = { x: event.clientX, y: event.clientY };
-	}, { signal: signal });
-	const release = event => {
-		if (dragging === event.pointerId) {
-			dragging = 0;
-			canvas.releasePointerCapture(event.pointerId);
-		}
-	};
-	canvas.addEventListener("pointerup", release, { signal: signal });
-	canvas.addEventListener("pointercancel", release, { signal: signal });
-	canvas.addEventListener("wheel", event => {
-		event.preventDefault();
+	const atCanvas = event => {
 		const box = canvas.getBoundingClientRect();
 		const factor = scale();
-		editor.zoomAt((event.clientX - box.left) * factor, (event.clientY - box.top) * factor,
-			event.deltaY > 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
+		return { x: (event.clientX - box.left) * factor, y: (event.clientY - box.top) * factor };
+	};
+	const tileAt = event => {
+		const at = atCanvas(event);
+		return editor.tileAt(at.x, at.y);
+	};
+	const target = () => {
+		const where = settings.target === null ? null : settings.target();
+		return where == null || where.layer < 0 ? null : where;
+	};
+	const changed = () => {
+		if (settings.onChange !== null) {
+			settings.onChange();
+		}
+	};
+	// The rectangle two corners make, as a place and a size. Either corner
+	// may be the one that was there first.
+	const between = (one, other) => ({
+		x: Math.min(one.x, other.x),
+		y: Math.min(one.y, other.y),
+		width: Math.abs(other.x - one.x) + 1,
+		height: Math.abs(other.y - one.y) + 1,
+	});
+
+	canvas.addEventListener("contextmenu", event => event.preventDefault(), { signal: signal });
+	canvas.addEventListener("pointerdown", event => {
+		if (doing !== null) {
+			return;
+		}
+		pointer = event.pointerId;
+		last = { x: event.clientX, y: event.clientY };
+		canvas.setPointerCapture(pointer);
+		const where = target();
+		const tile = tileAt(event);
+		if (event.button !== 0 || where === null || tile === null) {
+			doing = "move";
+			return;
+		}
+		from = tile;
+		if (event.shiftKey) {
+			doing = "grab";
+		} else if (event.ctrlKey || event.metaKey) {
+			doing = "erase";
+		} else {
+			doing = "paint";
+			editor.begin("Draw");
+			editor.paint(where.group, where.layer, tile.x, tile.y);
+			changed();
+		}
+	}, { signal: signal });
+
+	canvas.addEventListener("pointermove", event => {
+		if (doing === null || pointer !== event.pointerId) {
+			return;
+		}
+		if (doing === "move") {
+			const factor = scale();
+			editor.moveByPixels(-(event.clientX - last.x) * factor, -(event.clientY - last.y) * factor);
+			last = { x: event.clientX, y: event.clientY };
+			return;
+		}
+		if (doing === "paint") {
+			const where = target();
+			const tile = tileAt(event);
+			if (where !== null && tile !== null) {
+				editor.paint(where.group, where.layer, tile.x, tile.y);
+				changed();
+			}
+		}
+		// Grabbing and rubbing out are about the rectangle the pointer ends
+		// on, so while it is moving there is nothing to do but wait.
+	}, { signal: signal });
+
+	const release = event => {
+		if (doing === null || pointer !== event.pointerId) {
+			return;
+		}
+		const where = target();
+		const tile = tileAt(event);
+		if (doing === "paint") {
+			editor.commit();
+			changed();
+		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase")) {
+			const box = between(from, tile);
+			if (doing === "grab") {
+				editor.grab(where.group, where.layer, box.x, box.y, box.width, box.height);
+			} else {
+				editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
+				changed();
+			}
+		}
+		doing = null;
+		canvas.releasePointerCapture(event.pointerId);
+	};
+	canvas.addEventListener("pointerup", release, { signal: signal });
+	canvas.addEventListener("pointercancel", event => {
+		if (doing === "paint") {
+			// A pointer that was taken away mid-stroke leaves what it has
+			// painted: throwing it out would be a surprise, and the one entry
+			// it made is one undo away.
+			editor.commit();
+			changed();
+		}
+		doing = null;
+	}, { signal: signal });
+
+	canvas.addEventListener("wheel", event => {
+		event.preventDefault();
+		const at = atCanvas(event);
+		editor.zoomAt(at.x, at.y, event.deltaY > 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
 	}, { signal: signal, passive: false });
 	return { destroy: () => stopping.abort() };
 }
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
+
+// A tileset is sixteen by sixteen, and the index of a tile is its place in
+// that square. Every map there is says it this way.
+const TILESET_SIDE = 16;
 
 /**
  * A map editor: `MapEditor.open({canvas, src})` for one on a canvas the page

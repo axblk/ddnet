@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+		<meta name="description" content="Edit a DDNet map in a web browser.">
+		<title>DDNet Map Editor</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<!-- What the panels the package builds are dressed in. A page that puts
+		     an editor in a box loads this one file and gets the same ones. -->
+		<link rel="stylesheet" href="ddnet-editor.css">
+		<script type="importmap">
+		{
+			"imports": {
+				"@ddnet/base": "./ddnet-base.js",
+				"@ddnet/map-editor": "./map-editor.js"
+			}
+		}
+		</script>
+		<link rel="preload" as="script" href="ddnet-map-editor.js" crossorigin>
+		<style>
+			/* The map fills what is left of the window and the panels sit
+			   beside it. Nothing here is the package's: an editor put into
+			   somebody else's page is laid out by that page. */
+			body {
+				margin: 0;
+				height: 100dvh;
+				display: flex;
+				background: #16161a;
+				color: #e8e8e8;
+				font: 13px/1.4 system-ui, sans-serif;
+				overflow: hidden;
+			}
+			#picture {
+				flex: 1;
+				min-width: 0;
+				position: relative;
+			}
+			#canvas {
+				display: block;
+				width: 100%;
+				height: 100%;
+				touch-action: none;
+			}
+			#side {
+				width: 320px;
+				padding: 8px;
+				box-sizing: border-box;
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				background: #1c1c20;
+				overflow: auto;
+			}
+			#open-panel {
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				background: #232327;
+				border-radius: 6px;
+				padding: 8px;
+			}
+			#open-panel button {
+				border: 0;
+				border-radius: 4px;
+				background: #34343a;
+				color: inherit;
+				font: inherit;
+				padding: 4px 8px;
+				cursor: pointer;
+			}
+			#message {
+				opacity: 0.75;
+				min-height: 1.4em;
+			}
+		</style>
+	</head>
+	<body>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<div id="picture"><canvas id="canvas" tabindex="0"></canvas></div>
+		<div id="side">
+			<div id="open-panel">
+				<strong>DDNet Map Editor</strong>
+				<p id="message" role="status">Starting&hellip;</p>
+				<button id="open-button" disabled>Open a map&hellip;</button>
+				<button id="new-button" disabled>New map</button>
+				<input id="open-file" type="file" accept=".map" hidden>
+			</div>
+			<div id="panels"></div>
+		</div>
+		<script type="module">
+			import { MapEditor, EditorPanels, steerEditor } from "@ddnet/map-editor";
+			import { followSize } from "@ddnet/base";
+
+			const canvas = document.getElementById("canvas");
+			const message = document.getElementById("message");
+			const openButton = document.getElementById("open-button");
+			const newButton = document.getElementById("new-button");
+			const openFile = document.getElementById("open-file");
+
+			function say(text) {
+				message.textContent = text;
+			}
+
+			let editor = null;
+			try {
+				// A map may be named in the address, the same way the viewer
+				// takes one: `editor.html#map=<url>`.
+				editor = await MapEditor.open({
+					canvas: canvas,
+					urlParams: ["map"],
+					onOutput: (text, kind) => { if (kind.error) { console.error(text); } },
+				});
+			} catch (error) {
+				say((error && error.message) || String(error));
+				throw error;
+			}
+
+			// The canvas is a box of the page's, so the page measures it and
+			// says how big to draw; the program never asks the window.
+			followSize(document.getElementById("picture"), editor);
+			steerEditor(editor, { canvas: canvas });
+			const panels = new EditorPanels(editor, { container: document.getElementById("panels") });
+
+			// The page's own handle on what it started, for whoever opens the
+			// console and for the browser tests that drive it from outside. A
+			// page may claim a name; the package may not, and does not.
+			window.ddnetEditor = { editor: editor, panels: panels };
+
+			openButton.disabled = false;
+			newButton.disabled = false;
+			// What the program is showing, whenever that changes. It is asked
+			// rather than remembered: a map named in the address is opened by
+			// the program itself while the page is still being set up - the
+			// answer above says that the program runs, not that it has
+			// finished starting.
+			function describe() {
+				const size = editor.map < 0 ? null : editor.size();
+				say(size === null ? "Open a map, or drop one onto this page." : `${editor.name()} — ${size.width} x ${size.height} tiles`);
+			}
+			describe();
+
+			for (const type of ["loaded", "closed"]) {
+				editor.addEventListener(type, () => {
+					describe();
+					panels.refresh();
+				});
+			}
+			editor.addEventListener("error", event => {
+				say(`Could not ${event.detail && event.detail.what === "save" ? "save" : "open"} that.`);
+			});
+
+			openButton.addEventListener("click", () => openFile.click());
+			openFile.addEventListener("change", async () => {
+				const file = openFile.files[0];
+				// The same file twice in a row is still a choice, and without
+				// this the second time would go unnoticed.
+				openFile.value = "";
+				if (file == null) {
+					return;
+				}
+				say("Reading…");
+				try {
+					await editor.loadFile(file);
+				} catch (error) {
+					say((error && error.message) || String(error));
+				}
+			});
+
+			newButton.addEventListener("click", () => {
+				editor.create(100, 50, "untitled");
+				panels.refresh();
+			});
+
+			// A map dropped anywhere on the page goes the same way one chosen
+			// above does.
+			document.addEventListener("dragover", event => event.preventDefault());
+			document.addEventListener("drop", async event => {
+				event.preventDefault();
+				const file = event.dataTransfer && event.dataTransfer.files[0];
+				if (file != null) {
+					say("Reading…");
+					await editor.loadFile(file).catch(error => say((error && error.message) || String(error)));
+				}
+			});
+		</script>
+	</body>
+</html>

@@ -1,0 +1,199 @@
+/* What the map editor's panels are dressed in. A page that puts an editor in
+   a box loads this one file and gets the same panels this page has.
+
+   The colours are the ones `ddnet-page.css` uses, said again here rather than
+   inherited, so that a page which only wants the panels needs nothing else. */
+
+.editor-panels {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+	color: #e8e8e8;
+	font: 13px/1.4 system-ui, sans-serif;
+}
+
+.editor-bar {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-wrap: wrap;
+}
+
+.editor-button {
+	width: 32px;
+	height: 32px;
+	padding: 6px;
+	border: 0;
+	border-radius: 6px;
+	background: #2b2b2fcc;
+	color: inherit;
+	cursor: pointer;
+}
+
+.editor-button:hover:not(:disabled) {
+	background: #3d3d44;
+}
+
+.editor-button:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.editor-button[aria-pressed="true"] {
+	background: #4a6ea8;
+}
+
+.editor-button svg {
+	width: 100%;
+	height: 100%;
+	fill: currentColor;
+}
+
+.editor-status {
+	margin-left: auto;
+	opacity: 0.75;
+}
+
+.editor-columns {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 0;
+	overflow: auto;
+}
+
+.editor-panel {
+	background: #232327;
+	border-radius: 6px;
+	padding: 6px 8px 8px;
+}
+
+.editor-panel-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+
+.editor-panel-head h2 {
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	opacity: 0.7;
+	margin: 0;
+}
+
+.editor-panel-tools {
+	margin-left: auto;
+	display: flex;
+	gap: 4px;
+	align-items: center;
+	opacity: 0.8;
+}
+
+.editor-small {
+	border: 0;
+	border-radius: 4px;
+	background: #34343a;
+	color: inherit;
+	font: inherit;
+	font-size: 11px;
+	padding: 2px 6px;
+	cursor: pointer;
+}
+
+.editor-small:hover {
+	background: #45454d;
+}
+
+.editor-tree,
+.editor-layers,
+.editor-history {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	max-height: 240px;
+	overflow: auto;
+}
+
+.editor-layers {
+	margin-left: 16px;
+	max-height: none;
+}
+
+.editor-row {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 4px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.editor-row:hover {
+	background: #2e2e35;
+}
+
+.editor-selected {
+	background: #4a6ea8;
+}
+
+/* What was undone is still there to go back to, and says so by being faint
+   rather than by disappearing - that is the whole point of a history panel. */
+.editor-undone {
+	opacity: 0.45;
+}
+
+.editor-fold {
+	border: 0;
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	padding: 0 2px;
+	font-size: 11px;
+}
+
+.editor-name {
+	font-weight: 600;
+}
+
+.editor-props {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.editor-prop {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.editor-prop > span:first-child {
+	flex: 1;
+	opacity: 0.8;
+}
+
+.editor-prop input {
+	width: 110px;
+	background: #17171a;
+	color: inherit;
+	border: 1px solid #3a3a42;
+	border-radius: 4px;
+	padding: 2px 4px;
+	font: inherit;
+}
+
+.editor-prop input[type="checkbox"] {
+	width: auto;
+}
+
+.editor-readout {
+	width: 110px;
+	opacity: 0.6;
+}

@@ -715,6 +715,67 @@ namespace map_document
 			Document.Commit();
 			return Succeeded();
 		}
+		if(str_comp(pOp, "info.setProp") == 0)
+		{
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(pValue->type != json_string)
+				return Failed("that is a word");
+			CMapInfo Changed = Map.m_Info;
+			if(str_comp(pProp, "author") == 0)
+				Changed.m_Author = pValue->u.string.ptr;
+			else if(str_comp(pProp, "mapVersion") == 0)
+				Changed.m_MapVersion = pValue->u.string.ptr;
+			else if(str_comp(pProp, "credits") == 0)
+				Changed.m_Credits = pValue->u.string.ptr;
+			else if(str_comp(pProp, "license") == 0)
+				Changed.m_License = pValue->u.string.ptr;
+			else
+				return Failed(std::string("a map has no '") + pProp + "'");
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			Document.Edit().m_Info = std::move(Changed);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "info.settings.add") == 0 || str_comp(pOp, "info.settings.set") == 0 ||
+			str_comp(pOp, "info.settings.delete") == 0)
+		{
+			const size_t Count = Map.m_Info.m_Settings.Size();
+			const bool Adding = str_comp(pOp, "info.settings.add") == 0;
+			const size_t Line = Adding ? Count : Arguments.Index("line", Count);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			CMapInfo Changed = Map.m_Info;
+			std::vector<std::string> &vSettings = Changed.m_Settings.Mutable();
+			if(str_comp(pOp, "info.settings.delete") == 0)
+			{
+				vSettings.erase(vSettings.begin() + Line);
+				Document.Begin(Arguments.Str("label", "Delete setting"), pMerge);
+			}
+			else
+			{
+				const json_value *pValue = json_object_get(pParsed.get(), "value");
+				if(pValue->type != json_string)
+					return Failed("a setting is a line of console");
+				// A line with a newline in it would come back as two lines,
+				// and then the map would not be the map that was written.
+				const char *pLine = pValue->u.string.ptr;
+				if(str_find(pLine, "\n") != nullptr || str_find(pLine, "\r") != nullptr)
+					return Failed("a setting is one line");
+				if(Adding)
+					vSettings.emplace_back(pLine);
+				else
+					vSettings[Line] = pLine;
+				Document.Begin(Arguments.Str("label", Adding ? "Add setting" : "Setting"), pMerge);
+			}
+			Document.Edit().m_Info = std::move(Changed);
+			Document.Commit();
+			return Adding ? Succeeded("line", (int)Line) : Succeeded();
+		}
 		if(str_comp(pOp, "image.add") == 0)
 		{
 			// Only a picture that lies beside the map: the pixels of an

@@ -110,6 +110,10 @@ export type Command =
 	| { op: "quad.setPoint"; group: number; layer: number; quad: number; point: number; x: number; y: number; label?: string }
 	| { op: "quad.setColor"; group: number; layer: number; quad: number; corner: number; value: number[]; label?: string }
 	| { op: "quad.setProp"; group: number; layer: number; quad: number; prop: string; value: number; label?: string }
+	| { op: "info.setProp"; prop: "author" | "mapVersion" | "credits" | "license"; value: string; label?: string }
+	| { op: "info.settings.add"; value: string; label?: string }
+	| { op: "info.settings.set"; line: number; value: string; label?: string }
+	| { op: "info.settings.delete"; line: number; label?: string }
 	| { op: "image.add"; name: string; width?: number; height?: number; label?: string }
 	| { op: "image.delete"; image: number; label?: string }
 	| { op: "image.setProp"; image: number; prop: "name" | "external"; value: string | boolean; label?: string }

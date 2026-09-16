@@ -62,7 +62,7 @@ CGameState &CCamera::GameState() const
 
 CGameView &CCamera::View() const
 {
-	return m_pView != nullptr ? *m_pView : GameClient()->LegacyGameView();
+	return m_pView != nullptr ? *m_pView : GameClient()->InputView();
 }
 
 CGameState::CSnapState &CCamera::Snap() const

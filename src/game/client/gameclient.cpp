@@ -319,16 +319,29 @@ const CGameState &CGameClient::GameState(int Conn) const
 	return const_cast<CGameClient *>(this)->GameState(Conn);
 }
 
-CGameView &CGameClient::LegacyGameView()
+int CGameClient::PlayedConnection(CSessionId SessionId) const
 {
-	CGameView *pView = m_GameViews.Find(m_LegacyGameViewId);
-	dbg_assert(pView != nullptr, "missing legacy game view");
-	CGameSessionContext &Session = SessionContext();
-	const int Conn = Session.Id() == Client()->DemoSessionId() ? IClient::CONN_MAIN : ActiveConnection();
-	CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
-	dbg_assert(pState != nullptr, "missing focused game state");
-	pView->SetTarget(Session.Id(), pState->Id());
+	return SessionId == Client()->DemoSessionId() ? IClient::CONN_MAIN : Client()->StreamIndex(SessionId, Client()->ActiveStreamId(SessionId));
+}
+
+CGameView &CGameClient::GameView(CSessionId SessionId, int Conn)
+{
+	const bool Input = SessionId == Client()->FocusedSessionId() && Conn == PlayedConnection(SessionId);
+	const CGameViewId ViewId = Input && !g_Config.m_ClDummySplitScreen ? m_InputViewId : m_aPaneViewIds[SessionId == Client()->DemoSessionId() ? PANE_DEMO : Conn];
+	CGameView *pView = m_GameViews.Find(ViewId);
+	dbg_assert(pView != nullptr, "missing game view");
+	CGameSessionContext *pSession = FindSessionContext(SessionId);
+	dbg_assert(pSession != nullptr, "missing game view session");
+	CGameState *pState = pSession->GameStates().FindByStream(Client()->StreamId(SessionId, Conn));
+	dbg_assert(pState != nullptr, "missing game view state");
+	pView->SetTarget(SessionId, pState->Id());
 	return *pView;
+}
+
+CGameView &CGameClient::InputView()
+{
+	const CSessionId SessionId = Client()->FocusedSessionId();
+	return GameView(SessionId, PlayedConnection(SessionId));
 }
 
 // The programs that only show a demo register none of these, and every place
@@ -358,29 +371,15 @@ void CGameClient::OnConsoleInit()
 	m_pRenderTrace = m_pClient->RenderTrace();
 	for(CSessionId SessionId : m_pClient->SessionIds())
 		dbg_assert(m_SessionContexts.Create(SessionId, "", EGameProtocol::SIX, m_pClient->StreamIds(SessionId)) != nullptr, "failed to create game session context");
-	// The three views the old single-connection code paths look through belong
-	// to the session that plays the game. A program without a connection, the
-	// demo render tool for instance, has the demo session play it instead.
-	CGameSessionContext *pPrimaryContext = m_SessionContexts.Find(m_pClient->NetworkSessionId());
-	if(pPrimaryContext == nullptr)
-		pPrimaryContext = m_SessionContexts.Find(m_pClient->FocusedSessionId());
-	dbg_assert(pPrimaryContext != nullptr, "failed to create game session contexts");
-	m_LegacyGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pPrimaryContext->GameStates().States().front()->Id());
-	dbg_assert(m_LegacyGameViewId.IsValid(), "failed to create legacy game view");
-	const CGameState *pMainState = pPrimaryContext->GameStates().FindByStream(m_pClient->PrimaryStreamId(pPrimaryContext->Id()));
-	dbg_assert(pMainState != nullptr, "missing main game state");
-	const CGameState *pDummyState = pPrimaryContext->GameStates().FindByStream(m_pClient->StreamId(pPrimaryContext->Id(), IClient::CONN_DUMMY));
-	// A session with a single stream has no second connection for the secondary
-	// view to look at, so it looks at the same game state as the main one.
-	if(pDummyState == nullptr)
-		pDummyState = pMainState;
-	m_SecondaryGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pDummyState->Id());
-	dbg_assert(m_SecondaryGameViewId.IsValid(), "failed to create secondary game view");
-	m_TertiaryGameViewId = m_GameViews.Create(pPrimaryContext->Id(), pMainState->Id());
-	dbg_assert(m_TertiaryGameViewId.IsValid(), "failed to create tertiary game view");
-	CGameView *pLegacyView = m_GameViews.Find(m_LegacyGameViewId);
-	dbg_assert(pLegacyView != nullptr, "missing legacy game view");
-	m_Camera.BindState(pLegacyView->Camera());
+	// Every view starts out on the focused session and is pointed at its own
+	// stream the first time it is looked up.
+	const CGameSessionContext *pFocusedContext = m_SessionContexts.Find(m_pClient->FocusedSessionId());
+	dbg_assert(pFocusedContext != nullptr, "failed to create game session contexts");
+	const CGameStateId FirstStateId = pFocusedContext->GameStates().States().front()->Id();
+	m_InputViewId = m_GameViews.Create(pFocusedContext->Id(), FirstStateId);
+	for(CGameViewId &PaneViewId : m_aPaneViewIds)
+		PaneViewId = m_GameViews.Create(pFocusedContext->Id(), FirstStateId);
+	m_Camera.BindState(m_GameViews.Find(m_InputViewId)->Camera());
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
@@ -903,7 +902,7 @@ void CGameClient::OnUpdate()
 	const int TouchConnection = ActiveConnection();
 	CGameSessionContext &TouchSession = SessionContext();
 	CGameState &TouchState = GameState(TouchConnection);
-	CGameView &TouchView = LegacyGameView();
+	CGameView &TouchView = InputView();
 	const CViewport &TouchViewport = TouchView.Viewport();
 	const float TouchAspectRatio = TouchViewport.m_Width > 0 && TouchViewport.m_Height > 0 ? TouchViewport.m_Width / (float)TouchViewport.m_Height : Graphics()->ScreenAspect();
 	CTouchControllerContext TouchContext{
@@ -1055,7 +1054,7 @@ void CGameClient::OnConnectionFocusChanged(CSessionId SessionId, CStreamId Previ
 	CGameState *pPreviousState = pSession->GameStates().FindByStream(PreviousStreamId);
 	CGameState *pState = pSession->GameStates().FindByStream(StreamId);
 	dbg_assert(pPreviousState != nullptr && pState != nullptr, "missing focus-change game state");
-	(void)LegacyGameView();
+	(void)InputView();
 	m_Camera.UpdateCamera();
 	for(CClientData &Client : m_aClients)
 		Client.UpdateSkinInfo(*pState);
@@ -1327,16 +1326,13 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	MultiView().Reset();
 
-	LegacyGameView().SetSpectator(false);
-	LegacyGameView().SpectatorCursor().Reset();
-	CGameView *pSecondaryView = m_GameViews.Find(m_SecondaryGameViewId);
-	dbg_assert(pSecondaryView != nullptr, "missing secondary game view");
-	pSecondaryView->SetSpectator(false);
-	pSecondaryView->SpectatorCursor().Reset();
-	CGameView *pTertiaryView = m_GameViews.Find(m_TertiaryGameViewId);
-	dbg_assert(pTertiaryView != nullptr, "missing tertiary game view");
-	pTertiaryView->SetSpectator(false);
-	pTertiaryView->SpectatorCursor().Reset();
+	for(CGameViewId ViewId : {m_InputViewId, m_aPaneViewIds[0], m_aPaneViewIds[1], m_aPaneViewIds[2]})
+	{
+		CGameView *pView = m_GameViews.Find(ViewId);
+		dbg_assert(pView != nullptr, "missing game view");
+		pView->SetSpectator(false);
+		pView->SpectatorCursor().Reset();
+	}
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
@@ -1541,7 +1537,7 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 			pState->Input().ReleaseGameplay();
 	}
 	InvalidateSnapshot(SessionId);
-	LegacyGameView();
+	InputView();
 	m_SessionPresentations.SetAudible(SessionId);
 	if(!pSession->MapContext().Map()->IsLoaded())
 		return;
@@ -1680,6 +1676,63 @@ void CGameClient::OnRender()
 		const char *m_pTraceName;
 		IGraphics::EGpuRenderZone m_GpuZone = IGraphics::EGpuRenderZone::COUNT;
 	};
+	auto RenderWorld = [this, pTrace, ClearColor](const CRenderContext &Context, CRenderOutput &Output) {
+		CRenderTraceScope TraceScope(pTrace, "game/world");
+		const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
+		CSessionPresentation &Presentation = SessionPresentation(Context.m_Session.Id());
+		if(Context.m_Time.m_IsGameActive)
+			Presentation.PrepareRender(Context, UsePredictedTime);
+		if(!m_Background.UsesCurrentMap())
+			m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
+		const std::array<SRenderComponent, 13> apWorldComponents = {
+			SRenderComponent{&Presentation.MapLayersBackground(), "world/map_background", IGraphics::EGpuRenderZone::MAP_BACKGROUND},
+			SRenderComponent{&m_Particles.m_RenderTrail, "world/particles_trail", IGraphics::EGpuRenderZone::PARTICLES},
+			SRenderComponent{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", IGraphics::EGpuRenderZone::PARTICLES},
+			SRenderComponent{&m_Items, "world/items", IGraphics::EGpuRenderZone::ITEMS},
+			SRenderComponent{&m_Ghost, "world/ghost", IGraphics::EGpuRenderZone::GHOST},
+			SRenderComponent{&m_Players, "world/players", IGraphics::EGpuRenderZone::PLAYERS},
+			SRenderComponent{&Presentation.MapLayersForeground(), "world/map_foreground", IGraphics::EGpuRenderZone::MAP_FOREGROUND},
+			SRenderComponent{&m_Particles.m_RenderExplosions, "world/particles_explosions", IGraphics::EGpuRenderZone::PARTICLES},
+			SRenderComponent{&m_NamePlates, "world/nameplates", IGraphics::EGpuRenderZone::NAMEPLATES},
+			SRenderComponent{&m_Particles.m_RenderExtra, "world/particles_extra", IGraphics::EGpuRenderZone::PARTICLES},
+			SRenderComponent{&m_Particles.m_RenderGeneral, "world/particles_general", IGraphics::EGpuRenderZone::PARTICLES},
+			SRenderComponent{&m_FreezeBars, "world/freezebars", IGraphics::EGpuRenderZone::FREEZEBARS},
+			SRenderComponent{&m_DamageInd, "world/damage_indicators", IGraphics::EGpuRenderZone::DAMAGE_INDICATORS},
+		};
+		Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
+		if(Context.m_View.IsInset())
+		{
+			// The screen was cleared once, before the views under this one were
+			// drawn, so an inset clears its own rectangle.
+			Graphics()->MapScreenToSize(1.0f, 1.0f);
+			Graphics()->TextureClear();
+			Graphics()->QuadsBegin();
+			Graphics()->SetColor(ClearColor);
+			const IGraphics::CQuadItem Quad(0.0f, 0.0f, 1.0f, 1.0f);
+			Graphics()->QuadsDrawTL(&Quad, 1);
+			Graphics()->QuadsEnd();
+		}
+		if(g_Config.m_ClOverlayEntities == 100)
+		{
+			CRenderTraceScope BackgroundTraceScope(pTrace, "world/background", IGraphics::EGpuRenderZone::MAP_BACKGROUND);
+			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
+			if(m_Background.UsesCurrentMap())
+				Presentation.MapLayersBackgroundForce().OnRender(Context);
+			else
+				m_Background.OnRender(Context);
+			Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
+		}
+		for(const auto &[pComponent, pName, GpuZone] : apWorldComponents)
+		{
+			CRenderTraceScope ComponentTraceScope(pTrace, pName, GpuZone);
+			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+				Graphics()->GpuRenderZoneBegin(GpuZone);
+			pComponent->OnRender(Context);
+			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
+				Graphics()->GpuRenderZoneEnd(GpuZone);
+		}
+		Output.EndView();
+	};
 	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
@@ -1693,50 +1746,9 @@ void CGameClient::OnRender()
 			m_Ghost.UpdatePresentation(Context);
 			m_Players.UpdatePresentation(Context);
 		},
-		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
-			CRenderTraceScope TraceScope(pTrace, "game/world");
-			const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
-			CSessionPresentation &Presentation = SessionPresentation(Context.m_Session.Id());
-			if(Context.m_Time.m_IsGameActive)
-				Presentation.PrepareRender(Context, UsePredictedTime);
-			if(!m_Background.UsesCurrentMap())
-				m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
-			const std::array<SRenderComponent, 13> apWorldComponents = {
-				SRenderComponent{&Presentation.MapLayersBackground(), "world/map_background", IGraphics::EGpuRenderZone::MAP_BACKGROUND},
-				SRenderComponent{&m_Particles.m_RenderTrail, "world/particles_trail", IGraphics::EGpuRenderZone::PARTICLES},
-				SRenderComponent{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", IGraphics::EGpuRenderZone::PARTICLES},
-				SRenderComponent{&m_Items, "world/items", IGraphics::EGpuRenderZone::ITEMS},
-				SRenderComponent{&m_Ghost, "world/ghost", IGraphics::EGpuRenderZone::GHOST},
-				SRenderComponent{&m_Players, "world/players", IGraphics::EGpuRenderZone::PLAYERS},
-				SRenderComponent{&Presentation.MapLayersForeground(), "world/map_foreground", IGraphics::EGpuRenderZone::MAP_FOREGROUND},
-				SRenderComponent{&m_Particles.m_RenderExplosions, "world/particles_explosions", IGraphics::EGpuRenderZone::PARTICLES},
-				SRenderComponent{&m_NamePlates, "world/nameplates", IGraphics::EGpuRenderZone::NAMEPLATES},
-				SRenderComponent{&m_Particles.m_RenderExtra, "world/particles_extra", IGraphics::EGpuRenderZone::PARTICLES},
-				SRenderComponent{&m_Particles.m_RenderGeneral, "world/particles_general", IGraphics::EGpuRenderZone::PARTICLES},
-				SRenderComponent{&m_FreezeBars, "world/freezebars", IGraphics::EGpuRenderZone::FREEZEBARS},
-				SRenderComponent{&m_DamageInd, "world/damage_indicators", IGraphics::EGpuRenderZone::DAMAGE_INDICATORS},
-			};
-			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
-			if(g_Config.m_ClOverlayEntities == 100)
-			{
-				CRenderTraceScope BackgroundTraceScope(pTrace, "world/background", IGraphics::EGpuRenderZone::MAP_BACKGROUND);
-				Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
-				if(m_Background.UsesCurrentMap())
-					Presentation.MapLayersBackgroundForce().OnRender(Context);
-				else
-					m_Background.OnRender(Context);
-				Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::MAP_BACKGROUND);
-			}
-			for(const auto &[pComponent, pName, GpuZone] : apWorldComponents)
-			{
-				CRenderTraceScope ComponentTraceScope(pTrace, pName, GpuZone);
-				if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
-					Graphics()->GpuRenderZoneBegin(GpuZone);
-				pComponent->OnRender(Context);
-				if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
-					Graphics()->GpuRenderZoneEnd(GpuZone);
-			}
-			Output.EndView();
+		[&RenderWorld](const CRenderContext &Context, CRenderOutput &Output) {
+			if(!Context.m_View.IsInset())
+				RenderWorld(Context, Output);
 		});
 	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
 	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::INTERFACE);
@@ -1777,6 +1789,8 @@ void CGameClient::OnRender()
 			// pointers, which is what a `std::function` holds without reaching
 			// for the heap on every frame.
 			[this, &Components](const CRenderContext &Context, CRenderOutput &Output) {
+				if(Context.m_View.IsInset())
+					return;
 				Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 				for(const auto &[pComponent, pName, GpuZone] : Components)
 				{
@@ -1815,6 +1829,8 @@ void CGameClient::OnRender()
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
+			if(Context.m_View.IsInset())
+				return;
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 			CRenderTraceScope TraceScope(pTrace, "ui/chat", IGraphics::EGpuRenderZone::CHAT);
 			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::CHAT);
@@ -1823,6 +1839,17 @@ void CGameClient::OnRender()
 			Output.EndView();
 		});
 	RenderRequestComponents(apRequestOverlaysAfterChat);
+	// Over the HUD and chat of the views below, but still part of the scene the
+	// menu blurs and the boards cover.
+	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
+	m_RenderScheduler.Run(
+		m_vRenderRequests,
+		[](const CPresentationContext &) {},
+		[&RenderWorld](const CRenderContext &Context, CRenderOutput &Output) {
+			if(Context.m_View.IsInset())
+				RenderWorld(Context, Output);
+		});
+	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
 	if(!m_PreparedIsolatedVideoOutput)
 	{
 		ScreenOutput.BeginView(View.Viewport(), View.CameraPosition(), View.Zoom());
@@ -1849,6 +1876,8 @@ void CGameClient::OnRender()
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
 		[this, pTrace](const CRenderContext &Context, CRenderOutput &Output) {
+			if(Context.m_View.IsInset())
+				return;
 			Output.BeginView(Context.m_View.Viewport(), Context.m_View.CameraPosition(), Context.m_View.Zoom());
 			CRenderTraceScope TraceScope(pTrace, "ui/scoreboard", IGraphics::EGpuRenderZone::SCOREBOARD);
 			Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::SCOREBOARD);
@@ -1945,80 +1974,80 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	m_vPreparedRenderEntries.reserve(3);
 
 	CGameSessionContext &ActiveSession = SessionContext();
-	const bool FocusedDemo = ActiveSession.Id() == Client()->DemoSessionId();
-	const int ActiveConn = FocusedDemo ? IClient::CONN_MAIN : ActiveConnection();
+	const int ActiveConn = PlayedConnection(ActiveSession.Id());
 	CGameState *pActiveState = ActiveSession.GameStates().FindByStream(Client()->StreamId(ActiveSession.Id(), ActiveConn));
 	dbg_assert(pActiveState != nullptr, "missing active game state");
 	CGameState &ActiveState = *pActiveState;
-	CGameView &View = LegacyGameView();
-	CGameView *pSecondaryView = m_GameViews.Find(m_SecondaryGameViewId);
-	CGameView *pTertiaryView = m_GameViews.Find(m_TertiaryGameViewId);
-	dbg_assert(pSecondaryView != nullptr && pTertiaryView != nullptr, "missing auxiliary game views");
+	CGameView &View = InputView();
 
-	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State, CGameView &RenderView, int Conn, bool Audible) {
-		RenderView.SetTarget(Session.Id(), State.Id());
+	auto AddEntry = [&](CGameSessionContext &Session, int Conn, bool Inset) {
+		CGameState *pState = Session.GameStates().FindByStream(Client()->StreamId(Session.Id(), Conn));
+		dbg_assert(pState != nullptr, "missing shown game state");
 		CPreparedRenderEntry Entry;
 		Entry.m_pSession = &Session;
-		Entry.m_pState = &State;
-		Entry.m_pView = &RenderView;
+		Entry.m_pState = pState;
+		Entry.m_pView = &GameView(Session.Id(), Conn);
 		Entry.m_Conn = Conn;
-		Entry.m_Active = Audible;
-		Entry.m_Audible = Audible;
+		Entry.m_Active = Entry.m_pView == &View;
+		Entry.m_Audible = Entry.m_Active;
+		Entry.m_Inset = Inset;
 		m_vPreparedRenderEntries.push_back(Entry);
 	};
-	auto AddNetworkEntries = [&](CGameSessionContext &NetworkSession, CGameView &MainView, CGameView *pDummyView) {
-		CGameState *pMainState = NetworkSession.GameStates().FindByStream(Client()->PrimaryStreamId(NetworkSession.Id()));
-		dbg_assert(pMainState != nullptr, "missing Network main state");
-		AddEntry(NetworkSession, *pMainState, MainView, IClient::CONN_MAIN, &MainView == &View);
-		if(pDummyView != nullptr && NetworkSession.Id() == Client()->NetworkSessionId() && Client()->DummyConnected())
+	// The split screen shows the dummy beside the player. An inset only ever
+	// shows the stream that is played.
+	const bool SplitScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
+	auto AddSession = [&](CGameSessionContext &Session, bool Inset) {
+		if(!Inset && SplitScreen && Session.Id() == Client()->NetworkSessionId() && Client()->DummyConnected())
 		{
-			CGameState *pDummyState = NetworkSession.GameStates().FindByStream(Client()->StreamId(NetworkSession.Id(), IClient::CONN_DUMMY));
-			dbg_assert(pDummyState != nullptr, "missing Network dummy state");
-			AddEntry(NetworkSession, *pDummyState, *pDummyView, IClient::CONN_DUMMY, pDummyView == &View);
+			AddEntry(Session, IClient::CONN_MAIN, false);
+			AddEntry(Session, IClient::CONN_DUMMY, false);
+		}
+		else
+		{
+			AddEntry(Session, PlayedConnection(Session.Id()), Inset);
 		}
 	};
 
-	const bool MultiGameScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
-	if(MultiGameScreen && FocusedDemo && Client()->SessionState(Client()->NetworkSessionId()) == ESessionState::READY)
-	{
-		CGameSessionContext *pNetworkSession = FindSessionContext(Client()->NetworkSessionId());
-		dbg_assert(pNetworkSession != nullptr, "missing Network session context");
-		AddNetworkEntries(*pNetworkSession, *pSecondaryView, pTertiaryView);
-		AddEntry(ActiveSession, ActiveState, View, ActiveConn, true);
-	}
-	else if(MultiGameScreen && !FocusedDemo)
-	{
-		if(ActiveConn == IClient::CONN_MAIN)
-			AddNetworkEntries(ActiveSession, View, pSecondaryView);
-		else
-			AddNetworkEntries(ActiveSession, *pSecondaryView, &View);
-		if(Client()->SessionState(Client()->DemoSessionId()) == ESessionState::READY)
-		{
-			CGameSessionContext *pDemoSession = FindSessionContext(Client()->DemoSessionId());
-			dbg_assert(pDemoSession != nullptr, "missing Demo session context");
-			CGameState *pDemoState = pDemoSession->GameStates().FindByStream(Client()->PrimaryStreamId(pDemoSession->Id()));
-			dbg_assert(pDemoState != nullptr, "missing Demo game state");
-			AddEntry(*pDemoSession, *pDemoState, *pTertiaryView, IClient::CONN_MAIN, false);
-		}
-	}
-	else
-	{
-		AddEntry(ActiveSession, ActiveState, View, ActiveConn, true);
-	}
+	// The session without focus is shown too, as long as it has something to
+	// show: beside the focused one on the split screen, or in a corner of it.
+	// The server always keeps the left of the screen and the demo the right, so
+	// that moving focus between them does not move them around.
+	const CSessionId OtherId = ActiveSession.Id() == Client()->DemoSessionId() ? Client()->NetworkSessionId() : Client()->DemoSessionId();
+	CGameSessionContext *pOther = FindSessionContext(OtherId);
+	const bool PictureInPicture = g_Config.m_ClPictureInPicture != 0 && !VideoOutput;
+	if(pOther == nullptr || (!SplitScreen && !PictureInPicture) || Client()->SessionState(OtherId) != ESessionState::READY)
+		pOther = nullptr;
+	const bool OtherBeside = pOther != nullptr && !PictureInPicture;
+	if(OtherBeside && OtherId == Client()->NetworkSessionId())
+		AddSession(*pOther, false);
+	AddSession(ActiveSession, false);
+	if(OtherBeside && OtherId != Client()->NetworkSessionId())
+		AddSession(*pOther, false);
+	if(pOther != nullptr && PictureInPicture)
+		AddSession(*pOther, true);
 
-	if(m_vPreparedRenderEntries.size() > 1)
+	const int ScreenWidth = Graphics()->ScreenWidth();
+	const int ScreenHeight = Graphics()->ScreenHeight();
+	const int NumColumns = std::count_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return !Entry.m_Inset; });
+	int Column = 0;
+	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
-		for(size_t i = 0; i < m_vPreparedRenderEntries.size(); ++i)
+		if(Entry.m_Inset)
 		{
-			CPreparedRenderEntry &Entry = m_vPreparedRenderEntries[i];
-			const int Left = Graphics()->ScreenWidth() * static_cast<int>(i) / static_cast<int>(m_vPreparedRenderEntries.size());
-			const int Right = Graphics()->ScreenWidth() * static_cast<int>(i + 1) / static_cast<int>(m_vPreparedRenderEntries.size());
-			Entry.m_pView->SetViewport({Left, 0, Right - Left, Graphics()->ScreenHeight()});
+			// In the shape of the screen, in the corner furthest from the chat,
+			// the HUD and the kill messages.
+			const int Width = ScreenWidth * g_Config.m_ClPictureInPictureSize / 100;
+			const int Height = Width * ScreenHeight / std::max(ScreenWidth, 1);
+			const int Margin = ScreenHeight / 50;
+			Entry.m_pView->SetViewport({ScreenWidth - Width - Margin, ScreenHeight - Height - Margin, Width, Height}, true);
 		}
-	}
-	else
-	{
-		View.SetViewport({});
+		else
+		{
+			const int Left = ScreenWidth * Column / NumColumns;
+			const int Right = ScreenWidth * (Column + 1) / NumColumns;
+			Entry.m_pView->SetViewport(NumColumns > 1 ? CViewport{Left, 0, Right - Left, ScreenHeight} : CViewport{});
+			++Column;
+		}
 	}
 
 	const int64_t PresentationTime = VideoOutput ? Client()->DemoPlaybackTime(ActiveSession.Id()) : time_get();
@@ -2142,7 +2171,7 @@ void CGameClient::OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportS
 	CGameSessionContext &FocusedSession = SessionContext();
 	CGameState *pFocusedState = FocusedSession.GameStates().FindByStream(Client()->StreamId(FocusedSession.Id(), ActiveConnection()));
 	if(pFocusedState != nullptr)
-		m_Camera.BindTarget(FocusedSession, *pFocusedState, LegacyGameView(), true, Client()->LocalTime());
+		m_Camera.BindTarget(FocusedSession, *pFocusedState, InputView(), true, Client()->LocalTime());
 }
 #endif
 
@@ -5033,7 +5062,7 @@ void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGam
 
 void CGameClient::UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time)
 {
-	CGameView &View = LegacyGameView();
+	CGameView &View = InputView();
 	CGameView::CSpectatorCursorState &Cursor = View.SpectatorCursor();
 	using CCursorState = CGameView::CSpectatorCursorState;
 	const int CursorOwnerId = View.IsSpectating() ? View.SpectatorId() : State.LocalClientId();

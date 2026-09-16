@@ -220,9 +220,14 @@ private:
 	int m_StateCacheConn = -1;
 	CGameState *m_pStateCache = nullptr;
 	CGameViewManager m_GameViews;
-	CGameViewId m_LegacyGameViewId;
-	CGameViewId m_SecondaryGameViewId;
-	CGameViewId m_TertiaryGameViewId;
+	// The view the player looks through on a single screen. It follows focus and
+	// the dummy switch, so zoom and camera carry over as they always have.
+	CGameViewId m_InputViewId;
+	// A view per stream that is shown beside or inside another one: the player,
+	// the dummy and the demo. It stays with its stream, so a pane keeps its zoom
+	// and selections whichever of them has focus.
+	static constexpr int PANE_DEMO = NUM_DUMMIES;
+	std::array<CGameViewId, NUM_DUMMIES + 1> m_aPaneViewIds;
 #if defined(CONF_VIDEORECORDER)
 	CGameViewId m_VideoGameViewId;
 #endif
@@ -236,6 +241,7 @@ private:
 		int m_Conn = IClient::CONN_MAIN;
 		bool m_Active = false;
 		bool m_Audible = false;
+		bool m_Inset = false;
 		CGameTickInfo m_Time;
 		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
 		CVisibleWorldRect m_VisibleWorldRect{vec2(), vec2()};
@@ -334,7 +340,11 @@ public:
 	class CConfig *Config() const { return m_pConfig; }
 	CGameState &GameState(int Conn);
 	const CGameState &GameState(int Conn) const;
-	CGameView &LegacyGameView();
+	CGameView &GameView(CSessionId SessionId, int Conn);
+	// The stream of a session that is played rather than only watched: the one
+	// cl_dummy picks on a server, the only one there is in a demo.
+	int PlayedConnection(CSessionId SessionId) const;
+	CGameView &InputView();
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
@@ -790,7 +800,7 @@ public:
 
 	const std::vector<CSnapEntities> &SnapEntities() { return m_vSnapEntities; }
 
-	CGameView::CMultiViewState &MultiView() { return LegacyGameView().MultiView(); }
+	CGameView::CMultiViewState &MultiView() { return InputView().MultiView(); }
 
 	void ResetMultiView();
 	int FindFirstMultiViewId();

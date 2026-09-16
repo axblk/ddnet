@@ -81,7 +81,7 @@ void CMotd::OnRender()
 	// so it only belongs behind this box while the box is the first thing over
 	// the scene. Over a scoreboard it would cut a hole into it.
 	if(!GameClient()->m_Scoreboard.IsActive() && !GameClient()->m_Statboard.IsActive())
-		GameClient()->m_Menus.RenderBackdropRegion({RectX, RectY, RectWidth, RectHeight});
+		GameClient()->m_Menus.RenderBackdropRegion({RectX, RectY, RectWidth, RectHeight}, IGraphics::CORNER_ALL, FontSize);
 	m_TouchRect = CUIRect{RectX / ScreenWidth, RectY / ScreenHeight, RectWidth / ScreenWidth, RectHeight / ScreenHeight};
 
 	if(m_RectQuadContainer == -1)

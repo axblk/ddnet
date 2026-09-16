@@ -300,8 +300,7 @@ void CScoreboard::RenderTitleBar(CUIRect TitleBar, int Team, const char *pTitle)
 
 void CScoreboard::RenderGoals(CUIRect Goals)
 {
-	GameClient()->m_Menus.RenderBackdropRegion(Goals);
-	Goals.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
+	GameClient()->m_Menus.DrawSurface(Goals, BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 	Goals.VMargin(5.0f, &Goals);
 
 	const float FontSize = 10.0f;
@@ -329,8 +328,7 @@ void CScoreboard::RenderGoals(CUIRect Goals)
 
 void CScoreboard::RenderSpectators(CUIRect Spectators)
 {
-	GameClient()->m_Menus.RenderBackdropRegion(Spectators);
-	Spectators.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
+	GameClient()->m_Menus.DrawSurface(Spectators, BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 	constexpr float SpectatorCut = 5.0f;
 	Spectators.Margin(SpectatorCut, &Spectators);
 
@@ -1076,8 +1074,10 @@ void CScoreboard::OnRender()
 
 		CUIRect RedScoreboard, BlueScoreboard, RedTitle, BlueTitle;
 		Scoreboard.VSplitMid(&RedScoreboard, &BlueScoreboard, ROUNDING);
-		GameClient()->m_Menus.RenderBackdropRegion(RedScoreboard);
-		GameClient()->m_Menus.RenderBackdropRegion(BlueScoreboard);
+		// Title and body are two boxes that meet in a straight line, so one
+		// rounded backdrop each covers both.
+		GameClient()->m_Menus.RenderBackdropRegion(RedScoreboard, IGraphics::CORNER_ALL, ROUNDING);
+		GameClient()->m_Menus.RenderBackdropRegion(BlueScoreboard, IGraphics::CORNER_ALL, ROUNDING);
 		RedScoreboard.HSplitTop(TitleHeight, &RedTitle, &RedScoreboard);
 		BlueScoreboard.HSplitTop(TitleHeight, &BlueTitle, &BlueScoreboard);
 
@@ -1110,8 +1110,7 @@ void CScoreboard::OnRender()
 	}
 	else
 	{
-		GameClient()->m_Menus.RenderBackdropRegion(Scoreboard);
-		Scoreboard.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
+		GameClient()->m_Menus.DrawSurface(Scoreboard, BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 
 		const char *pTitle;
 		if(pGameInfoObj && (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER))

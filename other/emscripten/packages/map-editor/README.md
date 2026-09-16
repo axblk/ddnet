@@ -76,6 +76,13 @@ the right and middle buttons move the map. What a rectangle gesture is about
 is drawn on the map while the button is down. `X` and `Y` turn the brush over, `R` turns it a quarter, and the digits
 are ten slots to put one away in (`Shift` and a digit stores).
 
+The picture of the tiles comes from wherever the map keeps it. A picture that
+lies beside the map is a PNG and the browser reads PNGs, so the page fetches it
+and the program is not asked; a picture packed into the map file is already
+unpacked in the program, and the page asks for the pixels
+(`editor.imageData(index)`) and draws them itself. Either way the program never
+draws a tileset - it draws maps.
+
 A stroke is one change made of many stamps, which is why it costs what it
 touched rather than what the map is: a hundred strokes of eight stamps each
 take 72 ms on ctf1 and 104 ms on Tsunami, a map eight times its size, and both
@@ -85,7 +92,6 @@ and 17 ms.
 ## What it is not, yet
 
 Quads, envelopes, images, sounds and the automapper are looked at but not
-changed; the numbers beside a tele or a switch tile cannot be set. The tileset
-of an image that is packed into the map file is shown as a grid of numbers
-rather than as a picture - the pixels are in the program, and nothing hands
-them out yet.
+changed; the numbers beside a tele or a switch tile cannot be set. A layer with
+no picture at all is shown as a grid of numbers - the tiles are still there to
+be picked, they just cannot be shown.

@@ -228,6 +228,20 @@ public:
 	const map_document::CDocument *Document(int Id) const;
 
 	/**
+	 * One picture of the map as the version holds it.
+	 *
+	 * Only for reading, and only until the map changes: a picture packed into
+	 * the map file holds its pixels here, and whoever wants to show them
+	 * should take a copy rather than the address.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which picture of the map.
+	 *
+	 * @return The picture, or `nullptr` where there is none.
+	 */
+	const map_document::CImage *Image(int Id, int Index) const;
+
+	/**
 	 * Where a map is being looked at.
 	 *
 	 * @param Id The number of the map.

@@ -208,6 +208,15 @@ const map_document::CDocument *CMapEditor::Document(int Id) const
 	return pMap == nullptr ? nullptr : &pMap->m_Document;
 }
 
+const map_document::CImage *CMapEditor::Image(int Id, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0)
+		return nullptr;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	return (size_t)Index >= Map.NumImages() ? nullptr : Map.Image((size_t)Index);
+}
+
 map_document::CView *CMapEditor::View(int Id)
 {
 	CMap *pMap = Find(Id);

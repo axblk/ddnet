@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -240,6 +241,31 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorStructure(int Id)
 EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->HistoryJson(Id));
+}
+
+// The pixels of a picture that is packed into the map file, so that a page can
+// show a tileset it cannot fetch. They lie in the version, already unpacked,
+// and this hands out where - no copy is made, because the one the page makes
+// when it reads them is the one copy that is needed.
+//
+// The address is good until the map changes. A page that keeps it instead of
+// the pixels is holding a page of somebody else's memory.
+EMSCRIPTEN_KEEPALIVE const uint8_t *MapEditorImagePixels(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr || pImage->m_Data.Empty() ? nullptr : &pImage->m_Data[0];
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorImageWidth(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr ? 0 : pImage->m_Width;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorImageHeight(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr ? 0 : pImage->m_Height;
 }
 
 // A change that is made over many calls - a slider being dragged, a brush

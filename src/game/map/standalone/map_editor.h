@@ -343,6 +343,16 @@ public:
 	 */
 	std::string SettingNamesJson(const char *pPrefix) const;
 
+	/**
+	 * What lies in a directory of the storage, as a JSON array.
+	 *
+	 * For the browser, where the maps that were saved live in the program's
+	 * own file system and a page cannot look into it. Each entry says its
+	 * name without the `.map` and how big it is; directories and anything
+	 * that is not a map are left out.
+	 */
+	std::string SavedJson(const char *pDirectory, int StorageType);
+
 	/** What is wrong with one settings line - see `map_document::CheckSetting`. */
 	std::string CheckSetting(const char *pLine) const;
 

@@ -222,6 +222,12 @@ export declare class MapEditor {
 	save(id?: MapId, options?: { handout?: boolean }): boolean;
 	/** Whether the map has been changed since it was last written out. */
 	dirty(id?: MapId): boolean;
+	/** The maps in the browser's own storage, by name, with their size in bytes. */
+	saved(): { name: string; size: number }[];
+	/** Opens one of those by name; the number of the map, or -1. */
+	openSaved(name: string): number;
+	/** Writes the map under another name without renaming it or marking it saved. */
+	saveCopy(id: MapId | undefined, name: string, options?: { handout?: boolean }): boolean;
 	/** Writes every changed map into the browser's own storage every so many seconds. */
 	autosave(seconds: number): void;
 
@@ -447,6 +453,18 @@ export declare class EditorPanels {
 	askNewMap(): void;
 	/** Asks what the map is to be called from now on, then saves it. */
 	askSaveAs(): void;
+	/** Picks one of the maps in this browser's storage and opens it. */
+	askOpenSaved(): void;
+	/** Asks for a name and writes a copy under it; this map stays this map. */
+	askSaveCopy(): void;
+	/** The editor's own yes-or-no question, instead of `confirm()`. */
+	askYesNo(title: string, text: string, yes: string, done: () => void): void;
+	/** Every key the editor answers to, on one sheet. */
+	showKeys(): void;
+	/** The outer ring of the selected tile layer, drawn with the brush. */
+	makeBorder(): boolean;
+	/** Takes out every envelope nothing is bound to, as one step. */
+	deleteUnusedEnvelopes(): { ok: boolean; envelopes?: number; error?: string };
 	closeDialog(): void;
 	refresh(): void;
 	destroy(): void;

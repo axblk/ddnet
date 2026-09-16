@@ -333,6 +333,51 @@ std::string CMapEditor::SettingNamesJson(const char *pPrefix) const
 	return Writer.GetOutputString();
 }
 
+std::string CMapEditor::SavedJson(const char *pDirectory, int StorageType)
+{
+	struct CFound
+	{
+		IStorage *m_pStorage;
+		const char *m_pDirectory;
+		int m_StorageType;
+		std::vector<std::pair<std::string, int64_t>> m_vFiles;
+	};
+	CFound Found{m_View.Storage(), pDirectory, StorageType, {}};
+	m_View.Storage()->ListDirectory(StorageType, pDirectory, [](const char *pName, int IsDir, int Type, void *pUser) {
+		CFound *pFound = static_cast<CFound *>(pUser);
+		if(IsDir != 0 || !str_endswith(pName, ".map"))
+			return 0;
+		char aPath[IO_MAX_PATH_LENGTH];
+		str_format(aPath, sizeof(aPath), "%s/%s", pFound->m_pDirectory, pName);
+		// How big it is, because a name alone says nothing about whether this
+		// is the map somebody meant. Unreadable ones are left out: a name in
+		// the list that cannot be opened is worse than no name.
+		IOHANDLE File = pFound->m_pStorage->OpenFile(aPath, IOFLAG_READ, pFound->m_StorageType);
+		if(!File)
+			return 0;
+		const int64_t Size = io_length(File);
+		io_close(File);
+		std::string Name(pName);
+		Name.erase(Name.size() - 4);
+		pFound->m_vFiles.emplace_back(std::move(Name), Size);
+		return 0; }, &Found);
+	std::sort(Found.m_vFiles.begin(), Found.m_vFiles.end(),
+		[](const auto &First, const auto &Second) { return First.first < Second.first; });
+	CJsonStringWriter Writer;
+	Writer.BeginArray();
+	for(const auto &[Name, Size] : Found.m_vFiles)
+	{
+		Writer.BeginObject();
+		Writer.WriteAttribute("name");
+		Writer.WriteStrValue(Name.c_str());
+		Writer.WriteAttribute("size");
+		Writer.WriteIntValue((int)Size);
+		Writer.EndObject();
+	}
+	Writer.EndArray();
+	return Writer.GetOutputString();
+}
+
 std::string CMapEditor::CheckSetting(const char *pLine) const
 {
 	return map_document::CheckSetting(pLine);

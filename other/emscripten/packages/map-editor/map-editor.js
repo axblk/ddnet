@@ -588,6 +588,39 @@ class CMapEditor extends Program {
 		return this.call("MapEditorCheckSetting", "string", ["string"], [line || ""]) || "";
 	}
 
+	/**
+	 * The maps that lie in the browser's own storage, newest name first.
+	 *
+	 * The program says it, not the page: the files are in the program's own
+	 * file system, and a page cannot look into it.
+	 */
+	saved() {
+		const text = this.call("MapEditorSaved", "string", [], []);
+		try {
+			return text === null ? [] : JSON.parse(text);
+		} catch (error) {
+			return [];
+		}
+	}
+
+	/** Opens one of them by name, and puts it in front. */
+	openSaved(name) {
+		return this.call("MapEditorOpenSaved", "number", ["string"], [name || ""]);
+	}
+
+	/**
+	 * Writes the map out under another name without becoming that map.
+	 *
+	 * The map one is working on keeps its name and its place in the history,
+	 * so the dot that says "not saved" stays where it was. Saving *as* is a
+	 * rename and then a save, which is a different thing.
+	 */
+	saveCopy(id, name, options) {
+		const handout = !(options && options.handout === false);
+		return this.call("MapEditorSaveCopy", "number", ["number", "string", "number"],
+			[this.which(id), name || "", handout ? 1 : 0]) === 1;
+	}
+
 	/** The names of settings that begin with what has been typed. */
 	settingNames(prefix) {
 		const text = this.call("MapEditorSettingNames", "string", ["string"], [prefix || ""]);
@@ -1978,9 +2011,16 @@ class CEditorPanels {
 	}
 
 	/** Closes one, and puts another in front if that was the one in front. */
-	closeMap(id) {
+	closeMap(id, asked) {
 		const open = this.editor.maps;
 		if (open.length < 2) {
+			return false;
+		}
+		// What was changed and not written out is gone the moment the map is:
+		// the history goes with it. So it is asked first, once.
+		if (asked !== true && this.editor.dirty(id)) {
+			this.askYesNo("Close the map", `${this.editor.name(id) || "This map"} has changes that were never saved.`,
+				"Close it anyway", () => this.closeMap(id, true));
 			return false;
 		}
 		if (id === this.editor.map) {
@@ -2990,7 +3030,7 @@ class CEditorPanels {
 	 * list of what to ask, because a new map and a new name are the same
 	 * shape and only differ in what is asked.
 	 */
-	askFor(title, fields, done) {
+	askFor(title, fields, done, options) {
 		const home = this.overlayHome();
 		if (home === null) {
 			return;
@@ -3010,18 +3050,39 @@ class CEditorPanels {
 		form.append(head);
 		const inputs = new Map();
 		for (const field of fields) {
+			// A line that only says something has nothing to type into and no
+			// name to hand back - a question needs saying before it is asked.
+			if (field.kind === "note") {
+				const note = document.createElement("p");
+				note.className = "editor-dialog-note";
+				note.dataset.role = `dialog-${field.name}`;
+				note.textContent = field.label;
+				form.append(note);
+				continue;
+			}
 			const label = document.createElement("label");
 			label.className = "editor-dialog-field";
 			const name = document.createElement("span");
 			name.textContent = field.label;
-			const input = document.createElement("input");
-			input.type = field.kind === "number" ? "number" : "text";
+			let input;
+			if (field.kind === "pick") {
+				input = document.createElement("select");
+				for (const choice of field.choices) {
+					const one = document.createElement("option");
+					one.value = String(choice.value);
+					one.textContent = choice.label;
+					input.append(one);
+				}
+			} else {
+				input = document.createElement("input");
+				input.type = field.kind === "number" ? "number" : "text";
+				if (field.kind === "number") {
+					input.min = String(field.min);
+					input.max = String(field.max);
+				}
+			}
 			input.dataset.role = `dialog-${field.name}`;
 			input.value = String(field.value);
-			if (field.kind === "number") {
-				input.min = String(field.min);
-				input.max = String(field.max);
-			}
 			label.append(name, input);
 			form.append(label);
 			inputs.set(field.name, input);
@@ -3037,7 +3098,7 @@ class CEditorPanels {
 		go.type = "submit";
 		go.className = "editor-small editor-dialog-go";
 		go.dataset.role = "dialog-go";
-		go.textContent = title;
+		go.textContent = options && options.go ? options.go : title;
 		row.append(cancel, go);
 		form.append(row);
 		this.dialog.append(form);
@@ -3088,6 +3149,187 @@ class CEditorPanels {
 			this.editor.create(Math.max(2, answer.width), Math.max(2, answer.height), answer.name || "untitled");
 			this.refresh();
 		});
+	}
+
+	/**
+	 * The outer ring of the layer, drawn with what is in hand.
+	 *
+	 * One entry in the history for the whole ring: the brush is stamped
+	 * along the four edges inside one transaction, and each stamp joins it.
+	 * A brush bigger than one tile steps by its own size, so the ring is the
+	 * brush's width thick and nothing is stamped twice.
+	 */
+	makeBorder() {
+		const layer = this.selectedLayer();
+		if (layer === null || layer.type !== "tiles" || layer.size === undefined) {
+			this.say("Pick a tile layer to put a border round", "error");
+			return false;
+		}
+		const brush = this.editor.brushSize();
+		if (brush === null || brush.width === 0 || brush.height === 0) {
+			this.say("Nothing in hand to draw the border with", "error");
+			return false;
+		}
+		const [width, height] = layer.size;
+		const where = this.selection;
+		const spots = new Set();
+		const stamp = (x, y) => spots.add(`${Math.max(0, Math.min(width - brush.width, x))},${Math.max(0, Math.min(height - brush.height, y))}`);
+		for (let x = 0; x < width; x += brush.width) {
+			stamp(x, 0);
+			stamp(x, height - brush.height);
+		}
+		for (let y = 0; y < height; y += brush.height) {
+			stamp(0, y);
+			stamp(width - brush.width, y);
+		}
+		this.change(() => {
+			this.editor.begin("Border");
+			for (const spot of spots) {
+				const [x, y] = spot.split(",").map(Number);
+				this.editor.paint(where.group, where.layer, x, y);
+			}
+			this.editor.commit();
+		});
+		this.say(`A border round ${layer.name || "the layer"}`);
+		return true;
+	}
+
+	/** Takes out every envelope that nothing is bound to. */
+	deleteUnusedEnvelopes() {
+		const answer = this.change(() => this.editor.apply({ op: "envelope.deleteUnused" }));
+		if (answer && answer.ok) {
+			const count = answer.envelopes || 0;
+			this.say(`${count} ${count === 1 ? "envelope" : "envelopes"} taken out`);
+		}
+		return answer;
+	}
+
+	/**
+	 * Every key the editor answers to, on one sheet.
+	 *
+	 * Grouped the way the palette groups them, because that is the order they
+	 * are in everywhere else. It is a dialogue and not a panel because it is
+	 * looked at once and then closed - and because a sheet that covered the
+	 * map while one worked would be the wrong shape of help.
+	 */
+	showKeys() {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeDialog();
+		this.dialog = document.createElement("div");
+		this.dialog.className = "editor-dialog editor-dialog-wide";
+		this.dialog.dataset.role = "dialog";
+		this.dialog.setAttribute("role", "dialog");
+		this.dialog.setAttribute("aria-modal", "true");
+		this.dialog.setAttribute("aria-label", "What the keys do");
+		const form = document.createElement("form");
+		form.className = "editor-dialog-body";
+		const head = document.createElement("h2");
+		head.className = "editor-dialog-head";
+		head.textContent = "What the keys do";
+		form.append(head);
+		const sheet = document.createElement("div");
+		sheet.className = "editor-keys";
+		sheet.dataset.role = "keys";
+		const groups = new Map();
+		for (const command of this.commands) {
+			if (command.keys === undefined || command.keys.length === 0) {
+				continue;
+			}
+			if (!groups.has(command.group)) {
+				groups.set(command.group, []);
+			}
+			groups.get(command.group).push(command);
+		}
+		for (const [group, commands] of groups) {
+			const where = document.createElement("h3");
+			where.className = "editor-keys-group";
+			where.textContent = group;
+			sheet.append(where);
+			const list = document.createElement("dl");
+			list.className = "editor-keys-list";
+			for (const command of commands) {
+				const what = document.createElement("dt");
+				what.textContent = command.label;
+				const key = document.createElement("dd");
+				// Every key it answers to, not only the first: the tool bar
+				// has room for one and a sheet has room for all of them.
+				key.textContent = command.keys.map(keyLabel).join(" or ");
+				list.append(what, key);
+			}
+			sheet.append(list);
+		}
+		form.append(sheet);
+		const row = document.createElement("div");
+		row.className = "editor-dialog-buttons";
+		const go = document.createElement("button");
+		go.type = "submit";
+		go.className = "editor-small editor-dialog-go";
+		go.dataset.role = "dialog-go";
+		go.textContent = "Done";
+		row.append(go);
+		form.append(row);
+		this.dialog.append(form);
+		form.addEventListener("submit", event => {
+			event.preventDefault();
+			this.closeDialog();
+		}, { signal: this.stopping.signal });
+		home.append(this.dialog);
+		go.focus();
+	}
+
+	/**
+	 * Asks a question whose answer is yes or no.
+	 *
+	 * The browser has `confirm()`, and it stops the whole page dead while it
+	 * is up - which in a program that keeps drawing means the map stops with
+	 * it. This one is the editor's own dialogue, in the editor's own colours,
+	 * and the frame goes on.
+	 */
+	askYesNo(title, text, yes, done) {
+		this.askFor(title, [{ name: "what", label: text, kind: "note" }],
+			() => done(), { go: yes });
+	}
+
+	/** One of the maps that lie in this browser's storage. */
+	askOpenSaved() {
+		const saved = this.editor.saved();
+		if (saved.length === 0) {
+			this.say("Nothing has been saved in this browser yet", "error");
+			return;
+		}
+		const size = bytes => bytes < 1024 ? `${bytes} B`
+			: bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KiB`
+				: `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+		this.askFor("Open from this browser", [{
+			name: "name", label: "Map", kind: "pick", value: saved[0].name,
+			choices: saved.map(one => ({ value: one.name, label: `${one.name} (${size(one.size)})` })),
+		}], answer => {
+			if (this.editor.openSaved(answer.name) < 0) {
+				this.say("That map could not be read", "error");
+				return;
+			}
+			this.refresh();
+			this.refreshMaps();
+		}, { go: "Open" });
+	}
+
+	/** Another file with the same map in it; this map stays this map. */
+	askSaveCopy() {
+		this.askFor("Save a copy", [
+			{ name: "name", label: "Called", kind: "text", value: `${this.editor.name() || "untitled"} copy` },
+		], answer => {
+			const name = (answer.name || "").trim();
+			if (name === "") {
+				this.say("A copy needs a name", "error");
+				return;
+			}
+			this.say(this.editor.saveCopy(undefined, name) ? `Copy saved as ${name}` : "That copy was refused",
+				this.editor.dirty() ? "note" : "note");
+			this.refreshMaps();
+		}, { go: "Save a copy" });
 	}
 
 	/** Called what, from now on - the name is the name of the file. */

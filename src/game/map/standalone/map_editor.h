@@ -3,6 +3,7 @@
 
 #include <base/vmath.h>
 
+#include <game/map/document/automap.h>
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/view.h>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -79,6 +81,8 @@ public:
 		 * rubbing it out. Empty while nothing is marked.
 		 */
 		CDocumentRenderer::CParams::CMarked m_Marked;
+		/** The quad whose corners are shown, for somebody dragging them. */
+		CDocumentRenderer::CParams::CShownQuad m_ShownQuad;
 
 		/** Whether that layer is drawn. */
 		bool Visible(size_t Group, size_t Layer) const
@@ -242,6 +246,169 @@ public:
 	const map_document::CImage *Image(int Id, int Index) const;
 
 	/**
+	 * The quads of one layer, as JSON - see `map_document::QuadsJson`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 *
+	 * @return The JSON text, or `null` for a layer that holds no quads.
+	 */
+	std::string QuadsJson(int Id, int Group, int Layer) const;
+
+	/**
+	 * Where a pixel of the surface is, in the coordinates one group is drawn
+	 * in - which is the plain view for a group without parallax and somewhere
+	 * else entirely for one with it.
+	 *
+	 * This is what a pointer over a quad needs: a quad's points are in its
+	 * group's coordinates, and a click is on the surface.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Pixel Where on the surface, in pixels from its top left.
+	 *
+	 * @return The place, in world units.
+	 */
+	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
+
+	/**
+	 * What tile stands in one place of a layer.
+	 *
+	 * One tile at a time rather than the whole plane, for the same reason the
+	 * quads and the envelope points are asked for one at a time: a map of
+	 * four million tiles is not a thing to hand out after every stroke.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to hold tiles.
+	 * @param x Where, in tiles.
+	 * @param y Where, in tiles.
+	 *
+	 * @return The index, or -1 where there is no such tile.
+	 */
+	int TileIndex(int Id, int Group, int Layer, int x, int y) const;
+
+	/**
+	 * Keeps a `.rules` file under a name, parsed, for automapping with.
+	 *
+	 * The file is not read here: natively it comes off the disk and in the
+	 * browser the page fetches it, and either way what arrives is text. The
+	 * name is the one the map calls the picture, because that is how a layer
+	 * finds its rules.
+	 *
+	 * @param pName What the rules are called - the picture's name.
+	 * @param pText The whole file.
+	 *
+	 * @return How many configurations it holds.
+	 */
+	size_t LoadRules(const char *pName, const char *pText);
+
+	/** How many configurations a rules file that was loaded holds. */
+	size_t NumRuleConfigs(const char *pName) const;
+
+	/** What one of them is called, or an empty word for one that is not there. */
+	const char *RuleConfigName(const char *pName, size_t Config) const;
+
+	/**
+	 * Runs one configuration of a rules file over a layer, or over a piece of
+	 * one, as a change of its own.
+	 *
+	 * The game layer of the same map is handed to it, so that a run which is
+	 * filtered by a physics tile has something to filter by.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to hold tiles.
+	 * @param pRules Which rules file, by the name it was loaded under.
+	 * @param Config Which configuration of it.
+	 * @param Seed The seed, or 0 for one that is made up.
+	 * @param Reference Which physics tile the first run is filtered by, -1
+	 * for none.
+	 * @param x Where the rectangle starts.
+	 * @param y Where the rectangle starts.
+	 * @param Width How wide, or -1 for the whole layer.
+	 * @param Height How tall, or -1 for the whole layer.
+	 *
+	 * @return Whether it ran.
+	 */
+	bool Automap(int Id, int Group, int Layer, const char *pRules, int Config, int Seed, int Reference,
+		int x, int y, int Width, int Height);
+
+	/**
+	 * Puts a picture into the map with its pixels, and says where it went.
+	 *
+	 * Not a command like the rest, because the pixels are bytes: a picture
+	 * of a thousand by a thousand is four megabytes, and four megabytes of
+	 * JSON is a text nobody should have to write or read. The page decodes
+	 * the PNG - browsers do that - and hands over what came out.
+	 *
+	 * @param Id The number of the map.
+	 * @param pName What to call it.
+	 * @param Width How wide the pixels are.
+	 * @param Height How tall.
+	 * @param pPixels RGBA, `Width * Height * 4` bytes.
+	 *
+	 * @return Which picture of the map it became, or -1 where it was refused.
+	 */
+	int AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
+
+	/**
+	 * Puts other pixels into a picture the map already has, keeping every
+	 * layer that is drawn with it.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which picture of the map.
+	 * @param Width How wide the pixels are.
+	 * @param Height How tall.
+	 * @param pPixels RGBA, `Width * Height * 4` bytes.
+	 *
+	 * @return Whether it was done.
+	 */
+	bool SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels);
+
+	/**
+	 * The lowest number no tile of a physics layer is using yet - see
+	 * `map_document::NextFreeNumber`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 * @param Checkpoint For a tele layer, whether to count the checkpoints
+	 * rather than the rest.
+	 *
+	 * @return The number, or -1 where there is none to be had.
+	 */
+	int NextFreeNumber(int Id, int Group, int Layer, bool Checkpoint) const;
+
+	/**
+	 * Looks at where a number is used, one place per cluster.
+	 *
+	 * Which place is the caller's to count, because which one somebody is
+	 * standing on is a question about the interface rather than about the
+	 * map - the editor only moves the view there.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 * @param Number The number to look for.
+	 * @param Which Which of the places, counted from zero and wrapped round.
+	 *
+	 * @return How many places there are, and 0 when the view did not move.
+	 */
+	size_t GotoNumber(int Id, int Group, int Layer, int Number, size_t Which);
+
+	/**
+	 * The points of one envelope, as JSON - see `map_document::EnvelopeJson`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which envelope of it.
+	 *
+	 * @return The JSON text, or `null` where there is no such envelope.
+	 */
+	std::string EnvelopeJson(int Id, int Index) const;
+
+	/**
 	 * Where a map is being looked at.
 	 *
 	 * @param Id The number of the map.
@@ -275,6 +442,36 @@ public:
 	 * piece of one map into another is doing the ordinary thing.
 	 */
 	const map_document::CBrush &Brush() const { return m_Brush; }
+
+	/**
+	 * What goes beside a physics tile the brush puts down - a tele's target,
+	 * a switch's group and delay, how hard and which way a speedup pushes.
+	 *
+	 * They belong to the brush and not to a tile: a number is chosen and then
+	 * tiles are put down with it. Grabbing a piece of a layer reads them back
+	 * off what was grabbed, so that carrying a piece of a map somewhere else
+	 * carries its numbers too.
+	 */
+	const map_document::CBrushNumbers &Numbers() const { return m_Numbers; }
+
+	/**
+	 * Whether the tiles in hand are tele checkpoints.
+	 *
+	 * Asked because the checkpoints of a tele layer keep a count of their own
+	 * apart from the teleporters, so which free number to offer depends on
+	 * which of the two is about to be put down. What a tile index means is
+	 * the program's to know, not the page's.
+	 *
+	 * @return Whether any tile of the brush is one.
+	 */
+	bool BrushIsCheckpoint() const;
+
+	/**
+	 * Sets those numbers and writes them onto the brush in hand.
+	 *
+	 * @param Numbers What to put beside the tiles from now on.
+	 */
+	void SetNumbers(const map_document::CBrushNumbers &Numbers);
 
 	/**
 	 * A brush taken out of the tileset rather than out of the map: the
@@ -443,6 +640,9 @@ private:
 			m_Document(std::move(Opened)) {}
 	};
 
+	/** What the renderer is told about a map, in one place because two callers ask. */
+	CDocumentRenderer::CParams ParamsFor(const CMap &Map) const;
+
 	CMap *Find(int Id);
 	const CMap *Find(int Id) const;
 	/** Puts a freshly read map in the list and in front. */
@@ -477,7 +677,12 @@ private:
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
 	map_document::CBrush m_Brush;
+	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
+	// The `.rules` files that were handed in, by the name they came under.
+	// They belong to the editor rather than to a map: the same rules
+	// automap every map that draws with that picture.
+	std::map<std::string, map_document::CAutomapRules> m_Rules;
 };
 
 #endif // GAME_MAP_STANDALONE_MAP_EDITOR_H

@@ -15,6 +15,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
+#include <game/map/document/edit.h>
 #include <game/map/standalone/map_editor.h>
 
 #include <algorithm>
@@ -85,6 +86,7 @@ namespace
 		log_info(TOOL_NAME, "  -g <tiles>   Draw a grid every so many tiles (default: none)");
 		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
 		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
+		log_info(TOOL_NAME, "  -q <g>:<l>:<n>  Put handles on the corners of that quad");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -256,6 +258,114 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorStructure(int Id)
 EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->HistoryJson(Id));
+}
+
+// Where a pixel of the surface is in the coordinates of one group - which for
+// a group with parallax is somewhere else than the plain view says. A quad's
+// points are in its group's coordinates, so this is what a pointer over one
+// has to ask.
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupWorldX(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->WorldInGroup(Id, (size_t)Group, vec2(X, Y)).x;
+}
+
+EMSCRIPTEN_KEEPALIVE float MapEditorGroupWorldY(int Id, int Group, float X, float Y)
+{
+	return g_pEditor == nullptr || Group < 0 ? 0.0f : g_pEditor->WorldInGroup(Id, (size_t)Group, vec2(X, Y)).y;
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorQuads(int Id, int Group, int Layer)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->QuadsJson(Id, Group, Layer));
+}
+
+// Which quad has handles on its corners. A width of nothing - `Show` of zero -
+// takes them away again. Nothing about this reaches the map.
+EMSCRIPTEN_KEEPALIVE void MapEditorShowQuad(int Id, int Group, int Layer, int Quad, int Show)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr)
+		return;
+	CDocumentRenderer::CParams::CShownQuad &Shown = g_pEditor->Display(Id)->m_ShownQuad;
+	Shown.m_Group = (size_t)std::max(0, Group);
+	Shown.m_Layer = (size_t)std::max(0, Layer);
+	Shown.m_Quad = (size_t)std::max(0, Quad);
+	Shown.m_Shown = Show != 0 && Group >= 0 && Layer >= 0 && Quad >= 0;
+	g_pEditor->Touch();
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorEnvelope(int Id, int Index)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->EnvelopeJson(Id, Index));
+}
+
+// The lowest number a physics layer is not using yet, so that a page need not
+// walk the layer itself to find one.
+EMSCRIPTEN_KEEPALIVE int MapEditorNextFreeNumber(int Id, int Group, int Layer, int Checkpoint)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->NextFreeNumber(Id, Group, Layer, Checkpoint != 0);
+}
+
+// What tile stands in one place of a layer. One at a time, because a map of
+// four million tiles is not a thing to hand out after every stroke.
+EMSCRIPTEN_KEEPALIVE int MapEditorTileIndex(int Id, int Group, int Layer, int X, int Y)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->TileIndex(Id, Group, Layer, X, Y);
+}
+
+// A `.rules` file, as text, kept under the name the map calls the picture -
+// which is how a layer finds its rules. The file itself is not read here:
+// natively it comes off the disk and in the browser the page fetches it.
+EMSCRIPTEN_KEEPALIVE int MapEditorLoadRules(const char *pName, const char *pText)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->LoadRules(pName, pText);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorNumRuleConfigs(const char *pName)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->NumRuleConfigs(pName);
+}
+
+EMSCRIPTEN_KEEPALIVE const char *MapEditorRuleConfigName(const char *pName, int Config)
+{
+	return g_pEditor == nullptr || Config < 0 ? "" : Answer(std::string(g_pEditor->RuleConfigName(pName, (size_t)Config)));
+}
+
+// Runs one configuration over a layer, or over a piece of one. A change of
+// its own, so one press of the button is one entry in the history.
+EMSCRIPTEN_KEEPALIVE int MapEditorAutomap(int Id, int Group, int Layer, const char *pRules, int Config,
+	int Seed, int Reference, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && g_pEditor->Automap(Id, Group, Layer, pRules, Config, Seed, Reference, X, Y, Width, Height) ? 1 : 0;
+}
+
+// A picture and its pixels, which come over as bytes rather than as JSON: a
+// thousand by a thousand is four megabytes, and the page has them already -
+// it decoded the PNG itself, because browsers do that.
+EMSCRIPTEN_KEEPALIVE int MapEditorAddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor == nullptr ? -1 : g_pEditor->AddImage(Id, pName, Width, Height, pPixels);
+}
+
+// Other pixels in the place of a picture's, which keeps every layer that is
+// drawn with it - that is what replacing a picture is for.
+EMSCRIPTEN_KEEPALIVE int MapEditorSetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)
+{
+	return g_pEditor != nullptr && g_pEditor->SetImagePixels(Id, Index, Width, Height, pPixels) ? 1 : 0;
+}
+
+// Whether the tiles in hand are tele checkpoints, which have a free-number
+// count of their own. No Id: the brush belongs to the editor, not to a map.
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushCheckpoint()
+{
+	return g_pEditor != nullptr && g_pEditor->BrushIsCheckpoint() ? 1 : 0;
+}
+
+// Moves the view to where a number is used, and says how many such places
+// there are. Which of them is the page's to count: it is the page that knows
+// somebody pressed the button twice.
+EMSCRIPTEN_KEEPALIVE int MapEditorGotoNumber(int Id, int Group, int Layer, int Number, int Which)
+{
+	return g_pEditor == nullptr ? 0 : (int)g_pEditor->GotoNumber(Id, Group, Layer, Number, (size_t)std::max(0, Which));
 }
 
 // The pixels of a picture that is packed into the map file, so that a page can
@@ -568,6 +678,48 @@ EMSCRIPTEN_KEEPALIVE int MapEditorUseBrush(int Slot)
 	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->UseBrush((size_t)Slot) ? 1 : 0;
 }
 
+// What goes beside a physics tile: which tele, which switch and how long it
+// waits, how hard and which way a speedup pushes. One set for the brush rather
+// than one per tile - a number is chosen and then tiles are put down with it.
+// Read back after a grab, which is how a piece of a map carries its numbers.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetNumbers(int Number, int Delay, int Force, int MaxSpeed, int Angle)
+{
+	if(g_pEditor == nullptr)
+		return;
+	map_document::CBrushNumbers Numbers;
+	Numbers.m_Number = Number;
+	Numbers.m_Delay = Delay;
+	Numbers.m_Force = Force;
+	Numbers.m_MaxSpeed = MaxSpeed;
+	Numbers.m_Angle = Angle;
+	g_pEditor->SetNumbers(Numbers);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorNumber()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Number;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorDelay()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Delay;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorForce()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Force;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorMaxSpeed()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_MaxSpeed;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorAngle()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Numbers().m_Angle;
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorBrushWidth()
 {
 	return g_pEditor == nullptr ? 0 : g_pEditor->Brush().Width();
@@ -597,6 +749,7 @@ int main(int argc, const char **argv)
 	int Grid = 0;
 	std::vector<std::pair<size_t, size_t>> vHide;
 	std::string Marked;
+	std::string ShownQuad;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -620,6 +773,10 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-m") == 0 && i + 1 < argc)
 		{
 			Marked = argv[++i];
+		}
+		else if(str_comp(argv[i], "-q") == 0 && i + 1 < argc)
+		{
+			ShownQuad = argv[++i];
 		}
 		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
 		{
@@ -679,6 +836,22 @@ int main(int argc, const char **argv)
 			Editor.Display(Id)->m_Grid = Grid;
 		for(const auto &[Group, Layer] : vHide)
 			Editor.Display(Id)->SetVisible(Group, Layer, false);
+		if(!ShownQuad.empty())
+		{
+			int aNumbers[3] = {0, 0, 0};
+			const char *pRead = ShownQuad.c_str();
+			for(int &Number : aNumbers)
+			{
+				Number = str_toint(pRead);
+				const char *pColon = str_find(pRead, ":");
+				pRead = pColon == nullptr ? "" : pColon + 1;
+			}
+			CDocumentRenderer::CParams::CShownQuad &Shown = Editor.Display(Id)->m_ShownQuad;
+			Shown.m_Group = (size_t)std::max(0, aNumbers[0]);
+			Shown.m_Layer = (size_t)std::max(0, aNumbers[1]);
+			Shown.m_Quad = (size_t)std::max(0, aNumbers[2]);
+			Shown.m_Shown = true;
+		}
 		if(!Marked.empty())
 		{
 			int aNumbers[5] = {0, 0, 0, 0, 0};

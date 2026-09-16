@@ -217,9 +217,181 @@ class CMapEditor extends Program {
 		return new ImageData(new Uint8ClampedArray(heap.subarray(address, address + width * height * 4)), width, height);
 	}
 
+	/**
+	 * What tile stands in one place of a layer, or -1 where there is none.
+	 *
+	 * One at a time, the way the quads and the envelope points are asked
+	 * for: a map of four million tiles is not a thing to hand out after
+	 * every stroke.
+	 */
+	tileIndex(group, layer, x, y, id) {
+		return this.ask("MapEditorTileIndex", "number", [this.which(id), group, layer, x, y]);
+	}
+
+	/**
+	 * Keeps a `.rules` file under a name, parsed, and says how many
+	 * configurations it holds.
+	 *
+	 * The file is not read by the program: the page fetches it, because a
+	 * page fetches things. The name is the one the map calls the picture,
+	 * because that is how a layer finds its rules.
+	 */
+	loadRules(name, text) {
+		return this.call("MapEditorLoadRules", "number", ["string", "string"], [name, text]) || 0;
+	}
+
+	/** What the configurations of a rules file that was loaded are called. */
+	ruleConfigs(name) {
+		const count = this.call("MapEditorNumRuleConfigs", "number", ["string"], [name]) || 0;
+		const names = [];
+		for (let index = 0; index < count; ++index) {
+			names.push(this.call("MapEditorRuleConfigName", "string", ["string", "number"], [name, index]) || "");
+		}
+		return names;
+	}
+
+	/**
+	 * Runs one configuration of a rules file over a layer, or over a piece of
+	 * one. One call is one history entry.
+	 *
+	 * @param options.seed 0 for one that is made up, which means the answer
+	 * is not the same twice.
+	 * @param options.reference Which physics tile the first run is filtered
+	 * by, -1 for none.
+	 * @param options.x The rectangle, in tiles; left out it is the whole
+	 * layer.
+	 */
+	automap(group, layer, rules, config, options) {
+		const settings = Object.assign({ seed: 0, reference: -1, x: 0, y: 0, width: -1, height: -1, id: undefined }, options || {});
+		return this.call("MapEditorAutomap", "number",
+			["number", "number", "number", "string", "number", "number", "number", "number", "number", "number", "number"],
+			[this.which(settings.id), group, layer, rules, config, settings.seed, settings.reference,
+				settings.x, settings.y, settings.width, settings.height]) === 1;
+	}
+
+	/**
+	 * Puts a picture into the map with its pixels, and says which picture of
+	 * the map it became - or -1 where it was refused.
+	 *
+	 * The pixels do not go through a command, because they are bytes: a
+	 * picture of a thousand by a thousand is four megabytes, and four
+	 * megabytes of JSON is a text nobody should have to write or read. The
+	 * page decodes the PNG - browsers do that - and hands over what came out.
+	 *
+	 * @param name What to call it in the map.
+	 * @param pixels An `ImageData`, which is what a canvas gives back.
+	 */
+	addImage(name, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.call("MapEditorAddImage", "number", ["number", "string", "number", "number", "number"],
+				[this.which(id), name, width, height, address]));
+	}
+
+	/**
+	 * Puts other pixels into a picture the map already has, keeping every
+	 * layer that is drawn with it - which is what replacing a picture is for.
+	 */
+	setImagePixels(index, pixels, id) {
+		return this.withPixels(pixels, (address, width, height) =>
+			this.ask("MapEditorSetImagePixels", "number", [this.which(id), index, width, height, address]) === 1);
+	}
+
+	// Hands the pixels to the program and takes the room back again. The
+	// program copies what it keeps, so the room is only needed for the call.
+	withPixels(pixels, work) {
+		const module = this.module;
+		if (module == null || pixels == null || !pixels.width || !pixels.height) {
+			return null;
+		}
+		const bytes = pixels.width * pixels.height * 4;
+		const address = module._malloc(bytes);
+		if (!address) {
+			return null;
+		}
+		try {
+			module.HEAPU8.set(new Uint8Array(pixels.data.buffer, pixels.data.byteOffset, bytes), address);
+			return work(address, pixels.width, pixels.height);
+		} finally {
+			module._free(address);
+		}
+	}
+
 	/** What the map is made of: groups, layers, envelopes, images, sounds. */
 	structure(id) {
 		return this.json("MapEditorStructure", [this.which(id)]);
+	}
+
+	/**
+	 * The quads of one layer: their five points in world units, their four
+	 * corner colours, and which envelopes move and colour them.
+	 *
+	 * `null` for a layer that holds no quads, which is how a caller finds out
+	 * what sort of layer it is looking at.
+	 */
+	quads(group, layer, id) {
+		return this.json("MapEditorQuads", [this.which(id), group, layer]);
+	}
+
+	/**
+	 * Puts handles on the corners of one quad, or takes them away when called
+	 * with nothing. Drawn by the program because a quad lies in its group's
+	 * coordinates, parallax and all.
+	 */
+	showQuad(group, layer, quad, id) {
+		return group === undefined || group === null
+			? this.setNumbers("MapEditorShowQuad", [this.which(id), 0, 0, 0, 0])
+			: this.setNumbers("MapEditorShowQuad", [this.which(id), group, layer, quad, 1]);
+	}
+
+	/**
+	 * Where a point on the canvas is in the coordinates of one group, in
+	 * world units.
+	 *
+	 * Not the same as `worldAt`, which answers for the plain view: a group
+	 * with parallax shows a different piece of the world, and a quad in it
+	 * lives in that piece.
+	 */
+	groupWorldAt(group, x, y, id) {
+		const map = this.which(id);
+		const wx = this.ask("MapEditorGroupWorldX", "number", [map, group, x, y]);
+		return wx === null ? null : { x: wx, y: this.ask("MapEditorGroupWorldY", "number", [map, group, x, y]) };
+	}
+
+	/**
+	 * The lowest number no tile of a physics layer is using yet, or -1 where
+	 * all 255 are taken.
+	 *
+	 * The checkpoints of a tele layer keep their own count, which is why
+	 * there is a flag for them.
+	 */
+	nextFreeNumber(group, layer, checkpoint, id) {
+		return this.ask("MapEditorNextFreeNumber", "number", [this.which(id), group, layer, checkpoint ? 1 : 0]);
+	}
+
+	/**
+	 * Moves the view to where a number is used, and answers how many such
+	 * places there are - zero when the view did not move.
+	 *
+	 * Which of them is the page's to count: a button that is pressed twice
+	 * goes to the next one, and the program is not the one that knows it was
+	 * pressed twice. Tiles closer together than ten are one place, so a
+	 * teleporter four tiles wide is somewhere to go rather than four.
+	 */
+	gotoNumber(group, layer, number, which, id) {
+		return this.ask("MapEditorGotoNumber", "number", [this.which(id), group, layer, number, which]);
+	}
+
+	/**
+	 * The points of one envelope.
+	 *
+	 * Not in `structure()`, which says only how many there are: a long
+	 * envelope has hundreds of points and nearly nothing wants them. Times
+	 * are whole milliseconds and values the map's own 22.10 fixed point -
+	 * whole numbers out and whole numbers back in, so nothing is lost on the
+	 * way. What a value means is a question about the channels.
+	 */
+	envelope(index, id) {
+		return this.json("MapEditorEnvelope", [this.which(id), index]);
 	}
 
 	/** What was done to the map, and where in it the map stands. */
@@ -453,9 +625,42 @@ class CMapEditor extends Program {
 		return this.ask("MapEditorUseBrush", "number", [slot]) === 1;
 	}
 	/** How big the brush is, in tiles. */
+	/**
+	 * What goes beside a physics tile the brush puts down: which tele, which
+	 * switch and how long it waits, how hard and which way a speedup pushes.
+	 *
+	 * Called with nothing it answers what the brush is carrying, which is
+	 * what a grab or a stored brush brought back with it. Called with an
+	 * object it sets them and writes them onto the brush in hand.
+	 */
+	numbers(values) {
+		if (values === undefined) {
+			return {
+				number: this.call("MapEditorNumber", "number") || 0,
+				delay: this.call("MapEditorDelay", "number") || 0,
+				force: this.call("MapEditorForce", "number") || 0,
+				maxSpeed: this.call("MapEditorMaxSpeed", "number") || 0,
+				angle: this.call("MapEditorAngle", "number") || 0,
+			};
+		}
+		const now = this.numbers();
+		const pick = name => (values[name] === undefined ? now[name] : Math.round(values[name]));
+		return this.setNumbers("MapEditorSetNumbers",
+			[pick("number"), pick("delay"), pick("force"), pick("maxSpeed"), pick("angle")]);
+	}
+
 	brushSize() {
 		const width = this.call("MapEditorBrushWidth", "number");
 		return width === null ? null : { width: width, height: this.call("MapEditorBrushHeight", "number") };
+	}
+
+	/**
+	 * Whether the tiles in hand are tele checkpoints, which count their
+	 * numbers apart from the teleporters. What a tile index means is the
+	 * program's to know.
+	 */
+	brushCheckpoint() {
+		return this.call("MapEditorBrushCheckpoint", "number") === 1;
 	}
 
 	/** Whether the pictures of the map in front are all here yet. */
@@ -517,6 +722,60 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
+		<div class="editor-numbers" data-role="numbers"></div>
+		<div class="editor-automap" data-role="automap" hidden>
+			<select class="editor-small" data-role="automap-config"></select>
+			<select class="editor-small" data-role="automap-reference"></select>
+			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
+			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
+		</div>
+	</section>
+	<section class="editor-panel" data-role="quads-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Quads</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-quad" title="A quad in the middle of the view">+</button>
+				<button class="editor-small" data-role="delete-quad" title="Delete the quad that is picked">-</button>
+			</span>
+		</header>
+		<ol class="editor-quads" data-role="quad-list"></ol>
+		<div class="editor-props" data-role="quad-props"></div>
+	</section>
+	<section class="editor-panel" data-role="images-panel">
+		<header class="editor-panel-head">
+			<h2>Images</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-image" title="Read a PNG into the map">+</button>
+				<button class="editor-small" data-role="replace-image" title="Other pixels for this picture">&#8635;</button>
+				<button class="editor-small" data-role="unpack-image" title="Take the pixels out and name the file instead">out</button>
+				<button class="editor-small" data-role="delete-image" title="Take this picture out of the map">-</button>
+			</span>
+		</header>
+		<ol class="editor-images" data-role="image-list"></ol>
+		<input type="file" accept="image/png,image/*" data-role="image-file" hidden>
+	</section>
+	<section class="editor-panel" data-role="envelopes-panel">
+		<header class="editor-panel-head">
+			<h2>Envelopes</h2>
+			<span class="editor-panel-tools">
+				<select class="editor-small" data-role="envelope-list"></select>
+				<button class="editor-small" data-role="add-envelope" title="Add a colour envelope">+</button>
+				<button class="editor-small" data-role="delete-envelope" title="Delete this envelope">-</button>
+			</span>
+		</header>
+		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+		<div class="editor-props" data-role="point-props"></div>
+	</section>
+	<section class="editor-panel" data-role="info-panel">
+		<header class="editor-panel-head">
+			<h2>Map</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
+				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
+			</span>
+		</header>
+		<div class="editor-props" data-role="info-props"></div>
+		<ol class="editor-settings" data-role="setting-list"></ol>
 	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
@@ -543,6 +802,15 @@ const GROUP_PROPS = [
 	{ prop: "clipY", label: "Clip Y", kind: "number" },
 	{ prop: "clipW", label: "Clip W", kind: "number" },
 	{ prop: "clipH", label: "Clip H", kind: "number" },
+];
+
+// What a map says about itself. The lines a server runs are a list and are
+// not here; everything else is a word.
+const MAP_INFO_PROPS = [
+	{ prop: "author", label: "Author", kind: "text" },
+	{ prop: "mapVersion", label: "Version", kind: "text" },
+	{ prop: "credits", label: "Credits", kind: "text" },
+	{ prop: "license", label: "Licence", kind: "text" },
 ];
 
 const LAYER_PROPS = {
@@ -572,6 +840,31 @@ const PACKED = {
 function propertyValue(thing, prop) {
 	const packed = PACKED[prop];
 	return packed === undefined ? thing[prop] : thing[packed[0]][packed[1]];
+}
+
+/**
+ * The pixels of a picture file, decoded by the browser.
+ *
+ * A browser reads PNGs and what comes out of a canvas is already the RGBA the
+ * map keeps, so the program is never asked to decode anything - which is also
+ * why a picture that is 4096 wide is refused here rather than there: that is
+ * what a map file can hold.
+ *
+ * @return An `ImageData`, or null where the browser could not read it.
+ */
+async function pixelsOf(file) {
+	try {
+		const picture = await createImageBitmap(file);
+		const canvas = document.createElement("canvas");
+		canvas.width = picture.width;
+		canvas.height = picture.height;
+		const paint = canvas.getContext("2d", { willReadFrequently: true });
+		paint.drawImage(picture, 0, 0);
+		picture.close();
+		return paint.getImageData(0, 0, canvas.width, canvas.height);
+	} catch (error) {
+		return null;
+	}
 }
 
 // A colour as the browser writes one, and back. The map keeps four channels
@@ -615,6 +908,22 @@ class CEditorPanels {
 		// Where the panels stood when each history entry was made, so that
 		// stepping back through them takes the panels along.
 		this.snapshots = new Map();
+		// Which envelope is being drawn, and which of its points is picked.
+		this.envelope = 0;
+		this.point = -1;
+		// Which quad of the selected layer has handles on it.
+		this.quad = -1;
+		// Which picture of the map is picked in the image panel.
+		this.image = -1;
+		// Which line of the server settings is picked.
+		this.setting = -1;
+		// The rules files that were fetched, by the name of the picture they
+		// belong to. `null` means there are none for that picture - asked
+		// once and then remembered, so a layer without rules costs one 404.
+		this.rules = new Map();
+		// Which of the places a number is used at was looked at last, so that
+		// pressing the button again goes to the next one.
+		this.gotoAt = 0;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -676,6 +985,11 @@ class CEditorPanels {
 		on("flip-y", () => { this.editor.flipBrushY(); this.refreshTiles(); });
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
+		this.wireAutomap();
+		this.wireEnvelopes();
+		this.wireQuads();
+		this.wireImages();
+		this.wireInfo();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -954,6 +1268,10 @@ class CEditorPanels {
 		this.refreshTree();
 		this.refreshProps();
 		this.refreshTiles();
+		this.refreshQuads();
+		this.refreshImages();
+		this.refreshEnvelopes();
+		this.refreshInfo();
 		this.refreshHistory();
 	}
 
@@ -1196,6 +1514,19 @@ class CEditorPanels {
 	wireTileset() {
 		const canvas = this.part("tileset");
 		let from = null;
+		// A refused capture must not take the pick with it; see the canvas
+		// pointer, which holds on the same way.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					canvas.setPointerCapture(pointerId);
+				} else {
+					canvas.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The pick still works; it just stops at the edge.
+			}
+		};
 		const at = event => {
 			const box = canvas.getBoundingClientRect();
 			return {
@@ -1205,7 +1536,7 @@ class CEditorPanels {
 		};
 		canvas.addEventListener("pointerdown", event => {
 			from = at(event);
-			canvas.setPointerCapture(event.pointerId);
+			capture(event.pointerId, true);
 			this.pick(from, from);
 		}, { signal: this.stopping.signal });
 		canvas.addEventListener("pointermove", event => {
@@ -1217,7 +1548,7 @@ class CEditorPanels {
 			if (from !== null) {
 				this.pick(from, at(event));
 				from = null;
-				canvas.releasePointerCapture(event.pointerId);
+				capture(event.pointerId, false);
 			}
 		};
 		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
@@ -1249,6 +1580,8 @@ class CEditorPanels {
 		}
 		const size = this.editor.brushSize();
 		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
+		this.refreshNumbers(layer);
+		this.refreshAutomap(layer);
 
 		// The picture the layer is drawn with, where the map names one that
 		// lies beside it. A layer whose picture is inside the map file, or
@@ -1278,6 +1611,246 @@ class CEditorPanels {
 			}
 		}
 		this.paintTileset();
+	}
+
+	/**
+	 * The numbers that go beside a physics tile, as fields under the tileset.
+	 *
+	 * Changing one changes the brush and nothing else: no version, no history
+	 * entry. What is put down afterwards carries it.
+	 *
+	 * @param layer The layer that is selected.
+	 */
+	refreshNumbers(layer) {
+		const box = this.part("numbers");
+		const fields = TILE_NUMBERS[layer.kind] || [];
+		// Only rebuilt when the layer wants other fields than are there, so
+		// that a number being typed is not taken away mid-word.
+		const wanted = fields.map(field => field.key).join(",");
+		if (box.dataset.fields !== wanted) {
+			box.dataset.fields = wanted;
+			box.textContent = "";
+			for (const field of fields) {
+				const row = document.createElement("label");
+				row.className = "editor-prop";
+				const name = document.createElement("span");
+				name.textContent = field.label;
+				const input = document.createElement("input");
+				input.type = "number";
+				input.min = "0";
+				input.max = String(field.max);
+				input.dataset.role = `number-${field.key}`;
+				input.addEventListener("input", () => {
+					const value = Number.parseInt(input.value, 10);
+					if (Number.isFinite(value)) {
+						this.editor.numbers({ [field.key]: value });
+					}
+				}, { signal: this.stopping.signal });
+				row.append(name, input);
+				if (field.key === "number") {
+					// Beside the number, the two things somebody does with
+					// one: take one that is free, and go and look at where
+					// this one already is.
+					const free = document.createElement("button");
+					free.className = "editor-small";
+					free.dataset.role = "next-free";
+					free.textContent = "free";
+					free.title = "The lowest number this layer is not using";
+					row.append(free);
+					const goto_ = document.createElement("button");
+					goto_.className = "editor-small";
+					goto_.dataset.role = "goto-number";
+					goto_.textContent = "go";
+					goto_.title = "Look at where this number is used; again for the next one";
+					row.append(goto_);
+					free.addEventListener("click", () => this.takeFreeNumber(input), { signal: this.stopping.signal });
+					goto_.addEventListener("click", () => this.lookAtNumber(), { signal: this.stopping.signal });
+				}
+				box.append(row);
+			}
+		}
+		if (fields.length === 0) {
+			return;
+		}
+		// What the brush carries, which after a grab is what was picked up.
+		const carried = this.editor.numbers();
+		for (const field of fields) {
+			const input = box.querySelector(`[data-role="number-${field.key}"]`);
+			if (input !== null && input !== document.activeElement) {
+				input.value = String(carried[field.key]);
+			}
+		}
+	}
+
+	/** Puts the lowest free number of this layer into the brush. */
+	takeFreeNumber(input) {
+		const where = this.selection;
+		const layer = this.selectedLayer();
+		if (layer === null) {
+			return;
+		}
+		// A tele layer counts its checkpoints apart from the rest, and which
+		// of the two is being put down is a question about the brush.
+		const checkpoint = layer.kind === "tele" && this.editor.brushCheckpoint();
+		const free = this.editor.nextFreeNumber(where.group, where.layer, checkpoint);
+		if (free < 0) {
+			this.say("Every number is taken");
+			return;
+		}
+		this.editor.numbers({ number: free });
+		input.value = String(free);
+	}
+
+	/**
+	 * Moves the view to where the brush's number is already used, and to the
+	 * next such place when pressed again.
+	 */
+	lookAtNumber() {
+		const where = this.selection;
+		const number = this.editor.numbers().number;
+		const places = this.editor.gotoNumber(where.group, where.layer, number, this.gotoAt);
+		if (places === 0) {
+			this.gotoAt = 0;
+			this.say(`Nothing uses ${number}`);
+			return;
+		}
+		this.say(`${(this.gotoAt % places) + 1} of ${places}`);
+		this.gotoAt = (this.gotoAt + 1) % places;
+	}
+
+	/**
+	 * The automapper: which rules to run over this layer and which of their
+	 * configurations.
+	 *
+	 * The rules file belongs to the picture, not to the layer - a layer drawn
+	 * with `grass_main` is automapped by `grass_main.rules` - so what is
+	 * offered follows the picture. The page fetches the file, because a page
+	 * fetches things; the program parses it and runs it.
+	 */
+	wireAutomap() {
+		this.part("automap-run").addEventListener("click", () => {
+			const layer = this.selectedLayer();
+			const name = this.rulesNameFor(layer);
+			if (layer === null || name === null) {
+				return;
+			}
+			const config = Number.parseInt(this.part("automap-config").value, 10);
+			const reference = Number.parseInt(this.part("automap-reference").value, 10);
+			if (!Number.isFinite(config)) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => ({
+				ok: this.editor.automap(where.group, where.layer, name, config,
+					{ seed: layer.automapperSeed || 0, reference: reference }),
+				error: "The rules would not run",
+			}));
+		}, { signal: this.stopping.signal });
+		this.part("automap-auto").addEventListener("change", () => {
+			const where = this.selection;
+			this.change(() => this.editor.apply({
+				op: "layer.setProp", group: where.group, layer: where.layer,
+				prop: "automapperAutomatic", value: this.part("automap-auto").checked,
+			}));
+		}, { signal: this.stopping.signal });
+	}
+
+	/**
+	 * Runs the layer's own rules over what a stroke just drew, where the
+	 * layer was told to do that by itself.
+	 *
+	 * Called while the stroke's change is still open, so drawing and what it
+	 * led to are one entry: one undo takes both back. Only the rectangle the
+	 * stroke was over is run, with the margin the rules need - which is why a
+	 * stroke on a large map costs what it touched.
+	 */
+	automapAfterStroke(where, box) {
+		const layer = this.selectedLayer();
+		const name = this.rulesNameFor(layer);
+		if (layer === null || name === null || !layer.automapperAutomatic || layer.automapperConfig < 0) {
+			return;
+		}
+		if (this.rules.get(name) !== name) {
+			return;
+		}
+		this.editor.automap(where.group, where.layer, name, layer.automapperConfig, {
+			seed: layer.automapperSeed || 0, reference: -1,
+			x: box.x, y: box.y, width: box.width, height: box.height,
+		});
+	}
+
+	// Which rules file a layer is automapped by: the one named after its
+	// picture, and nothing at all for a layer that has no picture.
+	rulesNameFor(layer) {
+		if (layer === null || layer.type !== "tiles" || layer.image < 0 || this.map === null) {
+			return null;
+		}
+		const image = this.map.images[layer.image];
+		return image === undefined ? null : image.name;
+	}
+
+	refreshAutomap(layer) {
+		const box = this.part("automap");
+		const name = this.rulesNameFor(layer);
+		box.hidden = name === null || this.rules.get(name) === null;
+		if (name === null) {
+			return;
+		}
+		if (!this.rules.has(name)) {
+			// Asked for once. What comes back goes to the program, which
+			// parses it; what does not come back is remembered as nothing, so
+			// a picture without rules is not fetched again.
+			this.rules.set(name, undefined);
+			fetch(new URL(`editor/automap/${name}.rules`, this.dataBase).href)
+				.then(answer => (answer.ok ? answer.text() : null))
+				.then(text => {
+					this.rules.set(name, text === null || this.editor.loadRules(name, text) === 0 ? null : name);
+					this.refreshTiles();
+				})
+				.catch(() => {
+					this.rules.set(name, null);
+				});
+			return;
+		}
+		if (this.rules.get(name) === undefined) {
+			return;
+		}
+		const configs = this.editor.ruleConfigs(name);
+		box.hidden = configs.length === 0;
+		const chooser = this.part("automap-config");
+		if (chooser.dataset.rules !== name) {
+			chooser.dataset.rules = name;
+			chooser.textContent = "";
+			configs.forEach((title, index) => {
+				const option = document.createElement("option");
+				option.value = String(index);
+				option.textContent = title;
+				chooser.append(option);
+			});
+			chooser.value = String(Math.max(0, layer.automapperConfig));
+			chooser.addEventListener("change", () => {
+				const where = this.selection;
+				this.change(() => this.editor.apply({
+					op: "layer.setProp", group: where.group, layer: where.layer,
+					prop: "automapperConfig", value: Number.parseInt(chooser.value, 10),
+				}));
+			}, { signal: this.stopping.signal });
+		} else if (document.activeElement !== chooser) {
+			chooser.value = String(Math.max(0, layer.automapperConfig));
+		}
+		const reference = this.part("automap-reference");
+		if (reference.childElementCount === 0) {
+			// The first run may read the game layer instead of this one, and
+			// then only one kind of physics tile of it.
+			["Off"].concat(AUTOMAP_REFERENCES).forEach((title, index) => {
+				const option = document.createElement("option");
+				option.value = String(index - 1);
+				option.textContent = title;
+				reference.append(option);
+			});
+			reference.value = "-1";
+		}
+		this.part("automap-auto").checked = layer.automapperAutomatic === true;
 	}
 
 	paintTileset() {
@@ -1336,6 +1909,660 @@ class CEditorPanels {
 		return this.map.groups[this.selection.group].layers[this.selection.layer] || null;
 	}
 
+	/**
+	 * The envelope panel: which envelope, its curve, and the point that is
+	 * picked out of it.
+	 *
+	 * The curve is an SVG rather than a canvas because that is what an SVG is
+	 * for - a few dozen points that are dragged one at a time, each of them a
+	 * thing the browser can hit-test and give a pointer to. This is the place
+	 * the plan meant when it said web technology is most clearly ahead of the
+	 * painted editor.
+	 */
+	wireEnvelopes() {
+		const signal = this.stopping.signal;
+		this.part("envelope-list").addEventListener("change", event => {
+			this.envelope = Number.parseInt(event.target.value, 10);
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: signal });
+		this.part("add-envelope").addEventListener("click", () => {
+			const answer = this.change(() => this.editor.apply({ op: "envelope.add", name: "envelope" }));
+			if (answer && answer.ok) {
+				this.envelope = answer.envelope;
+				this.point = -1;
+				this.refreshEnvelopes();
+			}
+		}, { signal: signal });
+		this.part("delete-envelope").addEventListener("click", () => {
+			if (this.envelopeCount() === 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "envelope.delete", envelope: this.envelope }));
+			this.envelope = Math.max(0, Math.min(this.envelope, this.envelopeCount() - 1));
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: signal });
+		this.wireCurve();
+	}
+
+	envelopeCount() {
+		return this.map === null ? 0 : this.map.envelopes.length;
+	}
+
+	/**
+	 * The rectangle of the envelope that the curve is drawn in: all of its
+	 * time, and enough of its values to show them.
+	 *
+	 * Worked out from the points rather than fixed, because a colour envelope
+	 * runs 0 to 1024 and a position envelope runs wherever the map goes, and
+	 * a drawing that fits one would be a flat line for the other.
+	 */
+	curveBounds(envelope) {
+		let last = 1000;
+		let low = 0;
+		let high = ENVELOPE_ONE;
+		for (const point of envelope.points) {
+			last = Math.max(last, point.time);
+			for (const value of point.values) {
+				low = Math.min(low, value);
+				high = Math.max(high, value);
+			}
+		}
+		// A little air above and below, or a point at the very top is drawn
+		// half outside the box.
+		const air = Math.max(1, (high - low) * 0.08);
+		return { time: last, low: low - air, high: high + air };
+	}
+
+	/**
+	 * The quads of the layer that is selected, as a list to pick from.
+	 *
+	 * Picking one puts handles on its corners - drawn by the program, because
+	 * a quad lies in its group's coordinates and the parallax sum belongs
+	 * where the drawing is. Dragging them is the pointer's business, not the
+	 * panel's.
+	 */
+	wireQuads() {
+		const signal = this.stopping.signal;
+		this.part("add-quad").addEventListener("click", () => {
+			const where = this.selection;
+			const canvas = this.editor.canvas;
+			// In the middle of the view - but asked of the group, not of the
+			// plain view: a quad lives in its group's coordinates, and in a
+			// group with no parallax at all the middle of the world is
+			// nowhere near the middle of the screen.
+			const middle = this.editor.groupWorldAt(where.group, canvas.width / 2, canvas.height / 2);
+			if (middle === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "quad.add", group: where.group, layer: where.layer,
+				x: Math.round(middle.x), y: Math.round(middle.y),
+			}));
+			if (answer && answer.ok) {
+				this.quad = answer.quad;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-quad").addEventListener("click", () => {
+			if (this.quad < 0) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => this.editor.apply({ op: "quad.delete", group: where.group, layer: where.layer, quad: this.quad }));
+			this.quad = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshQuads() {
+		const panel = this.part("quads-panel");
+		const layer = this.selectedLayer();
+		panel.hidden = layer === null || layer.type !== "quads";
+		if (panel.hidden) {
+			this.quad = -1;
+			this.editor.showQuad();
+			return;
+		}
+		const where = this.selection;
+		const quads = this.editor.quads(where.group, where.layer) || [];
+		if (this.quad >= quads.length) {
+			this.quad = -1;
+		}
+		this.part("delete-quad").disabled = this.quad < 0;
+		const list = this.part("quad-list");
+		list.textContent = "";
+		quads.forEach((quad, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "quad";
+			row.dataset.quad = String(index);
+			// Where it is rather than what it is called, because a quad has
+			// no name - the place of its pivot is what tells two apart.
+			row.textContent = `${index}: ${Math.round(quad.points[8] / MAP_TILE_SIZE)}, ${Math.round(quad.points[9] / MAP_TILE_SIZE)}`;
+			if (index === this.quad) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.quad = index;
+				this.refreshQuads();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+		if (this.quad < 0) {
+			this.editor.showQuad();
+		} else {
+			this.editor.showQuad(where.group, where.layer, this.quad);
+		}
+		this.refreshQuadProps(quads[this.quad]);
+	}
+
+	/**
+	 * The colours and the envelope bindings of the quad that is picked.
+	 *
+	 * Written as fields rather than dragged on the map, because that is what
+	 * they are: a colour is picked and a binding is a number. The points are
+	 * the other way round and are not here at all - they are dragged.
+	 */
+	refreshQuadProps(quad) {
+		const props = this.part("quad-props");
+		props.textContent = "";
+		if (quad === undefined) {
+			return;
+		}
+		const where = this.selection;
+		const index = this.quad;
+		// The four channels the map keeps, so that a colour picker - which
+		// has no alpha - can put the one it does not know back untouched.
+		const thing = { posEnv: quad.posEnv, posEnvOffset: quad.posEnvOffset, colorEnv: quad.colorEnv, colorEnvOffset: quad.colorEnvOffset };
+		QUAD_CORNERS.forEach((name, corner) => {
+			const color = quad.colors.slice(corner * 4, corner * 4 + 4);
+			thing[`corner${corner}`] = color;
+			thing[`alpha${corner}`] = color[3];
+			const set = value => ({ op: "quad.setColor", group: where.group, layer: where.layer, quad: index, corner: corner, value: value });
+			props.append(this.field(thing, { prop: `corner${corner}`, label: `${name} colour`, kind: "color" }, set));
+			props.append(this.field(thing, { prop: `alpha${corner}`, label: `${name} alpha`, kind: "number" },
+				value => set(value === null ? null : color.slice(0, 3).concat([Math.min(255, Math.max(0, value))]))));
+		});
+		for (const description of QUAD_PROPS) {
+			props.append(this.field(thing, description,
+				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
+		}
+	}
+
+	/**
+	 * The pictures of the map: reading one in, swapping its pixels, taking
+	 * the pixels back out, and taking it away.
+	 *
+	 * The PNG is decoded by the browser rather than by the program - a
+	 * browser reads PNGs, and what comes out of a canvas is already the RGBA
+	 * the map keeps. What crosses over is the bytes, not a JSON text of them.
+	 */
+	wireImages() {
+		const signal = this.stopping.signal;
+		const file = this.part("image-file");
+		// What the file, once chosen, is for: a new picture or another one's
+		// pixels. Held here because the dialogue answers later.
+		let replacing = -1;
+		this.part("add-image").addEventListener("click", () => {
+			replacing = -1;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		this.part("replace-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			replacing = this.image;
+			file.value = "";
+			file.click();
+		}, { signal: signal });
+		file.addEventListener("change", async () => {
+			const chosen = file.files && file.files[0];
+			if (!chosen) {
+				return;
+			}
+			const pixels = await pixelsOf(chosen);
+			if (pixels === null) {
+				this.say("That is not a picture this browser can read");
+				return;
+			}
+			// The name without its suffix, which is what a map calls a
+			// picture - the file is `grass_main.png`, the picture is
+			// `grass_main`.
+			const name = chosen.name.replace(/\.[^.]*$/, "");
+			this.change(() => {
+				if (replacing >= 0) {
+					return { ok: this.editor.setImagePixels(replacing, pixels) === true };
+				}
+				const index = this.editor.addImage(name, pixels);
+				if (index >= 0) {
+					this.image = index;
+				}
+				return { ok: index >= 0, error: "The picture was refused" };
+			});
+		}, { signal: signal });
+		this.part("unpack-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "image.setProp", image: this.image, prop: "external", value: true }));
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-image").addEventListener("click", () => {
+			if (this.image < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "image.delete", image: this.image }));
+			this.image = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshImages() {
+		const panel = this.part("images-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const images = this.map.images || [];
+		if (this.image >= images.length) {
+			this.image = -1;
+		}
+		for (const role of ["replace-image", "unpack-image", "delete-image"]) {
+			this.part(role).disabled = this.image < 0;
+		}
+		if (this.image >= 0) {
+			this.part("unpack-image").disabled = images[this.image].external;
+		}
+		const list = this.part("image-list");
+		list.textContent = "";
+		images.forEach((image, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "image";
+			row.dataset.image = String(index);
+			// Where its pixels are is the thing worth saying about a picture:
+			// one beside the map has to be fetched, one in it does not.
+			row.textContent = `${image.name} ${image.size[0]}x${image.size[1]}${image.external ? " (beside)" : ""}`;
+			if (index === this.image) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.image = index;
+				this.refreshImages();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+	}
+
+	/**
+	 * What the map says about itself, and the lines a server runs when it
+	 * loads it.
+	 *
+	 * A change here is a version like any other - the editor in the client
+	 * changes the map's own description without an undo entry, and that is
+	 * the one thing about it worth not copying.
+	 */
+	wireInfo() {
+		const signal = this.stopping.signal;
+		this.part("add-setting").addEventListener("click", () => {
+			const answer = this.change(() => this.editor.apply({ op: "info.settings.add", value: "sv_setting 0" }));
+			if (answer && answer.ok) {
+				this.setting = answer.line;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-setting").addEventListener("click", () => {
+			if (this.setting < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "info.settings.delete", line: this.setting }));
+			this.setting = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshInfo() {
+		const panel = this.part("info-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const info = this.map.info;
+		const props = this.part("info-props");
+		// Only rebuilt when a field is not being typed in, so that a name
+		// being written is not taken away mid-word.
+		if (!props.contains(document.activeElement)) {
+			props.textContent = "";
+			for (const description of MAP_INFO_PROPS) {
+				props.append(this.field(info, description,
+					value => ({ op: "info.setProp", prop: description.prop, value: value })));
+			}
+		}
+
+		const settings = info.settings || [];
+		if (this.setting >= settings.length) {
+			this.setting = -1;
+		}
+		this.part("delete-setting").disabled = this.setting < 0;
+		const list = this.part("setting-list");
+		if (list.contains(document.activeElement)) {
+			return;
+		}
+		list.textContent = "";
+		settings.forEach((line, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "setting";
+			const input = document.createElement("input");
+			input.type = "text";
+			input.dataset.role = "setting-line";
+			input.dataset.line = String(index);
+			input.value = line;
+			input.addEventListener("focus", () => {
+				this.setting = index;
+				this.part("delete-setting").disabled = false;
+				for (const other of list.querySelectorAll(".editor-row")) {
+					other.classList.remove("editor-selected");
+				}
+				row.classList.add("editor-selected");
+			}, { signal: this.stopping.signal });
+			input.addEventListener("change", () => {
+				this.change(() => this.editor.apply({ op: "info.settings.set", line: index, value: input.value }));
+			}, { signal: this.stopping.signal });
+			if (index === this.setting) {
+				row.classList.add("editor-selected");
+			}
+			row.append(input);
+			list.append(row);
+		});
+	}
+
+	refreshEnvelopes() {
+		const panel = this.part("envelopes-panel");
+		const count = this.envelopeCount();
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		this.envelope = count === 0 ? 0 : Math.min(this.envelope, count - 1);
+		const list = this.part("envelope-list");
+		list.textContent = "";
+		this.map.envelopes.forEach((envelope, index) => {
+			const option = document.createElement("option");
+			option.value = String(index);
+			option.textContent = `${index}: ${envelope.name || "envelope"} (${envelope.channels})`;
+			option.selected = index === this.envelope;
+			list.append(option);
+		});
+		this.part("delete-envelope").disabled = count === 0;
+		this.paintCurve();
+		this.refreshPoint();
+	}
+
+	/** The envelope being drawn, with its points, or `null`. */
+	shownEnvelope() {
+		return this.envelopeCount() === 0 ? null : this.editor.envelope(this.envelope);
+	}
+
+	paintCurve() {
+		const svg = this.part("curve");
+		svg.textContent = "";
+		const envelope = this.shownEnvelope();
+		if (envelope === null) {
+			return;
+		}
+		const bounds = this.curveBounds(envelope);
+		svg.dataset.time = String(bounds.time);
+		svg.dataset.low = String(bounds.low);
+		svg.dataset.high = String(bounds.high);
+		const make = name => document.createElementNS("http://www.w3.org/2000/svg", name);
+		const x = time => (bounds.time === 0 ? 0 : (time / bounds.time) * 100);
+		// Upside down, because a value that grows should go up and an SVG
+		// counts downwards.
+		const y = value => 100 - ((value - bounds.low) / (bounds.high - bounds.low)) * 100;
+
+		// The line at zero, so that a value which turns negative is visible
+		// as such rather than as a line that happens to be lower.
+		if (bounds.low < 0 && bounds.high > 0) {
+			const zero = make("line");
+			zero.setAttribute("x1", "0");
+			zero.setAttribute("x2", "100");
+			zero.setAttribute("y1", String(y(0)));
+			zero.setAttribute("y2", String(y(0)));
+			zero.setAttribute("class", "editor-curve-zero");
+			svg.append(zero);
+		}
+
+		const channels = ENVELOPE_CHANNELS[envelope.channels] || [];
+		channels.forEach((channel, index) => {
+			if (envelope.points.length > 0) {
+				const line = make("polyline");
+				line.setAttribute("points", envelope.points.map(p => `${x(p.time)},${y(p.values[index])}`).join(" "));
+				line.setAttribute("fill", "none");
+				line.setAttribute("stroke", channel.colour);
+				line.setAttribute("vector-effect", "non-scaling-stroke");
+				line.setAttribute("stroke-width", "1.5");
+				svg.append(line);
+			}
+			envelope.points.forEach((point, at) => {
+				const dot = make("circle");
+				dot.setAttribute("cx", String(x(point.time)));
+				dot.setAttribute("cy", String(y(point.values[index])));
+				// Not scaled with the box, which is stretched to fill the
+				// panel: a circle in it would be an egg.
+				dot.setAttribute("r", "1.6");
+				dot.setAttribute("fill", channel.colour);
+				dot.setAttribute("class", at === this.point ? "editor-curve-point editor-curve-picked" : "editor-curve-point");
+				dot.dataset.point = String(at);
+				dot.dataset.channel = String(index);
+				svg.append(dot);
+			});
+		});
+	}
+
+	/**
+	 * Dragging a point, and clicking where there is none to make one.
+	 *
+	 * A drag is one transaction from the button going down to it coming up,
+	 * so the history gets one entry however far the point travelled - and
+	 * every step of the way is already drawn, which is the preview.
+	 */
+	wireCurve() {
+		const svg = this.part("curve");
+		const signal = this.stopping.signal;
+		let dragging = -1;
+		let channel = 0;
+
+		// Holding on to the pointer, or letting go of it. Either may be
+		// refused - a pointer that has already gone is not there to be caught
+		// - and neither is worth giving up a drag over.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					svg.setPointerCapture(pointerId);
+				} else {
+					svg.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The drag still works; it just stops when the pointer leaves.
+			}
+		};
+
+		// Where a pointer is, in the envelope's own numbers.
+		const at = event => {
+			const box = svg.getBoundingClientRect();
+			const time = Number.parseFloat(svg.dataset.time) || 1000;
+			const low = Number.parseFloat(svg.dataset.low) || 0;
+			const high = Number.parseFloat(svg.dataset.high) || ENVELOPE_ONE;
+			const across = box.width === 0 ? 0 : (event.clientX - box.left) / box.width;
+			const down = box.height === 0 ? 0 : (event.clientY - box.top) / box.height;
+			return {
+				time: Math.max(0, Math.round(across * time)),
+				value: Math.round(low + (1 - down) * (high - low)),
+			};
+		};
+
+		svg.addEventListener("pointerdown", event => {
+			const envelope = this.shownEnvelope();
+			if (envelope === null) {
+				return;
+			}
+			const picked = event.target.dataset && event.target.dataset.point;
+			if (picked === undefined) {
+				// Nowhere in particular: a new point there, on every channel
+				// at once so that the envelope keeps its shape.
+				const where = at(event);
+				const values = new Array(envelope.channels).fill(where.value);
+				const answer = this.change(() => this.editor.apply({
+					op: "envelope.point.add", envelope: this.envelope, time: where.time, values: values,
+				}));
+				if (answer && answer.ok) {
+					this.point = answer.point;
+					this.refreshEnvelopes();
+				}
+				return;
+			}
+			dragging = Number.parseInt(picked, 10);
+			channel = Number.parseInt(event.target.dataset.channel, 10);
+			this.point = dragging;
+			// The change is opened before the pointer is caught, and catching
+			// it is allowed to fail: a browser refuses for a pointer that is
+			// no longer there, and a drag without a transaction would write
+			// an entry per step.
+			this.editor.begin("Move point");
+			capture(event.pointerId, true);
+			this.refreshEnvelopes();
+		}, { signal: signal });
+
+		svg.addEventListener("pointermove", event => {
+			if (dragging < 0) {
+				return;
+			}
+			const envelope = this.shownEnvelope();
+			if (envelope === null || dragging >= envelope.points.length) {
+				return;
+			}
+			const where = at(event);
+			// Only the channel whose dot was taken hold of moves; the others
+			// stay where they are, which is what somebody dragging a red dot
+			// means by it.
+			const values = envelope.points[dragging].values.slice();
+			values[channel] = where.value;
+			const answer = this.editor.apply({
+				op: "envelope.point.set", envelope: this.envelope, point: dragging, time: where.time, values: values,
+			});
+			if (answer && answer.ok) {
+				dragging = answer.point;
+				this.point = answer.point;
+			}
+			this.paintCurve();
+			this.refreshPoint();
+		}, { signal: signal });
+
+		const release = event => {
+			if (dragging < 0) {
+				return;
+			}
+			dragging = -1;
+			this.editor.commit();
+			capture(event.pointerId, false);
+			this.refresh();
+		};
+		svg.addEventListener("pointerup", release, { signal: signal });
+		svg.addEventListener("pointercancel", release, { signal: signal });
+	}
+
+	/** The point that is picked, as fields: its time, its values, its curve. */
+	refreshPoint() {
+		const box = this.part("point-props");
+		box.textContent = "";
+		const envelope = this.shownEnvelope();
+		if (envelope === null || this.point < 0 || this.point >= envelope.points.length) {
+			return;
+		}
+		const point = envelope.points[this.point];
+		const send = command => this.change(() => this.editor.apply(command));
+
+		const time = document.createElement("label");
+		time.className = "editor-prop";
+		const timeName = document.createElement("span");
+		timeName.textContent = "Time (ms)";
+		const timeInput = document.createElement("input");
+		timeInput.type = "number";
+		timeInput.dataset.role = "point-time";
+		timeInput.value = String(point.time);
+		timeInput.addEventListener("change", () => {
+			const value = Number.parseInt(timeInput.value, 10);
+			if (Number.isFinite(value)) {
+				const answer = send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, time: value });
+				if (answer && answer.ok) {
+					this.point = answer.point;
+				}
+				this.refreshEnvelopes();
+			}
+		}, { signal: this.stopping.signal });
+		time.append(timeName, timeInput);
+		box.append(time);
+
+		const channels = ENVELOPE_CHANNELS[envelope.channels] || [];
+		channels.forEach((channel, index) => {
+			const row = document.createElement("label");
+			row.className = "editor-prop";
+			const name = document.createElement("span");
+			name.textContent = channel.name;
+			const input = document.createElement("input");
+			input.type = "number";
+			input.dataset.role = `point-value-${index}`;
+			input.value = String(point.values[index]);
+			input.addEventListener("change", () => {
+				const value = Number.parseInt(input.value, 10);
+				if (!Number.isFinite(value)) {
+					return;
+				}
+				const values = point.values.slice();
+				values[index] = value;
+				send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, values: values });
+				this.refreshEnvelopes();
+			}, { signal: this.stopping.signal });
+			row.append(name, input);
+			box.append(row);
+		});
+
+		const curve = document.createElement("label");
+		curve.className = "editor-prop";
+		const curveName = document.createElement("span");
+		curveName.textContent = "Curve";
+		const select = document.createElement("select");
+		select.dataset.role = "point-curve";
+		CURVES.forEach((label, index) => {
+			const option = document.createElement("option");
+			option.value = String(index);
+			option.textContent = label;
+			option.selected = index === point.curve;
+			select.append(option);
+		});
+		select.addEventListener("change", () => {
+			send({ op: "envelope.point.set", envelope: this.envelope, point: this.point, curve: Number.parseInt(select.value, 10) });
+			this.refreshEnvelopes();
+		}, { signal: this.stopping.signal });
+		curve.append(curveName, select);
+		box.append(curve);
+
+		const remove = document.createElement("button");
+		remove.className = "editor-small";
+		remove.dataset.role = "delete-point";
+		remove.textContent = "Delete point";
+		remove.addEventListener("click", () => {
+			send({ op: "envelope.point.delete", envelope: this.envelope, point: this.point });
+			this.point = -1;
+			this.refreshEnvelopes();
+		}, { signal: this.stopping.signal });
+		box.append(remove);
+	}
+
 	refreshHistory() {
 		const list = this.part("history");
 		list.textContent = "";
@@ -1386,7 +2613,7 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -1399,6 +2626,27 @@ function steerWithPointer(editor, options) {
 	let pointer = 0;
 	let last = { x: 0, y: 0 };
 	let from = { x: 0, y: 0 };
+	// The tiles a stroke has been over, so that whatever wants to look at
+	// what was drawn - the automapper - is told a rectangle rather than the
+	// whole layer.
+	let touched = null;
+	const touch = tile => {
+		if (touched === null) {
+			touched = { x: tile.x, y: tile.y, toX: tile.x, toY: tile.y };
+			return;
+		}
+		touched.x = Math.min(touched.x, tile.x);
+		touched.y = Math.min(touched.y, tile.y);
+		touched.toX = Math.max(touched.toX, tile.x);
+		touched.toY = Math.max(touched.toY, tile.y);
+	};
+	// Said while the stroke's change is still open, so that what it leads to
+	// is part of the same history entry.
+	const afterStroke = (where, box) => {
+		if (settings.afterStroke !== null && where !== null && box !== null) {
+			settings.afterStroke(where, box);
+		}
+	};
 
 	// The canvas is measured in the units the page lays out in and drawn in
 	// the pixels the screen has; a pointer that ignored the difference would
@@ -1417,6 +2665,20 @@ function steerWithPointer(editor, options) {
 		const where = settings.target === null ? null : settings.target();
 		return where == null || where.layer < 0 ? null : where;
 	};
+	// Holding on to the pointer, or letting go of it. Either may be refused -
+	// a pointer that has already gone is not there to be caught - and a drag
+	// that gave up over it would be a stroke that never started.
+	const capture = (pointerId, hold) => {
+		try {
+			if (hold) {
+				canvas.setPointerCapture(pointerId);
+			} else {
+				canvas.releasePointerCapture(pointerId);
+			}
+		} catch (error) {
+			// The stroke still works; it just stops when the pointer leaves.
+		}
+	};
 	const changed = () => {
 		if (settings.onChange !== null) {
 			settings.onChange();
@@ -1431,6 +2693,55 @@ function steerWithPointer(editor, options) {
 		height: Math.abs(other.y - one.y) + 1,
 	});
 
+	// Which quad point is being dragged, while one is. A quad layer is found
+	// out by asking for its quads: a layer that holds none answers nothing.
+	let quadPoint = null;
+
+	/**
+	 * Takes hold of a quad point under the pointer, if there is one.
+	 *
+	 * The points are in the coordinates of the group the layer is in, which
+	 * for a group with parallax is not where the plain view says - so the
+	 * pointer is asked for in those coordinates too, and the two are compared
+	 * where they both mean the same thing.
+	 */
+	const takeQuadPoint = (event, where) => {
+		const quads = editor.quads(where.group, where.layer);
+		if (quads === null) {
+			return false;
+		}
+		const spot = atCanvas(event);
+		const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+		if (world === null) {
+			return false;
+		}
+		// How near counts, in world units: a handful of pixels, turned into
+		// world units by what a pixel is worth right now.
+		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const reach = step === null ? 32 : Math.abs(step.x - world.x);
+
+		let best = null;
+		quads.forEach((quad, index) => {
+			for (let point = 0; point < 5; ++point) {
+				const dx = quad.points[point * 2] - world.x;
+				const dy = quad.points[point * 2 + 1] - world.y;
+				const away = Math.hypot(dx, dy);
+				if (away <= reach && (best === null || away < best.away)) {
+					best = { quad: index, point: point, away: away };
+				}
+			}
+		});
+		if (best === null) {
+			return false;
+		}
+		doing = "quad";
+		quadPoint = { group: where.group, layer: where.layer, quad: best.quad, point: best.point };
+		editor.showQuad(where.group, where.layer, best.quad);
+		editor.begin(best.point === 4 ? "Move quad" : "Move corner");
+		changed();
+		return true;
+	};
+
 	canvas.addEventListener("contextmenu", event => event.preventDefault(), { signal: signal });
 	canvas.addEventListener("pointerdown", event => {
 		if (doing !== null) {
@@ -1438,8 +2749,11 @@ function steerWithPointer(editor, options) {
 		}
 		pointer = event.pointerId;
 		last = { x: event.clientX, y: event.clientY };
-		canvas.setPointerCapture(pointer);
+		capture(pointer, true);
 		const where = target();
+		if (event.button === 0 && where !== null && takeQuadPoint(event, where)) {
+			return;
+		}
 		const tile = tileAt(event);
 		if (event.button !== 0 || where === null || tile === null) {
 			doing = "move";
@@ -1454,6 +2768,8 @@ function steerWithPointer(editor, options) {
 			doing = "erase";
 		} else {
 			doing = "paint";
+			touched = null;
+			touch(tile);
 			editor.begin("Draw");
 			editor.paint(where.group, where.layer, tile.x, tile.y);
 			changed();
@@ -1475,10 +2791,23 @@ function steerWithPointer(editor, options) {
 			last = { x: event.clientX, y: event.clientY };
 			return;
 		}
+		if (doing === "quad") {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(quadPoint.group, spot.x, spot.y);
+			if (world !== null) {
+				editor.apply({
+					op: "quad.setPoint", group: quadPoint.group, layer: quadPoint.layer,
+					quad: quadPoint.quad, point: quadPoint.point,
+					x: Math.round(world.x), y: Math.round(world.y),
+				});
+			}
+			return;
+		}
 		if (doing === "paint") {
 			const where = target();
 			const tile = tileAt(event);
 			if (where !== null && tile !== null) {
+				touch(tile);
 				editor.paint(where.group, where.layer, tile.x, tile.y);
 				changed();
 			}
@@ -1499,32 +2828,60 @@ function steerWithPointer(editor, options) {
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
+		if (doing === "quad") {
+			doing = null;
+			quadPoint = null;
+			editor.commit();
+			changed();
+			capture(event.pointerId, false);
+			return;
+		}
 		const where = target();
 		const tile = tileAt(event);
 		if (doing === "paint") {
+			// The brush is stamped with its corner on the tile, so what it
+			// covered reaches that much further than where the pointer went.
+			const brush = editor.brushSize() || { width: 1, height: 1 };
+			afterStroke(where, touched === null ? null : {
+				x: touched.x, y: touched.y,
+				width: touched.toX - touched.x + brush.width,
+				height: touched.toY - touched.y + brush.height,
+			});
 			editor.commit();
 			changed();
 		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase" || doing === "fill")) {
 			const box = between(from, tile);
 			if (doing === "grab") {
 				editor.grab(where.group, where.layer, box.x, box.y, box.width, box.height);
-			} else if (doing === "fill") {
-				// The brush is laid out over the rectangle again and again,
-				// so a fill of one tile and a fill of a pattern are the same
-				// gesture.
-				editor.fill(where.group, where.layer, box.x, box.y, box.width, box.height);
-				changed();
-			} else {
-				editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
+			} else if (doing === "fill" || doing === "erase") {
+				// Opened here as well, so that what follows the stroke - the
+				// automapper - lands in the same history entry. The call
+				// inside opens one of its own, and one inside another is
+				// still one entry.
+				editor.begin(doing === "fill" ? "Fill" : "Erase");
+				if (doing === "fill") {
+					// The brush is laid out over the rectangle again and
+					// again, so a fill of one tile and a fill of a pattern
+					// are the same gesture.
+					editor.fill(where.group, where.layer, box.x, box.y, box.width, box.height);
+				} else {
+					editor.erase(where.group, where.layer, box.x, box.y, box.width, box.height);
+				}
+				afterStroke(where, box);
+				editor.commit();
 				changed();
 			}
 		}
 		doing = null;
 		editor.mark();
-		canvas.releasePointerCapture(event.pointerId);
+		capture(event.pointerId, false);
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
+		if (doing === "quad") {
+			editor.commit();
+			changed();
+		}
 		if (doing === "paint") {
 			// A pointer that was taken away mid-stroke leaves what it has
 			// painted: throwing it out would be a surprise, and the one entry
@@ -1544,8 +2901,63 @@ function steerWithPointer(editor, options) {
 	return { destroy: () => stopping.abort() };
 }
 
+// How near a pointer has to come to a quad's handle for it to be the one that
+// is taken hold of, in pixels of the canvas.
+const HANDLE_REACH_PIXELS = 10;
+
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;
+
+// What the channels of an envelope are called and what colour each is drawn
+// in. Which of them an envelope has is its channel count: four are a colour,
+// three a place and a turn, one a volume.
+// What a quad has beside its points: a colour on each corner, and which
+// envelopes move and colour it. The corners are named the way the file orders
+// them - top left, top right, bottom left, bottom right.
+// What the first run of a configuration may be filtered by, in the order the
+// program counts them. "Off" is not one of them and is not in the list.
+const AUTOMAP_REFERENCES = ["Game Layer", "Hookable", "Death", "Unhookable", "Freeze",
+	"Unfreeze", "Deep Freeze", "Deep Unfreeze", "Live Freeze", "Live Unfreeze"];
+
+const QUAD_CORNERS = ["Top left", "Top right", "Bottom left", "Bottom right"];
+const QUAD_PROPS = [
+	{ prop: "posEnv", label: "Position envelope", kind: "number" },
+	{ prop: "posEnvOffset", label: "Position offset", kind: "number" },
+	{ prop: "colorEnv", label: "Colour envelope", kind: "number" },
+	{ prop: "colorEnvOffset", label: "Colour offset", kind: "number" },
+];
+
+const ENVELOPE_CHANNELS = {
+	1: [{ name: "Volume", colour: "#e8b84a" }],
+	3: [{ name: "X", colour: "#e8615a" }, { name: "Y", colour: "#5ad07a" }, { name: "Rotation", colour: "#5a9ce8" }],
+	4: [
+		{ name: "Red", colour: "#e8615a" },
+		{ name: "Green", colour: "#5ad07a" },
+		{ name: "Blue", colour: "#5a9ce8" },
+		{ name: "Alpha", colour: "#cccccc" },
+	],
+};
+
+// What the curve between two points does. The numbers are the map's own.
+const CURVES = ["Step", "Linear", "Slow", "Fast", "Smooth", "Bezier"];
+
+// One unit of an envelope value, as the file counts: 22.10 fixed point, so a
+// colour channel runs 0 to 1024 and a place is in world units times this.
+const ENVELOPE_ONE = 1024;
+
+// What goes beside a physics tile, and which kinds of layer take which.
+// A tile index says what the tile does; these say to which of them - and a
+// layer that has none of them shows none.
+const TILE_NUMBERS = {
+	tele: [{ key: "number", label: "Number", max: 255 }],
+	switch: [{ key: "number", label: "Number", max: 255 }, { key: "delay", label: "Delay", max: 255 }],
+	speedup: [
+		{ key: "force", label: "Force", max: 255 },
+		{ key: "maxSpeed", label: "Max speed", max: 255 },
+		{ key: "angle", label: "Angle", max: 359 },
+	],
+	tune: [{ key: "number", label: "Zone", max: 255 }],
+};
 
 // A tileset is sixteen by sixteen, and the index of a tile is its place in
 // that square. Every map there is says it this way.

@@ -9,6 +9,7 @@
 #include <game/map/document/structure.h>
 
 #include <algorithm>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -186,6 +187,124 @@ namespace map_document
 				return false;
 			}
 			*pOut = json_string_get(pValue);
+			return true;
+		}
+
+		/** A quad's corner colour, which is four whole numbers from 0 to 255. */
+		bool ReadQuadColor(const json_value *pValue, CColor *pColor, std::string *pError)
+		{
+			if(pValue->type != json_array || json_array_length(pValue) != 4)
+			{
+				*pError = "a colour is four whole numbers";
+				return false;
+			}
+			int aChannels[4];
+			for(int Channel = 0; Channel < 4; ++Channel)
+			{
+				const json_value *pChannel = json_array_get(pValue, Channel);
+				if(pChannel->type != json_integer)
+				{
+					*pError = "a colour is four whole numbers";
+					return false;
+				}
+				aChannels[Channel] = std::clamp(json_int_get(pChannel), 0, 255);
+			}
+			*pColor = CColor(aChannels[0], aChannels[1], aChannels[2], aChannels[3]);
+			return true;
+		}
+
+		/**
+		 * What a quad has beside its points and colours: which envelopes move and
+		 * colour it, and how far into them it starts.
+		 *
+		 * An envelope is named by its place, so -1 for none and anything else has
+		 * to be an envelope the map has - a binding to one that is not there is a
+		 * map that reads back differently than it was written.
+		 */
+		bool SetQuadProp(CQuad &Quad, const char *pProp, const json_value *pValue, size_t NumEnvelopes, std::string *pError)
+		{
+			int Value = 0;
+			if(!ReadInt(pValue, &Value, pError))
+				return false;
+			const bool Envelope = str_comp(pProp, "posEnv") == 0 || str_comp(pProp, "colorEnv") == 0;
+			if(Envelope && (Value < -1 || Value >= (int)NumEnvelopes))
+			{
+				*pError = "there is no such envelope";
+				return false;
+			}
+			if(str_comp(pProp, "posEnv") == 0)
+				Quad.m_PosEnv = Value;
+			else if(str_comp(pProp, "posEnvOffset") == 0)
+				Quad.m_PosEnvOffset = Value;
+			else if(str_comp(pProp, "colorEnv") == 0)
+				Quad.m_ColorEnv = Value;
+			else if(str_comp(pProp, "colorEnvOffset") == 0)
+				Quad.m_ColorEnvOffset = Value;
+			else
+			{
+				*pError = std::string("a quad has no '") + pProp + "'";
+				return false;
+			}
+			return true;
+		}
+
+		bool SetEnvelopeProp(CEnvelope &Envelope, const char *pProp, const json_value *pValue, std::string *pError)
+		{
+			if(str_comp(pProp, "name") == 0)
+				return ReadString(pValue, &Envelope.m_Name, pError);
+			if(str_comp(pProp, "synchronized") == 0)
+				return ReadBool(pValue, &Envelope.m_Synchronized, pError);
+			*pError = std::string("an envelope has no '") + pProp + "'";
+			return false;
+		}
+
+		/**
+		 * Reads what a command says about an envelope point onto one.
+		 *
+		 * Everything is optional, so that moving a point in time and changing
+		 * what it is worth are the same command with different parts of it
+		 * filled in. Times are whole milliseconds and values are the map's own
+		 * 22.10 fixed point, because that is what the file holds - what a value
+		 * means is a question about the envelope's channels, and belongs to
+		 * whoever knows that.
+		 */
+		bool ReadEnvelopePoint(const json_value *pCommand, int Channels, CEnvPoint_runtime *pPoint, std::string *pError)
+		{
+			const json_value *pTime = json_object_get(pCommand, "time");
+			if(pTime->type != json_none)
+			{
+				int Millis = 0;
+				if(!ReadInt(pTime, &Millis, pError))
+					return false;
+				pPoint->m_Time = CFixedTime(std::max(0, Millis));
+			}
+			const json_value *pCurve = json_object_get(pCommand, "curve");
+			if(pCurve->type != json_none)
+			{
+				int Curve = 0;
+				if(!ReadInt(pCurve, &Curve, pError))
+					return false;
+				if(Curve < 0 || Curve >= NUM_CURVETYPES)
+				{
+					*pError = "that is not a kind of curve";
+					return false;
+				}
+				pPoint->m_Curvetype = Curve;
+			}
+			const json_value *pValues = json_object_get(pCommand, "values");
+			if(pValues->type != json_none)
+			{
+				if(pValues->type != json_array || json_array_length(pValues) != Channels)
+				{
+					*pError = "a point carries one value for each of the envelope's channels";
+					return false;
+				}
+				for(int Channel = 0; Channel < Channels; ++Channel)
+				{
+					if(!ReadInt(json_array_get(pValues, Channel), &pPoint->m_aValues[Channel], pError))
+						return false;
+				}
+			}
 			return true;
 		}
 
@@ -450,6 +569,326 @@ namespace map_document
 			Document.Edit().ReplaceLayer(Group, Layer, std::move(Changed));
 			Document.Commit();
 			return Succeeded();
+		}
+
+		if(str_comp(pOp, "quad.add") == 0 || str_comp(pOp, "quad.delete") == 0 ||
+			str_comp(pOp, "quad.setPoint") == 0 || str_comp(pOp, "quad.setColor") == 0 ||
+			str_comp(pOp, "quad.setProp") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CQuadLayer *pQuads = Arguments.Failed() ? nullptr : std::get_if<CQuadLayer>(Map.Layer(Group, Layer));
+			if(pQuads == nullptr)
+				return Failed("that layer holds no quads");
+			const CLayerAddress Address{Group, Layer};
+
+			if(str_comp(pOp, "quad.add") == 0)
+			{
+				// In world units, which is what the page has after turning a
+				// click into a place; a tile is thirty-two of them.
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				const int Width = Arguments.Int("width", 64);
+				const int Height = Arguments.Int("height", 64);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Document.Begin(Arguments.Str("label", "Add quad"), pMerge);
+				const size_t Index = AddQuad(Document, Address, MakeQuad(X, Y, Width, Height));
+				Document.Commit();
+				return Succeeded("quad", (int)Index);
+			}
+
+			const size_t Quad = Arguments.Index("quad", pQuads->m_Quads.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+
+			if(str_comp(pOp, "quad.delete") == 0)
+			{
+				Document.Begin(Arguments.Str("label", "Delete quad"), pMerge);
+				DeleteQuad(Document, Address, Quad);
+				Document.Commit();
+				return Succeeded();
+			}
+
+			CQuad Changed = pQuads->m_Quads[Quad];
+			if(str_comp(pOp, "quad.setPoint") == 0)
+			{
+				// Five points: four corners in the order the file keeps them,
+				// and the pivot it turns about.
+				const size_t Point = Arguments.Index("point", std::size(Changed.m_aPoints));
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				// The pivot carries the corners with it, because that is what
+				// a pivot is: dragging it moves the quad rather than bending
+				// it out of shape.
+				if(Point + 1 == std::size(Changed.m_aPoints))
+				{
+					const int MovedX = i2fx(X) - Changed.m_aPoints[Point].x;
+					const int MovedY = i2fx(Y) - Changed.m_aPoints[Point].y;
+					for(CPoint &Corner : Changed.m_aPoints)
+					{
+						Corner.x += MovedX;
+						Corner.y += MovedY;
+					}
+				}
+				else
+				{
+					Changed.m_aPoints[Point] = CPoint{i2fx(X), i2fx(Y)};
+				}
+			}
+			else if(str_comp(pOp, "quad.setColor") == 0)
+			{
+				const size_t Corner = Arguments.Index("corner", std::size(Changed.m_aColors));
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				CColor Color;
+				std::string Error;
+				if(!ReadQuadColor(json_object_get(pParsed.get(), "value"), &Color, &Error))
+					return Failed(Error);
+				Changed.m_aColors[Corner] = Color;
+			}
+			else
+			{
+				const char *pProp = Arguments.Str("prop", nullptr);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pProp == nullptr)
+					return Failed("The command has no 'prop'");
+				std::string Error;
+				if(!SetQuadProp(Changed, pProp, json_object_get(pParsed.get(), "value"), Map.NumEnvelopes(), &Error))
+					return Failed(Error);
+			}
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", str_comp(pOp, "quad.setPoint") == 0 ? "Move quad" : "Quad"), pMerge);
+			SetQuad(Document, Address, Quad, Changed);
+			Document.Commit();
+			return Succeeded();
+		}
+
+		if(str_comp(pOp, "envelope.add") == 0)
+		{
+			const char *pName = Arguments.Str("name");
+			// One channel is a sound, three are a position, four a colour;
+			// nothing else is an envelope any renderer knows how to read.
+			const int Channels = Arguments.Int("channels", 4);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(Channels != 1 && Channels != 3 && Channels != 4)
+				return Failed("an envelope has one, three or four channels");
+			CEnvelope Envelope;
+			Envelope.m_Name = pName;
+			Envelope.m_Channels = Channels;
+			Document.Begin(Arguments.Str("label", "Add envelope"), pMerge);
+			const size_t Index = AddEnvelope(Document, std::move(Envelope));
+			Document.Commit();
+			return Succeeded("envelope", (int)Index);
+		}
+		if(str_comp(pOp, "envelope.delete") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete envelope"), pMerge);
+			DeleteEnvelope(Document, Envelope);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.setProp") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CEnvelope Changed = *Map.Envelope(Envelope);
+			std::string Error;
+			if(!SetEnvelopeProp(Changed, pProp, json_object_get(pParsed.get(), "value"), &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			Document.Edit().ReplaceEnvelope(Envelope, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "info.setProp") == 0)
+		{
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(pValue->type != json_string)
+				return Failed("that is a word");
+			CMapInfo Changed = Map.m_Info;
+			if(str_comp(pProp, "author") == 0)
+				Changed.m_Author = pValue->u.string.ptr;
+			else if(str_comp(pProp, "mapVersion") == 0)
+				Changed.m_MapVersion = pValue->u.string.ptr;
+			else if(str_comp(pProp, "credits") == 0)
+				Changed.m_Credits = pValue->u.string.ptr;
+			else if(str_comp(pProp, "license") == 0)
+				Changed.m_License = pValue->u.string.ptr;
+			else
+				return Failed(std::string("a map has no '") + pProp + "'");
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			Document.Edit().m_Info = std::move(Changed);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "info.settings.add") == 0 || str_comp(pOp, "info.settings.set") == 0 ||
+			str_comp(pOp, "info.settings.delete") == 0)
+		{
+			const size_t Count = Map.m_Info.m_Settings.Size();
+			const bool Adding = str_comp(pOp, "info.settings.add") == 0;
+			const size_t Line = Adding ? Count : Arguments.Index("line", Count);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			CMapInfo Changed = Map.m_Info;
+			std::vector<std::string> &vSettings = Changed.m_Settings.Mutable();
+			if(str_comp(pOp, "info.settings.delete") == 0)
+			{
+				vSettings.erase(vSettings.begin() + Line);
+				Document.Begin(Arguments.Str("label", "Delete setting"), pMerge);
+			}
+			else
+			{
+				const json_value *pValue = json_object_get(pParsed.get(), "value");
+				if(pValue->type != json_string)
+					return Failed("a setting is a line of console");
+				// A line with a newline in it would come back as two lines,
+				// and then the map would not be the map that was written.
+				const char *pLine = pValue->u.string.ptr;
+				if(str_find(pLine, "\n") != nullptr || str_find(pLine, "\r") != nullptr)
+					return Failed("a setting is one line");
+				if(Adding)
+					vSettings.emplace_back(pLine);
+				else
+					vSettings[Line] = pLine;
+				Document.Begin(Arguments.Str("label", Adding ? "Add setting" : "Setting"), pMerge);
+			}
+			Document.Edit().m_Info = std::move(Changed);
+			Document.Commit();
+			return Adding ? Succeeded("line", (int)Line) : Succeeded();
+		}
+		if(str_comp(pOp, "image.add") == 0)
+		{
+			// Only a picture that lies beside the map: the pixels of an
+			// embedded one do not go through JSON, they go through
+			// `CMapEditor::AddImage` as the bytes they are.
+			const char *pName = Arguments.Str("name", nullptr);
+			const int Width = Arguments.Int("width", 0);
+			const int Height = Arguments.Int("height", 0);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pName == nullptr || pName[0] == '\0')
+				return Failed("a picture needs a name");
+			CImage Image;
+			Image.m_Name = pName;
+			Image.m_External = true;
+			Image.m_Width = std::max(0, Width);
+			Image.m_Height = std::max(0, Height);
+			Document.Begin(Arguments.Str("label", "Add image"), pMerge);
+			const size_t Index = AddImage(Document, std::move(Image));
+			Document.Commit();
+			return Succeeded("image", (int)Index);
+		}
+		if(str_comp(pOp, "image.delete") == 0)
+		{
+			const size_t Image = Arguments.Index("image", Map.NumImages());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete image"), pMerge);
+			DeleteImage(Document, Image);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "image.setProp") == 0)
+		{
+			const size_t Index = Arguments.Index("image", Map.NumImages());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CImage Changed = *Map.Image(Index);
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(str_comp(pProp, "name") == 0)
+			{
+				if(pValue->type != json_string || pValue->u.string.length == 0)
+					return Failed("a name is a word");
+				Changed.m_Name = pValue->u.string.ptr;
+			}
+			else if(str_comp(pProp, "external") == 0)
+			{
+				if(pValue->type != json_boolean)
+					return Failed("that is yes or no");
+				const bool External = pValue->u.boolean != 0;
+				// Going the other way needs pixels, and pixels do not come
+				// through here - a picture that has none cannot be embedded
+				// by being called embedded.
+				if(!External && Changed.m_Data.Empty())
+					return Failed("that picture has no pixels of its own");
+				Changed.m_External = External;
+				if(External)
+					Changed.m_Data = CSharedList<uint8_t>();
+			}
+			else
+			{
+				return Failed(std::string("a picture has no '") + pProp + "'");
+			}
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			SetImage(Document, Index, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.point.add") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			CEnvPoint_runtime Point = {};
+			Point.m_Curvetype = CURVETYPE_LINEAR;
+			std::string Error;
+			if(!ReadEnvelopePoint(pParsed.get(), Map.Envelope(Envelope)->m_Channels, &Point, &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", "Add point"), pMerge);
+			const size_t Index = AddEnvelopePoint(Document, Envelope, Point);
+			Document.Commit();
+			return Succeeded("point", (int)Index);
+		}
+		if(str_comp(pOp, "envelope.point.delete") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const size_t Point = Arguments.Index("point", Arguments.Failed() ? 0 : Map.Envelope(Envelope)->m_Points.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete point"), pMerge);
+			DeleteEnvelopePoint(Document, Envelope, Point);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "envelope.point.set") == 0)
+		{
+			const size_t Envelope = Arguments.Index("envelope", Map.NumEnvelopes());
+			const size_t Point = Arguments.Index("point", Arguments.Failed() ? 0 : Map.Envelope(Envelope)->m_Points.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			// Read onto the point as it stands, so that a command which says
+			// only a time leaves the values where they were.
+			CEnvPoint_runtime Changed = Map.Envelope(Envelope)->m_Points[Point];
+			std::string Error;
+			if(!ReadEnvelopePoint(pParsed.get(), Map.Envelope(Envelope)->m_Channels, &Changed, &Error))
+				return Failed(Error);
+			Document.Begin(Arguments.Str("label", "Move point"), pMerge);
+			const size_t Index = SetEnvelopePoint(Document, Envelope, Point, Changed);
+			Document.Commit();
+			return Succeeded("point", (int)Index);
 		}
 
 		// Stepping through the versions is not a change to the map, so it is

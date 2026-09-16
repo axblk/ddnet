@@ -297,3 +297,250 @@ TEST(Command, WithoutSayingSoNothingMerges)
 	}
 	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 6u);
 }
+
+// Envelopes through the text. What they are made of is points in time order,
+// so what is tested here is that the order is the document's business and not
+// the caller's, and that taking one away puts right what was bound to it.
+
+namespace
+{
+	CMapState WithAnEnvelope()
+	{
+		CMapState Map = TwoGroups();
+		CEnvelope Envelope;
+		Envelope.m_Name = "colour";
+		Map.AddEnvelope(std::move(Envelope));
+		CTileLayer Bound = *Map.TileLayer(0, 0);
+		Bound.m_ColorEnvelope = 0;
+		Map.ReplaceLayer(0, 0, std::move(Bound));
+		return Map;
+	}
+	CMapState WithAPicture()
+	{
+		CMapState Map = TwoGroups();
+		CImage Image;
+		Image.m_Name = "grass";
+		Image.m_External = false;
+		Image.m_Width = 2;
+		Image.m_Height = 2;
+		Image.m_Data.Mutable().assign(2 * 2 * 4, 0x20);
+		Map.AddImage(std::move(Image));
+		CTileLayer Drawn = *Map.TileLayer(0, 0);
+		Drawn.m_Image = 0;
+		Map.ReplaceLayer(0, 0, std::move(Drawn));
+		return Map;
+	}
+} // namespace
+
+TEST(Command, WhatAMapSaysAboutItselfIsChangedLikeEverythingElse)
+{
+	CCommands Commands(TwoGroups());
+	Commands.Ok(R"({"op":"info.setProp","prop":"author","value":"redix"})");
+	Commands.Ok(R"({"op":"info.setProp","prop":"license","value":"CC-BY-SA"})");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Author, "redix");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_License, "CC-BY-SA");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.setProp","prop":"mood","value":"sunny"})"), "a map has no 'mood'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.setProp","prop":"author","value":7})"), "that is a word");
+
+	// And it is a version like any other: one undo takes it back.
+	Commands.m_Document.Undo();
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_License, "");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Author, "redix");
+}
+
+TEST(Command, TheLinesAServerRunsAreAddedChangedAndTakenAway)
+{
+	CCommands Commands(TwoGroups());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"info.settings.add","value":"sv_deepfly 0"})"), "line"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"info.settings.add","value":"sv_test 1"})"), "line"), 1);
+	ASSERT_EQ(Commands.m_Document.Map().m_Info.m_Settings.Size(), 2u);
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[0], "sv_deepfly 0");
+
+	Commands.Ok(R"({"op":"info.settings.set","line":1,"value":"sv_test 2"})");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[1], "sv_test 2");
+
+	// One line, because a line with a break in it comes back as two and then
+	// the map is not the map that was written.
+	EXPECT_EQ(Commands.Refused("{\"op\":\"info.settings.add\",\"value\":\"one\\ntwo\"}"), "a setting is one line");
+
+	Commands.Ok(R"({"op":"info.settings.delete","line":0})");
+	ASSERT_EQ(Commands.m_Document.Map().m_Info.m_Settings.Size(), 1u);
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[0], "sv_test 2");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.settings.delete","line":5})"), "'line' is 5, which is not there");
+}
+
+TEST(Command, APictureBesideTheMapIsAddedAndNamed)
+{
+	CCommands Commands(WithAPicture());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"image.add","name":"desert","width":64,"height":64})"), "image"), 1);
+	const CImage *pImage = Commands.m_Document.Map().Image(1);
+	ASSERT_NE(pImage, nullptr);
+	EXPECT_EQ(pImage->m_Name, "desert");
+	EXPECT_TRUE(pImage->m_External) << "a picture that comes through a command has no pixels";
+	EXPECT_EQ(pImage->m_Width, 64);
+
+	Commands.Ok(R"({"op":"image.setProp","image":1,"prop":"name","value":"dune"})");
+	EXPECT_EQ(Commands.m_Document.Map().Image(1)->m_Name, "dune");
+}
+
+TEST(Command, APictureThatIsTakenAwayIsTakenOffTheLayersDrawnWithIt)
+{
+	CCommands Commands(WithAPicture());
+	Commands.Ok(R"({"op":"image.add","name":"desert"})");
+	// The layer is drawn with the first one; taking the second one away
+	// leaves it where it is.
+	Commands.Ok(R"({"op":"image.delete","image":1})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, 0);
+	// And taking away the one it uses leaves it drawn with none.
+	Commands.Ok(R"({"op":"image.delete","image":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumImages(), 0u);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, -1);
+}
+
+TEST(Command, APictureIsMadeExternalButNotEmbeddedWithoutPixels)
+{
+	CCommands Commands(WithAPicture());
+	// Out of the file: the pixels go, the layers stay.
+	Commands.Ok(R"({"op":"image.setProp","image":0,"prop":"external","value":true})");
+	EXPECT_TRUE(Commands.m_Document.Map().Image(0)->m_External);
+	EXPECT_TRUE(Commands.m_Document.Map().Image(0)->m_Data.Empty());
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_Image, 0);
+
+	// And back in again is not something a command can do, because the
+	// pixels are not in it.
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.setProp","image":0,"prop":"external","value":false})"),
+		"that picture has no pixels of its own");
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.add","name":""})"), "a picture needs a name");
+	EXPECT_EQ(Commands.Refused(R"({"op":"image.setProp","image":0,"prop":"size","value":4})"), "a picture has no 'size'");
+}
+
+TEST(Command, AnEnvelopeIsAddedAndItsPointsGoInTimeOrder)
+{
+	CCommands Commands(WithAnEnvelope());
+	const CJson pAdded = Commands.Ok(R"({"op":"envelope.add","name":"moving","channels":3})");
+	EXPECT_EQ(Number(pAdded, "envelope"), 1);
+	ASSERT_EQ(Commands.m_Document.Map().NumEnvelopes(), 2u);
+	EXPECT_EQ(Commands.m_Document.Map().Envelope(1)->m_Channels, 3);
+
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.add","envelope":1,"time":2000,"values":[1,2,3]})"), "point"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.add","envelope":1,"time":1000,"values":[4,5,6]})"), "point"), 0);
+	const CEnvelope *pEnvelope = Commands.m_Document.Map().Envelope(1);
+	ASSERT_EQ(pEnvelope->m_Points.Size(), 2u);
+	EXPECT_EQ(pEnvelope->m_Points[0].m_Time.GetInternal(), 1000);
+	EXPECT_EQ(pEnvelope->m_Points[1].m_aValues[0], 1);
+
+	// Dragged past its neighbour, which the answer says.
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.set","envelope":1,"point":0,"time":3000})"), "point"), 1);
+	EXPECT_EQ(Commands.m_Document.Map().Envelope(1)->m_Points[1].m_aValues[0], 4) << "and it took its values along";
+
+	Commands.Ok(R"({"op":"envelope.setProp","envelope":1,"prop":"synchronized","value":true})");
+	EXPECT_TRUE(Commands.m_Document.Map().Envelope(1)->m_Synchronized);
+}
+
+TEST(Command, AnEnvelopeThatIsTakenAwayIsTakenOffWhatUsedIt)
+{
+	CCommands Commands(WithAnEnvelope());
+	Commands.Ok(R"({"op":"envelope.add","name":"second"})");
+	// The layer is bound to the first one; taking the second one away leaves
+	// it where it is.
+	Commands.Ok(R"({"op":"envelope.delete","envelope":1})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, 0);
+	// And taking away the one it uses leaves it bound to nothing.
+	Commands.Ok(R"({"op":"envelope.delete","envelope":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumEnvelopes(), 0u);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, -1);
+}
+
+TEST(Command, AnEnvelopeCommandThatMakesNoSenseIsRefused)
+{
+	CCommands Commands(WithAnEnvelope());
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.add","channels":2})"), "an envelope has one, three or four channels");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.point.add","envelope":0,"time":0,"values":[1,2]})"),
+		"a point carries one value for each of the envelope's channels");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.setProp","envelope":0,"prop":"channels","value":3})"),
+		"an envelope has no 'channels'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.point.delete","envelope":0,"point":0})"), "'point' is 0, which is not there");
+	// Nothing of that reached the map.
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 1u);
+}
+
+// Quads. A page works in world units and the file holds 22.10 fixed point, so
+// what is tested here is that a quad goes out and comes back as the same quad
+// - and that a pivot dragged about carries its corners along, which is what a
+// pivot is for.
+
+namespace
+{
+	CMapState WithQuads()
+	{
+		CMapState Map = TwoGroups();
+		CQuadLayer Quads;
+		Quads.m_Name = "quads";
+		CGroup Group;
+		Group.m_Name = "design";
+		Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Quads)));
+		Map.AddGroup(std::move(Group));
+		CEnvelope Envelope;
+		Envelope.m_Name = "colour";
+		Map.AddEnvelope(std::move(Envelope));
+		return Map;
+	}
+
+	const CQuadLayer &QuadsOf(const CMapState &Map)
+	{
+		return std::get<CQuadLayer>(*Map.Layer(2, 0));
+	}
+} // namespace
+
+TEST(Command, AQuadIsAddedWhereItWasAskedFor)
+{
+	CCommands Commands(WithQuads());
+	const CJson pAnswer = Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":320,"y":160,"width":64,"height":32})");
+	EXPECT_EQ(Number(pAnswer, "quad"), 0);
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 1u);
+
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), 320 - 32) << "top left";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[3].y), 160 + 16) << "bottom right";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 320) << "the pivot is where it was put";
+	EXPECT_EQ(Quad.m_aColors[0].r, 255);
+	EXPECT_EQ(Quad.m_PosEnv, -1);
+}
+
+TEST(Command, DraggingThePivotCarriesTheCornersAlong)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":100,"y":100,"width":40,"height":40})");
+	// One corner on its own: only that corner moves.
+	Commands.Ok(R"({"op":"quad.setPoint","group":2,"layer":0,"quad":0,"point":0,"x":50,"y":60})");
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[0].x), 50);
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[1].x), 120) << "the other corner stayed";
+
+	// The pivot: everything moves with it, by what it moved.
+	Commands.Ok(R"({"op":"quad.setPoint","group":2,"layer":0,"quad":0,"point":4,"x":200,"y":100})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[4].x), 200);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), 150) << "the corner came along";
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), 60) << "and did not move in the other direction";
+}
+
+TEST(Command, AQuadsColoursAndEnvelopesAreSetAndChecked)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0})");
+	Commands.Ok(R"({"op":"quad.setColor","group":2,"layer":0,"quad":0,"corner":1,"value":[10,20,30,40]})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(Quad.m_aColors[1].g, 20);
+	EXPECT_EQ(Quad.m_aColors[0].g, 255) << "the other corners are left alone";
+
+	Commands.Ok(R"({"op":"quad.setProp","group":2,"layer":0,"quad":0,"prop":"colorEnv","value":0})");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_ColorEnv, 0);
+	// There is one envelope, so binding to the second one is not a binding.
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.setProp","group":2,"layer":0,"quad":0,"prop":"colorEnv","value":1})"),
+		"there is no such envelope");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.add","group":0,"layer":0,"x":0,"y":0})"), "that layer holds no quads");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.delete","group":2,"layer":0,"quad":1})"), "'quad' is 1, which is not there");
+
+	Commands.Ok(R"({"op":"quad.delete","group":2,"layer":0,"quad":0})");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 0u);
+}

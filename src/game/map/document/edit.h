@@ -2,12 +2,14 @@
 #define GAME_MAP_DOCUMENT_EDIT_H
 
 #include <base/dbg.h>
+#include <base/vmath.h>
 
 #include <game/map/document/document.h>
 #include <game/map/document/layer.h>
 
 #include <cstddef>
 #include <utility>
+#include <vector>
 
 namespace map_document
 {
@@ -88,6 +90,88 @@ namespace map_document
 	 * height.
 	 */
 	void RotateBrush(CBrush &Brush);
+
+	/**
+	 * What goes beside a physics tile: which of them it means.
+	 *
+	 * A tile index in a tele layer says what the tile *does* - send, check,
+	 * a start, an exit - and this says to which target. The same for a
+	 * switch's group and how long it waits, and for how hard and which way a
+	 * speedup pushes. It is one set for a whole brush rather than one per
+	 * tile, because that is how somebody places them: a number is chosen and
+	 * then tiles are put down with it.
+	 *
+	 * Which of these mean anything depends on the kind of layer, and the
+	 * ones that do not are left where they are.
+	 */
+	class CBrushNumbers
+	{
+	public:
+		/** A tele's target, a switch's group, a tune zone. 0 to 255. */
+		int m_Number = 0;
+		/** How long a switch waits, in seconds. 0 to 255. */
+		int m_Delay = 0;
+		/** How hard a speedup pushes, and how fast it may get. 0 to 255. */
+		int m_Force = 0;
+		int m_MaxSpeed = 0;
+		/** Which way a speedup pushes, in degrees. */
+		int m_Angle = 0;
+	};
+
+	/**
+	 * Writes those numbers onto every tile of the brush that is not air.
+	 *
+	 * Air keeps none of them: a number on a tile that does nothing would be
+	 * written into the file and read back as a tile that does nothing with a
+	 * number. A brush of a kind that has no numbers is left alone.
+	 *
+	 * @param Brush The brush to write on.
+	 * @param Numbers What to write.
+	 */
+	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers);
+
+	/**
+	 * The numbers the brush is carrying, read off its first tile that is not
+	 * air - for an interface that has just grabbed a piece of a layer and
+	 * wants to show what came with it.
+	 *
+	 * @param Brush The brush to read.
+	 *
+	 * @return What it carries, or all zeroes where it carries nothing.
+	 */
+	CBrushNumbers BrushNumbers(const CBrush &Brush);
+
+	/**
+	 * The lowest number from 1 to 255 that no tile of this layer uses yet.
+	 *
+	 * What "uses" means is the layer's business: a tele layer has two counts
+	 * that do not share their numbers - the checkpoints and everything else -
+	 * and some tiles of a switch layer carry no number at all.
+	 *
+	 * @param Layer The layer to look through.
+	 * @param Checkpoint For a tele layer, whether to count the checkpoints
+	 * rather than the rest. Means nothing to the other kinds.
+	 *
+	 * @return The number, or -1 where all 255 are taken.
+	 */
+	int NextFreeNumber(const CTileLayer &Layer, bool Checkpoint = false);
+
+	/**
+	 * Every place a number is used, as tiles, one per cluster.
+	 *
+	 * The interface walks this to show somebody where a tele number goes:
+	 * one number is usually a handful of places, and a teleporter that is
+	 * four tiles wide is one of them rather than four. Which is why tiles
+	 * closer than ten to the one before are left out - the same rule the
+	 * editor in the client uses, only worked out at once instead of
+	 * remembering where it was.
+	 *
+	 * @param Layer The layer to look through.
+	 * @param Number The number to look for; 0 is no number and finds nothing.
+	 *
+	 * @return The places, in the order the layer is read, or empty.
+	 */
+	std::vector<ivec2> NumberPlaces(const CTileLayer &Layer, int Number);
 
 	/**
 	 * Changes one tile layer of the version being made.

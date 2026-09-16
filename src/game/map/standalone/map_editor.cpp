@@ -9,16 +9,19 @@
 #include <engine/shared/datafile.h>
 #include <engine/storage.h>
 
+#include <game/map/document/automap.h>
 #include <game/map/document/command.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
 #include <game/map/document/structure.h>
+#include <game/mapitems.h>
 
 #include <algorithm>
 #include <optional>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace
 {
@@ -217,6 +220,181 @@ const map_document::CImage *CMapEditor::Image(int Id, int Index) const
 	return (size_t)Index >= Map.NumImages() ? nullptr : Map.Image((size_t)Index);
 }
 
+std::string CMapEditor::QuadsJson(int Id, int Group, int Layer) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return "null";
+	return map_document::QuadsJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
+}
+
+std::string CMapEditor::EnvelopeJson(int Id, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0)
+		return "null";
+	return map_document::EnvelopeJson(pMap->m_Document.Map(), (size_t)Index);
+}
+
+int CMapEditor::TileIndex(int Id, int Group, int Layer, int x, int y) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0 || x < 0 || y < 0)
+		return -1;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return -1;
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr || x >= pTiles->Width() || y >= pTiles->Height())
+		return -1;
+	return pTiles->m_Tiles.Get(x, y).m_Index;
+}
+
+size_t CMapEditor::LoadRules(const char *pName, const char *pText)
+{
+	if(pName == nullptr || pName[0] == '\0')
+		return 0;
+	map_document::CAutomapRules Rules = map_document::ParseAutomapRules(pText);
+	const size_t Configs = Rules.NumConfigs();
+	m_Rules[pName] = std::move(Rules);
+	return Configs;
+}
+
+size_t CMapEditor::NumRuleConfigs(const char *pName) const
+{
+	if(pName == nullptr)
+		return 0;
+	const auto Found = m_Rules.find(pName);
+	return Found == m_Rules.end() ? 0 : Found->second.NumConfigs();
+}
+
+const char *CMapEditor::RuleConfigName(const char *pName, size_t Config) const
+{
+	if(pName == nullptr)
+		return "";
+	const auto Found = m_Rules.find(pName);
+	return Found == m_Rules.end() ? "" : Found->second.ConfigName(Config);
+}
+
+bool CMapEditor::Automap(int Id, int Group, int Layer, const char *pRules, int Config, int Seed, int Reference,
+	int x, int y, int Width, int Height)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0 || Config < 0 || pRules == nullptr)
+		return false;
+	const auto Found = m_Rules.find(pRules);
+	if(Found == m_Rules.end() || (size_t)Config >= Found->second.NumConfigs())
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return false;
+	// Asked of the layer rather than of `TileLayer`, which is for a caller
+	// that already knows: a quad layer is a thing somebody may well have
+	// selected, not a mistake.
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr || !map_document::DrawsOwnTiles(pTiles->m_Kind))
+		return false;
+
+	// The game layer of the same map, for a run that is filtered by a physics
+	// tile. A map without one automaps without the filter.
+	const map_document::CTileLayer *pGame = nullptr;
+	for(size_t OverGroup = 0; OverGroup < Map.NumGroups() && pGame == nullptr; ++OverGroup)
+		for(size_t OverLayer = 0; OverLayer < Map.NumLayers(OverGroup); ++OverLayer)
+		{
+			const auto *pOne = std::get_if<map_document::CTileLayer>(Map.Layer(OverGroup, OverLayer));
+			if(pOne != nullptr && pOne->m_Kind == map_document::ETileLayerKind::GAME)
+			{
+				pGame = pOne;
+				break;
+			}
+		}
+
+	pMap->m_Document.Begin("Automap");
+	map_document::EditTileLayer(pMap->m_Document, (size_t)Group, (size_t)Layer, [&](map_document::CTileLayer &Changed) {
+		map_document::Automap(Changed, pGame, Found->second, (size_t)Config, Seed, Reference, x, y, Width, Height);
+	});
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+int CMapEditor::AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || pName == nullptr || pName[0] == '\0' || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	map_document::CImage Image;
+	Image.m_Name = pName;
+	Image.m_External = false;
+	Image.m_Width = Width;
+	Image.m_Height = Height;
+	Image.m_Data.Mutable().assign(pPixels, pPixels + (size_t)Width * (size_t)Height * 4);
+	pMap->m_Document.Begin("Add image");
+	const size_t Index = map_document::AddImage(pMap->m_Document, std::move(Image));
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Index;
+}
+
+bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0 || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return false;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Index >= Map.NumImages())
+		return false;
+	map_document::CImage Changed = *Map.Image((size_t)Index);
+	Changed.m_External = false;
+	Changed.m_Width = Width;
+	Changed.m_Height = Height;
+	Changed.m_Data.Mutable().assign(pPixels, pPixels + (size_t)Width * (size_t)Height * 4);
+	pMap->m_Document.Begin("Replace image");
+	map_document::SetImage(pMap->m_Document, (size_t)Index, std::move(Changed));
+	pMap->m_Document.Commit();
+	Touch();
+	return true;
+}
+
+bool CMapEditor::BrushIsCheckpoint() const
+{
+	const auto *pTele = std::get_if<map_document::CTileStore<CTeleTile>>(&m_Brush.m_ExtraTiles);
+	if(pTele == nullptr)
+		return false;
+	for(int y = 0; y < pTele->Height(); ++y)
+		for(int x = 0; x < pTele->Width(); ++x)
+			if(IsTeleTileCheckpoint(pTele->Get(x, y).m_Type))
+				return true;
+	return false;
+}
+
+int CMapEditor::NextFreeNumber(int Id, int Group, int Layer, bool Checkpoint) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return -1;
+	const map_document::CTileLayer *pTiles = pMap->m_Document.Map().TileLayer((size_t)Group, (size_t)Layer);
+	return pTiles == nullptr ? -1 : map_document::NextFreeNumber(*pTiles, Checkpoint);
+}
+
+size_t CMapEditor::GotoNumber(int Id, int Group, int Layer, int Number, size_t Which)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return 0;
+	const map_document::CTileLayer *pTiles = pMap->m_Document.Map().TileLayer((size_t)Group, (size_t)Layer);
+	if(pTiles == nullptr)
+		return 0;
+	const std::vector<ivec2> vPlaces = map_document::NumberPlaces(*pTiles, Number);
+	if(vPlaces.empty())
+		return 0;
+	// The middle of the tile rather than its corner, so that what was looked
+	// for is in the middle of the screen.
+	const ivec2 Place = vPlaces[Which % vPlaces.size()];
+	pMap->m_View.SetCenter(vec2(Place.x * 32.0f + 16.0f, Place.y * 32.0f + 16.0f));
+	return vPlaces.size();
+}
+
 map_document::CView *CMapEditor::View(int Id)
 {
 	CMap *pMap = Find(Id);
@@ -280,6 +458,44 @@ void CMapEditor::Update()
 	pMap->m_pImages->Update();
 }
 
+CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
+{
+	CDocumentRenderer::CParams Params;
+	Params.m_Center = Map.m_View.Center();
+	Params.m_Zoom = Map.m_View.Zoom();
+	Params.m_ViewSize = Map.m_View.ViewSize();
+	Params.m_HighDetail = Map.m_Display.m_HighDetail;
+	Params.m_EntityOverlayVal = Map.m_Display.m_EntityOverlayVal;
+	Params.m_TimeOffsetMillis = Map.m_Display.m_TimeOffsetMillis;
+	Params.m_pHidden = &Map.m_Display.m_vHidden;
+	Params.m_Grid = Map.m_Display.m_Grid;
+	Params.m_Marked = Map.m_Display.m_Marked;
+	Params.m_ShownQuad = Map.m_Display.m_ShownQuad;
+	// The grid belongs to the group that is being worked in, and the editor
+	// itself holds no selection - so it follows the group the game layer is
+	// in, which is the one the tiles of a map are measured against.
+	const std::optional<map_document::CLayerAddress> Game = map_document::FindGameLayer(Map.m_Document.Map());
+	if(Game.has_value())
+		Params.m_GridGroup = Game->m_Group;
+	return Params;
+}
+
+vec2 CMapEditor::WorldInGroup(int Id, size_t Group, vec2 Pixel) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group >= pMap->m_Document.Map().NumGroups())
+		return vec2(0.0f, 0.0f);
+	// The same sum the renderer draws that group with, asked of the renderer
+	// itself - so that where a pointer says it is and where a quad is drawn
+	// cannot be two different answers.
+	const CScreenRect Shown = pMap->m_pRenderer->GroupScreen(*pMap->m_Document.Map().m_vpGroups[Group], ParamsFor(*pMap));
+	const float Width = std::max(1, m_View.Width());
+	const float Height = std::max(1, m_View.Height());
+	return vec2(
+		Shown.m_TopLeft.x + Pixel.x / Width * Shown.Width(),
+		Shown.m_TopLeft.y + Pixel.y / Height * Shown.Height());
+}
+
 void CMapEditor::Render()
 {
 	CMap *pMap = Find(m_Active);
@@ -296,22 +512,7 @@ void CMapEditor::Render()
 	const auto pShown = std::make_shared<const map_document::CMapState>(pMap->m_Document.Map());
 	pMap->m_pRenderer->Use(pShown);
 
-	CDocumentRenderer::CParams Params;
-	Params.m_Center = pMap->m_View.Center();
-	Params.m_Zoom = pMap->m_View.Zoom();
-	Params.m_ViewSize = pMap->m_View.ViewSize();
-	Params.m_HighDetail = pMap->m_Display.m_HighDetail;
-	Params.m_EntityOverlayVal = pMap->m_Display.m_EntityOverlayVal;
-	Params.m_TimeOffsetMillis = pMap->m_Display.m_TimeOffsetMillis;
-	Params.m_pHidden = &pMap->m_Display.m_vHidden;
-	Params.m_Grid = pMap->m_Display.m_Grid;
-	Params.m_Marked = pMap->m_Display.m_Marked;
-	// The grid belongs to the group that is being worked in, and the editor
-	// itself holds no selection - so it follows the group the game layer is
-	// in, which is the one the tiles of a map are measured against.
-	const std::optional<map_document::CLayerAddress> Game = map_document::FindGameLayer(pMap->m_Document.Map());
-	if(Game.has_value())
-		Params.m_GridGroup = Game->m_Group;
+	const CDocumentRenderer::CParams Params = ParamsFor(*pMap);
 
 	IGraphics *pGraphics = m_View.Graphics();
 	pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));
@@ -381,6 +582,10 @@ bool CMapEditor::PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int
 		for(int tx = 0; tx < Width; ++tx)
 			SetBrushTile(Brush, tx, ty, (y + ty) * TILESET_SIDE + x + tx);
 	}
+	// A tile out of the tileset says what it does; the numbers say to which
+	// of them, and they are the ones last chosen rather than whatever the
+	// tileset would suggest, which is nothing.
+	map_document::SetBrushNumbers(Brush, m_Numbers);
 	m_Brush = std::move(Brush);
 	return true;
 }
@@ -391,7 +596,17 @@ bool CMapEditor::Grab(int Id, size_t Group, size_t Layer, int x, int y, int Widt
 	if(pMap == nullptr)
 		return false;
 	m_Brush = map_document::GrabTiles(*pMap->m_Document.Map().TileLayer(Group, Layer), x, y, Width, Height);
+	// A piece of a layer comes with the numbers that were on it, and now they
+	// are the ones in hand - so putting the piece down somewhere else puts
+	// down what was picked up.
+	m_Numbers = map_document::BrushNumbers(m_Brush);
 	return true;
+}
+
+void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
+{
+	m_Numbers = Numbers;
+	map_document::SetBrushNumbers(m_Brush, m_Numbers);
 }
 
 bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
@@ -465,6 +680,9 @@ bool CMapEditor::UseBrush(size_t Slot)
 	if(Slot >= m_aStoredBrushes.size() || m_aStoredBrushes[Slot].Width() == 0)
 		return false;
 	m_Brush = m_aStoredBrushes[Slot];
+	// A brush taken out of a slot brings its own numbers back with it, the
+	// same way a grabbed one does.
+	m_Numbers = map_document::BrushNumbers(m_Brush);
 	return true;
 }
 

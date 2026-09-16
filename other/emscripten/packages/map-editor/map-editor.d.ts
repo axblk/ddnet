@@ -57,6 +57,33 @@ export interface Structure {
 	sounds: { name: string; external: boolean; bytes: number }[];
 }
 
+export interface Quad {
+	/** Five points as ten numbers: four corners then the pivot, in world units. */
+	points: number[];
+	/** Four colours as sixteen numbers, each 0 to 255. */
+	colors: number[];
+	posEnv: number;
+	posEnvOffset: number;
+	colorEnv: number;
+	colorEnvOffset: number;
+}
+
+export interface Envelope {
+	name: string;
+	channels: number;
+	synchronized: boolean;
+	points: {
+		/** Whole milliseconds. */
+		time: number;
+		curve: number;
+		/** One per channel, in the map's 22.10 fixed point. */
+		values: number[];
+		/** Tangents, two numbers per channel. */
+		in: number[];
+		out: number[];
+	}[];
+}
+
 export interface History {
 	current: number;
 	canUndo: boolean;
@@ -78,6 +105,24 @@ export type Command =
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
+	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
+	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }
+	| { op: "quad.setPoint"; group: number; layer: number; quad: number; point: number; x: number; y: number; label?: string }
+	| { op: "quad.setColor"; group: number; layer: number; quad: number; corner: number; value: number[]; label?: string }
+	| { op: "quad.setProp"; group: number; layer: number; quad: number; prop: string; value: number; label?: string }
+	| { op: "info.setProp"; prop: "author" | "mapVersion" | "credits" | "license"; value: string; label?: string }
+	| { op: "info.settings.add"; value: string; label?: string }
+	| { op: "info.settings.set"; line: number; value: string; label?: string }
+	| { op: "info.settings.delete"; line: number; label?: string }
+	| { op: "image.add"; name: string; width?: number; height?: number; label?: string }
+	| { op: "image.delete"; image: number; label?: string }
+	| { op: "image.setProp"; image: number; prop: "name" | "external"; value: string | boolean; label?: string }
+	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
+	| { op: "envelope.delete"; envelope: number; label?: string }
+	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
+	| { op: "envelope.point.add"; envelope: number; time: number; values: number[]; curve?: number; label?: string }
+	| { op: "envelope.point.delete"; envelope: number; point: number; label?: string }
+	| { op: "envelope.point.set"; envelope: number; point: number; time?: number; values?: number[]; curve?: number; label?: string }
 	| { op: "history.undo" }
 	| { op: "history.redo" }
 	| { op: "history.jump"; index: number };
@@ -106,6 +151,34 @@ export declare class MapEditor {
 	structure(id?: MapId): Structure | null;
 	/** The pixels of a picture packed into the map file, or null for one beside it. */
 	imageData(index: number, id?: MapId): ImageData | null;
+	/** The quads of one layer, points in world units; null for a layer without them. */
+	quads(group: number, layer: number, id?: MapId): Quad[] | null;
+	/** Puts handles on one quad's corners, or takes them away when called with nothing. */
+	showQuad(group?: number, layer?: number, quad?: number, id?: MapId): void;
+	/** Where a canvas point is in one group's coordinates, in world units. */
+	groupWorldAt(group: number, x: number, y: number, id?: MapId): { x: number; y: number } | null;
+	/** What tile stands in one place of a layer, or -1 where there is none. */
+	tileIndex(group: number, layer: number, x: number, y: number, id?: MapId): number;
+	/** Keeps a `.rules` file under a name; answers how many configurations it holds. */
+	loadRules(name: string, text: string): number;
+	/** What the configurations of a rules file that was loaded are called. */
+	ruleConfigs(name: string): string[];
+	/** Runs one configuration over a layer, or over a piece of it, as one history entry. */
+	automap(group: number, layer: number, rules: string, config: number, options?: {
+		seed?: number; reference?: number; x?: number; y?: number; width?: number; height?: number; id?: MapId;
+	}): boolean;
+	/** Puts a picture with its pixels into the map; answers which picture it became, or -1. */
+	addImage(name: string, pixels: ImageData, id?: MapId): number;
+	/** Puts other pixels into a picture the map has, keeping the layers drawn with it. */
+	setImagePixels(index: number, pixels: ImageData, id?: MapId): boolean;
+	/** The lowest number a physics layer is not using yet, or -1 when all are taken. */
+	nextFreeNumber(group: number, layer: number, checkpoint?: boolean, id?: MapId): number;
+	/** Moves the view to the `which`-th place a number is used; answers how many there are. */
+	gotoNumber(group: number, layer: number, number: number, which: number, id?: MapId): number;
+	/** Whether the tiles in hand are tele checkpoints, which count their numbers apart. */
+	brushCheckpoint(): boolean;
+	/** The points of one envelope; times in ms, values in 22.10 fixed point. */
+	envelope(index: number, id?: MapId): Envelope | null;
 	history(id?: MapId): History | null;
 	apply(command: Command, id?: MapId): Answer;
 	undo(id?: MapId): Answer;
@@ -138,6 +211,9 @@ export declare class MapEditor {
 	storeBrush(slot: number): boolean;
 	useBrush(slot: number): boolean;
 	brushSize(): { width: number; height: number } | null;
+	/** What goes beside a physics tile the brush puts down. */
+	numbers(): { number: number; delay: number; force: number; maxSpeed: number; angle: number };
+	numbers(values: { number?: number; delay?: number; force?: number; maxSpeed?: number; angle?: number }): void;
 
 	highDetail(on?: boolean, id?: MapId): boolean | void;
 	entities(value?: boolean | number, id?: MapId): number | void;

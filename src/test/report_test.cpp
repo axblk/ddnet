@@ -253,3 +253,87 @@ TEST(Report, AHalfMadeChangeIsReportedAsOne)
 	EXPECT_EQ(json_array_length(json_object_get(Parse(StructureJson(Document.Map())).get(), "groups")), 1);
 	Document.Abort();
 }
+
+// The points of one envelope. They are whole numbers in the file and whole
+// numbers here, so what goes out is what comes back - an editor that saves
+// the map again writes the same bytes it read.
+TEST(Report, AnEnvelopeSaysWhatItsPointsAre)
+{
+	CMapState Map;
+	CEnvelope Envelope;
+	Envelope.m_Name = "colour";
+	Envelope.m_Channels = 4;
+	std::vector<CEnvPoint_runtime> vPoints(2);
+	vPoints[0].m_Time = CFixedTime(0);
+	vPoints[0].m_Curvetype = CURVETYPE_LINEAR;
+	vPoints[0].m_aValues[0] = 1024;
+	vPoints[1].m_Time = CFixedTime(1500);
+	vPoints[1].m_Curvetype = CURVETYPE_BEZIER;
+	vPoints[1].m_aValues[0] = 512;
+	vPoints[1].m_Bezier.m_aOutTangentDeltaX[0] = CFixedTime(200);
+	vPoints[1].m_Bezier.m_aOutTangentDeltaY[0] = -64;
+	Envelope.m_Points = CSharedList<CEnvPoint_runtime>(std::move(vPoints));
+	Map.AddEnvelope(std::move(Envelope));
+
+	const std::string Json = EnvelopeJson(Map, 0);
+	const CJson pRead(JsonParse(Json.c_str(), Json.size()), json_value_free);
+	ASSERT_NE(pRead, nullptr) << Json;
+	EXPECT_STREQ(json_string_get(json_object_get(pRead.get(), "name")), "colour");
+	EXPECT_EQ(json_int_get(json_object_get(pRead.get(), "channels")), 4);
+	const json_value *pPoints = json_object_get(pRead.get(), "points");
+	ASSERT_EQ(json_array_length(pPoints), 2u);
+
+	const json_value *pSecond = json_array_get(pPoints, 1);
+	EXPECT_EQ(json_int_get(json_object_get(pSecond, "time")), 1500);
+	EXPECT_EQ(json_int_get(json_object_get(pSecond, "curve")), CURVETYPE_BEZIER);
+	EXPECT_EQ(json_int_get(json_array_get(json_object_get(pSecond, "values"), 0)), 512);
+	// The tangents go out as pairs, one pair per channel.
+	const json_value *pOut = json_object_get(pSecond, "out");
+	ASSERT_EQ(json_array_length(pOut), 8u);
+	EXPECT_EQ(json_int_get(json_array_get(pOut, 0)), 200);
+	EXPECT_EQ(json_int_get(json_array_get(pOut, 1)), -64);
+
+	// Only four channels' worth of values, whatever the point holds room for.
+	EXPECT_EQ(json_array_length(json_object_get(json_array_get(pPoints, 0), "values")), 4u);
+	EXPECT_STREQ(EnvelopeJson(Map, 1).c_str(), "null");
+}
+
+// The quads of one layer. They go out in world units, because that is the
+// only number a page can hold against a click.
+TEST(Report, AQuadLayerSaysWhatItsQuadsAre)
+{
+	CMapState Map;
+	CQuadLayer Quads;
+	Quads.m_Name = "design";
+	CQuad Quad = {};
+	Quad.m_aPoints[0] = CPoint{i2fx(-32), i2fx(-16)};
+	Quad.m_aPoints[4] = CPoint{i2fx(320), i2fx(160)};
+	Quad.m_aColors[2] = CColor(10, 20, 30, 40);
+	Quad.m_PosEnv = 2;
+	Quad.m_ColorEnvOffset = 500;
+	Quads.m_Quads = CSharedList<CQuad>(std::vector<CQuad>{Quad});
+	CGroup Group;
+	Group.m_vpLayers.push_back(std::make_shared<const CLayer>(std::move(Quads)));
+	Map.AddGroup(std::move(Group));
+
+	const std::string Json = QuadsJson(Map, 0, 0);
+	const CJson pRead(JsonParse(Json.c_str(), Json.size()), json_value_free);
+	ASSERT_NE(pRead, nullptr) << Json;
+	ASSERT_EQ(json_array_length(pRead.get()), 1u);
+	const json_value *pQuad = json_array_get(pRead.get(), 0);
+
+	// Five points, two numbers each, in world units.
+	const json_value *pPoints = json_object_get(pQuad, "points");
+	ASSERT_EQ(json_array_length(pPoints), 10u);
+	EXPECT_EQ(json_int_get(json_array_get(pPoints, 0)), -32);
+	EXPECT_EQ(json_int_get(json_array_get(pPoints, 8)), 320);
+	// Four colours, four channels each.
+	const json_value *pColors = json_object_get(pQuad, "colors");
+	ASSERT_EQ(json_array_length(pColors), 16u);
+	EXPECT_EQ(json_int_get(json_array_get(pColors, 8)), 10);
+	EXPECT_EQ(json_int_get(json_object_get(pQuad, "posEnv")), 2);
+	EXPECT_EQ(json_int_get(json_object_get(pQuad, "colorEnvOffset")), 500);
+
+	// A layer that holds no quads is not a layer that holds none of them.
+	EXPECT_STREQ(QuadsJson(Map, 0, 1).c_str(), "null");
+}

@@ -310,6 +310,161 @@ namespace map_document
 			Brush.m_ExtraTiles);
 	}
 
+	void SetBrushNumbers(CBrush &Brush, const CBrushNumbers &Numbers)
+	{
+		const int Number = std::clamp(Numbers.m_Number, 0, 255);
+		const int Delay = std::clamp(Numbers.m_Delay, 0, 255);
+		const int Force = std::clamp(Numbers.m_Force, 0, 255);
+		const int MaxSpeed = std::clamp(Numbers.m_MaxSpeed, 0, 255);
+		// Degrees, and the way round is what matters rather than how many
+		// turns it took to get there.
+		const short Angle = (short)(((Numbers.m_Angle % 360) + 360) % 360);
+		std::visit([&](auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(std::is_same_v<TStore, std::monostate>)
+				return;
+			else
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+				{
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						auto Tile = Extra.Get(x, y);
+						// Air carries nothing: a number on a tile that does
+						// nothing would go into the file and come back as
+						// exactly that.
+						if(Tile.m_Type == 0)
+							continue;
+						if constexpr(std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+						{
+							Tile.m_Force = (unsigned char)Force;
+							Tile.m_MaxSpeed = (unsigned char)MaxSpeed;
+							Tile.m_Angle = Angle;
+						}
+						else
+						{
+							Tile.m_Number = (unsigned char)Number;
+							if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+								Tile.m_Delay = (unsigned char)Delay;
+						}
+						Extra.Set(x, y, Tile);
+					}
+				}
+			}
+		},
+			Brush.m_ExtraTiles);
+	}
+
+	CBrushNumbers BrushNumbers(const CBrush &Brush)
+	{
+		CBrushNumbers Numbers;
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(std::is_same_v<TStore, std::monostate>)
+				return;
+			else
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+				{
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(Tile.m_Type == 0)
+							continue;
+						if constexpr(std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+						{
+							Numbers.m_Force = Tile.m_Force;
+							Numbers.m_MaxSpeed = Tile.m_MaxSpeed;
+							Numbers.m_Angle = Tile.m_Angle;
+						}
+						else
+						{
+							Numbers.m_Number = Tile.m_Number;
+							if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+								Numbers.m_Delay = Tile.m_Delay;
+						}
+						return;
+					}
+				}
+			}
+		},
+			Brush.m_ExtraTiles);
+		return Numbers;
+	}
+
+	namespace
+	{
+		/**
+		 * Whether a tile of this store carries the number that is being
+		 * counted, which is a different question for every kind.
+		 */
+		template<typename TStore, typename TTile>
+		bool CarriesNumber(const TTile &Tile, bool Checkpoint)
+		{
+			if constexpr(std::is_same_v<TStore, CTileStore<CTeleTile>>)
+				return IsValidTeleTile(Tile.m_Type) && IsTeleTileNumberUsed(Tile.m_Type, Checkpoint);
+			else if constexpr(std::is_same_v<TStore, CTileStore<CSwitchTile>>)
+				return IsValidSwitchTile(Tile.m_Type) && IsSwitchTileNumberUsed(Tile.m_Type);
+			else if constexpr(std::is_same_v<TStore, CTileStore<CTuneTile>>)
+				return IsValidTuneTile(Tile.m_Type);
+			else
+				return false;
+		}
+
+		// Two tiles of the same number closer together than this are one
+		// place: a teleporter is drawn several tiles wide, and somebody
+		// looking for where number seven is wants seven places, not seventy.
+		constexpr float MIN_CLUSTER_DISTANCE = 10.0f;
+	} // namespace
+
+	int NextFreeNumber(const CTileLayer &Layer, bool Checkpoint)
+	{
+		bool aTaken[256] = {};
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(!std::is_same_v<TStore, std::monostate> && !std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(CarriesNumber<TStore>(Tile, Checkpoint))
+							aTaken[Tile.m_Number] = true;
+					}
+			}
+		},
+			Layer.m_ExtraTiles);
+		for(int Number = 1; Number <= 255; ++Number)
+			if(!aTaken[Number])
+				return Number;
+		return -1;
+	}
+
+	std::vector<ivec2> NumberPlaces(const CTileLayer &Layer, int Number)
+	{
+		std::vector<ivec2> vPlaces;
+		if(Number <= 0 || Number > 255)
+			return vPlaces;
+		std::visit([&](const auto &Extra) {
+			using TStore = std::decay_t<decltype(Extra)>;
+			if constexpr(!std::is_same_v<TStore, std::monostate> && !std::is_same_v<TStore, CTileStore<CSpeedupTile>>)
+			{
+				for(int y = 0; y < Extra.Height(); ++y)
+					for(int x = 0; x < Extra.Width(); ++x)
+					{
+						const auto Tile = Extra.Get(x, y);
+						if(Tile.m_Number != Number || !CarriesNumber<TStore>(Tile, IsTeleTileCheckpoint(Tile.m_Type)))
+							continue;
+						if(!vPlaces.empty() && distance(vec2(vPlaces.back().x, vPlaces.back().y), vec2(x, y)) < MIN_CLUSTER_DISTANCE)
+							continue;
+						vPlaces.emplace_back(x, y);
+					}
+			}
+		},
+			Layer.m_ExtraTiles);
+		return vPlaces;
+	}
+
 	void PaintTiles(CDocument &Doc, size_t Group, size_t Layer, int x, int y, const CBrush &Brush)
 	{
 		EditTileLayer(Doc, Group, Layer, [&](CTileLayer &Changed) {

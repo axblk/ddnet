@@ -2736,6 +2736,8 @@ list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
 set_src(GAME_MAP GLOB_RECURSE src/game/map
   # tidy-alphabetical-start
   document/assets.h
+  document/automap.cpp
+  document/automap.h
   document/command.cpp
   document/command.h
   document/document.h
@@ -4005,7 +4007,7 @@ if(CLIENT)
       # `HEAPU8` beside the rest so that a page can say what a map costs: the
       # editor is the one program here where somebody may open a map big
       # enough for that to be the question.
-      target_link_options(map-editor PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,HEAPU8,IDBFS")
+      target_link_options(map-editor PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,HEAPU8,IDBFS" "-sEXPORTED_FUNCTIONS=_main,_malloc,_free")
     endif()
     # No `${LIBS}` and no FreeType, as in the viewer: nothing here talks to
     # the network, and nothing here draws a letter - the letters are the
@@ -4548,6 +4550,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     aio_test.cpp
     asset_loader_test.cpp
     assets_test.cpp
+    automap_test.cpp
     bezier_test.cpp
     blocklist_driver_test.cpp
     bytes_be_test.cpp

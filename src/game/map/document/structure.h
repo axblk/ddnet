@@ -88,6 +88,143 @@ namespace map_document
 	CLayerAddress MoveLayer(CDocument &Doc, const CLayerAddress &From, const CLayerAddress &To);
 
 	/**
+	 * A square quad of that size around that place, in world units - what
+	 * "add a quad" means before anybody has dragged a corner of it.
+	 *
+	 * Its four corners are the order the file keeps them in: top left, top
+	 * right, bottom left, bottom right, and the fifth point is the pivot it
+	 * turns about. It is drawn white and takes the whole of its picture.
+	 *
+	 * @param CenterX Where the middle of it goes, in world units.
+	 * @param CenterY The same, downwards.
+	 * @param Width How wide it is, in world units.
+	 * @param Height How tall it is.
+	 *
+	 * @return The quad, which is not in any layer yet.
+	 */
+	CQuad MakeQuad(int CenterX, int CenterY, int Width, int Height);
+
+	/**
+	 * Puts a quad at the end of a quad layer, and says which one it became.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a quad layer.
+	 * @param Quad The quad to put in.
+	 *
+	 * @return Which quad of that layer it is.
+	 */
+	size_t AddQuad(CDocument &Doc, const CLayerAddress &Layer, const CQuad &Quad);
+
+	/** Takes one quad out of a quad layer. */
+	void DeleteQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad);
+
+	/**
+	 * Puts a changed quad back in place of the one that was there - which is
+	 * what dragging a corner, a colour or a pivot comes down to.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer.
+	 * @param Quad Which quad of it.
+	 * @param Changed What the quad is to be.
+	 */
+	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
+
+	/**
+	 * Adds a picture at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Image The picture to add.
+	 *
+	 * @return Which picture of the map it became.
+	 */
+	size_t AddImage(CDocument &Doc, CImage Image);
+
+	/**
+	 * Takes a picture out of the map, and takes it off every layer that was
+	 * drawn with it.
+	 *
+	 * A layer names a picture by its place, the same way a quad names an
+	 * envelope, so the same rebinding is needed: what pointed past the one
+	 * that is gone comes down one, and a layer that was drawn with it is
+	 * drawn with none. A layer that used a different picture is left as the
+	 * node it is, so this costs the layers that used this one rather than the
+	 * map.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Image Which picture to take out.
+	 */
+	void DeleteImage(CDocument &Doc, size_t Image);
+
+	/**
+	 * Puts another picture in the place of one, keeping every layer that is
+	 * drawn with it.
+	 *
+	 * Which is what replacing a picture is for: the tiles stay where they
+	 * are and the picture under them changes.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Index Which picture of the map.
+	 * @param Changed What it is to be.
+	 */
+	void SetImage(CDocument &Doc, size_t Index, CImage Changed);
+
+	/**
+	 * Adds an envelope at the end, and says where it went.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope The envelope to add.
+	 *
+	 * @return Which envelope it became.
+	 */
+	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope);
+
+	/**
+	 * Takes an envelope out of the map, and takes it off whatever was bound
+	 * to it.
+	 *
+	 * A layer or a quad names an envelope by its place, so the ones after it
+	 * move up - which means every binding above it has to come down by one,
+	 * and a binding to the one being taken away becomes no binding at all.
+	 * Leaving that to the caller would mean a map whose colours come from the
+	 * wrong envelope, which is worse than one that is slower to save.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope to take out.
+	 */
+	void DeleteEnvelope(CDocument &Doc, size_t Envelope);
+
+	/**
+	 * Puts a point into an envelope, in the place its time gives it.
+	 *
+	 * The points of an envelope are in time order and the sum that reads them
+	 * counts on it, so where a point goes is not the caller's to choose: it
+	 * goes where its time puts it, after any point at the same time.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope.
+	 * @param Point The point to put in.
+	 *
+	 * @return Which point of that envelope it became.
+	 */
+	size_t AddEnvelopePoint(CDocument &Doc, size_t Envelope, const CEnvPoint_runtime &Point);
+
+	/** Takes one point out of an envelope. */
+	void DeleteEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point);
+
+	/**
+	 * Changes one point, and puts it back in time order if it moved.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Envelope Which envelope.
+	 * @param Point Which point of it.
+	 * @param Changed What the point is to be.
+	 *
+	 * @return Where that point is now, which is somewhere else if its time
+	 * moved it past one of its neighbours.
+	 */
+	size_t SetEnvelopePoint(CDocument &Doc, size_t Envelope, size_t Point, const CEnvPoint_runtime &Changed);
+
+	/**
 	 * Changes the properties of a group - its name, its parallax, its offset,
 	 * its clipping - or the order of its layers.
 	 *

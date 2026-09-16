@@ -209,6 +209,106 @@ namespace map_document
 		return Writer.GetOutputString();
 	}
 
+	std::string EnvelopeJson(const CMapState &Map, size_t Index)
+	{
+		if(Index >= Map.NumEnvelopes())
+			return "null";
+		const CEnvelope &Envelope = *Map.Envelope(Index);
+		CJsonStringWriter Writer;
+		Writer.BeginObject();
+		Writer.WriteAttribute("name");
+		Writer.WriteStrValue(Envelope.m_Name.c_str());
+		Writer.WriteAttribute("channels");
+		Writer.WriteIntValue(Envelope.m_Channels);
+		Writer.WriteAttribute("synchronized");
+		Writer.WriteBoolValue(Envelope.m_Synchronized);
+		Writer.WriteAttribute("points");
+		Writer.BeginArray();
+		for(size_t Point = 0; Point < Envelope.m_Points.Size(); ++Point)
+		{
+			const CEnvPoint_runtime &Made = Envelope.m_Points[Point];
+			Writer.BeginObject();
+			Writer.WriteAttribute("time");
+			Writer.WriteIntValue(Made.m_Time.GetInternal());
+			Writer.WriteAttribute("curve");
+			Writer.WriteIntValue(Made.m_Curvetype);
+			Writer.WriteAttribute("values");
+			Writer.BeginArray();
+			for(int Channel = 0; Channel < Envelope.m_Channels; ++Channel)
+				Writer.WriteIntValue(Made.m_aValues[Channel]);
+			Writer.EndArray();
+			// The tangents are only read by a curve of the kind that has
+			// them, but they are held either way - so they go out either way,
+			// and a point that was bezier once and is linear now still knows
+			// what it looked like.
+			Writer.WriteAttribute("in");
+			Writer.BeginArray();
+			for(int Channel = 0; Channel < Envelope.m_Channels; ++Channel)
+			{
+				Writer.WriteIntValue(Made.m_Bezier.m_aInTangentDeltaX[Channel].GetInternal());
+				Writer.WriteIntValue(Made.m_Bezier.m_aInTangentDeltaY[Channel]);
+			}
+			Writer.EndArray();
+			Writer.WriteAttribute("out");
+			Writer.BeginArray();
+			for(int Channel = 0; Channel < Envelope.m_Channels; ++Channel)
+			{
+				Writer.WriteIntValue(Made.m_Bezier.m_aOutTangentDeltaX[Channel].GetInternal());
+				Writer.WriteIntValue(Made.m_Bezier.m_aOutTangentDeltaY[Channel]);
+			}
+			Writer.EndArray();
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+		Writer.EndObject();
+		return Writer.GetOutputString();
+	}
+
+	std::string QuadsJson(const CMapState &Map, size_t Group, size_t Layer)
+	{
+		if(Group >= Map.NumGroups() || Layer >= Map.NumLayers(Group))
+			return "null";
+		const CQuadLayer *pQuads = std::get_if<CQuadLayer>(Map.Layer(Group, Layer));
+		if(pQuads == nullptr)
+			return "null";
+		CJsonStringWriter Writer;
+		Writer.BeginArray();
+		for(size_t Index = 0; Index < pQuads->m_Quads.Size(); ++Index)
+		{
+			const CQuad &Quad = pQuads->m_Quads[Index];
+			Writer.BeginObject();
+			Writer.WriteAttribute("points");
+			Writer.BeginArray();
+			for(const CPoint &Point : Quad.m_aPoints)
+			{
+				Writer.WriteIntValue(fx2i(Point.x));
+				Writer.WriteIntValue(fx2i(Point.y));
+			}
+			Writer.EndArray();
+			Writer.WriteAttribute("colors");
+			Writer.BeginArray();
+			for(const CColor &Color : Quad.m_aColors)
+			{
+				Writer.WriteIntValue(Color.r);
+				Writer.WriteIntValue(Color.g);
+				Writer.WriteIntValue(Color.b);
+				Writer.WriteIntValue(Color.a);
+			}
+			Writer.EndArray();
+			Writer.WriteAttribute("posEnv");
+			Writer.WriteIntValue(Quad.m_PosEnv);
+			Writer.WriteAttribute("posEnvOffset");
+			Writer.WriteIntValue(Quad.m_PosEnvOffset);
+			Writer.WriteAttribute("colorEnv");
+			Writer.WriteIntValue(Quad.m_ColorEnv);
+			Writer.WriteAttribute("colorEnvOffset");
+			Writer.WriteIntValue(Quad.m_ColorEnvOffset);
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+		return Writer.GetOutputString();
+	}
+
 	std::string HistoryJson(const CDocument &Document)
 	{
 		const CHistory &History = Document.History();

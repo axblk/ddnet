@@ -55,6 +55,7 @@ all of it and a page may reach any of it.
 | `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
 | `controls="none\|compact\|full"` | How much tool bar. Left out, the size of the box decides. |
 | `readonly` | Nothing may be changed: no inspector, no brush, and the tool bar keeps only what is about looking. The pointer pans and zooms and paints nothing. |
+| `targets="auto\|big\|small"` | How big the things one aims at are. Left out (or `auto`), the browser is asked: `pointer: coarse` gets the finger sizes. The other two are for the cases where that answer is wrong - a touch laptop with a mouse says `fine`, a tablet in desktop mode says `coarse`, and neither is what the hand on it is doing. |
 
 `box.ready` is a promise for the running program, `box.editor` and
 `box.panels` are it and its panels once there are any, and `box.part("tree")`
@@ -108,11 +109,34 @@ so twelve-pixel text is already the right size on the glass; making it bigger
 would only mean less map. What the room buys is the *number* of things that
 can be open, not the size of any of them.
 
-Two things do move, because on a monitor eighty centimetres wide the middle is
-not where one is looking: the tile chooser opens under the pointer rather than
-in the middle (fitted back inside the edges if it would hang over one), and
+Three things do move, because on a monitor eighty centimetres wide the middle
+is not where one is looking: the tile chooser opens under the pointer rather
+than in the middle (fitted back inside the edges if it would hang over one),
 the coordinate under the pointer is shown a second time at the top of the
-inspector - the line at the bottom is for the eye, that one is for the hand.
+inspector - the line at the bottom is for the eye, that one is for the hand -
+and the notes over the map move from the top right corner to the bottom
+middle, because that corner is the far end of the desk.
+
+### What just happened, and how far away
+
+What the editor says about what it just did is said twice: in the line along
+the bottom, where one looks for it afterwards, and as a note over the map,
+which one sees without looking. A note goes by itself after four seconds and
+never more than four stand at once; something that went *wrong* stays, marked
+down its edge, until it is dismissed - a mistake that vanished before it was
+read is a mistake nobody knows about. If the four are full it is the oldest
+plain note that gives way, never the error.
+
+The corner of the map says what the zoom is and is three buttons: further
+away, back into the picture, closer. Only the number shows for a pointer,
+which has a wheel and is quicker with it; a finger gets the minus and the plus
+at forty-four pixels each.
+
+Between each column and the map there is a handle. Dragging it sets the width
+(240 to 480 on the left, 288 to 560 on the right, 160 to 640 for the dock),
+the arrow keys move it sixteen pixels at a time, and Home or a double press
+gives it back to the stylesheet. A side that is a drawer has no edge to drag
+and does not show one.
 
 ### One editor, several maps
 
@@ -162,6 +186,22 @@ near.
 The tileset in the inspector is nineteen pixels a tile - a picture of what is
 in hand, not a thing a finger can hit - so with a finger a touch on it opens
 the big chooser, where a tile is forty-four pixels or more.
+
+A side that is a drawer is pulled out of the edge it sleeps behind: a finger
+that starts in the twenty pixels along that edge and travels forty inwards
+opens it, and that press never paints. Twenty pixels is narrow on purpose -
+a stroke begins with the finger on the map, not on its edge.
+
+A `title` is a pointer's affordance: it appears because the mouse rested
+there, and a finger never rests anywhere without pressing. So a long press on
+a button says the same words the pointer would have been shown. Shortcuts are
+left out of those words until a key has actually been struck - `Ctrl+Z` beside
+a name is a hint on a laptop and noise on an iPad - and from the first
+keydown on they are back, in the tooltips and in the palette both.
+
+Which sizes are used is the browser's answer, and `targets` on the element
+overrules it where that answer is wrong. The command is **Big targets**
+(Ctrl+Alt+T), which goes round the three: as the browser says, on, off.
 
 ## One list of everything it can do
 

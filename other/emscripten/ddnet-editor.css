@@ -561,3 +561,20 @@ circle.editor-source-dot.editor-source-picked {
 	color: #e2544a;
 	opacity: 1;
 }
+
+/* The knife, while a cut is being made: the places clicked so far, and the
+   line between them. */
+.editor-carve {
+	fill: none;
+	stroke: #ffffff;
+	stroke-width: 1.5;
+	stroke-dasharray: 5 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-carve-dot {
+	fill: #e8b84a;
+	stroke: #16161a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}

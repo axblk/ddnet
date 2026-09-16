@@ -773,7 +773,7 @@ namespace map_document
 		if(str_comp(pOp, "quad.add") == 0 || str_comp(pOp, "quad.delete") == 0 ||
 			str_comp(pOp, "quad.setPoint") == 0 || str_comp(pOp, "quad.setColor") == 0 ||
 			str_comp(pOp, "quad.setTexcoord") == 0 || str_comp(pOp, "quad.shape") == 0 ||
-			str_comp(pOp, "quad.setProp") == 0)
+			str_comp(pOp, "quad.carve") == 0 || str_comp(pOp, "quad.setProp") == 0)
 		{
 			const size_t Group = Arguments.Index("group", Map.NumGroups());
 			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
@@ -810,6 +810,36 @@ namespace map_document
 				DeleteQuad(Document, Address, Quad);
 				Document.Commit();
 				return Succeeded();
+			}
+
+			if(str_comp(pOp, "quad.carve") == 0)
+			{
+				// Four places inside the quad, in the order somebody clicked
+				// them, in world units.
+				const json_value *pPoints = json_object_get(pParsed.get(), "points");
+				if(pPoints->type != json_array || pPoints->u.array.length != 8)
+					return Failed("a knife cuts along four places, which is eight numbers");
+				vec2 aRing[4];
+				for(size_t Corner = 0; Corner < 4; ++Corner)
+				{
+					// Whole world units, the same as everywhere else a place
+					// leaves the page: a thirty-second of a tile is finer than
+					// anybody can click.
+					const json_value *pX = json_array_get(pPoints, (int)Corner * 2);
+					const json_value *pY = json_array_get(pPoints, (int)Corner * 2 + 1);
+					if(pX->type != json_integer || pY->type != json_integer)
+						return Failed("a place is two whole numbers");
+					aRing[Corner] = vec2((float)json_int_get(pX), (float)json_int_get(pY));
+				}
+				for(const vec2 &Place : aRing)
+				{
+					if(!PointInQuad(pQuads->m_Quads[Quad], Place))
+						return Failed("a knife cuts inside the quad, not outside it");
+				}
+				Document.Begin(Arguments.Str("label", "Carve quad"), pMerge);
+				const size_t Made = CarveQuad(Document, Address, Quad, aRing);
+				Document.Commit();
+				return Succeeded("quad", (int)Made);
 			}
 
 			if(str_comp(pOp, "quad.shape") == 0)

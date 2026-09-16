@@ -1,8 +1,10 @@
 #include <base/dbg.h>
+#include <base/math.h>
 
 #include <game/map/document/structure.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <variant>
@@ -337,6 +339,100 @@ namespace map_document
 
 		SetQuad(Doc, Layer, Quad, Changed);
 		return true;
+	}
+
+	namespace
+	{
+		/** Twice the area of a triangle, signed - the sign says which way round. */
+		float TwiceArea(vec2 A, vec2 B, vec2 C)
+		{
+			return (B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y);
+		}
+
+		bool InTriangle(vec2 Point, vec2 A, vec2 B, vec2 C)
+		{
+			// Compared against the whole triangle's own winding, so a triangle
+			// given either way round answers the same.
+			const float Whole = TwiceArea(A, B, C);
+			if(Whole == 0.0f)
+				return false;
+			const float One = TwiceArea(Point, B, C) / Whole;
+			const float Two = TwiceArea(A, Point, C) / Whole;
+			const float Three = TwiceArea(A, B, Point) / Whole;
+			return One >= 0.0f && Two >= 0.0f && Three >= 0.0f;
+		}
+
+		vec2 CornerOf(const CQuad &Quad, size_t Corner)
+		{
+			return vec2(fx2f(Quad.m_aPoints[Corner].x), fx2f(Quad.m_aPoints[Corner].y));
+		}
+	} // namespace
+
+	bool PointInQuad(const CQuad &Quad, vec2 Point)
+	{
+		// A quad is two triangles about the corner-0-to-corner-3 diagonal.
+		const vec2 TopLeft = CornerOf(Quad, 0);
+		const vec2 BottomRight = CornerOf(Quad, 3);
+		return InTriangle(Point, TopLeft, CornerOf(Quad, 1), BottomRight) ||
+		       InTriangle(Point, TopLeft, BottomRight, CornerOf(Quad, 2));
+	}
+
+	size_t CarveQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const vec2 *apPoints)
+	{
+		CMapState &Map = Doc.Edit();
+		CLayer Changed = *Map.Layer(Layer.m_Group, Layer.m_Layer);
+		CQuadLayer *pQuads = std::get_if<CQuadLayer>(&Changed);
+		dbg_assert(pQuads != nullptr, "Layer holds no quads");
+		dbg_assert(Quad < pQuads->m_Quads.Size(), "Quad out of range");
+		const CQuad &Cut = pQuads->m_Quads[Quad];
+
+		// The four places come in as a ring, because that is how somebody
+		// clicks them; the file keeps corners as two rows. A ring that folds
+		// over itself is the same four places wound the other way, so it is
+		// unfolded rather than refused.
+		vec2 aRing[4] = {apPoints[0], apPoints[1], apPoints[2], apPoints[3]};
+		if(InTriangle(aRing[3], aRing[0], aRing[1], aRing[2]) ||
+			InTriangle(aRing[1], aRing[0], aRing[2], aRing[3]))
+		{
+			std::swap(aRing[0], aRing[3]);
+			std::swap(aRing[1], aRing[2]);
+		}
+		std::swap(aRing[2], aRing[3]);
+
+		CQuad Made = Cut;
+		const vec2 TopLeft = CornerOf(Cut, 0);
+		const vec2 BottomRight = CornerOf(Cut, 3);
+		for(size_t Corner = 0; Corner < 4; ++Corner)
+		{
+			// Which half of the old quad the place falls in decides which
+			// third corner it is measured against.
+			const size_t Third = InTriangle(aRing[Corner], TopLeft, BottomRight, CornerOf(Cut, 2)) ? 2 : 1;
+			const vec2 Away = CornerOf(Cut, Third);
+			const float Whole = TwiceArea(TopLeft, BottomRight, Away);
+			const float Here = Whole == 0.0f ? 1.0f : TwiceArea(aRing[Corner], BottomRight, Away) / Whole;
+			const float There = Whole == 0.0f ? 0.0f : TwiceArea(TopLeft, aRing[Corner], Away) / Whole;
+			const float Rest = Whole == 0.0f ? 0.0f : TwiceArea(TopLeft, BottomRight, aRing[Corner]) / Whole;
+
+			const auto Mixed = [&](int One, int Two, int Three) {
+				return (int)std::lround(One * Here + Two * There + Three * Rest);
+			};
+			Made.m_aColors[Corner].r = Mixed(Cut.m_aColors[0].r, Cut.m_aColors[3].r, Cut.m_aColors[Third].r);
+			Made.m_aColors[Corner].g = Mixed(Cut.m_aColors[0].g, Cut.m_aColors[3].g, Cut.m_aColors[Third].g);
+			Made.m_aColors[Corner].b = Mixed(Cut.m_aColors[0].b, Cut.m_aColors[3].b, Cut.m_aColors[Third].b);
+			Made.m_aColors[Corner].a = Mixed(Cut.m_aColors[0].a, Cut.m_aColors[3].a, Cut.m_aColors[Third].a);
+			Made.m_aTexcoords[Corner].x = Mixed(Cut.m_aTexcoords[0].x, Cut.m_aTexcoords[3].x, Cut.m_aTexcoords[Third].x);
+			Made.m_aTexcoords[Corner].y = Mixed(Cut.m_aTexcoords[0].y, Cut.m_aTexcoords[3].y, Cut.m_aTexcoords[Third].y);
+			Made.m_aPoints[Corner] = CPoint{f2fx(aRing[Corner].x), f2fx(aRing[Corner].y)};
+		}
+		// The pivot in the middle of what was cut, which is where a pivot
+		// belongs on a quad nobody has moved yet.
+		Made.m_aPoints[4].x = ((Made.m_aPoints[0].x + Made.m_aPoints[3].x) / 2 + (Made.m_aPoints[1].x + Made.m_aPoints[2].x) / 2) / 2;
+		Made.m_aPoints[4].y = ((Made.m_aPoints[0].y + Made.m_aPoints[3].y) / 2 + (Made.m_aPoints[1].y + Made.m_aPoints[2].y) / 2) / 2;
+
+		pQuads->m_Quads.Mutable().push_back(Made);
+		const size_t At = pQuads->m_Quads.Size() - 1;
+		Map.ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Changed));
+		return At;
 	}
 
 	CAppendReport AppendMap(CDocument &Doc, const CMapState &Other)

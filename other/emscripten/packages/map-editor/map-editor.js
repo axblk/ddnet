@@ -975,6 +975,7 @@ const PANELS_HTML = `
 			<span class="editor-panel-tools">
 				<button class="editor-small" data-role="add-quad" title="A quad in the middle of the view">+</button>
 				<button class="editor-small" data-role="delete-quad" title="Delete the quad that is picked">-</button>
+				<button class="editor-small" data-role="knife" title="Cut a piece out of the quad that is picked: four clicks inside it" aria-pressed="false">knife</button>
 			</span>
 		</header>
 		<ol class="editor-quads" data-role="quad-list"></ol>
@@ -1269,6 +1270,9 @@ class CEditorPanels {
 		// Whether what a player would see is drawn, and at which zoom:
 		// "off", "game" or "menu".
 		this.proof = "off";
+		// The places clicked with the knife so far, or null when it is not
+		// out. Four of them make a cut.
+		this.carving = null;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -2659,7 +2663,7 @@ class CEditorPanels {
 		// the units the page uses; the SVG is laid out, so it is told about
 		// the drawn ones and scales itself.
 		overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
-		const drawn = this.paintProof(overlay) + this.paintSources(overlay, known);
+		const drawn = this.paintProof(overlay) + this.paintCarve(overlay) + this.paintSources(overlay, known);
 		overlay.hidden = drawn === 0;
 	}
 
@@ -2810,6 +2814,44 @@ class CEditorPanels {
 		const said = this.editor.explain(where.group, where.layer, index);
 		readout.textContent = `${tile.x}, ${tile.y} · ${index} (0x${hex})${said === "" ? "" : ` · ${said}`}`;
 		readout.title = said;
+	}
+
+	/**
+	 * Where the knife has been clicked so far, so that a cut half made can be
+	 * seen while it is being made.
+	 */
+	paintCarve(overlay) {
+		if (this.carving === null || this.carving.length === 0) {
+			return 0;
+		}
+		const where = this.selection;
+		const spot = (x, y) => this.editor.groupPixelAt(where.group, x, y);
+		const places = [];
+		for (let at = 0; at < this.carving.length; at += 2) {
+			const point = spot(this.carving[at], this.carving[at + 1]);
+			if (point !== null) {
+				places.push(point);
+			}
+		}
+		if (places.length === 0) {
+			return 0;
+		}
+		const line = document.createElementNS(SVG_NAMESPACE, "path");
+		line.setAttribute("d", places.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join(""));
+		line.setAttribute("class", "editor-carve");
+		line.dataset.role = "carve-line";
+		overlay.append(line);
+		places.forEach((place, index) => {
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(place.x));
+			dot.setAttribute("cy", String(place.y));
+			dot.setAttribute("r", "4");
+			dot.setAttribute("class", "editor-carve-dot");
+			dot.dataset.role = "carve-dot";
+			dot.dataset.point = String(index);
+			overlay.append(dot);
+		});
+		return places.length + 1;
 	}
 
 	/** The shapes a sound layer's sources are heard within. */
@@ -3021,6 +3063,53 @@ class CEditorPanels {
 				}));
 			}, { signal: this.stopping.signal });
 		}
+		this.part("knife").addEventListener("click", () => this.knife(this.carving === null),
+			{ signal: this.stopping.signal });
+	}
+
+	/**
+	 * The knife: out or away.
+	 *
+	 * Out, it waits for four clicks inside the quad that is picked and makes
+	 * a piece of it into a quad of its own. Away, whatever was clicked so far
+	 * is forgotten - a cut half made is not a cut.
+	 */
+	knife(out) {
+		this.carving = out ? [] : null;
+		this.part("knife").setAttribute("aria-pressed", out ? "true" : "false");
+		this.refreshOverlay();
+	}
+
+	/**
+	 * A click on the map while the knife is out.
+	 *
+	 * @param world Where it was, in the quad layer's own coordinates.
+	 *
+	 * @return Whether the knife took it, so the canvas knows to do nothing
+	 * else with the click.
+	 */
+	carveAt(world) {
+		if (this.carving === null || this.quad < 0) {
+			return false;
+		}
+		this.carving.push(Math.round(world.x), Math.round(world.y));
+		if (this.carving.length < 8) {
+			this.refreshOverlay();
+			return true;
+		}
+		const where = this.selection;
+		const points = this.carving;
+		this.carving = [];
+		const answer = this.change(() => this.editor.apply({
+			op: "quad.carve", group: where.group, layer: where.layer, quad: this.quad, points: points,
+		}));
+		if (answer && answer.ok) {
+			this.quad = answer.quad;
+		} else {
+			this.say(answer && answer.error ? answer.error : "That cut was refused");
+		}
+		this.refresh();
+		return true;
 	}
 
 	/**
@@ -3778,7 +3867,7 @@ class CEditorPanels {
  * @param options.signal Stops listening again.
  */
 function steerWithPointer(editor, options) {
-	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, afterStroke: null, signal: undefined }, options || {});
+	const settings = Object.assign({ canvas: null, target: null, onChange: null, onView: null, onHover: null, onClickInGroup: null, afterStroke: null, signal: undefined }, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
 	if (settings.signal) {
@@ -3964,6 +4053,16 @@ function steerWithPointer(editor, options) {
 		last = { x: event.clientX, y: event.clientY };
 		capture(pointer, true);
 		const where = target();
+		// A tool that takes clicks takes this one and nothing else happens
+		// with it - the knife is the one there is so far.
+		if (event.button === 0 && where !== null && settings.onClickInGroup !== null) {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+			if (world !== null && settings.onClickInGroup(world, where) === true) {
+				doing = "tool";
+				return;
+			}
+		}
 		if (event.button === 0 && where !== null && (takeQuadPoint(event, where) || takeSource(event, where))) {
 			return;
 		}
@@ -4002,6 +4101,9 @@ function steerWithPointer(editor, options) {
 			settings.onHover(tileAt(event));
 		}
 		if (doing === null || pointer !== event.pointerId) {
+			return;
+		}
+		if (doing === "tool") {
 			return;
 		}
 		if (doing === "move") {
@@ -4066,6 +4168,13 @@ function steerWithPointer(editor, options) {
 
 	const release = event => {
 		if (doing === null || pointer !== event.pointerId) {
+			return;
+		}
+		if (doing === "tool") {
+			// A tool's click did its work when it went down; letting go of it
+			// is nothing.
+			doing = null;
+			capture(event.pointerId, false);
 			return;
 		}
 		if (doing === "quad" || doing === "source") {

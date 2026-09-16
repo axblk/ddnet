@@ -601,6 +601,7 @@ const PANELS_HTML = `
 			</span>
 		</header>
 		<ol class="editor-quads" data-role="quad-list"></ol>
+		<div class="editor-props" data-role="quad-props"></div>
 	</section>
 	<section class="editor-panel" data-role="envelopes-panel">
 		<header class="editor-panel-head">
@@ -1651,6 +1652,40 @@ class CEditorPanels {
 		} else {
 			this.editor.showQuad(where.group, where.layer, this.quad);
 		}
+		this.refreshQuadProps(quads[this.quad]);
+	}
+
+	/**
+	 * The colours and the envelope bindings of the quad that is picked.
+	 *
+	 * Written as fields rather than dragged on the map, because that is what
+	 * they are: a colour is picked and a binding is a number. The points are
+	 * the other way round and are not here at all - they are dragged.
+	 */
+	refreshQuadProps(quad) {
+		const props = this.part("quad-props");
+		props.textContent = "";
+		if (quad === undefined) {
+			return;
+		}
+		const where = this.selection;
+		const index = this.quad;
+		// The four channels the map keeps, so that a colour picker - which
+		// has no alpha - can put the one it does not know back untouched.
+		const thing = { posEnv: quad.posEnv, posEnvOffset: quad.posEnvOffset, colorEnv: quad.colorEnv, colorEnvOffset: quad.colorEnvOffset };
+		QUAD_CORNERS.forEach((name, corner) => {
+			const color = quad.colors.slice(corner * 4, corner * 4 + 4);
+			thing[`corner${corner}`] = color;
+			thing[`alpha${corner}`] = color[3];
+			const set = value => ({ op: "quad.setColor", group: where.group, layer: where.layer, quad: index, corner: corner, value: value });
+			props.append(this.field(thing, { prop: `corner${corner}`, label: `${name} colour`, kind: "color" }, set));
+			props.append(this.field(thing, { prop: `alpha${corner}`, label: `${name} alpha`, kind: "number" },
+				value => set(value === null ? null : color.slice(0, 3).concat([Math.min(255, Math.max(0, value))]))));
+		});
+		for (const description of QUAD_PROPS) {
+			props.append(this.field(thing, description,
+				value => ({ op: "quad.setProp", group: where.group, layer: where.layer, quad: index, prop: description.prop, value: value })));
+		}
 	}
 
 	refreshEnvelopes() {
@@ -2244,6 +2279,17 @@ const WHEEL_ZOOM_STEP = 1.1;
 // What the channels of an envelope are called and what colour each is drawn
 // in. Which of them an envelope has is its channel count: four are a colour,
 // three a place and a turn, one a volume.
+// What a quad has beside its points: a colour on each corner, and which
+// envelopes move and colour it. The corners are named the way the file orders
+// them - top left, top right, bottom left, bottom right.
+const QUAD_CORNERS = ["Top left", "Top right", "Bottom left", "Bottom right"];
+const QUAD_PROPS = [
+	{ prop: "posEnv", label: "Position envelope", kind: "number" },
+	{ prop: "posEnvOffset", label: "Position offset", kind: "number" },
+	{ prop: "colorEnv", label: "Colour envelope", kind: "number" },
+	{ prop: "colorEnvOffset", label: "Colour offset", kind: "number" },
+];
+
 const ENVELOPE_CHANNELS = {
 	1: [{ name: "Volume", colour: "#e8b84a" }],
 	3: [{ name: "X", colour: "#e8615a" }, { name: "Y", colour: "#5ad07a" }, { name: "Rotation", colour: "#5a9ce8" }],

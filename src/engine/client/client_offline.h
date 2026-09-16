@@ -87,6 +87,8 @@ public:
 	void DemoSliceBegin() override {}
 	void DemoSliceEnd() override {}
 	void Disconnect() override {}
+	void CloseDemo() override {}
+	void SwitchSessionFocus() override {}
 	void DummyConnect() override {}
 	void DummyDisconnect(const char *pReason) override {}
 	void EnterGame(CSessionId SessionId, CStreamId StreamId) override {}

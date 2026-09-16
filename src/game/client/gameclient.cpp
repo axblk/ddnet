@@ -281,7 +281,16 @@ bool CGameClient::AudioForSession(CSessionId SessionId, bool &Offline) const
 			return false;
 	}
 #endif
-	return Client()->FocusedSessionId() == SessionId;
+	// The server and a demo beside it are never heard both at once, but either
+	// of them can be the one that is heard.
+	CSessionId Heard = Client()->FocusedSessionId();
+	if(g_Config.m_ClPictureInPictureSound && (g_Config.m_ClPictureInPicture || g_Config.m_ClDummySplitScreen))
+	{
+		const CSessionId Other = Heard == Client()->DemoSessionId() ? Client()->NetworkSessionId() : Client()->DemoSessionId();
+		if(m_SessionContexts.Find(Other) != nullptr && Client()->SessionState(Other) == ESessionState::READY)
+			Heard = Other;
+	}
+	return Heard == SessionId;
 }
 
 bool CGameClient::AudioForState(const CGameState &State, bool &Offline) const
@@ -1992,7 +2001,8 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 		Entry.m_pView = &GameView(Session.Id(), Conn);
 		Entry.m_Conn = Conn;
 		Entry.m_Active = Entry.m_pView == &View;
-		Entry.m_Audible = Entry.m_Active;
+		bool OfflineAudio;
+		Entry.m_Audible = Conn == PlayedConnection(Session.Id()) && AudioForSession(Session.Id(), OfflineAudio);
 		Entry.m_Inset = Inset;
 		m_vPreparedRenderEntries.push_back(Entry);
 	};

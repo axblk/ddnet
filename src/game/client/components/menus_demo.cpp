@@ -63,11 +63,18 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 		pDemoState->DamageIndicators().Reset();
 		GameClient()->ResetInfoMessages(DemoSessionId);
 		pDemoState->Particles().Reset();
-		GameClient()->m_Sounds.OnReset();
-		GameClient()->m_Scoreboard.OnReset();
+		// The sounds and boards belong to whatever has focus, which is the server
+		// while the demo plays in a corner of it.
+		const bool Focused = Client()->FocusedSessionId() == DemoSessionId;
+		if(Focused)
+		{
+			GameClient()->m_Sounds.OnReset();
+			GameClient()->m_Scoreboard.OnReset();
+		}
 		pDemoSession->Stats().Reset();
 		pDemoSession->MatchReportAssembler().Reset();
-		GameClient()->m_Statboard.OnReset();
+		if(Focused)
+			GameClient()->m_Statboard.OnReset();
 		GameClient()->m_SuppressEvents = true;
 		if(TimeToSeek != 0.0f)
 			DemoPlayer()->SeekTime(TimeToSeek);
@@ -161,10 +168,15 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		m_SkipDurationIndex = NumDurationLabels - 1;
 	}
 
+	// While the server has focus and the demo plays in a corner, the keys belong
+	// to the game and the menu, and the demo is only steered with the mouse.
+	const bool DemoFocused = Client()->FocusedSessionId() == Client()->DemoSessionId();
+	const bool ServerReady = Client()->SessionState(Client()->NetworkSessionId()) == ESessionState::READY;
+
 	// handle keyboard shortcuts independent of active menu
 	float PositionToSeek = -1.0f;
 	float TimeToSeek = 0.0f;
-	if(!GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
+	if(DemoFocused && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
 	{
 		// increase/decrease speed
 		if(!Input()->ModifierIsPressed() && !Input()->ShiftIsPressed() && !Input()->AltIsPressed())
@@ -326,7 +338,8 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	CUIRect DemoControls;
 	MainView.HSplitBottom(TotalHeight, nullptr, &DemoControls);
 	DemoControls.VSplitLeft(50.0f, nullptr, &DemoControls);
-	DemoControls.VSplitLeft(600.0f, &DemoControls, nullptr);
+	// Room for the two buttons that only a demo beside a server has.
+	DemoControls.VSplitLeft(600.0f + (ServerReady ? 2 * (ButtonbarHeight + Margins) : 0.0f), &DemoControls, nullptr);
 	const CUIRect DemoControlsOriginal = DemoControls;
 	DemoControls.x += m_DemoControlsPositionOffset.x;
 	DemoControls.y += m_DemoControlsPositionOffset.y;
@@ -738,13 +751,38 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	// close button
 	ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
 	static CButtonContainer s_ExitButton;
-	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
+	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (DemoFocused && Input()->KeyPress(KEY_C) && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
 	{
-		Client()->Disconnect();
-		SetMenuPage(PAGE_DEMOS);
+		Client()->CloseDemo();
+		if(DemoFocused)
+			SetMenuPage(PAGE_DEMOS);
 		DemolistOnUpdate(false);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_ExitButton, &Button, Localize("Close the demo player"));
+
+	if(ServerReady)
+	{
+		// Which of the two has focus, and which of them is heard.
+		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
+		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
+		static CButtonContainer s_SwitchFocusButton;
+		if(Ui()->DoButton_FontIcon(&s_SwitchFocusButton, FontIcon::ARROWS_LEFT_RIGHT, 0, &Button, BUTTONFLAG_LEFT))
+		{
+			Client()->SwitchSessionFocus();
+			// Entering the other state closes the menu, as it does after joining.
+			SetActive(true);
+		}
+		GameClient()->m_Tooltips.DoToolTip(&s_SwitchFocusButton, &Button,
+			DemoFocused ? Localize("Back to the server. While you watch the demo, your player stands still and the server may move it to the spectators for being inactive.") : Localize("Watch the demo, and show the server in the corner instead"));
+
+		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
+		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
+		static CButtonContainer s_OtherSoundButton;
+		if(Ui()->DoButton_FontIcon(&s_OtherSoundButton, FontIcon::MUSIC, 0, &Button, BUTTONFLAG_LEFT, IGraphics::CORNER_ALL, g_Config.m_ClPictureInPictureSound != 0))
+			g_Config.m_ClPictureInPictureSound ^= 1;
+		const bool DemoHeard = DemoFocused != (g_Config.m_ClPictureInPictureSound != 0);
+		GameClient()->m_Tooltips.DoToolTip(&s_OtherSoundButton, &Button, DemoHeard ? Localize("Hear the server instead of the demo") : Localize("Hear the demo instead of the server"));
+	}
 
 	// toggle keyboard shortcuts button
 	ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
@@ -757,7 +795,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	GameClient()->m_Tooltips.DoToolTip(&s_KeyboardShortcutsButton, &Button, Localize("Toggle keyboard shortcuts"));
 
 	// auto camera button (only available when it is possible to use)
-	if(GameClient()->m_Camera.CanUseAutoSpecCamera())
+	if(DemoFocused && GameClient()->m_Camera.CanUseAutoSpecCamera())
 	{
 		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
 		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
@@ -1668,10 +1706,8 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 			}
 			else // file
 			{
-				if(GameClient()->CurrentRaceTime() / 60 >= g_Config.m_ClConfirmDisconnectTime && g_Config.m_ClConfirmDisconnectTime >= 0)
-					PopupConfirm(Localize("Disconnect"), Localize("Are you sure that you want to disconnect and play this demo?"), Localize("Yes"), Localize("No"), &CMenus::PopupConfirmPlayDemo);
-				else
-					CMenus::PopupConfirmPlayDemo();
+				// Nothing is disconnected: the server keeps running beside the demo.
+				PopupConfirmPlayDemo();
 				return;
 			}
 		}

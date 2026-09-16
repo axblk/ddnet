@@ -16,6 +16,8 @@
 #include <memory>
 #include <vector>
 
+class IConfigManager;
+class IConsole;
 class IEngineGraphics;
 class IEngineGraphicsWindow;
 class IKernel;
@@ -71,9 +73,9 @@ public:
 	CStandaloneMapView &operator=(const CStandaloneMapView &) = delete;
 
 	/**
-	 * Brings up the kernel, the storage and the jobs. Opening a window comes
-	 * after this, so that whatever else belongs in the kernel - a console, the
-	 * settings - is registered before anything reads a setting.
+	 * Brings up the kernel, the storage, the settings and the jobs. Opening a
+	 * window comes after this, so that everything that belongs in the kernel
+	 * is registered before anything reads a setting.
 	 *
 	 * @return `true` on success, `false` after reporting what went wrong.
 	 */
@@ -330,6 +332,13 @@ private:
 
 	std::unique_ptr<IKernel> m_pKernel;
 	std::unique_ptr<IStorage> m_pStorage;
+	// The settings, and what registers them. Every program that draws a map
+	// needs them in place before the graphics read one - the texture LOD bias
+	// among them, without which a picture comes out sharper than anything
+	// anybody would ever see in the game. The kernel owns both, as it owns
+	// the engine.
+	IConsole *m_pConsole = nullptr;
+	IConfigManager *m_pConfigManager = nullptr;
 	MapViewSupport::CMinimalEngine *m_pEngine = nullptr;
 	IEngineGraphicsWindow *m_pWindow = nullptr;
 	IEngineGraphics *m_pGraphics = nullptr;

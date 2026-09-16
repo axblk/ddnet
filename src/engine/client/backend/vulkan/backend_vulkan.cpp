@@ -999,13 +999,6 @@ private:
 	// call for nothing. Two slots because dual atlas text binds a second
 	// sampler and grouped quads bind a second uniform set.
 	std::array<VkDescriptorSet, 2> m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-	// Every pipeline declares viewport and scissor dynamic, so both have to be
-	// set again in every command buffer - but not in every draw, and a draw is
-	// the far more common of the two. Invalid until the first set of a command
-	// buffer, and reset wherever m_LastPipeline is.
-	bool m_HasDynamicState = false;
-	VkViewport m_LastViewport = {};
-	VkRect2D m_LastScissor = {};
 
 	void BindDescriptorSet(VkCommandBuffer CommandBuffer, VkPipelineLayout PipeLayout, uint32_t Slot, VkDescriptorSet Descriptor);
 
@@ -2082,7 +2075,6 @@ public:
 
 		m_LastPipeline = VK_NULL_HANDLE;
 		m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-		m_HasDynamicState = false;
 
 		m_StreamedBuffers.Destroy([&](size_t ImageIndex, SFrameBuffers &Buffer) { DestroyBufferOfFrame(ImageIndex, Buffer); });
 		m_StreamedUniformBuffers.Destroy([&](size_t ImageIndex, SFrameUniformBuffers &Buffer) { DestroyUniBufferOfFrame(ImageIndex, Buffer); });
@@ -2235,7 +2227,6 @@ public:
 
 		m_LastPipeline = VK_NULL_HANDLE;
 		m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-		m_HasDynamicState = false;
 
 		m_vvFrameDelayedBufferCleanup.resize(m_SwapChainImageCount);
 		m_vvFrameDelayedTextureCleanup.resize(m_SwapChainImageCount);
@@ -2712,7 +2703,6 @@ bool CCommandProcessorFragment_Vulkan::FlushRenderCommands()
 		return false;
 	m_LastPipeline = VK_NULL_HANDLE;
 	m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-	m_HasDynamicState = false;
 	return true;
 }
 
@@ -5166,15 +5156,7 @@ void CCommandProcessorFragment_Vulkan::ExecuteMemoryCommandBuffer()
 		VkFence Fence = VK_NULL_HANDLE;
 		if(m_CurImageIndex < m_vMemoryCommandBufferFences.size() && vkResetFences(m_VKDevice, 1, &m_vMemoryCommandBufferFences[m_CurImageIndex]) == VK_SUCCESS)
 			Fence = m_vMemoryCommandBufferFences[m_CurImageIndex];
-		const VkResult SubmitResult = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, Fence);
-		if(SubmitResult != VK_SUCCESS)
-		{
-			// Marking the slot pending would leave the next frame waiting for
-			// a fence that nothing is going to signal.
-			m_vUsedMemoryCommandBuffer[m_CurImageIndex] = false;
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Submitting the memory command buffer failed.", CheckVulkanCriticalError(SubmitResult));
-			return;
-		}
+		vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, Fence);
 		if(Fence != VK_NULL_HANDLE)
 			m_vMemoryCommandBufferPending[m_CurImageIndex] = true;
 		else
@@ -6418,17 +6400,8 @@ void CCommandProcessorFragment_Vulkan::BindPipeline(VkCommandBuffer &CommandBuff
 		m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 	}
 
-	if(!m_HasDynamicState || mem_comp(&m_LastViewport, &ExecBuffer.m_Viewport, sizeof(m_LastViewport)) != 0)
-	{
-		vkCmdSetViewport(CommandBuffer, 0, 1, &ExecBuffer.m_Viewport);
-		m_LastViewport = ExecBuffer.m_Viewport;
-	}
-	if(!m_HasDynamicState || mem_comp(&m_LastScissor, &ExecBuffer.m_Scissor, sizeof(m_LastScissor)) != 0)
-	{
-		vkCmdSetScissor(CommandBuffer, 0, 1, &ExecBuffer.m_Scissor);
-		m_LastScissor = ExecBuffer.m_Scissor;
-	}
-	m_HasDynamicState = true;
+	vkCmdSetViewport(CommandBuffer, 0, 1, &ExecBuffer.m_Viewport);
+	vkCmdSetScissor(CommandBuffer, 0, 1, &ExecBuffer.m_Scissor);
 }
 
 bool CCommandProcessorFragment_Vulkan::CreateRenderPass(VkRenderPass &RenderPass, VkFormat Format, bool ClearAttachments, VkImageLayout FinalLayout)

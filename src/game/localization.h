@@ -51,10 +51,25 @@ class CLocalizationDatabase
 	CHeap m_StringsHeap;
 
 public:
-	void LoadIndexfile(class IStorage *pStorage, class IConsole *pConsole);
+	/**
+	 * Takes the list of languages, which is `languages/index.txt`.
+	 *
+	 * The text rather than the file, because in the browser a file is a
+	 * request: whoever reads it hands over what was read rather than making
+	 * the main thread wait for it.
+	 */
+	void ParseIndex(const char *pIndex);
 	const std::vector<CLanguage> &Languages() const { return m_vLanguages; }
 	void SelectDefaultLanguage(class IConsole *pConsole, char *pFilename, size_t Length) const;
 
+	/**
+	 * Takes the translations of one language. An empty text unloads them, which
+	 * is what English is.
+	 *
+	 * @param pText The contents of the language file.
+	 * @param pName What the text is called, for error messages.
+	 */
+	bool ParseLanguage(const char *pText, const char *pName);
 	bool Load(const char *pFilename, class IStorage *pStorage, class IConsole *pConsole);
 
 	void AddString(const char *pOrgStr, const char *pNewStr, const char *pContext);

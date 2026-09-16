@@ -464,7 +464,6 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	void ReleaseTexture(STexture &Texture);
 
 	void RememberPipelineLayout(WGPURenderPipeline Pipeline, WGPUPipelineLayout Layout);
-	void ReleasePipeline(WGPURenderPipeline &Pipeline);
 
 	bool CreateTextureBindGroups(WGPUTextureView View, WGPUBindGroupLayout Layout, uint32_t TextureBinding, std::array<WGPUBindGroup, 2> &aBindGroups, bool TextureArray);
 	WGPURenderPipeline MipmapPipeline(IGraphics::ETextureFormat Format);
@@ -2728,18 +2727,6 @@ void CCommandProcessorFragment_WebGpu::RememberPipelineLayout(WGPURenderPipeline
 	m_PipelineBindGroupLayouts[Pipeline] = aLayouts;
 }
 
-void CCommandProcessorFragment_WebGpu::ReleasePipeline(WGPURenderPipeline &Pipeline)
-{
-	if(Pipeline == nullptr)
-		return;
-	// A released pipeline may come back at the same address, so what was
-	// remembered for it goes with it. Only the pipelines given up here are
-	// forgotten: the other set keeps what it registered.
-	m_PipelineBindGroupLayouts.erase(Pipeline);
-	wgpuRenderPipelineRelease(Pipeline);
-	Pipeline = nullptr;
-}
-
 WGPUVertexFormat CCommandProcessorFragment_WebGpu::VertexAttributeFormat(const IGraphics::CVertexAttributeDesc &Attribute)
 {
 	switch(Attribute.m_Type)
@@ -2996,16 +2983,45 @@ bool CCommandProcessorFragment_WebGpu::CreateDualAtlasPipelines(SPipelineSet &Pi
 
 bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines, WGPUTextureFormat Format, uint32_t SampleCount)
 {
-	ReleasePipeline(Pipelines.m_PlanarYuv);
-	ReleasePipeline(Pipelines.m_Blur);
-	for(auto *pPipelineArray : {&Pipelines.m_aPrimitive, &Pipelines.m_aLayeredPrimitive})
-		for(auto &Pipeline : *pPipelineArray)
-			ReleasePipeline(Pipeline);
+	// Whatever is released below may come back at the same address.
+	m_PipelineBindGroupLayouts.clear();
+	if(Pipelines.m_PlanarYuv != nullptr)
+	{
+		wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
+		Pipelines.m_PlanarYuv = nullptr;
+	}
+	if(Pipelines.m_Blur != nullptr)
+	{
+		wgpuRenderPipelineRelease(Pipelines.m_Blur);
+		Pipelines.m_Blur = nullptr;
+	}
+	for(auto &Pipeline : Pipelines.m_aPrimitive)
+	{
+		if(Pipeline != nullptr)
+			wgpuRenderPipelineRelease(Pipeline);
+		Pipeline = nullptr;
+	}
+	for(auto &Pipeline : Pipelines.m_aLayeredPrimitive)
+	{
+		if(Pipeline != nullptr)
+			wgpuRenderPipelineRelease(Pipeline);
+		Pipeline = nullptr;
+	}
 	for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aArrayColorTransform, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
+	{
 		for(auto &Pipeline : *pPipelineArray)
-			ReleasePipeline(Pipeline);
+		{
+			if(Pipeline != nullptr)
+				wgpuRenderPipelineRelease(Pipeline);
+			Pipeline = nullptr;
+		}
+	}
 	for(auto &Pipeline : Pipelines.m_aDualAtlas)
-		ReleasePipeline(Pipeline);
+	{
+		if(Pipeline != nullptr)
+			wgpuRenderPipelineRelease(Pipeline);
+		Pipeline = nullptr;
+	}
 
 	std::array<WGPUVertexAttribute, 3> aAttributes{};
 	aAttributes[0].format = WGPUVertexFormat_Float32x2;
@@ -3471,6 +3487,8 @@ return vec4f((outline.rgb + primary.rgb * primary.a) / alpha, alpha);
 
 void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 {
+	// Whatever is released below may come back at the same address.
+	m_PipelineBindGroupLayouts.clear();
 	for(auto &Buffer : m_vBuffers)
 		ReleaseBuffer(Buffer);
 	m_vBuffers.clear();
@@ -3482,15 +3500,24 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 	for(auto &Pipelines : m_aPipelineSets)
 	{
 		for(auto *pPipelineArray : {&Pipelines.m_aPrimitive, &Pipelines.m_aLayeredPrimitive})
+		{
 			for(auto &Pipeline : *pPipelineArray)
-				ReleasePipeline(Pipeline);
+				if(Pipeline != nullptr)
+					wgpuRenderPipelineRelease(Pipeline);
+		}
 		for(auto *pPipelineArray : {&Pipelines.m_aUniformColor, &Pipelines.m_aInstanced, &Pipelines.m_aArrayColor, &Pipelines.m_aArrayColorTransform, &Pipelines.m_aQuadPerItem, &Pipelines.m_aQuadShared})
+		{
 			for(auto &Pipeline : *pPipelineArray)
-				ReleasePipeline(Pipeline);
+				if(Pipeline != nullptr)
+					wgpuRenderPipelineRelease(Pipeline);
+		}
 		for(auto &Pipeline : Pipelines.m_aDualAtlas)
-			ReleasePipeline(Pipeline);
-		ReleasePipeline(Pipelines.m_Blur);
-		ReleasePipeline(Pipelines.m_PlanarYuv);
+			if(Pipeline != nullptr)
+				wgpuRenderPipelineRelease(Pipeline);
+		if(Pipelines.m_Blur != nullptr)
+			wgpuRenderPipelineRelease(Pipelines.m_Blur);
+		if(Pipelines.m_PlanarYuv != nullptr)
+			wgpuRenderPipelineRelease(Pipelines.m_PlanarYuv);
 		Pipelines = {};
 	}
 	if(m_QuadBindGroup != nullptr)

@@ -5,6 +5,7 @@
 
 #include <base/io.h>
 #include <base/log.h>
+#include <base/mem.h>
 #include <base/os.h>
 #include <base/str.h>
 
@@ -18,20 +19,29 @@ const char *Localize(const char *pStr, const char *pContext)
 	return pNewStr ? pNewStr : pStr;
 }
 
-void CLocalizationDatabase::LoadIndexfile(IStorage *pStorage, IConsole *pConsole)
+// The line reader takes a buffer and frees it, so what it gets is a copy of
+// the text rather than the bytes whoever read them still holds.
+static char *DuplicateForLineReader(const char *pText)
+{
+	const size_t Length = str_length(pText);
+	char *pBuffer = static_cast<char *>(malloc(Length + 1));
+	if(pBuffer != nullptr)
+		mem_copy(pBuffer, pText, Length + 1);
+	return pBuffer;
+}
+
+void CLocalizationDatabase::ParseIndex(const char *pIndex)
 {
 	m_vLanguages.clear();
 
 	const std::vector<std::string> vEnglishLanguageCodes = {"en"};
 	m_vLanguages.emplace_back("English", "", 826, vEnglishLanguageCodes);
 
-	const char *pFilename = "languages/index.txt";
-	CLineReader LineReader;
-	if(!LineReader.OpenFile(pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
-	{
-		log_error("localization", "Couldn't open index file '%s'", pFilename);
+	char *pBuffer = DuplicateForLineReader(pIndex);
+	if(pBuffer == nullptr)
 		return;
-	}
+	CLineReader LineReader;
+	LineReader.OpenBuffer(pBuffer);
 
 	while(const char *pLine = LineReader.Get())
 	{
@@ -170,17 +180,33 @@ bool CLocalizationDatabase::Load(const char *pFilename, IStorage *pStorage, ICon
 {
 	// empty string means unload
 	if(pFilename[0] == 0)
+		return ParseLanguage("", pFilename);
+
+	char *pFileData = pStorage->ReadFileStr(pFilename, IStorage::TYPE_ALL);
+	if(pFileData == nullptr)
+		return false;
+	const bool Success = ParseLanguage(pFileData, pFilename);
+	free(pFileData);
+	return Success;
+}
+
+bool CLocalizationDatabase::ParseLanguage(const char *pText, const char *pName)
+{
+	// empty text means unload
+	if(pText[0] == '\0')
 	{
 		m_vStrings.clear();
 		m_StringsHeap.Reset();
 		return true;
 	}
 
-	CLineReader LineReader;
-	if(!LineReader.OpenFile(pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
+	char *pBuffer = DuplicateForLineReader(pText);
+	if(pBuffer == nullptr)
 		return false;
+	CLineReader LineReader;
+	LineReader.OpenBuffer(pBuffer);
 
-	log_info("localization", "loaded '%s'", pFilename);
+	log_info("localization", "loaded '%s'", pName);
 	m_vStrings.clear();
 	m_StringsHeap.Reset();
 

@@ -13,11 +13,44 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <vector>
 
 enum
 {
 	ITEMTYPE_EX = 0xFFFF,
+};
+
+/**
+ * The contents of one data item as they are stored in the file.
+ *
+ * Uncompressing them can be done on any thread, for example on a job thread
+ * while the main thread continues.
+ */
+class CDataFileRawData
+{
+	std::vector<uint8_t> m_vData;
+	size_t m_UncompressedSize = 0;
+	bool m_Compressed = false;
+
+public:
+	CDataFileRawData() = default;
+	CDataFileRawData(std::vector<uint8_t> vData, size_t UncompressedSize, bool Compressed);
+
+	/**
+	 * Returns the size that the data has after uncompressing it.
+	 *
+	 * @return Size of the uncompressed data.
+	 */
+	size_t UncompressedSize() const { return m_UncompressedSize; }
+
+	/**
+	 * Uncompresses the data into a newly allocated buffer.
+	 *
+	 * @return Buffer of `UncompressedSize()` bytes or `nullptr` if the data is
+	 * corrupt or the memory could not be allocated.
+	 */
+	[[nodiscard]] std::unique_ptr<uint8_t[]> Uncompress() const;
 };
 
 /**
@@ -36,6 +69,11 @@ class CDataFileReader
 
 	int GetExternalItemType(int InternalType, CUuid *pUuid);
 	int GetInternalItemType(int ExternalType);
+	/**
+	 * Makes the reader out of the bytes of a whole file, whether they were
+	 * read here or handed over. Takes ownership of `pFileData`.
+	 */
+	[[nodiscard]] bool OpenBuffer(unsigned char *pFileData, unsigned FileDataSize, const char *pFullName, const char *pPath);
 
 public:
 	~CDataFileReader();
@@ -43,14 +81,46 @@ public:
 
 	[[nodiscard]] bool Open(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType);
 	[[nodiscard]] bool Open(IStorage *pStorage, const char *pPath, int StorageType);
+	/**
+	 * Opens a datafile from bytes that are already in memory, for a caller
+	 * that got them from somewhere other than the storage.
+	 *
+	 * @param pFullName Name of the file without its extension, as `Open` takes
+	 * it from the path.
+	 * @param pData Contents of the file. Only read, the reader copies what it
+	 * keeps.
+	 * @param Size Number of bytes in `pData`.
+	 * @param pPath Where the bytes came from, for logging and for the callers
+	 * that ask the reader about it afterwards.
+	 */
+	[[nodiscard]] bool OpenFromMemory(const char *pFullName, const void *pData, unsigned Size, const char *pPath);
 	void Close();
 	bool IsOpen() const;
-	IOHANDLE File() const;
+	/**
+	 * The bytes of the file as they were read when it was opened.
+	 *
+	 * @return Buffer of `Size()` bytes, valid until the reader is closed.
+	 */
+	const unsigned char *FileData() const;
 
 	int GetDataSize(int Index) const;
 	void *GetData(int Index);
 	void *GetDataSwapped(int Index); // makes sure that the data is 32bit LE ints when saved
 	const char *GetDataString(int Index);
+	/**
+	 * Reads the stored bytes of a data item without uncompressing them.
+	 *
+	 * The data is not cached, so `UnloadData` must not be used for it. Data
+	 * that is already loaded or that is being intercepted is returned
+	 * uncompressed instead, so the result always matches `GetData`.
+	 *
+	 * @param Index Index of the data item.
+	 * @param RawData Receives the data of the item.
+	 *
+	 * @return `true` on success, `false` if the item does not exist or could
+	 * not be read.
+	 */
+	[[nodiscard]] bool GetRawData(int Index, CDataFileRawData &RawData);
 	void AddDataProcessor(int Index, FDataProcessor DataProcessor);
 	void UnloadData(int Index);
 	int NumData() const;

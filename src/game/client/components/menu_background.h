@@ -1,6 +1,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 #define GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 
+#include <engine/client/asset_loader.h>
+
 #include <game/client/components/background.h>
 #include <game/client/components/camera.h>
 
@@ -20,6 +22,7 @@ public:
 	bool m_HasDay;
 	bool m_HasNight;
 	IGraphics::CTextureHandle m_IconTexture;
+	CImageResource m_IconResource;
 	bool operator<(const CTheme &Other) const { return m_Name < Other.m_Name; }
 };
 
@@ -85,11 +88,32 @@ private:
 	float m_MoveTime;
 
 	bool m_IsInit;
-	bool m_Loading;
+	uint64_t m_AssetGeneration = 0;
+
+	/**
+	 * The background map, while it is being read. The map is a file like any
+	 * other: read where it is needed it would be the main thread waiting for
+	 * the network, so it is an asset job and the menu draws its plain
+	 * background until the map is here.
+	 */
+	CTypedAssetResource<CDataAssetJob> m_MapResource;
+	/**
+	 * Name of the background map, without a folder or an extension.
+	 */
+	std::string m_MenuMapName;
+	/**
+	 * The paths that are still to be tried for the background map, in order.
+	 * A theme can bring a day and a night map, so what is wanted may not be
+	 * there and the next one is taken.
+	 */
+	std::vector<std::string> m_vMapCandidates;
 
 	void ResetPositions();
 
+	void StartLoadingMapCandidate();
+	void FinishMapLoad();
 	void LoadThemeIcon(CTheme &Theme);
+	void FinishThemeIconLoads();
 	static int ThemeScan(const char *pName, int IsDir, int DirType, void *pUser);
 
 	std::vector<CTheme> m_vThemes;
@@ -100,12 +124,13 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
+	void OnUpdate() override;
+	void OnShutdown() override;
 	void OnMapLoad() override;
 
 	void LoadMenuBackground(bool HasDayHint = true, bool HasNightHint = true);
 
 	bool Render();
-	bool IsLoading() const { return m_Loading; }
 
 	void ChangePosition(int PositionNumber);
 

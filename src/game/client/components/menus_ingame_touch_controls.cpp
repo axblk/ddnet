@@ -56,7 +56,7 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	bool Changed = false;
 	CUIRect Functional, LeftButton, MiddleButton, RightButton, EditBox, Block;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	MainView.Draw(CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.VMargin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(MAINMARGIN, nullptr, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
@@ -635,7 +635,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 {
 	CUIRect LeftButton, MiddleButton, RightButton, EditBox, LabelRect, CommandRect, X, Y, W, H, Row;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	MainView.Draw(CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 
 	MainView.HSplitTop(ROWSIZE, &Row, &MainView);
@@ -900,6 +900,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 void CMenusIngameTouchControls::RenderSelectingTab(CUIRect SelectingTab)
 {
 	CUIRect LeftButton;
+	GameClient()->m_Menus.RenderBackdropRegion(SelectingTab, IGraphics::CORNER_T, 10.0f);
 	SelectingTab.VSplitLeft(SelectingTab.w / 4.0f, &LeftButton, &SelectingTab);
 	static CButtonContainer s_FileTab;
 	if(GameClient()->m_Menus.DoButton_MenuTab(&s_FileTab, Localize("File"), m_CurrentMenu == EMenuType::MENU_FILE, &LeftButton, IGraphics::CORNER_TL))
@@ -922,7 +923,7 @@ void CMenusIngameTouchControls::RenderConfigSettings(CUIRect MainView)
 {
 	CUIRect EditBox, Row, Label, Button;
 	MainView.h = 2 * MAINMARGIN + 4 * ROWSIZE + 3 * ROWGAP;
-	MainView.Draw(CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.VMargin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(MAINMARGIN, nullptr, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
@@ -984,7 +985,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 {
 	CUIRect EditBox, Button;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	MainView.Draw(CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
 	MainView.HSplitTop(ROWGAP, nullptr, &MainView);
@@ -1044,7 +1045,7 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 {
 	CUIRect Label, Button, Row;
 	MainView.h = 2 * MAINMARGIN + 4 * ROWSIZE + 3 * ROWGAP;
-	MainView.Draw(CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 
 	MainView.HSplitTop(ROWSIZE, &Row, &MainView);

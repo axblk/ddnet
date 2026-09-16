@@ -22,7 +22,7 @@
  * here.
  */
 
-import DDNetBase, { addIcons, Program } from "@ddnet/base";
+import DDNetBase, { addIcons, followSize, Program } from "@ddnet/base";
 
 // The pictures on the editor's own buttons. Named as the viewer names its
 // own, so that a page which shows both says the same thing twice rather than
@@ -1268,7 +1268,7 @@ class CEditorPanels {
 	 * @param options.signal Takes them off again, the same as `destroy`.
 	 */
 	constructor(editor, options) {
-		const settings = Object.assign({ container: null, dataBase: null, signal: undefined }, options || {});
+		const settings = Object.assign({ container: null, dataBase: null, keys: true, signal: undefined }, options || {});
 		this.editor = editor;
 		this.stopping = new AbortController();
 		if (settings.signal) {
@@ -1325,6 +1325,8 @@ class CEditorPanels {
 		this.tileset = null;
 		this.tilesetSource = null;
 		this.picked = null;
+		// Whether the panels listen for keys on the whole page themselves.
+		this.keys = settings.keys;
 		this.root = document.createElement("div");
 		this.root.className = "editor-panels";
 		this.root.innerHTML = PANELS_HTML;
@@ -1438,7 +1440,12 @@ class CEditorPanels {
 		for (const type of ["document", "loaded", "closed", "saved", "error"]) {
 			this.editor.addEventListener(type, event => this.onProgram(type, event.detail), { signal: signal });
 		}
-		document.addEventListener("keydown", event => this.onKey(event), { signal: signal });
+		// Whoever put the panels on the page may hand out the keyboard
+		// themselves - `<ddnet-editor>` does, so that two editors on one page
+		// do not both answer to the same key.
+		if (this.keys) {
+			document.addEventListener("keydown", event => this.onKey(event), { signal: signal });
+		}
 	}
 
 	onProgram(type, detail) {
@@ -4516,6 +4523,376 @@ const TILE_NUMBERS = {
 // that square. Every map there is says it this way.
 const TILESET_SIDE = 16;
 
+// ---------------------------------------------------------------------------
+// The box.
+
+/**
+ * What the frame around the map is dressed in. This is the only style the
+ * package keeps in the program: everything it holds is a grid of six areas,
+ * and everything *in* those areas is the page's own light DOM, dressed by
+ * `ddnet-editor.css` the way it always was. The colours below are asked for
+ * as variables and inherit through the shadow boundary from that same file.
+ */
+const BOX_STYLE = `
+:host {
+	display: block;
+	position: relative;
+	/* The areas answer to the width of the box, not of the window: an editor
+	   in an 800-pixel hole in somebody's page is a narrow editor even on a
+	   wide screen. */
+	container-type: inline-size;
+	container-name: editor;
+	background: var(--bg-0, #121216);
+	color: var(--text-1, #ececf1);
+	font: var(--type-sm, 400 12px/16px system-ui, sans-serif);
+	overflow: hidden;
+}
+
+:host([hidden]) {
+	display: none;
+}
+
+.box {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+	grid-template-areas:
+		"head head head"
+		"tools tools tools"
+		"left map right"
+		"dock dock dock"
+		"status status status";
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+	min-height: 0;
+}
+
+.area {
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+/* An area nobody filled takes no room at all - not a line, not a gap. The
+   class is set from a slotchange, because a slot with nothing in it is still
+   a box as far as the grid is concerned. */
+.area.empty {
+	display: none;
+}
+
+.head { grid-area: head; }
+.tools { grid-area: tools; }
+.left { grid-area: left; }
+.map { grid-area: map; position: relative; }
+.right { grid-area: right; }
+.dock { grid-area: dock; }
+.status { grid-area: status; }
+`;
+
+const BOX_HTML = `
+<div class="box" data-role="box">
+	<div class="area head"><slot name="header"></slot></div>
+	<div class="area tools"><slot name="toolbar"></slot></div>
+	<div class="area left"><slot name="left"></slot></div>
+	<div class="area map"><slot name="map"></slot></div>
+	<div class="area right"><slot name="right"></slot></div>
+	<div class="area dock"><slot name="dock"></slot></div>
+	<div class="area status"><slot name="status"></slot></div>
+</div>
+`;
+
+/**
+ * Every editor element that is on the page right now.
+ *
+ * The keyboard is the reason: a key pressed while nothing at all has the
+ * focus belongs to the editor when there is one editor, and to nobody when
+ * there are two - there would be no way to say which.
+ */
+const boxes = new Set();
+
+/**
+ * Who has the focus, through however many shadow roots. `document.activeElement`
+ * stops at the first one and names the element that holds it, not what is
+ * inside.
+ */
+function deepActive() {
+	let element = document.activeElement;
+	while (element !== null && element.shadowRoot !== null && element.shadowRoot.activeElement !== null) {
+		element = element.shadowRoot.activeElement;
+	}
+	return element;
+}
+
+// A worker has no `HTMLElement`, and a class cannot be declared from a name
+// that is not there. Nothing in a worker makes one, so the stand-in is never
+// used for anything.
+const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
+
+/**
+ * `<ddnet-editor>` - the whole editor as one element.
+ *
+ * ```html
+ * <ddnet-editor src="maps/ctf1.map" style="height: 100dvh"></ddnet-editor>
+ * ```
+ *
+ * It makes the program, the canvas, the shapes over it and the panels, and
+ * lays them out in six areas: `header`, `toolbar`, `left`, `right`, `dock`
+ * and `status`. A page may put its own things into any of them with
+ * `slot="header"` and the like; what the element fills in itself is light DOM
+ * as well, so `ddnet-editor.css` dresses it and a page may reach it.
+ *
+ * Attributes: `src` a map to open, `urlparam` a parameter of the page's own
+ * address to take one from, `theme="light"`, `remember` to let it keep what
+ * is being edited in the browser's storage between visits.
+ *
+ * The element takes no part in the page's keyboard unless the focus is inside
+ * it - which is what lets two of them stand on one page.
+ */
+class CEditorElement extends ELEMENT_BASE {
+	static observedAttributes = ["src", "theme"];
+
+	constructor() {
+		super();
+		const root = this.attachShadow({ mode: "open" });
+		root.innerHTML = `<style>${BOX_STYLE}</style>${BOX_HTML}`;
+		// What the element puts into its own light DOM: the map, and the
+		// panels beside it. A page that wants them somewhere else moves them;
+		// a page that wants none of them is Step 7's business.
+		this.mapBox = document.createElement("div");
+		this.mapBox.slot = "map";
+		this.mapBox.className = "editor-map";
+		this.editorCanvas = document.createElement("canvas");
+		this.editorCanvas.className = "editor-canvas";
+		this.editorCanvas.dataset.role = "map";
+		// The map takes the keyboard, so it has to be able to hold it.
+		this.editorCanvas.tabIndex = 0;
+		this.mapBox.append(this.editorCanvas);
+		this.sideBox = document.createElement("div");
+		this.sideBox.slot = "right";
+		this.sideBox.className = "editor-side";
+		this.editorInstance = null;
+		this.editorPanels = null;
+		this.stopping = null;
+		/** A promise for the running editor, for a page that waits for one. */
+		this.ready = null;
+	}
+
+	/** The program, once it runs, and `null` before that. */
+	get editor() {
+		return this.editorInstance;
+	}
+
+	/** The panels beside the map, once they are there. */
+	get panels() {
+		return this.editorPanels;
+	}
+
+	/** The canvas the map is drawn on. It is there before the program is. */
+	get canvas() {
+		return this.editorCanvas;
+	}
+
+	/**
+	 * One of the element's parts by the name it carries. Its own first, the
+	 * frame's after - `data-role` names are this element's, not the page's,
+	 * which is what lets two editors stand on one page and both be asked.
+	 */
+	part(role) {
+		const which = `[data-role="${role}"]`;
+		return this.querySelector(which) || this.shadowRoot.querySelector(which);
+	}
+
+	connectedCallback() {
+		// Moving an element within a page takes it out and puts it back, and a
+		// program is too dear to throw away for that.
+		if (this.ready !== null) {
+			return;
+		}
+		boxes.add(this);
+		this.stopping = new AbortController();
+		if (!this.contains(this.mapBox)) {
+			this.append(this.mapBox, this.sideBox);
+		}
+		this.watchAreas();
+		this.ready = this.start();
+	}
+
+	disconnectedCallback() {
+		boxes.delete(this);
+		const stopping = this.stopping;
+		const instance = this.editorInstance;
+		this.editorInstance = null;
+		this.editorPanels = null;
+		this.stopping = null;
+		this.ready = null;
+		if (stopping !== null) {
+			stopping.abort();
+		}
+		if (instance !== null) {
+			instance.destroy();
+		}
+	}
+
+	attributeChangedCallback(name, was, now) {
+		if (was === now) {
+			return;
+		}
+		if (name === "theme") {
+			this.applyTheme();
+		} else if (name === "src" && this.editorInstance !== null && now !== null && now !== "") {
+			this.editorInstance.loadUrl(now);
+		}
+	}
+
+	// An area with nothing in it is not an empty strip at the top of the box;
+	// it is not there.
+	watchAreas() {
+		const signal = this.stopping.signal;
+		for (const slot of this.shadowRoot.querySelectorAll("slot")) {
+			const area = slot.parentElement;
+			const look = () => area.classList.toggle("empty", slot.assignedNodes({ flatten: true }).length === 0);
+			slot.addEventListener("slotchange", look, { signal: signal });
+			look();
+		}
+	}
+
+	// Which colours the panels use. The element is the one that knows which of
+	// them are its own, so it says so on each of them rather than leaving the
+	// page to find them.
+	applyTheme() {
+		const theme = this.getAttribute("theme");
+		for (const part of [this.sideBox, this.mapBox, ...this.querySelectorAll(".editor-panels, .editor-overlay")]) {
+			if (theme === null || theme === "") {
+				delete part.dataset.theme;
+			} else {
+				part.dataset.theme = theme;
+			}
+		}
+		if (theme === null || theme === "") {
+			delete this.dataset.theme;
+		} else {
+			this.dataset.theme = theme;
+		}
+	}
+
+	async start() {
+		const signal = this.stopping.signal;
+		const source = this.getAttribute("src");
+		// A parameter of the page's own address is read only where the page
+		// said to read one: two editors on a page cannot both be the one the
+		// address is about.
+		const parameter = this.getAttribute("urlparam");
+		let instance = null;
+		try {
+			instance = await CMapEditor.open({
+				canvas: this.editorCanvas,
+				file: source === null || source === "" ? undefined : source,
+				urlParams: parameter === null || parameter === "" ? [] : [parameter],
+				// An element in somebody else's page keeps nothing unless it
+				// was asked to: a page that quietly filled a visitor's storage
+				// would be a surprise.
+				persist: this.hasAttribute("remember"),
+				signal: signal,
+				onOutput: (text, kind) => {
+					if (kind.error) {
+						console.error(text);
+					}
+				},
+			});
+		} catch (error) {
+			this.dispatchEvent(new CustomEvent("editor-failed", { detail: { error: error } }));
+			throw error;
+		}
+		if (signal.aborted) {
+			instance.destroy();
+			return null;
+		}
+		this.editorInstance = instance;
+		// The canvas is a box on a page here, not the window, so nothing else
+		// would tell the program when it changes shape.
+		followSize(this.mapBox, instance, { signal: signal });
+		const panels = new CEditorPanels(instance, {
+			container: this.sideBox,
+			// The keyboard is handed out by the element, below.
+			keys: false,
+			signal: signal,
+		});
+		this.editorPanels = panels;
+		steerWithPointer(instance, {
+			canvas: this.editorCanvas,
+			target: () => panels.selection,
+			onChange: () => panels.refresh(),
+			// Panning and zooming change nothing about the map, so the panels
+			// are left alone - but what is drawn over the canvas is now over
+			// the wrong place.
+			onView: () => panels.refreshOverlay(),
+			onHover: tile => panels.hoverAt(tile),
+			// A tool that takes clicks - the knife so far - takes this one and
+			// the canvas does nothing else with it.
+			onClickInGroup: world => panels.carveAt(world),
+			// A layer that automaps itself does it while the stroke's change is
+			// still open, so that drawing and what it led to are one thing to
+			// undo.
+			afterStroke: (where, box) => panels.automapAfterStroke(where, box),
+			signal: signal,
+		});
+		this.applyTheme();
+		// Whatever has been changed goes into the browser's own storage every
+		// minute - a safety net, not a place to keep a map.
+		if (this.hasAttribute("remember")) {
+			instance.autosave(60);
+		}
+		document.addEventListener("keydown", event => {
+			if (this.hears()) {
+				panels.onKey(event);
+			}
+		}, { signal: signal });
+		// A map let go of over the box is a map to open. The box is the whole
+		// element, so a file dropped on the panels counts as much as one
+		// dropped on the map.
+		this.addEventListener("dragover", event => event.preventDefault(), { signal: signal });
+		this.addEventListener("drop", event => {
+			const file = event.dataTransfer === null ? null : event.dataTransfer.files[0];
+			if (file === undefined || file === null) {
+				return;
+			}
+			event.preventDefault();
+			instance.loadFile(file).catch(error => console.error(error));
+		}, { signal: signal });
+		// A page that keeps what is being edited asks before the tab goes with
+		// something in it that is not written out even there yet. A page that
+		// keeps nothing has nothing to lose that it did not know about.
+		if (this.hasAttribute("remember")) {
+			window.addEventListener("beforeunload", event => {
+				if (instance.maps.some(id => instance.dirty(id))) {
+					event.preventDefault();
+					// What browsers before the standard wanted, and some still do.
+					event.returnValue = "";
+				}
+			}, { signal: signal });
+		}
+		this.dispatchEvent(new CustomEvent("editor-ready", { detail: { editor: instance } }));
+		return instance;
+	}
+
+	// Whether a key pressed now was meant for this editor. Inside it, always;
+	// with the focus nowhere at all, only when it is the one editor on the
+	// page - with two there would be no way to say which was meant.
+	hears() {
+		const active = deepActive();
+		if (active !== null && (this.contains(active) || this.shadowRoot.contains(active))) {
+			return true;
+		}
+		const nowhere = active === null || active === document.body || active === document.documentElement;
+		return nowhere && boxes.size === 1;
+	}
+}
+
+if (typeof customElements !== "undefined" && customElements.get("ddnet-editor") === undefined) {
+	customElements.define("ddnet-editor", CEditorElement);
+}
+
 /**
  * A map editor: `MapEditor.open({canvas, src})` for one on a canvas the page
  * keeps, `MapEditor.openPage({elements})` for a page that is nothing else.
@@ -4525,10 +4902,13 @@ export const MapEditor = CMapEditor;
 export const EditorPanels = CEditorPanels;
 /** Dragging and the wheel on the canvas. */
 export const steerEditor = steerWithPointer;
+/** `<ddnet-editor>`, the whole thing as one element. */
+export const EditorElement = CEditorElement;
 
 export default {
 	MapEditor,
 	EditorPanels,
+	EditorElement,
 	steerEditor,
 	programUrl,
 	// The base this is built on, so that a page that has this has the rest of

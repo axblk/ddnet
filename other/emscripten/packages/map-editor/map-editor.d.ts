@@ -345,7 +345,13 @@ export declare class MapEditor {
 }
 
 export declare class EditorPanels {
-	constructor(editor: MapEditor, options?: { container?: Element | null; dataBase?: string | null; signal?: AbortSignal });
+	constructor(editor: MapEditor, options?: {
+		container?: Element | null;
+		dataBase?: string | null;
+		/** Whether the panels listen for keys on the whole page themselves. */
+		keys?: boolean;
+		signal?: AbortSignal;
+	});
 	readonly element: HTMLElement;
 	/** Which group, and which layer of it, or `layer: -1` for the group. */
 	selection: { group: number; layer: number };
@@ -375,11 +381,32 @@ export declare function steerEditor(
 	},
 ): { destroy(): void };
 
+/**
+ * `<ddnet-editor>` - the whole editor as one element, laid out in six areas
+ * a page may fill with `slot="header"`, `"toolbar"`, `"left"`, `"right"`,
+ * `"dock"` and `"status"`.
+ *
+ * Attributes: `src`, `urlparam`, `theme="light"`, `remember`.
+ */
+export declare class EditorElement extends HTMLElement {
+	/** The running program, or null until it is. */
+	readonly editor: MapEditor | null;
+	/** The panels beside the map, or null until they are there. */
+	readonly panels: EditorPanels | null;
+	/** The canvas the map is drawn on; there before the program is. */
+	readonly canvas: HTMLCanvasElement;
+	/** Waits for the program, and says what stopped it if it did not start. */
+	readonly ready: Promise<MapEditor> | null;
+	/** One of this editor's parts by the name it carries in `data-role`. */
+	part(role: string): Element | null;
+}
+
 export declare const programUrl: string;
 
 declare const _default: {
 	MapEditor: typeof MapEditor;
 	EditorPanels: typeof EditorPanels;
+	EditorElement: typeof EditorElement;
 	steerEditor: typeof steerEditor;
 	programUrl: string;
 	base: unknown;

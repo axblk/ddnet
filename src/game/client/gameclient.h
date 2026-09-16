@@ -20,6 +20,7 @@
 #include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
+#include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/snapshot.h>
 
@@ -194,6 +195,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
 	class IConfigManager *m_pConfigManager;
 	class CConfig *m_pConfig;

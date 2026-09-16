@@ -20,11 +20,11 @@ CLight::CLight(CGameWorld *pGameWorld, vec2 Pos, float Rotation, int Length,
 	m_Core = vec2(0.0f, 0.0f);
 	m_Layer = Layer;
 	m_Number = Number;
-	m_Tick = (Server()->TickSpeed() * 0.15f);
+	m_Tick = (GameWorld()->GameTickSpeed() * 0.15f);
 	m_Pos = Pos;
 	m_Rotation = Rotation;
 	m_Length = Length;
-	m_EvalTick = Server()->Tick();
+	m_EvalTick = GameWorld()->GameTick();
 	GameWorld()->InsertEntity(this);
 	Step();
 }
@@ -75,7 +75,7 @@ void CLight::Step()
 	Move();
 	const vec2 Direction = vec2(std::sin(m_Rotation), std::cos(m_Rotation));
 	const vec2 NextPosition = m_Pos + normalize(Direction) * m_CurveLength;
-	GameServer()->Collision()->IntersectNoLaser(m_Pos, NextPosition, &m_To, nullptr);
+	Collision()->IntersectNoLaser(m_Pos, NextPosition, &m_To, nullptr);
 }
 
 void CLight::Reset()
@@ -85,10 +85,10 @@ void CLight::Reset()
 
 void CLight::Tick()
 {
-	if(Server()->Tick() % (int)(Server()->TickSpeed() * 0.15f) == 0)
+	if(GameWorld()->GameTick() % (int)(GameWorld()->GameTickSpeed() * 0.15f) == 0)
 	{
-		m_EvalTick = Server()->Tick();
-		GameServer()->Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
+		m_EvalTick = GameWorld()->GameTick();
+		Collision()->MoverSpeed(m_Pos.x, m_Pos.y, &m_Core);
 		m_Pos += m_Core;
 		Step();
 	}
@@ -98,7 +98,7 @@ void CLight::Tick()
 
 void CLight::Snap(int SnappingClient)
 {
-	if((NetworkClipped(SnappingClient, m_Pos) && NetworkClipped(SnappingClient, m_To)) || !GetId().has_value())
+	if((NetworkClipped(SnappingClient, m_Pos) && NetworkClipped(SnappingClient, m_To)) || GetId() < 0)
 		return;
 
 	int SnappingClientVersion = GameServer()->GetClientVersion(SnappingClient);
@@ -127,17 +127,17 @@ void CLight::Snap(int SnappingClient)
 
 	if(SnappingClientVersion < VERSION_DDNET_ENTITY_NETOBJS)
 	{
-		int Tick = (Server()->Tick() % Server()->TickSpeed()) % 6;
+		int Tick = (GameWorld()->GameTick() % GameWorld()->GameTickSpeed()) % 6;
 		if(pChr && pChr->IsAlive() && m_Layer == LAYER_SWITCH && m_Number > 0 && !Switchers()[m_Number].m_aStatus[pChr->Team()] && Tick)
 			return;
 
 		StartTick = m_EvalTick;
-		if(StartTick < Server()->Tick() - 4)
-			StartTick = Server()->Tick() - 4;
-		else if(StartTick > Server()->Tick())
-			StartTick = Server()->Tick();
+		if(StartTick < GameWorld()->GameTick() - 4)
+			StartTick = GameWorld()->GameTick() - 4;
+		else if(StartTick > GameWorld()->GameTick())
+			StartTick = GameWorld()->GameTick();
 	}
 
-	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId().value(),
+	GameServer()->SnapLaserObject(CSnapContext(SnappingClientVersion, Server()->IsSixup(SnappingClient), SnappingClient), GetId(),
 		m_Pos, From, StartTick, -1, LASERTYPE_FREEZE, 0, m_Number);
 }

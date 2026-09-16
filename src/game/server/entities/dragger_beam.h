@@ -34,12 +34,12 @@ public:
 	CDraggerBeam(CGameWorld *pGameWorld, CDragger *pDragger, vec2 Pos, float Strength, bool IgnoreWalls, int ForClientId, int Layer, int Number);
 
 	void SetPos(vec2 Pos);
+	bool TargetsClient(int ClientId) const { return m_ForClientId == ClientId; }
 
 	void Reset() override;
 	void Tick() override;
 	void Snap(int SnappingClient) override;
 	void SwapClients(int Client1, int Client2) override;
-	ESaveResult BlocksSave(int ClientId) override;
 };
 
 #endif // GAME_SERVER_ENTITIES_DRAGGER_BEAM_H

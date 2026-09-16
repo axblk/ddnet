@@ -349,6 +349,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	uint32_t m_ViewportY = 0;
 	uint32_t m_ViewportWidth = 0;
 	uint32_t m_ViewportHeight = 0;
+	// Whether the viewport covers only a part of what it was given for, which
+	// inside a render target is the target rather than the surface.
+	bool m_PartialViewport = false;
 	uint32_t m_UniformAlignment = 256;
 	uint32_t m_MaxTextureDimension = 0;
 	uint32_t m_MultiSamplingCount = 0;
@@ -1322,12 +1325,14 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CMD_POST_SHUTDOWN:
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
+	case CCommandBuffer::CMD_DRAW_VIEWPORT:
 	{
 		auto *pCommand = static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand);
 		m_ViewportX = std::max(pCommand->m_X, 0);
 		m_ViewportY = std::max(pCommand->m_Y, 0);
 		m_ViewportWidth = std::max(pCommand->m_Width, 0);
 		m_ViewportHeight = std::max(pCommand->m_Height, 0);
+		m_PartialViewport = !pCommand->m_ByResize && (pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight);
 		if(pCommand->m_ByResize)
 		{
 			const uint32_t SurfaceWidth = pCommand->m_SurfaceWidth > 0 ? pCommand->m_SurfaceWidth : 0;
@@ -3784,10 +3789,11 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 	const STexture *pTarget = RenderTarget();
 	const uint32_t TargetWidth = pTarget != nullptr ? static_cast<uint32_t>(pTarget->m_Width) : m_SurfaceWidth;
 	const uint32_t TargetHeight = pTarget != nullptr ? static_cast<uint32_t>(pTarget->m_Height) : m_SurfaceHeight;
-	const uint32_t ViewportX = pTarget != nullptr ? 0 : std::min(m_ViewportX, TargetWidth);
-	const uint32_t ViewportY = pTarget != nullptr ? 0 : std::min(m_ViewportY, TargetHeight);
-	const uint32_t RequestedWidth = pTarget != nullptr ? TargetWidth : (m_ViewportWidth > 0 ? m_ViewportWidth : TargetWidth);
-	const uint32_t RequestedHeight = pTarget != nullptr ? TargetHeight : (m_ViewportHeight > 0 ? m_ViewportHeight : TargetHeight);
+	const bool WholeTarget = pTarget != nullptr && !m_PartialViewport;
+	const uint32_t ViewportX = WholeTarget ? 0 : std::min(m_ViewportX, TargetWidth);
+	const uint32_t ViewportY = WholeTarget ? 0 : std::min(m_ViewportY, TargetHeight);
+	const uint32_t RequestedWidth = WholeTarget ? TargetWidth : (m_ViewportWidth > 0 ? m_ViewportWidth : TargetWidth);
+	const uint32_t RequestedHeight = WholeTarget ? TargetHeight : (m_ViewportHeight > 0 ? m_ViewportHeight : TargetHeight);
 	const uint32_t ViewportWidth = std::min(RequestedWidth, TargetWidth - ViewportX);
 	const uint32_t ViewportHeight = std::min(RequestedHeight, TargetHeight - ViewportY);
 	if(ViewportWidth == 0 || ViewportHeight == 0)

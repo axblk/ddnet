@@ -868,6 +868,9 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	bool m_FrameCommandsRecording = false;
 	bool m_AcquireSemaphorePending = false;
 	bool m_HasDynamicViewport = false;
+	// Whether the viewport covers only a part of what it was given for, which
+	// inside a render target is the target rather than the presented image.
+	bool m_HasPartialViewport = false;
 	VkOffset2D m_DynamicViewportOffset;
 	VkExtent2D m_DynamicViewportSize;
 
@@ -3425,7 +3428,8 @@ ERunCommandReturnTypes CCommandProcessorFragment_Vulkan::RunCommand(const CComma
 	case CCommandBuffer::CMD_MULTISAMPLING: return CommandResult(Cmd_MultiSampling(static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand)));
 	case CCommandBuffer::CMD_VSYNC: return CommandResult(Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand)));
 	case CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK: return CommandResult(Cmd_PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand)));
-	case CCommandBuffer::CMD_UPDATE_VIEWPORT: return CommandResult(Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand)));
+	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
+	case CCommandBuffer::CMD_DRAW_VIEWPORT: return CommandResult(Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand)));
 	case CCommandBuffer::CMD_WINDOW_CREATE_NTF: return CommandResult(Cmd_WindowCreateNtf(static_cast<const CCommandBuffer::SCommand_WindowCreateNtf *>(pBaseCommand)), false);
 	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: return CommandResult(Cmd_WindowDestroyNtf(static_cast<const CCommandBuffer::SCommand_WindowDestroyNtf *>(pBaseCommand)), false);
 	}
@@ -4741,19 +4745,12 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Update_Viewport(const CCommandBuffer:
 	}
 	else
 	{
+		m_HasPartialViewport = pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight;
 		auto Viewport = m_VKSwapImgAndViewportExtent.GetPresentedImageViewport();
-		if(pCommand->m_X != 0 || pCommand->m_Y != 0 || (uint32_t)pCommand->m_Width != Viewport.width || (uint32_t)pCommand->m_Height != Viewport.height)
-		{
-			m_HasDynamicViewport = true;
-
-			// The viewport rectangle and Vulkan both use a top left origin.
-			m_DynamicViewportOffset = {(int32_t)pCommand->m_X, (int32_t)pCommand->m_Y};
-			m_DynamicViewportSize = {(uint32_t)pCommand->m_Width, (uint32_t)pCommand->m_Height};
-		}
-		else
-		{
-			m_HasDynamicViewport = false;
-		}
+		// The viewport rectangle and Vulkan both use a top left origin.
+		m_DynamicViewportOffset = {(int32_t)pCommand->m_X, (int32_t)pCommand->m_Y};
+		m_DynamicViewportSize = {(uint32_t)pCommand->m_Width, (uint32_t)pCommand->m_Height};
+		m_HasDynamicViewport = pCommand->m_X != 0 || pCommand->m_Y != 0 || (uint32_t)pCommand->m_Width != Viewport.width || (uint32_t)pCommand->m_Height != Viewport.height;
 	}
 
 	return true;
@@ -7189,10 +7186,11 @@ void CCommandProcessorFragment_Vulkan::ExecBufferFillDynamicStates(const CComman
 	VkViewport Viewport;
 	if(m_CurrentRenderTarget.IsValid())
 	{
-		Viewport.x = 0.0f;
-		Viewport.y = 0.0f;
-		Viewport.width = static_cast<float>(m_CurrentRenderExtent.width);
-		Viewport.height = static_cast<float>(m_CurrentRenderExtent.height);
+		const bool Partial = m_HasPartialViewport;
+		Viewport.x = Partial ? (float)m_DynamicViewportOffset.x : 0.0f;
+		Viewport.y = Partial ? (float)m_DynamicViewportOffset.y : 0.0f;
+		Viewport.width = static_cast<float>(Partial ? m_DynamicViewportSize.width : m_CurrentRenderExtent.width);
+		Viewport.height = static_cast<float>(Partial ? m_DynamicViewportSize.height : m_CurrentRenderExtent.height);
 		Viewport.minDepth = 0.0f;
 		Viewport.maxDepth = 1.0f;
 	}

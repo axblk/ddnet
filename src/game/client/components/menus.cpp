@@ -192,6 +192,9 @@ int CMenus::DoButton_MenuTab(CButtonContainer *pButtonContainer, const char *pTe
 		pAnimator->m_Time = Time;
 	}
 
+	if(m_TabsOverScene)
+		RenderBackdropRegion(Rect, Corners, EdgeRounding);
+
 	if(Checked)
 	{
 		ColorRGBA ColorMenuTab = ms_ColorTabbarActive;
@@ -467,6 +470,7 @@ int CMenus::DoButton_CheckBox_Number(const void *pId, const char *pText, int Che
 
 void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 {
+	m_TabsOverScene = true;
 	CUIRect Button;
 
 	int NewPage = -1;
@@ -712,6 +716,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		else
 			m_GamePage = NewPage;
 	}
+	m_TabsOverScene = false;
 }
 
 void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap)
@@ -809,7 +814,7 @@ void CMenus::RenderNews(CUIRect MainView)
 
 	g_Config.m_UiUnreadNews = false;
 
-	MainView.Draw(ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 
 	MainView.HSplitTop(10.0f, nullptr, &MainView);
 	MainView.VSplitLeft(15.0f, nullptr, &MainView);
@@ -1116,10 +1121,6 @@ void CMenus::Render()
 		{
 			CUIRect TabBar, MainView;
 			Screen.HSplitTop(24.0f, &TabBar, &MainView);
-			// The tab bar belongs to the page below it and is painted in the same
-			// colour, so it needs the same backdrop. Leaving it out is what makes
-			// the active tab and the page body read as two different surfaces.
-			RenderBackdropRegion(Screen);
 
 			if(m_MenuPage == PAGE_NEWS)
 			{
@@ -1155,20 +1156,6 @@ void CMenus::Render()
 		{
 			CUIRect TabBar, MainView;
 			Screen.HSplitTop(24.0f, &TabBar, &MainView);
-			if(m_GamePage == PAGE_GAME)
-			{
-				// The game tab only covers its button bar and leaves the rest
-				// see-through, so blurring the whole page would blur the game
-				// the player is still looking at. The tab bar above it is opaque
-				// either way and belongs to the covered part.
-				CUIRect Covered;
-				Screen.HSplitTop(TabBar.h + GameTabCoveredHeight(), &Covered, nullptr);
-				RenderBackdropRegion(Covered);
-			}
-			else
-			{
-				RenderBackdropRegion(Screen);
-			}
 
 			if(m_GamePage == PAGE_GAME)
 			{
@@ -1349,8 +1336,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	}
 
 	// Background
-	RenderBackdropRegion(Box);
-	Box.Draw(BgColor, IGraphics::CORNER_ALL, 15.0f);
+	DrawSurface(Box, BgColor, IGraphics::CORNER_ALL, 15.0f);
 
 	// Title
 	{
@@ -2141,8 +2127,7 @@ void CMenus::RenderPopupConnecting(CUIRect Screen)
 
 	CUIRect Box, Label;
 	Screen.Margin(150.0f, &Box);
-	RenderBackdropRegion(Box);
-	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
+	DrawSurface(Box, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
 	Box.Margin(20.0f, &Box);
 
 	Box.HSplitTop(24.0f, &Label, &Box);
@@ -2273,8 +2258,7 @@ void CMenus::RenderPopupLoading(CUIRect Screen)
 
 	CUIRect Box, Label;
 	Screen.Margin(150.0f, &Box);
-	RenderBackdropRegion(Box);
-	Box.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
+	DrawSurface(Box, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 15.0f);
 	Box.Margin(20.0f, &Box);
 
 	Box.HSplitTop(24.0f, &Label, &Box);
@@ -2675,30 +2659,31 @@ bool CMenus::BackdropConsumerActive() const
 	return SceneBackdropConsumerActive() || GameClient()->m_GameConsole.IsActive();
 }
 
-void CMenus::RenderBackdropRegion(CUIRect Rect)
+void CMenus::RenderBackdropRegion(const CUIRect &Rect, int Corners, float Rounding)
 {
 	if(!m_MenuBackdropReady || Rect.w <= 0.0f || Rect.h <= 0.0f)
 		return;
 
-	const CScreenRect Screen = Graphics()->GetScreen();
-	const float Left = std::max(Rect.x, Screen.m_TopLeft.x);
-	const float Top = std::max(Rect.y, Screen.m_TopLeft.y);
-	const float Right = std::min(Rect.x + Rect.w, Screen.m_BottomRight.x);
-	const float Bottom = std::min(Rect.y + Rect.h, Screen.m_BottomRight.y);
-	if(Left >= Right || Top >= Bottom)
-		return;
+	// The very geometry the box is drawn with, sampling the blurred picture at
+	// the spot on the screen each corner lands on. A rectangle cut out with a
+	// scissor showed the blur past rounded corners and snapped to whole pixels
+	// where the box did not.
+	Graphics()->TextureSet(m_aMenuBackdropBlurTextures[0]);
+	Graphics()->BlendNone();
+	Graphics()->WrapClamp();
+	Graphics()->QuadsBegin();
+	Graphics()->QuadsSetScreenTexCoords();
+	RenderTools()->DrawRectExt(Rect.x, Rect.y, Rect.w, Rect.h, Rounding, Corners);
+	Graphics()->QuadsEnd();
+	Graphics()->WrapNormal();
+	Graphics()->BlendNormal();
+	Graphics()->TextureClear();
+}
 
-	const float XScale = Graphics()->ScreenWidth() / Screen.Width();
-	const float YScale = Graphics()->ScreenHeight() / Screen.Height();
-	const int ClipX = std::round((Left - Screen.m_TopLeft.x) * XScale);
-	const int ClipY = std::round((Top - Screen.m_TopLeft.y) * YScale);
-	const int ClipRight = std::round((Right - Screen.m_TopLeft.x) * XScale);
-	const int ClipBottom = std::round((Bottom - Screen.m_TopLeft.y) * YScale);
-	Graphics()->ClipEnable(ClipX, ClipY, ClipRight - ClipX, ClipBottom - ClipY);
-	const bool Drawn = Graphics()->BlitTexture(m_aMenuBackdropBlurTextures[0], true);
-	Graphics()->ClipDisable();
-	if(!Drawn)
-		m_MenuBackdropReady = false;
+void CMenus::DrawSurface(const CUIRect &Rect, ColorRGBA Color, int Corners, float Rounding)
+{
+	RenderBackdropRegion(Rect, Corners, Rounding);
+	Rect.Draw(Color, Corners, Rounding);
 }
 
 void CMenus::OnRenderApplicationOverlay()

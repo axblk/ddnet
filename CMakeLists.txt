@@ -3018,6 +3018,8 @@ if(CLIENT)
     envelope_manager.h
     map_renderer.cpp
     map_renderer.h
+    quad_buffer_cache.cpp
+    quad_buffer_cache.h
     render_component.cpp
     render_component.h
     render_interfaces.h
@@ -3761,6 +3763,7 @@ if(TOOLS)
           # tidy-alphabetical-start
           src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
+          src/game/map/quad_buffer_cache.cpp
           src/game/map/render_component.cpp
           src/game/map/render_layer.cpp
           src/game/map/render_map.cpp

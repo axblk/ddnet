@@ -740,6 +740,9 @@ protected:
 	bool m_MenuBackdropOverlayActive = false;
 	bool m_MenuBackdropReady = false;
 	bool m_MenuBackdropBackgroundRendered = false;
+	// Set while the tabs being drawn sit straight over the scene rather than on
+	// a box of their own, so each of them gets the backdrop in its own shape.
+	bool m_TabsOverScene = false;
 	bool MenuBackdropTexturesValid() const;
 	bool RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection);
 	bool BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source);
@@ -761,7 +764,17 @@ public:
 	 * at the end of the frame for the case where nothing captured it.
 	 */
 	void PresentMenuBackdrop();
-	void RenderBackdropRegion(CUIRect Rect);
+	/**
+	 * Paints the blurred backdrop in the shape a box over it is about to be drawn
+	 * in, so that the blur ends exactly where the box does.
+	 */
+	void RenderBackdropRegion(const CUIRect &Rect, int Corners, float Rounding);
+	/**
+	 * Draws a box that sits straight over the scene: the backdrop, then the tint,
+	 * in one shape. A box inside such a box is drawn plainly, since painting the
+	 * backdrop again would wipe out the tint it sits on.
+	 */
+	void DrawSurface(const CUIRect &Rect, ColorRGBA Color, int Corners, float Rounding);
 	/**
 	 * Whether anything is currently drawn on top of the scene that wants the
 	 * blurred backdrop. Deciding this in one place keeps the pass that fills
@@ -777,13 +790,6 @@ public:
 	 * @return `true` if the scene has to be blurred this frame.
 	 */
 	bool SceneBackdropConsumerActive() const;
-	/**
-	 * Height that the game tab covers with its button bar. The rest of the tab
-	 * stays see-through so the game is still visible behind it.
-	 *
-	 * @return Height in menu units.
-	 */
-	static float GameTabCoveredHeight();
 
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }

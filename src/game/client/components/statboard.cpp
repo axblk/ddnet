@@ -268,7 +268,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 
 	Graphics()->MapScreenToSize(StatboardWidth, StatboardHeight);
 
-	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight});
+	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight}, IGraphics::CORNER_ALL, 17.0f);
 	RenderTools()->DrawRect(x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
 
 	int px = 325;

@@ -274,6 +274,49 @@
 	min-width: 0;
 }
 
+/* The shapes of the sound sources, over the canvas. The SVG is laid out to
+   fill whatever the canvas fills and lets every click through: taking hold of
+   a source is the canvas pointer's job, the same as a quad's corner, so
+   nothing here may stand in its way. */
+.editor-overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+}
+
+.editor-source {
+	fill: #5a9ce8;
+	fill-opacity: 0.12;
+	stroke: #5a9ce8;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-source-dot {
+	fill: #5a9ce8;
+	stroke: #16161a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-source-picked {
+	fill: #e8b84a;
+	stroke: #e8b84a;
+}
+
+circle.editor-source-picked,
+rect.editor-source-picked {
+	fill-opacity: 0.18;
+}
+
+circle.editor-source-dot.editor-source-picked {
+	fill: #e8b84a;
+	stroke: #16161a;
+	fill-opacity: 1;
+}
+
 /* The rules file as text. A textarea cannot colour its own words, so what is
    coloured is a `<pre>` behind it holding the same ones; the textarea above
    is transparent but for its caret. The two therefore have to agree about

@@ -222,6 +222,60 @@ namespace map_document
 		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Layers));
 	}
 
+	namespace
+	{
+		/** A sound layer of the map being changed, to be written to. */
+		CSoundLayer SoundsOf(CDocument &Doc, const CLayerAddress &Layer)
+		{
+			const CLayer *pLayer = Doc.Edit().Layer(Layer.m_Group, Layer.m_Layer);
+			dbg_assert(std::holds_alternative<CSoundLayer>(*pLayer), "That layer holds no sounds");
+			return std::get<CSoundLayer>(*pLayer);
+		}
+	} // namespace
+
+	CSoundSource MakeSoundSource(int X, int Y, int Radius)
+	{
+		CSoundSource Source = {};
+		Source.m_Position = CPoint{i2fx(X), i2fx(Y)};
+		Source.m_Loop = 1;
+		Source.m_Pan = 0;
+		Source.m_TimeDelay = 0;
+		Source.m_Falloff = 0;
+		Source.m_PosEnv = -1;
+		Source.m_PosEnvOffset = 0;
+		Source.m_SoundEnv = -1;
+		Source.m_SoundEnvOffset = 0;
+		Source.m_Shape.m_Type = CSoundShape::SHAPE_CIRCLE;
+		Source.m_Shape.m_Circle.m_Radius = Radius;
+		return Source;
+	}
+
+	size_t AddSoundSource(CDocument &Doc, const CLayerAddress &Layer, const CSoundSource &Source)
+	{
+		CSoundLayer Sounds = SoundsOf(Doc, Layer);
+		Sounds.m_Sources.Mutable().push_back(Source);
+		const size_t Index = Sounds.m_Sources.Size() - 1;
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Sounds));
+		return Index;
+	}
+
+	void DeleteSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source)
+	{
+		CSoundLayer Sounds = SoundsOf(Doc, Layer);
+		dbg_assert(Source < Sounds.m_Sources.Size(), "Sound source out of range");
+		std::vector<CSoundSource> &vSources = Sounds.m_Sources.Mutable();
+		vSources.erase(vSources.begin() + Source);
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Sounds));
+	}
+
+	void SetSoundSource(CDocument &Doc, const CLayerAddress &Layer, size_t Source, const CSoundSource &Changed)
+	{
+		CSoundLayer Sounds = SoundsOf(Doc, Layer);
+		dbg_assert(Source < Sounds.m_Sources.Size(), "Sound source out of range");
+		Sounds.m_Sources.Mutable()[Source] = Changed;
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Sounds));
+	}
+
 	bool ShapeQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, EQuadShape Shape, int Grid)
 	{
 		const CQuadLayer *pQuads = std::get_if<CQuadLayer>(Doc.Edit().Layer(Layer.m_Group, Layer.m_Layer));
@@ -328,6 +382,45 @@ namespace map_document
 	void SetImage(CDocument &Doc, size_t Index, CImage Changed)
 	{
 		Doc.Edit().ReplaceImage(Index, std::move(Changed));
+	}
+
+	size_t AddSound(CDocument &Doc, CSound Sound)
+	{
+		CMapState &Map = Doc.Edit();
+		Map.AddSound(std::move(Sound));
+		return Map.NumSounds() - 1;
+	}
+
+	void DeleteSound(CDocument &Doc, size_t Sound)
+	{
+		CMapState &Map = Doc.Edit();
+		dbg_assert(Sound < Map.NumSounds(), "Sound out of range");
+		Map.m_vpSounds.erase(Map.m_vpSounds.begin() + Sound);
+
+		// A layer names a sound by its place, the same way it names a
+		// picture, so the places have to be read again.
+		for(size_t Group = 0; Group < Map.NumGroups(); ++Group)
+		{
+			for(size_t Layer = 0; Layer < Map.NumLayers(Group); ++Layer)
+			{
+				CLayer Changed = *Map.Layer(Group, Layer);
+				CSoundLayer *pSounds = std::get_if<CSoundLayer>(&Changed);
+				if(pSounds == nullptr)
+					continue;
+				const int Was = pSounds->m_Sound;
+				if(pSounds->m_Sound == (int)Sound)
+					pSounds->m_Sound = -1;
+				else if(pSounds->m_Sound > (int)Sound)
+					--pSounds->m_Sound;
+				if(pSounds->m_Sound != Was)
+					Map.ReplaceLayer(Group, Layer, std::move(Changed));
+			}
+		}
+	}
+
+	void SetSound(CDocument &Doc, size_t Index, CSound Changed)
+	{
+		Doc.Edit().ReplaceSound(Index, std::move(Changed));
 	}
 
 	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope)

@@ -77,6 +77,25 @@ namespace map_document
 	std::string QuadsJson(const CMapState &Map, size_t Group, size_t Layer);
 
 	/**
+	 * The sound sources of one sound layer, for the panel and the overlay
+	 * that drags them.
+	 *
+	 * The same rule as the quads: a place comes out in **world units** and a
+	 * size with it, because a page turns a click into a place and back. What
+	 * a source is heard within is a rectangle or a circle, and which of the
+	 * two it says in a word rather than in a number, because the number means
+	 * nothing without the file format beside it.
+	 *
+	 * @param Map The version to read.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to be a sound layer.
+	 *
+	 * @return The JSON text, which is an array, or `null` for a layer that
+	 * holds no sounds.
+	 */
+	std::string SoundSourcesJson(const CMapState &Map, size_t Group, size_t Layer);
+
+	/**
 	 * The history as the history panel shows it: what was done, when, where
 	 * in it the map stands, and what it all costs.
 	 *

@@ -329,6 +329,56 @@ namespace map_document
 		return Writer.GetOutputString();
 	}
 
+	std::string SoundSourcesJson(const CMapState &Map, size_t Group, size_t Layer)
+	{
+		if(Group >= Map.NumGroups() || Layer >= Map.NumLayers(Group))
+			return "null";
+		const CSoundLayer *pSounds = std::get_if<CSoundLayer>(Map.Layer(Group, Layer));
+		if(pSounds == nullptr)
+			return "null";
+		CJsonStringWriter Writer;
+		Writer.BeginArray();
+		for(size_t Index = 0; Index < pSounds->m_Sources.Size(); ++Index)
+		{
+			const CSoundSource &Source = pSounds->m_Sources[Index];
+			Writer.BeginObject();
+			WriteIntPair(Writer, "position", fx2i(Source.m_Position.x), fx2i(Source.m_Position.y));
+			Writer.WriteAttribute("shape");
+			Writer.WriteStrValue(Source.m_Shape.m_Type == CSoundShape::SHAPE_CIRCLE ? "circle" : "rectangle");
+			if(Source.m_Shape.m_Type == CSoundShape::SHAPE_CIRCLE)
+			{
+				Writer.WriteAttribute("radius");
+				Writer.WriteIntValue(Source.m_Shape.m_Circle.m_Radius);
+			}
+			else
+			{
+				// The two sides of a rectangle are the file's own fixed
+				// point, so they come out in world units like everything
+				// else that is a distance.
+				WriteIntPair(Writer, "size", fx2i(Source.m_Shape.m_Rectangle.m_Width), fx2i(Source.m_Shape.m_Rectangle.m_Height));
+			}
+			Writer.WriteAttribute("loop");
+			Writer.WriteBoolValue(Source.m_Loop != 0);
+			Writer.WriteAttribute("pan");
+			Writer.WriteBoolValue(Source.m_Pan != 0);
+			Writer.WriteAttribute("timeDelay");
+			Writer.WriteIntValue(Source.m_TimeDelay);
+			Writer.WriteAttribute("falloff");
+			Writer.WriteIntValue(Source.m_Falloff);
+			Writer.WriteAttribute("posEnv");
+			Writer.WriteIntValue(Source.m_PosEnv);
+			Writer.WriteAttribute("posEnvOffset");
+			Writer.WriteIntValue(Source.m_PosEnvOffset);
+			Writer.WriteAttribute("soundEnv");
+			Writer.WriteIntValue(Source.m_SoundEnv);
+			Writer.WriteAttribute("soundEnvOffset");
+			Writer.WriteIntValue(Source.m_SoundEnvOffset);
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+		return Writer.GetOutputString();
+	}
+
 	std::string HistoryJson(const CDocument &Document)
 	{
 		const CHistory &History = Document.History();

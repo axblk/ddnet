@@ -249,6 +249,108 @@ namespace map_document
 			return true;
 		}
 
+		/**
+		 * Reads what a command says about a sound source onto one.
+		 *
+		 * The shape is the awkward one: which of the two it is and how large
+		 * it is are three numbers in a union, so setting the shape sets a
+		 * size with it rather than leaving whatever the other kind had.
+		 */
+		bool SetSoundProp(CSoundSource &Source, const char *pProp, const json_value *pValue, size_t NumEnvelopes, std::string *pError)
+		{
+			if(str_comp(pProp, "loop") == 0 || str_comp(pProp, "pan") == 0)
+			{
+				bool Value = false;
+				if(!ReadBool(pValue, &Value, pError))
+					return false;
+				(str_comp(pProp, "loop") == 0 ? Source.m_Loop : Source.m_Pan) = Value ? 1 : 0;
+				return true;
+			}
+			if(str_comp(pProp, "shape") == 0)
+			{
+				std::string Value;
+				if(!ReadString(pValue, &Value, pError))
+					return false;
+				if(Value == "circle")
+				{
+					if(Source.m_Shape.m_Type != CSoundShape::SHAPE_CIRCLE)
+					{
+						Source.m_Shape.m_Type = CSoundShape::SHAPE_CIRCLE;
+						Source.m_Shape.m_Circle.m_Radius = 96;
+					}
+					return true;
+				}
+				if(Value == "rectangle")
+				{
+					if(Source.m_Shape.m_Type != CSoundShape::SHAPE_RECTANGLE)
+					{
+						Source.m_Shape.m_Type = CSoundShape::SHAPE_RECTANGLE;
+						Source.m_Shape.m_Rectangle.m_Width = i2fx(192);
+						Source.m_Shape.m_Rectangle.m_Height = i2fx(192);
+					}
+					return true;
+				}
+				*pError = "a source is heard within a circle or a rectangle";
+				return false;
+			}
+
+			int Value = 0;
+			if(!ReadInt(pValue, &Value, pError))
+				return false;
+			const bool Envelope = str_comp(pProp, "posEnv") == 0 || str_comp(pProp, "soundEnv") == 0;
+			if(Envelope && (Value < -1 || Value >= (int)NumEnvelopes))
+			{
+				*pError = "there is no such envelope";
+				return false;
+			}
+			if(str_comp(pProp, "radius") == 0)
+			{
+				if(Source.m_Shape.m_Type != CSoundShape::SHAPE_CIRCLE)
+				{
+					*pError = "this source is heard within a rectangle";
+					return false;
+				}
+				if(Value <= 0)
+				{
+					*pError = "a source is heard within something";
+					return false;
+				}
+				Source.m_Shape.m_Circle.m_Radius = Value;
+			}
+			else if(str_comp(pProp, "width") == 0 || str_comp(pProp, "height") == 0)
+			{
+				if(Source.m_Shape.m_Type != CSoundShape::SHAPE_RECTANGLE)
+				{
+					*pError = "this source is heard within a circle";
+					return false;
+				}
+				if(Value <= 0)
+				{
+					*pError = "a source is heard within something";
+					return false;
+				}
+				(str_comp(pProp, "width") == 0 ? Source.m_Shape.m_Rectangle.m_Width : Source.m_Shape.m_Rectangle.m_Height) = i2fx(Value);
+			}
+			else if(str_comp(pProp, "timeDelay") == 0)
+				Source.m_TimeDelay = Value;
+			else if(str_comp(pProp, "falloff") == 0)
+				Source.m_Falloff = std::clamp(Value, 0, 255);
+			else if(str_comp(pProp, "posEnv") == 0)
+				Source.m_PosEnv = Value;
+			else if(str_comp(pProp, "posEnvOffset") == 0)
+				Source.m_PosEnvOffset = Value;
+			else if(str_comp(pProp, "soundEnv") == 0)
+				Source.m_SoundEnv = Value;
+			else if(str_comp(pProp, "soundEnvOffset") == 0)
+				Source.m_SoundEnvOffset = Value;
+			else
+			{
+				*pError = std::string("a sound source has no '") + pProp + "'";
+				return false;
+			}
+			return true;
+		}
+
 		bool SetEnvelopeProp(CEnvelope &Envelope, const char *pProp, const json_value *pValue, std::string *pError)
 		{
 			if(str_comp(pProp, "name") == 0)
@@ -804,6 +906,74 @@ namespace map_document
 			return Succeeded();
 		}
 
+		if(str_comp(pOp, "source.add") == 0 || str_comp(pOp, "source.delete") == 0 ||
+			str_comp(pOp, "source.setPoint") == 0 || str_comp(pOp, "source.setProp") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CSoundLayer *pSounds = std::get_if<CSoundLayer>(Map.Layer(Group, Layer));
+			if(pSounds == nullptr)
+				return Failed("that layer holds no sounds");
+			const CLayerAddress Address{Group, Layer};
+
+			if(str_comp(pOp, "source.add") == 0)
+			{
+				// In world units, the same as a quad: a page turns a click
+				// into a place and hands the place over.
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				const int Radius = Arguments.Int("radius", 96);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(Radius <= 0)
+					return Failed("a source is heard within something");
+				Document.Begin(Arguments.Str("label", "Add sound source"), pMerge);
+				const size_t Index = AddSoundSource(Document, Address, MakeSoundSource(X, Y, Radius));
+				Document.Commit();
+				return Succeeded("source", (int)Index);
+			}
+
+			const size_t Source = Arguments.Index("source", pSounds->m_Sources.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+
+			if(str_comp(pOp, "source.delete") == 0)
+			{
+				Document.Begin(Arguments.Str("label", "Delete sound source"), pMerge);
+				DeleteSoundSource(Document, Address, Source);
+				Document.Commit();
+				return Succeeded();
+			}
+
+			CSoundSource Changed = pSounds->m_Sources[Source];
+			if(str_comp(pOp, "source.setPoint") == 0)
+			{
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Changed.m_Position = CPoint{i2fx(X), i2fx(Y)};
+			}
+			else
+			{
+				const char *pProp = Arguments.Str("prop", nullptr);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pProp == nullptr)
+					return Failed("The command has no 'prop'");
+				std::string Error;
+				if(!SetSoundProp(Changed, pProp, json_object_get(pParsed.get(), "value"), Map.NumEnvelopes(), &Error))
+					return Failed(Error);
+			}
+
+			Document.Begin(Arguments.Str("label", str_comp(pOp, "source.setPoint") == 0 ? "Move sound source" : "Sound source"), pMerge);
+			SetSoundSource(Document, Address, Source, Changed);
+			Document.Commit();
+			return Succeeded();
+		}
+
 		if(str_comp(pOp, "envelope.add") == 0)
 		{
 			const char *pName = Arguments.Str("name");
@@ -978,6 +1148,72 @@ namespace map_document
 			}
 			Document.Begin(Arguments.Str("label", pProp), pMerge);
 			SetImage(Document, Index, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "sound.add") == 0)
+		{
+			// Only a sound that lies beside the map: the bytes of an embedded
+			// one do not go through JSON, they go through
+			// `CMapEditor::AddSound` as the bytes they are.
+			const char *pName = Arguments.Str("name", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pName == nullptr || pName[0] == '\0')
+				return Failed("a sound needs a name");
+			CSound Sound;
+			Sound.m_Name = pName;
+			Sound.m_External = true;
+			Document.Begin(Arguments.Str("label", "Add sound"), pMerge);
+			const size_t Index = AddSound(Document, std::move(Sound));
+			Document.Commit();
+			return Succeeded("sound", (int)Index);
+		}
+		if(str_comp(pOp, "sound.delete") == 0)
+		{
+			const size_t Sound = Arguments.Index("sound", Map.NumSounds());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", "Delete sound"), pMerge);
+			DeleteSound(Document, Sound);
+			Document.Commit();
+			return Succeeded();
+		}
+		if(str_comp(pOp, "sound.setProp") == 0)
+		{
+			const size_t Index = Arguments.Index("sound", Map.NumSounds());
+			const char *pProp = Arguments.Str("prop", nullptr);
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			if(pProp == nullptr)
+				return Failed("The command has no 'prop'");
+			CSound Changed = *Map.Sound(Index);
+			const json_value *pValue = json_object_get(pParsed.get(), "value");
+			if(str_comp(pProp, "name") == 0)
+			{
+				if(pValue->type != json_string || pValue->u.string.length == 0)
+					return Failed("a name is a word");
+				Changed.m_Name = pValue->u.string.ptr;
+			}
+			else if(str_comp(pProp, "external") == 0)
+			{
+				if(pValue->type != json_boolean)
+					return Failed("that is yes or no");
+				const bool External = pValue->u.boolean != 0;
+				// The same rule as a picture: going the other way needs bytes,
+				// and bytes do not come through here.
+				if(!External && Changed.m_Data.Empty())
+					return Failed("that sound has no bytes of its own");
+				Changed.m_External = External;
+				if(External)
+					Changed.m_Data = CSharedList<uint8_t>();
+			}
+			else
+			{
+				return Failed(std::string("a sound has no '") + pProp + "'");
+			}
+			Document.Begin(Arguments.Str("label", pProp), pMerge);
+			SetSound(Document, Index, std::move(Changed));
 			Document.Commit();
 			return Succeeded();
 		}

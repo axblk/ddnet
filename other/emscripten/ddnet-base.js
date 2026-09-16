@@ -1051,6 +1051,18 @@ export class Program extends EventTarget {
 			// Read by `src/engine/client/demo_render_client.cpp`.
 			ddnetRenderProgress: status => this.dispatchEvent(new CustomEvent("renderprogress", { detail: status })),
 			ddnetRenderDone: result => this.dispatchEvent(new CustomEvent("renderdone", { detail: result })),
+			// Read by `src/game/map/standalone/map_editor_main.cpp`: what an
+			// editor says happened (a map changed, was opened, was saved, …),
+			// as an event of that name with the JSON as its detail.
+			ddnetEditorEvent: (type, json) => {
+				let detail;
+				try {
+					detail = JSON.parse(json);
+				} catch {
+					detail = { json };
+				}
+				this.dispatchEvent(new CustomEvent(type, { detail }));
+			},
 			// Read by `src/base/web_data.cpp`. A program from another origin brings
 			// its data along.
 			ddnetDataBase: options.dataBase ?? (program === null ? undefined : new URL(".", program.base).href),

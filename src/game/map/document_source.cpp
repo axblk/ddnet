@@ -54,7 +54,7 @@ namespace
 	}
 } // namespace
 
-CTileChunkCache::CLayerSource DocumentLayerSource(std::shared_ptr<const CLayer> pLayer)
+CTileChunkCache::CLayerSource DocumentLayerSource(const std::shared_ptr<const CLayer> &pLayer)
 {
 	dbg_assert(pLayer != nullptr && std::holds_alternative<CTileLayer>(*pLayer), "Only a tile layer can be drawn as one");
 	// Points at the tile layer while holding on to the layer it is part of,

@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 
 /**
@@ -68,6 +69,43 @@ public:
 		 * map does rather than what it looks like.
 		 */
 		int m_EntityOverlayVal = 0;
+		/**
+		 * Which layers not to draw, as the number of the group and the number
+		 * of the layer in it. An editor hides a layer to look under it;
+		 * nothing else that draws a map has a reason to.
+		 */
+		const std::vector<std::pair<size_t, size_t>> *m_pHidden = nullptr;
+		/**
+		 * How many tiles apart the lines of the grid are, or 0 for no grid.
+		 *
+		 * The grid is drawn by the renderer rather than by whatever is around
+		 * it because it lies in the world: it follows the parallax and the
+		 * offset of the group it belongs to, so that its lines sit on that
+		 * group's tiles at every zoom.
+		 */
+		int m_Grid = 0;
+		/** Which group the grid follows - the one being worked in. */
+		size_t m_GridGroup = 0;
+		/**
+		 * A rectangle of tiles to mark, for a gesture that is about an area
+		 * rather than about a tile: taking a piece of a layer into the brush,
+		 * filling it, rubbing it out. Nothing is marked while it is empty.
+		 *
+		 * It is drawn here for the same reason the grid is - it lies in the
+		 * world, in the tiles of one group.
+		 */
+		class CMarked
+		{
+		public:
+			size_t m_Group = 0;
+			int m_X = 0;
+			int m_Y = 0;
+			int m_Width = 0;
+			int m_Height = 0;
+
+			bool Empty() const { return m_Width <= 0 || m_Height <= 0; }
+		};
+		CMarked m_Marked;
 	};
 
 	/**
@@ -117,8 +155,31 @@ private:
 		CQuadBufferCache::CQuadSource m_QuadSource;
 	};
 
-	/** What a group puts on the screen before its layers are drawn. */
-	bool UseGroup(const map_document::CGroup &Group, const CParams &Params);
+	/**
+	 * What a group puts on the screen before its layers are drawn.
+	 *
+	 * @param Group The group that is about to be drawn.
+	 * @param Params Where the view looks.
+	 * @param pWorld Where the piece of the world the group shows is put, for
+	 * whoever has to draw in those coordinates afterwards.
+	 *
+	 * @return Whether anything of the group is on the screen at all.
+	 */
+	bool UseGroup(const map_document::CGroup &Group, const CParams &Params, CScreenRect *pWorld = nullptr);
+	/**
+	 * Draws the grid over the group that was last put on the screen.
+	 *
+	 * @param World The piece of the world that group shows.
+	 * @param Spacing How many tiles apart the lines are.
+	 */
+	void RenderGrid(const CScreenRect &World, int Spacing);
+	/**
+	 * Draws the marked rectangle over the group that was last put on the
+	 * screen.
+	 *
+	 * @param Marked Which tiles are marked.
+	 */
+	void RenderMarked(const CParams::CMarked &Marked);
 	void RenderTileLayer(const map_document::CTileLayer &Layer, CLayerCache &Cache, const CParams &Params);
 	void RenderQuadLayer(const map_document::CQuadLayer &Layer, CLayerCache &Cache, const CParams &Params);
 	/** Points a cache at the layer it draws, and says what changed about it. */

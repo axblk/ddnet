@@ -19,8 +19,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <utility>
+#include <vector>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
@@ -52,9 +55,19 @@ namespace
 	constexpr const char *SAVE_DIRECTORY = "maps";
 
 	CMapEditor *g_pEditor = nullptr;
+	bool g_Quit = false;
 	// What a question was answered with, kept alive until the next one is
 	// asked: a page reads it out of the heap after the call has returned.
 	std::string g_Answer;
+	// What the page is still to be told, and is told between two frames.
+	//
+	// Not on the spot, because telling it means calling into the page, and
+	// the page will ask questions back - which is exactly what the buffer
+	// above cannot survive: the answer to the call that is still returning
+	// would be overwritten by the answer to the question the listener asked.
+	// Between two frames nothing is half done and nobody is waiting for an
+	// answer.
+	std::vector<std::pair<std::string, std::string>> g_vSaid;
 
 	const char *Answer(std::string &&Text)
 	{
@@ -69,6 +82,9 @@ namespace
 		log_info(TOOL_NAME, "  -w <width>   Surface width (default: %d)", DEFAULT_WIDTH);
 		log_info(TOOL_NAME, "  -h <height>  Surface height (default: %d)", DEFAULT_HEIGHT);
 		log_info(TOOL_NAME, "  -o <output>  Draw the map once, write it there and stop");
+		log_info(TOOL_NAME, "  -g <tiles>   Draw a grid every so many tiles (default: none)");
+		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
+		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -90,17 +106,27 @@ namespace
 	 * Says that a map changed, which is the one thing the page may not find
 	 * out by asking: everything else it asks for when it needs it.
 	 */
+	void Say(const char *pType, const std::string &Json)
+	{
+		g_vSaid.emplace_back(pType, Json);
+	}
+
 	void SayChanged(int Id)
 	{
 		if(g_pEditor == nullptr)
 			return;
-		const std::string Json = "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}";
-		BrowserEditorEvent("document", Json.c_str());
+		Say("document", "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}");
 	}
 
-	void Say(const char *pType, const std::string &Json)
+	/** Tells the page everything that has happened since the last frame. */
+	void SayEverything()
 	{
-		BrowserEditorEvent(pType, Json.c_str());
+		// Taken away first: a listener that changes something adds to the
+		// list while it is being walked, and that belongs to the next frame.
+		std::vector<std::pair<std::string, std::string>> vSaid;
+		vSaid.swap(g_vSaid);
+		for(const auto &[Type, Json] : vSaid)
+			BrowserEditorEvent(Type.c_str(), Json.c_str());
 	}
 } // namespace
 
@@ -114,18 +140,34 @@ namespace
 // they say when they are done with an event.
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE int MapEditorOpen(const char *pName, const char *pData, int Size)
+// How the loader hands a map over, the same way it hands a demo to the demo
+// player: it writes the bytes where the program can read them and names the
+// path. Reading it is one of the two calls here that waits, so the page hears
+// what came of it as an event rather than as an answer.
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackDropFile(const char *pPath)
 {
-	if(g_pEditor == nullptr || pData == nullptr || Size <= 0)
-		return -1;
-	const int Id = g_pEditor->OpenFromMemory(pData, (size_t)Size, pName);
+	if(g_pEditor == nullptr)
+		return;
+	const int Id = g_pEditor->Open(pPath, IStorage::TYPE_ABSOLUTE);
 	if(Id < 0)
 	{
-		Say("error", std::string("{\"what\":\"open\",\"name\":\"") + pName + "\"}");
-		return -1;
+		Say("error", std::string("{\"what\":\"open\",\"path\":\"") + pPath + "\"}");
+		return;
 	}
 	Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
-	return Id;
+}
+
+// The page's two ways of closing the tab. There is nothing here that has to
+// be finished first - a map that was not saved is the page's problem, and it
+// is the page that can ask about it.
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackQuit()
+{
+	g_Quit = true;
+}
+
+EMSCRIPTEN_KEEPALIVE void EmscriptenCallbackQuitForce()
+{
+	emscripten_force_exit(-1);
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorCreate(int Width, int Height, const char *pName)
@@ -172,7 +214,11 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorName(int Id)
 
 // Writing the map out is one of the two calls that wait: the file is written,
 // closed and handed to the browser, and the page hears about it afterwards.
-EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id)
+// Writing the map out. `Handout` says whether it also goes to wherever the
+// user keeps their files: an autosave writes into the browser's own storage
+// and stops there, because a browser that dropped a file into the downloads
+// every minute would be a browser nobody leaves open.
+EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id, int Handout)
 {
 	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr)
 		return 0;
@@ -187,8 +233,9 @@ EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id)
 	// Into the browser's own storage, so that a map survives the tab, and
 	// then out to wherever the user keeps their files.
 	g_pEditor->Storage()->SyncPersistentStorage();
-	g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
-	Say("saved", "{\"map\":" + std::to_string(Id) + "}");
+	if(Handout != 0)
+		g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+	Say("saved", "{\"map\":" + std::to_string(Id) + ",\"handout\":" + (Handout != 0 ? "true" : "false") + "}");
 	return 1;
 }
 
@@ -211,13 +258,41 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorHistory(int Id)
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->HistoryJson(Id));
 }
 
+// The pixels of a picture that is packed into the map file, so that a page can
+// show a tileset it cannot fetch. They lie in the version, already unpacked,
+// and this hands out where - no copy is made, because the one the page makes
+// when it reads them is the one copy that is needed.
+//
+// The address is good until the map changes. A page that keeps it instead of
+// the pixels is holding a page of somebody else's memory.
+EMSCRIPTEN_KEEPALIVE const uint8_t *MapEditorImagePixels(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr || pImage->m_Data.Empty() ? nullptr : &pImage->m_Data[0];
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorImageWidth(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr ? 0 : pImage->m_Width;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorImageHeight(int Id, int Index)
+{
+	const map_document::CImage *pImage = g_pEditor == nullptr ? nullptr : g_pEditor->Image(Id, Index);
+	return pImage == nullptr ? 0 : pImage->m_Height;
+}
+
 // A change that is made over many calls - a slider being dragged, a brush
 // being drawn with - is one entry in the history and many previews. The page
 // opens it, changes what it likes, and closes it when the pointer is let go.
-EMSCRIPTEN_KEEPALIVE void MapEditorBegin(int Id, const char *pLabel)
+// The merge key names what is being changed rather than what is being done:
+// two changes of the same thing, close enough together, become one history
+// entry. An empty one means this change stands alone, which is the usual case.
+EMSCRIPTEN_KEEPALIVE void MapEditorBegin(int Id, const char *pLabel, const char *pMerge)
 {
 	if(g_pEditor != nullptr && g_pEditor->Document(Id) != nullptr)
-		g_pEditor->Document(Id)->Begin(pLabel);
+		g_pEditor->Document(Id)->Begin(pLabel, pMerge);
 }
 
 EMSCRIPTEN_KEEPALIVE void MapEditorCommit(int Id)
@@ -372,6 +447,137 @@ EMSCRIPTEN_KEEPALIVE int MapEditorAnimate(int Id)
 	return g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr && g_pEditor->Display(Id)->m_Animate ? 1 : 0;
 }
 
+// Hiding a layer is a thing about looking: it changes no version, writes no
+// history entry, and is gone when the page is closed.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetLayerVisible(int Id, int Group, int Layer, int On)
+{
+	if(g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr && Group >= 0 && Layer >= 0)
+	{
+		g_pEditor->Display(Id)->SetVisible((size_t)Group, (size_t)Layer, On != 0);
+		g_pEditor->Touch();
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorLayerVisible(int Id, int Group, int Layer)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr || Group < 0 || Layer < 0)
+		return 1;
+	return g_pEditor->Display(Id)->Visible((size_t)Group, (size_t)Layer) ? 1 : 0;
+}
+
+// How many tiles apart the lines of the grid are, 0 for no grid.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetGrid(int Id, int Spacing)
+{
+	if(g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr)
+	{
+		g_pEditor->Display(Id)->m_Grid = std::max(0, Spacing);
+		g_pEditor->Touch();
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorGrid(int Id)
+{
+	return g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr ? 0 : g_pEditor->Display(Id)->m_Grid;
+}
+
+// What a gesture about an area is doing while it is being done: the rectangle
+// is drawn in the tiles of the group it is in, so it sits on them at every
+// zoom. A width or height of zero takes the mark away again.
+EMSCRIPTEN_KEEPALIVE void MapEditorMark(int Id, int Group, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr)
+		return;
+	CDocumentRenderer::CParams::CMarked &Marked = g_pEditor->Display(Id)->m_Marked;
+	Marked.m_Group = (size_t)std::max(0, Group);
+	Marked.m_X = X;
+	Marked.m_Y = Y;
+	Marked.m_Width = std::max(0, Width);
+	Marked.m_Height = std::max(0, Height);
+	g_pEditor->Touch();
+}
+
+// The brush: what is in hand and what putting it down does. A stroke is the
+// page opening a change when the button goes down, calling `Paint` on every
+// move and closing it when the button comes up - one entry in the history,
+// however many tiles it touched.
+EMSCRIPTEN_KEEPALIVE int MapEditorPickTiles(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && Group >= 0 && Layer >= 0 &&
+			       g_pEditor->PickTiles(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height) ?
+		       1 :
+		       0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorGrab(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	return g_pEditor != nullptr && Group >= 0 && Layer >= 0 &&
+			       g_pEditor->Grab(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height) ?
+		       1 :
+		       0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorPaint(int Id, int Group, int Layer, int X, int Y)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Paint(Id, (size_t)Group, (size_t)Layer, X, Y))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Fill(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorErase(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Erase(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
+		return 0;
+	SayChanged(Id);
+	return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorFlipBrushX()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->FlipBrushX();
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorFlipBrushY()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->FlipBrushY();
+}
+
+EMSCRIPTEN_KEEPALIVE void MapEditorRotateBrush()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->RotateBrush();
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorStoreBrush(int Slot)
+{
+	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->StoreBrush((size_t)Slot) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorUseBrush(int Slot)
+{
+	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->UseBrush((size_t)Slot) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushWidth()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Brush().Width();
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorBrushHeight()
+{
+	return g_pEditor == nullptr ? 0 : g_pEditor->Brush().Height();
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorLoading()
 {
 	return g_pEditor != nullptr && g_pEditor->Loading() ? 1 : 0;
@@ -388,6 +594,9 @@ int main(int argc, const char **argv)
 	int Height = DEFAULT_HEIGHT;
 	std::string OutputFile;
 	std::string InputMap;
+	int Grid = 0;
+	std::vector<std::pair<size_t, size_t>> vHide;
+	std::string Marked;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -403,6 +612,25 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-o") == 0 && i + 1 < argc)
 		{
 			OutputFile = argv[++i];
+		}
+		else if(str_comp(argv[i], "-g") == 0 && i + 1 < argc)
+		{
+			Grid = std::max(0, str_toint(argv[++i]));
+		}
+		else if(str_comp(argv[i], "-m") == 0 && i + 1 < argc)
+		{
+			Marked = argv[++i];
+		}
+		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
+		{
+			const char *pWhich = argv[++i];
+			const char *pColon = str_find(pWhich, ":");
+			if(pColon == nullptr)
+			{
+				InvalidUsage = true;
+				break;
+			}
+			vHide.emplace_back((size_t)std::max(0, str_toint(pWhich)), (size_t)std::max(0, str_toint(pColon + 1)));
 		}
 		else if(argv[i][0] != '-' && InputMap.empty())
 		{
@@ -438,22 +666,54 @@ int main(int argc, const char **argv)
 	IGraphics *pGraphics = Editor.Graphics();
 	pGraphics->AddWindowResizeListener([&] { Editor.OnResize(pGraphics->ScreenWidth(), pGraphics->ScreenHeight()); });
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	g_pEditor = &Editor;
+#endif
+
 	if(!InputMap.empty())
 	{
 		const int Id = Editor.Open(InputMap.c_str(), fs_is_file(InputMap.c_str()) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL);
 		if(Id < 0)
 			return 1;
-	}
-
+		if(Grid > 0)
+			Editor.Display(Id)->m_Grid = Grid;
+		for(const auto &[Group, Layer] : vHide)
+			Editor.Display(Id)->SetVisible(Group, Layer, false);
+		if(!Marked.empty())
+		{
+			int aNumbers[5] = {0, 0, 0, 0, 0};
+			const char *pRead = Marked.c_str();
+			for(int &Number : aNumbers)
+			{
+				Number = str_toint(pRead);
+				const char *pColon = str_find(pRead, ":");
+				pRead = pColon == nullptr ? "" : pColon + 1;
+			}
+			CDocumentRenderer::CParams::CMarked &Where = Editor.Display(Id)->m_Marked;
+			Where.m_Group = (size_t)std::max(0, aNumbers[0]);
+			Where.m_X = aNumbers[1];
+			Where.m_Y = aNumbers[2];
+			Where.m_Width = std::max(0, aNumbers[3]);
+			Where.m_Height = std::max(0, aNumbers[4]);
+		}
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	g_pEditor = &Editor;
+		// The page is already listening by now: starting the graphics gives
+		// the browser its thread back, and that is the moment the page was
+		// answered with a running program.
+		Say("loaded", "{\"map\":" + std::to_string(Id) + "}");
 #endif
+	}
 
 	int ReturnCode = 0;
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	std::chrono::nanoseconds NextFrameTime{};
 	while(true)
 	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(g_Quit)
+			break;
+		SayEverything();
+#endif
 		Editor.Update();
 
 		const int Active = Editor.Active();

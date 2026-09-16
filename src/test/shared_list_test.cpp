@@ -77,6 +77,9 @@ TEST(SharedList, AnEmptyListIsMadeOnFirstWrite)
 TEST(SharedList, ASharedListIsCountedOnce)
 {
 	const CSharedList<int> First(std::vector<int>(1000));
+	// The copy is the thing being tested; a reference would share nothing to
+	// count.
+	// NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
 	const CSharedList<int> Second = First;
 
 	std::unordered_set<const void *> Seen;

@@ -2268,12 +2268,15 @@ if(TARGET_OS STREQUAL "emscripten")
   )
   set(WEB_SITE_PAGE_FILES
     # tidy-alphabetical-start
+    other/emscripten/ddnet-editor.css
     other/emscripten/ddnet-render.css
     other/emscripten/ddnet-viewer.css
     other/emscripten/demo.html
+    other/emscripten/editor.html
     other/emscripten/map.html
     other/emscripten/packages/demo-player/demo-player.js
     other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-editor/map-editor.js
     other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html
     # tidy-alphabetical-end
@@ -3997,6 +4000,12 @@ if(CLIENT)
       # The browser's own fetch, so that the images of the map are fetched
       # beside each other. It brings no library with it.
       target_sources(map-editor PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+      # A map somebody saved has to still be there tomorrow, which the viewers
+      # never needed: they show what they were given and leave nothing behind.
+      # `HEAPU8` beside the rest so that a page can say what a map costs: the
+      # editor is the one program here where somebody may open a map big
+      # enough for that to be the question.
+      target_link_options(map-editor PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,HEAPU8,IDBFS")
     endif()
     # No `${LIBS}` and no FreeType, as in the viewer: nothing here talks to
     # the network, and nothing here draws a letter - the letters are the
@@ -4027,16 +4036,16 @@ if(CLIENT)
   endif()
 
   if(TARGET_OS STREQUAL "emscripten")
-    # Three programs, three pages and one data directory: the demo player is
+    # Four programs, four pages and one data directory: the demo player is
     # the render tool as well, which has no page of its own. Without the web
     # platform layer the render tool is a program of its own. The build says
     # what a server needs.
     if(WEB_TOOLS_PLATFORM)
-      set(WEB_TOOL_PROGRAMS ddnet-demo-player ddnet-map-viewer)
-      set(WEB_TOOL_TARGETS demo-player map-viewer)
+      set(WEB_TOOL_PROGRAMS ddnet-demo-player ddnet-map-editor ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player map-editor map-viewer)
     else()
-      set(WEB_TOOL_PROGRAMS ddnet-demo-render ddnet-demo-player ddnet-map-viewer)
-      set(WEB_TOOL_TARGETS demo-player demo-renderer map-viewer)
+      set(WEB_TOOL_PROGRAMS ddnet-demo-render ddnet-demo-player ddnet-map-editor ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player demo-renderer map-editor map-viewer)
     endif()
     add_custom_target(web-site
       COMMAND ${CMAKE_COMMAND}

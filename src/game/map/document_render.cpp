@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <utility>
 #include <variant>
 
@@ -66,6 +67,18 @@ namespace
 		if(Layer.m_Kind == ETileLayerKind::TILES)
 			return Params.m_EntityOverlayVal < 100;
 		return Params.m_EntityOverlayVal > 0;
+	}
+
+	// A grid whose lines are closer together than this is a grey wash over the
+	// map, so at that point there is no grid.
+	constexpr float MIN_PIXELS_PER_LINE = 4.0f;
+
+	/** Whether whoever is drawing asked for this layer to be left out. */
+	bool Hidden(const CDocumentRenderer::CParams &Params, size_t Group, size_t Layer)
+	{
+		if(Params.m_pHidden == nullptr)
+			return false;
+		return std::find(Params.m_pHidden->begin(), Params.m_pHidden->end(), std::make_pair(Group, Layer)) != Params.m_pHidden->end();
 	}
 } // namespace
 
@@ -201,7 +214,7 @@ void CDocumentRenderer::Use(std::shared_ptr<const CMapState> pMap)
 	m_Envelopes.Use(m_pMap.get());
 }
 
-bool CDocumentRenderer::UseGroup(const CGroup &Group, const CParams &Params)
+bool CDocumentRenderer::UseGroup(const CGroup &Group, const CParams &Params, CScreenRect *pWorld)
 {
 	const int ParallaxX = Group.m_ParallaxX;
 	const int ParallaxY = Group.m_ParallaxY;
@@ -244,8 +257,46 @@ bool CDocumentRenderer::UseGroup(const CGroup &Group, const CParams &Params)
 						  ParallaxX, ParallaxY, (float)ParallaxZoom, Group.m_OffsetX, Group.m_OffsetY, Params.m_Zoom) :
 					  m_pGraphics->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y,
 						  ParallaxX, ParallaxY, (float)ParallaxZoom, Group.m_OffsetX, Group.m_OffsetY, m_pGraphics->ScreenAspect(), Params.m_Zoom);
-	m_pGraphics->MapScreen(CRenderLayerGroup::Windowed(CRenderLayerGroup::Scaled(World, Scale), Params.m_Window));
+	const CScreenRect Screen = CRenderLayerGroup::Windowed(CRenderLayerGroup::Scaled(World, Scale), Params.m_Window);
+	m_pGraphics->MapScreen(Screen);
+	if(pWorld != nullptr)
+		*pWorld = Screen;
 	return true;
+}
+
+void CDocumentRenderer::RenderGrid(const CScreenRect &World, int Spacing)
+{
+	const float Step = Spacing * 32.0f;
+	const float Width = World.Width();
+	if(Step <= 0.0f || Width <= 0.0f)
+		return;
+	if(Step * m_pGraphics->ScreenWidth() / Width < MIN_PIXELS_PER_LINE)
+		return;
+
+	// Counted in lines rather than walked in world units: adding a step to a
+	// float a few hundred times over a large map is a line that slowly walks
+	// off the tiles it is meant to sit on.
+	const int First = (int)std::floor(World.m_TopLeft.x / Step);
+	const int FirstRow = (int)std::floor(World.m_TopLeft.y / Step);
+	const int Columns = (int)std::ceil(World.Width() / Step) + 1;
+	const int Rows = (int)std::ceil(World.Height() / Step) + 1;
+	m_pGraphics->TextureClear();
+	IGraphics::CLineItemBatch Batch;
+	m_pGraphics->LinesBatchBegin(&Batch);
+	m_pGraphics->SetColor(1.0f, 1.0f, 1.0f, 0.25f);
+	for(int Column = 0; Column <= Columns; ++Column)
+	{
+		const float X = (First + Column) * Step;
+		const IGraphics::CLineItem Line(X, World.m_TopLeft.y, X, World.m_BottomRight.y);
+		m_pGraphics->LinesBatchDraw(&Batch, &Line, 1);
+	}
+	for(int Row = 0; Row <= Rows; ++Row)
+	{
+		const float Y = (FirstRow + Row) * Step;
+		const IGraphics::CLineItem Line(World.m_TopLeft.x, Y, World.m_BottomRight.x, Y);
+		m_pGraphics->LinesBatchDraw(&Batch, &Line, 1);
+	}
+	m_pGraphics->LinesBatchEnd(&Batch);
 }
 
 void CDocumentRenderer::CEnvelopes::EnvelopeEval(int TimeOffsetMillis, int EnvelopeIndex, ColorRGBA &Result, size_t Channels) const
@@ -259,6 +310,24 @@ void CDocumentRenderer::CEnvelopes::EnvelopeEval(int TimeOffsetMillis, int Envel
 	CRenderMap::RenderEvalEnvelope(&Points,
 		std::chrono::milliseconds(TimeOffsetMillis) + std::chrono::milliseconds(m_TimeOffsetMillis),
 		Result, std::min({Channels, (size_t)Envelope.m_Channels, (size_t)CEnvPoint::MAX_CHANNELS}));
+}
+
+void CDocumentRenderer::RenderMarked(const CParams::CMarked &Marked)
+{
+	const float Left = Marked.m_X * 32.0f;
+	const float Top = Marked.m_Y * 32.0f;
+	const float Right = Left + Marked.m_Width * 32.0f;
+	const float Bottom = Top + Marked.m_Height * 32.0f;
+	const IGraphics::CLineItem aBorder[4] = {
+		IGraphics::CLineItem(Left, Top, Right, Top),
+		IGraphics::CLineItem(Right, Top, Right, Bottom),
+		IGraphics::CLineItem(Right, Bottom, Left, Bottom),
+		IGraphics::CLineItem(Left, Bottom, Left, Top)};
+	m_pGraphics->TextureClear();
+	m_pGraphics->LinesBegin();
+	m_pGraphics->SetColor(1.0f, 1.0f, 1.0f, 0.9f);
+	m_pGraphics->LinesDraw(aBorder, std::size(aBorder));
+	m_pGraphics->LinesEnd();
 }
 
 void CDocumentRenderer::RenderTileLayer(const CTileLayer &Layer, CLayerCache &Cache, const CParams &Params)
@@ -348,7 +417,7 @@ void CDocumentRenderer::Render(const CParams &Params)
 			dbg_assert(Next < m_vpCaches.size(), "The renderer was not given the version it is drawing");
 			CLayerCache &Cache = *m_vpCaches[Next++];
 			dbg_assert(Cache.m_Group == Group && Cache.m_Layer == Layer, "The renderer was not given the version it is drawing");
-			if(!Visible)
+			if(!Visible || Hidden(Params, Group, Layer))
 				continue;
 			if(std::holds_alternative<CTileLayer>(TheLayer))
 			{
@@ -363,6 +432,21 @@ void CDocumentRenderer::Render(const CParams &Params)
 					RenderQuadLayer(Quads, Cache, Params);
 			}
 		}
+	}
+
+	// Last, and over everything: a grid under the map would be a grid nobody
+	// can see. It follows the group that is being worked in, so its lines sit
+	// on that group's tiles whatever the parallax does.
+	if(Params.m_Grid > 0 && Params.m_GridGroup < m_pMap->NumGroups())
+	{
+		CScreenRect World(0.0f, 0.0f, 0.0f, 0.0f);
+		if(UseGroup(*m_pMap->m_vpGroups[Params.m_GridGroup], Params, &World))
+			RenderGrid(World, Params.m_Grid);
+	}
+	if(!Params.m_Marked.Empty() && Params.m_Marked.m_Group < m_pMap->NumGroups())
+	{
+		if(UseGroup(*m_pMap->m_vpGroups[Params.m_Marked.m_Group], Params))
+			RenderMarked(Params.m_Marked);
 	}
 	m_pGraphics->ClipDisable();
 }

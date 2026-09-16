@@ -40,6 +40,17 @@ namespace map_document
 			std::string m_Label;
 			/** When it was done, so the view can group or fade old entries. */
 			int64_t m_TimeNanos = 0;
+			/**
+			 * What this entry would fold a following one into itself for, or
+			 * empty for an entry that stands alone.
+			 *
+			 * A number field stepped with its arrows sends a change for every
+			 * step, and ten steps are not ten things to undo - they are one
+			 * change of one property. Whoever makes the change says so by
+			 * naming what is being changed; two changes of the same thing,
+			 * close enough together, become one entry.
+			 */
+			std::string m_MergeKey;
 		};
 
 		/**
@@ -74,14 +85,29 @@ namespace map_document
 		 * is not reachable from here any more, and keeping it would only cost
 		 * memory that the limit wants for the way back.
 		 */
-		void Push(CMapState State, const char *pLabel)
+		void Push(CMapState State, const char *pLabel, const char *pMergeKey = nullptr)
 		{
 			while(m_vEntries.size() > m_Current + 1)
 			{
 				DropBack();
 			}
+			const int64_t Time = Now();
+			if(MergesInto(m_vEntries.back(), pMergeKey, Time))
+			{
+				// The entry stays where it is and says the same thing; what
+				// changes is the version it points at. The way back is the
+				// version before it, which is where it was before this run of
+				// changes started - so a run of steps is one undo.
+				CEntry &Last = m_vEntries.back();
+				m_Bytes -= FreshBytes(Last.m_State, m_vEntries[m_vEntries.size() - 2].m_State);
+				Last.m_State = std::move(State);
+				Last.m_TimeNanos = Time;
+				m_Bytes += FreshBytes(Last.m_State, m_vEntries[m_vEntries.size() - 2].m_State);
+				Prune();
+				return;
+			}
 			m_Bytes += FreshBytes(State, m_vEntries.back().m_State);
-			m_vEntries.push_back(CEntry{std::move(State), pLabel, Now()});
+			m_vEntries.push_back(CEntry{std::move(State), pLabel, Time, pMergeKey == nullptr ? "" : pMergeKey});
 			m_Current = m_vEntries.size() - 1;
 			Prune();
 		}
@@ -168,10 +194,36 @@ namespace map_document
 		uint64_t MaxBytes() const { return m_MaxBytes; }
 		size_t MaxEntries() const { return m_MaxEntries; }
 
+		/**
+		 * How long an entry stays open for the next change of the same thing
+		 * to be folded into it. Zero means every change is its own entry.
+		 *
+		 * Half a second by default, which is what an editor that does this
+		 * usually settles on: long enough for a held-down arrow key, short
+		 * enough that two deliberate changes stay two.
+		 */
+		void SetMergeWindow(int64_t Nanos) { m_MergeWindowNanos = Nanos; }
+		int64_t MergeWindow() const { return m_MergeWindowNanos; }
+
 	private:
 		static int64_t Now() { return time_get_nanoseconds().count(); }
 
 		bool OverLimit() const { return m_vEntries.size() > m_MaxEntries || Bytes() > m_MaxBytes; }
+
+		/**
+		 * Whether a change named that way belongs in the entry that is
+		 * already there rather than in one of its own.
+		 *
+		 * The first entry is never one of them: it is what was opened, and
+		 * folding a change into it would take away the way back to it.
+		 */
+		bool MergesInto(const CEntry &Last, const char *pMergeKey, int64_t Time) const
+		{
+			return pMergeKey != nullptr && pMergeKey[0] != '\0' &&
+			       m_vEntries.size() > 1 && m_Current + 1 == m_vEntries.size() &&
+			       Last.m_MergeKey == pMergeKey &&
+			       Time - Last.m_TimeNanos < m_MergeWindowNanos;
+		}
 
 		/**
 		 * What `Newer` holds that `Older` does not.
@@ -230,6 +282,7 @@ namespace map_document
 		// better about the machine says so with `SetLimits`.
 		uint64_t m_MaxBytes = (uint64_t)256 * 1024 * 1024;
 		size_t m_MaxEntries = 1000;
+		int64_t m_MergeWindowNanos = 500 * 1000 * 1000;
 	};
 } // namespace map_document
 

@@ -25,6 +25,6 @@
  *
  * @return What `CTileChunkCache::Load` wants.
  */
-CTileChunkCache::CLayerSource DocumentLayerSource(std::shared_ptr<const map_document::CLayer> pLayer);
+CTileChunkCache::CLayerSource DocumentLayerSource(const std::shared_ptr<const map_document::CLayer> &pLayer);
 
 #endif // GAME_MAP_DOCUMENT_SOURCE_H

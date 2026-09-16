@@ -265,6 +265,8 @@ public:
 		// Wait out every readback the backend still owes.
 		CMD_FINISH_READBACKS,
 		CMD_UPDATE_VIEWPORT,
+		// The same viewport, set between the draws of a frame it applies to.
+		CMD_DRAW_VIEWPORT,
 
 		// in Android a window that minimizes gets destroyed
 		CMD_WINDOW_CREATE_NTF,
@@ -328,6 +330,7 @@ public:
 		case CMD_BEGIN_RENDER_PASS:
 		case CMD_END_RENDER_PASS:
 		case CMD_FLUSH_RENDER_PASS:
+		case CMD_DRAW_VIEWPORT:
 		case CMD_DRAW:
 		case CMD_DRAW_INDEXED:
 		case CMD_PRESENTATION_TARGET_READBACK:

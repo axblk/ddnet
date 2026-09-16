@@ -52,7 +52,7 @@ all of it and a page may reach any of it.
 | `src` | A map to open, and changing it opens another. |
 | `urlparam` | The name of a parameter of the page's *own* address to take a map from - `urlparam="map"` reads `#map=…`. Left out, the element does not read the address at all, because two editors on one page could not both be what it is about. |
 | `theme="light"` | The light set of colours. |
-| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
+| `remember` | Keeps what is being edited in the browser's own storage, saves into it every minute, and asks before the tab goes with something unsaved in it. It also keeps the shortcuts somebody chose. Without it the element keeps nothing - a page that quietly filled a visitor's storage would be a surprise. |
 | `controls="none\|compact\|full"` | How much tool bar. Left out, the size of the box decides. |
 | `readonly` | Nothing may be changed: no inspector, no brush, and the tool bar keeps only what is about looking. The pointer pans and zooms and paints nothing. |
 | `targets="auto\|big\|small"` | How big the things one aims at are. Left out (or `auto`), the browser is asked: `pointer: coarse` gets the finger sizes. The other two are for the cases where that answer is wrong - a touch laptop with a mouse says `fine`, a tablet in desktop mode says `coarse`, and neither is what the hand on it is doing. |
@@ -165,7 +165,7 @@ and adds buttons - never what the editor can do.
 | Two-finger tap / three-finger tap | back / forward |
 | A press that stands still, with an empty brush | which layer is here? |
 | A press that stands still, with a full brush | nothing - a finger may rest while it paints |
-| A pen | paints always; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass |
+| A pen | paints always, and its rubber end erases; once a pen has been seen a finger pans instead, because the hand holding the pen lies on the glass (Settings → *With a pen, a finger only pans* turns that off) |
 
 The second finger of a pan lands fifty to a hundred and fifty milliseconds
 after the first, and by then the first has already put down a tile. Within
@@ -324,7 +324,13 @@ frame.
 
 **What the keys do** (Ctrl+/) is every shortcut on one sheet, grouped the way
 the palette groups them, and every key a command answers to rather than only
-the first.
+the first. A key on the sheet is a button: press it, then the key it is to be.
+Escape leaves it as it was, Delete takes it away, and a key that belonged to
+another command moves rather than doubles - the line under the map says which
+command lost it. **Every key as it was** undoes all of it. With `remember` the
+element keeps the keys somebody chose under `ddnet-editor-keys`, and
+`editor-keys` tells a page that keeps them itself; `panels.applyKeys()` hands
+them back.
 
 ## What it is made of
 

@@ -707,6 +707,14 @@ export const COMMANDS = [
 		},
 	},
 	{
+		id: "settings.penHoldsPaper", label: "With a pen, a finger only pans", group: "Settings", safe: true, menu: "Settings",
+		pressed: p => p.penHoldsPaper,
+		run: p => {
+			p.penHoldsPaper = !p.penHoldsPaper;
+			p.refresh();
+		},
+	},
+	{
 		// Ctrl+U, as in the native editor.
 		id: "settings.allowUnused", label: "Allow unused tiles", group: "Settings", menu: "Settings",
 		keys: ["Ctrl+U"],

@@ -1520,6 +1520,10 @@ class CEditorPanels {
 		// the layer's colour (on, as there), and whether a tile that does
 		// nothing in a physics layer may be put down (off, as there).
 		this.brushColouring = true;
+		// Once a pen has been seen a finger pans rather than paints, because
+		// the hand holding the pen rests on the glass. Somebody who paints
+		// with a finger and points with the pen turns it off.
+		this.penHoldsPaper = true;
 		this.unusedSaidAt = -Infinity;
 		// What a long press says, where a pointer would have hovered.
 		this.tip = null;
@@ -1588,8 +1592,10 @@ class CEditorPanels {
 		// or "hex".
 		this.tileInfo = "hex";
 		// The commands, and the keys that reach them.
-		this.commands = COMMANDS;
-		this.keys_ = keyTable(COMMANDS);
+		// A copy of each for these panels alone: the keys can be set, and two
+		// editors on one page need not agree about them.
+		this.commands = COMMANDS.map(command => Object.assign({}, command));
+		this.keys_ = keyTable(this.commands);
 		// Whether the strip at the bottom is open. It starts closed: what is
 		// in it - envelopes, the history, the server settings, the rules - is
 		// looked at now and then, and the map should not pay two hundred
@@ -3313,47 +3319,76 @@ class CEditorPanels {
 		const head = document.createElement("h2");
 		head.className = "editor-dialog-head";
 		head.textContent = "What the keys do";
-		form.append(head);
+		const hint = document.createElement("p");
+		hint.className = "editor-dialog-note";
+		hint.textContent = "Press a key to give it another one. Delete takes it away, Escape leaves it as it was.";
+		form.append(head, hint);
 		const sheet = document.createElement("div");
 		sheet.className = "editor-keys";
 		sheet.dataset.role = "keys";
-		const groups = new Map();
-		for (const command of this.commands) {
-			if (command.keys === undefined || command.keys.length === 0) {
-				continue;
-			}
-			if (!groups.has(command.group)) {
-				groups.set(command.group, []);
-			}
-			groups.get(command.group).push(command);
-		}
-		for (const [group, commands] of groups) {
-			const where = document.createElement("h3");
-			where.className = "editor-keys-group";
-			where.textContent = group;
-			sheet.append(where);
-			const list = document.createElement("dl");
-			list.className = "editor-keys-list";
-			for (const command of commands) {
-				const what = document.createElement("dt");
-				what.textContent = command.label;
-				const key = document.createElement("dd");
-				// Every key it answers to, not only the first: the tool bar
-				// has room for one and a sheet has room for all of them.
-				key.textContent = command.keys.map(keyLabel).join(" or ");
-				list.append(what, key);
-			}
-			sheet.append(list);
-		}
 		form.append(sheet);
+		const fill = () => {
+			sheet.textContent = "";
+			const groups = new Map();
+			for (const command of this.commands) {
+				// A command that has a key, or had one: taking a key away must
+				// not take the row away with it, or it could not be given back.
+				const had = COMMANDS.find(which => which.id === command.id);
+				if ((command.keys === undefined || command.keys.length === 0) && (had.keys === undefined || had.keys.length === 0)) {
+					continue;
+				}
+				if (!groups.has(command.group)) {
+					groups.set(command.group, []);
+				}
+				groups.get(command.group).push(command);
+			}
+			for (const [group, commands] of groups) {
+				const where = document.createElement("h3");
+				where.className = "editor-keys-group";
+				where.textContent = group;
+				sheet.append(where);
+				const list = document.createElement("dl");
+				list.className = "editor-keys-list";
+				for (const command of commands) {
+					const what = document.createElement("dt");
+					what.textContent = command.label;
+					const key = document.createElement("dd");
+					const button = document.createElement("button");
+					button.type = "button";
+					button.className = "editor-keys-key";
+					button.dataset.role = "key";
+					button.dataset.command = command.id;
+					// Every key it answers to, not only the first: the tool bar
+					// has room for one and a sheet has room for all of them.
+					button.textContent = command.keys === undefined || command.keys.length === 0
+						? "none" : command.keys.map(keyLabel).join(" or ");
+					button.setAttribute("aria-label", `${command.label}: ${button.textContent}. Press to change.`);
+					button.addEventListener("click", () => this.listenForKey(button, command, fill),
+						{ signal: this.stopping.signal });
+					key.append(button);
+					list.append(what, key);
+				}
+				sheet.append(list);
+			}
+		};
+		fill();
 		const row = document.createElement("div");
 		row.className = "editor-dialog-buttons";
+		const back = document.createElement("button");
+		back.type = "button";
+		back.className = "editor-small";
+		back.dataset.role = "keys-reset";
+		back.textContent = "Every key as it was";
+		back.addEventListener("click", () => {
+			this.resetKeys();
+			fill();
+		}, { signal: this.stopping.signal });
 		const go = document.createElement("button");
 		go.type = "submit";
 		go.className = "editor-small editor-dialog-go";
 		go.dataset.role = "dialog-go";
 		go.textContent = "Done";
-		row.append(go);
+		row.append(back, go);
 		form.append(row);
 		this.dialog.append(form);
 		form.addEventListener("submit", event => {
@@ -3362,6 +3397,126 @@ class CEditorPanels {
 		}, { signal: this.stopping.signal });
 		home.append(this.dialog);
 		go.focus();
+	}
+
+	/**
+	 * Waits on one row of the sheet for the key that is to reach it.
+	 *
+	 * The press is taken before anything else hears it - otherwise the key
+	 * being set would also do what it does now. Escape leaves the row as it
+	 * was, Delete or Backspace takes its key away, and a modifier on its own
+	 * is waited past.
+	 */
+	listenForKey(button, command, done) {
+		button.textContent = "Press a key\u2026";
+		button.setAttribute("aria-pressed", "true");
+		const stop = new AbortController();
+		const signal = AbortSignal.any([stop.signal, this.stopping.signal]);
+		document.addEventListener("keydown", event => {
+			const name = keyName(event);
+			if (name === "") {
+				return;
+			}
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			stop.abort();
+			if (name !== "Escape") {
+				const taken = name === "Delete" || name === "Backspace" ? [] : [name];
+				const moved = this.setKeys(command.id, taken);
+				if (moved !== null) {
+					this.say(`${name} now does "${command.label}" rather than "${moved.label}"`);
+				}
+			}
+			done();
+		}, { capture: true, signal: signal });
+		// A press anywhere else gives up waiting.
+		document.addEventListener("pointerdown", event => {
+			if (event.target !== button) {
+				stop.abort();
+				done();
+			}
+		}, { capture: true, signal: signal });
+	}
+
+	/**
+	 * Gives a command these keys and no others.
+	 *
+	 * A key reaches one command, so a key that is given here is taken from
+	 * whichever had it; that one is handed back so that it can be said. What
+	 * differs from the table is told to the element, which keeps it where the
+	 * page asked it to keep things.
+	 *
+	 * @return The command that lost a key to this one, or `null`.
+	 */
+	setKeys(id, keys) {
+		const command = this.commands.find(which => which.id === id);
+		if (command === undefined) {
+			return null;
+		}
+		let moved = null;
+		for (const other of this.commands) {
+			if (other === command || other.keys === undefined) {
+				continue;
+			}
+			const kept = other.keys.filter(key => !keys.includes(key));
+			if (kept.length !== other.keys.length) {
+				other.keys = kept;
+				moved = other;
+			}
+		}
+		command.keys = keys.slice();
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+		this.tellKeys();
+		return moved;
+	}
+
+	/** Every key back to the table's. */
+	resetKeys() {
+		for (const command of this.commands) {
+			const table = COMMANDS.find(which => which.id === command.id);
+			command.keys = table.keys === undefined ? undefined : table.keys.slice();
+		}
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+		this.tellKeys();
+	}
+
+	/** What differs from the table: command by command, the keys it has now. */
+	changedKeys() {
+		const changed = {};
+		for (const command of this.commands) {
+			const table = COMMANDS.find(which => which.id === command.id);
+			const now = JSON.stringify(command.keys || []);
+			if (now !== JSON.stringify(table.keys || [])) {
+				changed[command.id] = command.keys || [];
+			}
+		}
+		return changed;
+	}
+
+	/** Puts keys back that were kept from another visit. */
+	applyKeys(changed) {
+		if (changed === null || typeof changed !== "object") {
+			return;
+		}
+		for (const [id, keys] of Object.entries(changed)) {
+			if (Array.isArray(keys) && keys.every(key => typeof key === "string")) {
+				const command = this.commands.find(which => which.id === id);
+				if (command !== undefined) {
+					command.keys = keys.slice();
+				}
+			}
+		}
+		this.keys_ = keyTable(this.commands);
+		this.refreshBar();
+	}
+
+	tellKeys() {
+		const target = this.box !== null && this.box !== undefined ? this.box : this.root;
+		if (target !== null) {
+			target.dispatchEvent(new CustomEvent("editor-keys", { detail: { keys: this.changedKeys() } }));
+		}
 	}
 
 	/** Which entities sheet, chosen from the ones there are. */
@@ -6899,7 +7054,7 @@ function steerWithPointer(editor, options) {
 	const settings = Object.assign({
 		canvas: null, target: null, mode: null, onChange: null, onView: null, onHover: null,
 		onClickInGroup: null, afterStroke: null, onLongPress: null, onFingerTap: null, onAsk: null,
-		signal: undefined,
+		penHoldsPaper: null, signal: undefined,
 	}, options || {});
 	const canvas = settings.canvas || editor.canvas;
 	const stopping = new AbortController();
@@ -7203,7 +7358,7 @@ function steerWithPointer(editor, options) {
 		}
 		// A finger on a tablet where a pen has been seen holds the paper; the
 		// pen is what draws.
-		if (sawPen && event.pointerType === "touch") {
+		if (sawPen && event.pointerType === "touch" && (settings.penHoldsPaper === null || settings.penHoldsPaper())) {
 			pointer = event.pointerId;
 			last = { x: event.clientX, y: event.clientY };
 			capture(pointer, true);
@@ -7231,7 +7386,9 @@ function steerWithPointer(editor, options) {
 			return;
 		}
 		const tile = tileAt(event);
-		if (event.button !== 0 || where === null || tile === null) {
+		// The other end of a pen is a rubber, and it comes as button 5.
+		const rubber = event.pointerType === "pen" && event.button === 5;
+		if ((event.button !== 0 && !rubber) || where === null || tile === null) {
 			doing = "move";
 			return;
 		}
@@ -7239,7 +7396,8 @@ function steerWithPointer(editor, options) {
 		// A held modifier says what this one stroke is; without one it is
 		// whatever the brush has been set to, which is painting until somebody
 		// says otherwise.
-		const asked = event.altKey ? "fill"
+		const asked = rubber ? "erase"
+			: event.altKey ? "fill"
 			: event.shiftKey ? "grab"
 				: (event.ctrlKey || event.metaKey) ? "erase"
 					: (settings.mode === null ? "paint" : settings.mode());
@@ -7518,6 +7676,9 @@ const HANDLE_REACH_FINGER = 22;
 // than a tap. Twenty pixels is narrow enough that a stroke which starts near
 // the edge of the map still starts on the map.
 const EDGE_SWIPE_ZONE = 20;
+
+// Where an element with `remember` keeps the keys somebody set.
+const KEYS_STORAGE = "ddnet-editor-keys";
 const EDGE_SWIPE_REACH = 40;
 
 const SECOND_FINGER_MS = 150;
@@ -8149,6 +8310,7 @@ class CEditorElement extends ELEMENT_BASE {
 			// go through `run`, where everything else is refused.
 			target: () => (panels.readonly ? null : panels.selection),
 			mode: () => panels.tool,
+			penHoldsPaper: () => panels.penHoldsPaper,
 			onChange: () => panels.refresh(),
 			// Panning and zooming change nothing about the map, so the panels
 			// are left alone - but what is drawn over the canvas is now over
@@ -8183,6 +8345,23 @@ class CEditorElement extends ELEMENT_BASE {
 		// minute - a safety net, not a place to keep a map.
 		if (this.hasAttribute("remember")) {
 			instance.autosave(60);
+			// And the keys somebody set, which are theirs rather than a map's.
+			try {
+				panels.applyKeys(JSON.parse(localStorage.getItem(KEYS_STORAGE) || "null"));
+			} catch (error) {
+				// Nothing kept, or something that is not keys: the table's.
+			}
+			this.addEventListener("editor-keys", event => {
+				try {
+					if (Object.keys(event.detail.keys).length === 0) {
+						localStorage.removeItem(KEYS_STORAGE);
+					} else {
+						localStorage.setItem(KEYS_STORAGE, JSON.stringify(event.detail.keys));
+					}
+				} catch (error) {
+					// A browser that keeps nothing forgets the keys with the tab.
+				}
+			}, { signal: signal });
 		}
 		document.addEventListener("keydown", event => {
 			if (this.hears()) {

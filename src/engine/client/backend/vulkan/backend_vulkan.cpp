@@ -4,21 +4,18 @@
 // definitions follow, in sections by what they concern.
 
 #include <base/dbg.h>
-#include <base/io.h>
 #include <base/log.h>
 #include <base/mem.h>
 #include <base/str.h>
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/embedded_shaders.h>
-#include <engine/client/backend/gpu_timestamp.h>
 #include <engine/client/backend/vulkan/backend_vulkan.h>
 #include <engine/client/command_buffer.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/localization.h>
-#include <engine/storage.h>
 
 #include <vulkan/vk_platform.h>
 #include <vulkan/vulkan_core.h>
@@ -717,12 +714,13 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 		ColorRGBA m_TextOutlineColor;
 	};
 
-	// A tile layer is drawn where it lies and a border tile is one quad
-	// stretched over the area it repeats across, so the offset and the scale
-	// are always here and stand at zero and one for a layer.
 	struct SUniformTileGPos
 	{
 		float m_aPos[4 * 2];
+	};
+
+	struct SUniformTileGPosBorder : public SUniformTileGPos
+	{
 		vec2 m_Offset;
 		vec2 m_Scale;
 	};
@@ -855,7 +853,6 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	// So that a target that is skipped every frame until the frontend has made
 	// it again says so once instead of once per frame.
 	SGpuTimingShared *m_pGpuTiming = nullptr;
-	IStorage *m_pStorage = nullptr;
 
 	TTwGraphicsGpuList *m_pGpuList;
 
@@ -931,13 +928,6 @@ private:
 	std::vector<SSwapChainMultiSampleImage> m_vSwapChainMultiSamplingImages;
 	std::vector<VkFramebuffer> m_vFramebufferList;
 	std::vector<VkCommandBuffer> m_vMainDrawCommandBuffers;
-	// A readback submits the slot's draw buffer mid-frame, but the frame is not
-	// over - the acquired image is still owed a present. The rest of it records
-	// into this second buffer, which is what lets the copy run on its own.
-	std::vector<VkCommandBuffer> m_vReadbackDrawCommandBuffers;
-	std::vector<bool> m_vUsingReadbackDrawCommandBuffer;
-	std::vector<VkFence> m_vReadbackFences;
-	std::vector<bool> m_vReadbackPending;
 
 	std::vector<VkCommandBuffer> m_vMemoryCommandBuffers;
 	std::vector<bool> m_vUsedMemoryCommandBuffer;
@@ -947,24 +937,15 @@ private:
 	// memory is not given back before then either. Nothing waits at the
 	// submit, and nothing waits for the whole queue.
 	std::vector<VkFence> m_vMemoryCommandBufferFences;
-	// The fence a slot's memory command buffer is in flight on, which is not
-	// its own when a readback submit took the buffer along.
-	std::vector<VkFence> m_vMemoryCommandBufferPending;
+	std::vector<bool> m_vMemoryCommandBufferPending;
 
 	std::vector<VkSemaphore> m_vQueueSubmitSemaphores;
 	std::vector<VkSemaphore> m_vBusyAcquireImageSemaphores;
 	VkSemaphore m_AcquireImageSemaphore;
 
 	std::vector<VkFence> m_vQueueSubmitFences;
-	// Two queries frame the whole frame, and each render zone interval adds
-	// a pair of its own behind them.
 	VkQueryPool m_GpuTimestampQueryPool = VK_NULL_HANDLE;
 	std::vector<bool> m_vGpuTimestampPending;
-	std::vector<uint32_t> m_vGpuTimestampZoneMasks;
-	std::vector<uint64_t> m_vGpuTimestampGenerations;
-	std::vector<uint32_t> m_vGpuTimestampIntervalCounts;
-	std::vector<TGpuTimestampIntervalZones> m_vGpuTimestampIntervalZones;
-	CGpuTimestampZones m_GpuTimestampZones;
 	float m_GpuTimestampPeriod = 0.0f;
 	uint32_t m_GpuTimestampValidBits = 0;
 	bool m_GpuTimestampRecording = false;
@@ -977,7 +958,6 @@ private:
 
 	VkInstance m_VKInstance;
 	VkPhysicalDevice m_VKGPU;
-	VkPhysicalDeviceMemoryProperties m_MemoryProperties{};
 	uint32_t m_VKGraphicsQueueIndex = std::numeric_limits<uint32_t>::max();
 	VkDevice m_VKDevice;
 	VkQueue m_VKGraphicsQueue, m_VKPresentQueue;
@@ -985,13 +965,8 @@ private:
 	SSwapImgViewportExtent m_VKSwapImgAndViewportExtent;
 
 #ifdef VK_EXT_debug_utils
-	VkDebugUtilsMessengerEXT m_DebugMessenger = VK_NULL_HANDLE;
-	// Null unless the debug extension is really there. A validation message or
-	// a capture shows bare handles without it.
-	PFN_vkSetDebugUtilsObjectNameEXT m_pfnSetDebugUtilsObjectName = nullptr;
+	VkDebugUtilsMessengerEXT m_DebugMessenger;
 #endif
-
-	void NameObject(VkObjectType Type, uint64_t Handle, const char *pName, int Index = -1);
 
 #ifdef VK_EXT_device_fault
 	// Optional VK_EXT_device_fault support. When the driver exposes the extension
@@ -1014,22 +989,12 @@ private:
 	SPipelineContainer m_PlanarYuvPipeline;
 	SPipelineContainer m_DualAtlasPipeline;
 	SPipelineContainer m_ArrayColorPipeline;
+	SPipelineContainer m_ArrayColorTransformPipeline;
 	SPipelineContainer m_PrimitiveUniformColorPipeline;
 	SPipelineContainer m_PrimitiveInstancedPipeline;
 	SPipelineContainer m_PrimitiveInstancedPushPipeline;
 	SPipelineContainer m_QuadPerItemPipeline;
 	SPipelineContainer m_QuadSharedPipeline;
-
-	// What the live pipelines were compiled against. Everything else a swapchain
-	// recreation changes is dynamic state, and a render pass only has to be
-	// compatible with the one a pipeline was built with, not the same object -
-	// so a resize or a vsync toggle cannot invalidate them.
-	VkFormat m_PipelinesFormat = VK_FORMAT_UNDEFINED;
-	VkSampleCountFlagBits m_PipelinesSampleCount = VK_SAMPLE_COUNT_1_BIT;
-	// Carries what the driver learned about our pipelines from one run to the
-	// next, so a cold start does not compile all of them from scratch.
-	VkPipelineCache m_PipelineCache = VK_NULL_HANDLE;
-	bool m_PipelineCacheDirty = false;
 
 	VkPipeline m_LastPipeline = VK_NULL_HANDLE;
 	// Consecutive draws bind the same texture far more often than not - a tile
@@ -1151,10 +1116,6 @@ protected:
 	[[nodiscard]] bool WaitForMemoryCommandBuffer(size_t Slot);
 
 	[[nodiscard]] bool WaitForFrameSlot();
-
-	// Waits for a slot's readback to land if one is still in flight, then hands
-	// the pixels over. The synchronous side of the asynchronous collection.
-	[[nodiscard]] bool WaitForReadback(size_t Slot);
 
 	[[nodiscard]] bool PrepareReadbackRecording();
 
@@ -1471,11 +1432,7 @@ protected:
 			}
 			if(RangeUpdateCount > 0 && FlushForRendering)
 			{
-				// Nothing here can act on it, but a draw that reads what the
-				// host never handed over is not a frame worth finishing either.
-				const VkResult FlushResult = vkFlushMappedMemoryRanges(m_VKDevice, RangeUpdateCount, StreamedBuffer.GetRanges(m_CurImageIndex).data());
-				if(FlushResult != VK_SUCCESS)
-					SetError(MemoryErrorType(FlushResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER), "Flushing the streamed buffers failed.");
+				vkFlushMappedMemoryRanges(m_VKDevice, RangeUpdateCount, StreamedBuffer.GetRanges(m_CurImageIndex).data());
 			}
 		}
 		StreamedBuffer.ResetFrame(m_CurImageIndex);
@@ -1514,8 +1471,6 @@ protected:
 	[[nodiscard]] bool BeginGpuTimestamp();
 
 	bool EndGpuTimestamp(VkCommandBuffer CommandBuffer);
-
-	[[nodiscard]] bool Cmd_GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand);
 
 	/**
 	 * Ends the recorded command buffer and submits it. Everything that needs a
@@ -1637,9 +1592,9 @@ protected:
 
 	VkPipeline &GetStandardPipe(bool IsLineGeometry, bool IsTextured, size_t BlendModeIndex);
 
-	VkPipelineLayout &GetArrayColorPipeLayout(bool IsTextured, size_t BlendModeIndex);
+	VkPipelineLayout &GetArrayColorPipeLayout(bool HasTransform, bool IsTextured, size_t BlendModeIndex);
 
-	VkPipeline &GetArrayColorPipe(bool IsTextured, size_t BlendModeIndex);
+	VkPipeline &GetArrayColorPipe(bool HasTransform, bool IsTextured, size_t BlendModeIndex);
 
 	void GetStateIndices(const CCommandBuffer::SState &State, bool &IsTextured, size_t &BlendModeIndex, size_t &AddressModeIndex);
 
@@ -1653,7 +1608,7 @@ protected:
 
 	void RenderArrayColor_FillExecuteBuffer(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, size_t BufferObjectIndex);
 
-	[[nodiscard]] bool RenderArrayColor(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, const ColorRGBA &Color, const vec2 &Scale, const vec2 &Off, uint32_t IndexCount, size_t IndexOffset);
+	[[nodiscard]] bool RenderArrayColor(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, bool HasTransform, const ColorRGBA &Color, const vec2 &Scale, const vec2 &Off, uint32_t IndexCount, size_t IndexOffset);
 
 	template<typename TName, bool Is3DTextured>
 	[[nodiscard]] bool RenderStandard(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, EPrimitiveType PrimitiveType, const TName *pVertices, uint32_t VertexCount, SPipelineContainer *pPipelineContainer = nullptr)
@@ -1911,12 +1866,11 @@ public:
 		{
 			PipelineInfo.renderPass = Pass == PIPELINE_PASS_SCREEN ? m_VKRenderPass : m_VKRenderTargetPass;
 			VkPipeline &Pipeline = GetPipeline(PipeContainer, EPipelinePass(Pass), HasSampler, size_t(BlendMode));
-			if(vkCreateGraphicsPipelines(m_VKDevice, m_PipelineCache, 1, &PipelineInfo, nullptr, &Pipeline) != VK_SUCCESS)
+			if(vkCreateGraphicsPipelines(m_VKDevice, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &Pipeline) != VK_SUCCESS)
 			{
 				SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating the graphic pipeline failed.");
 				return false;
 			}
-			NameObject(VK_OBJECT_TYPE_PIPELINE, (uint64_t)Pipeline, pVertName);
 		}
 
 		return true;
@@ -1958,7 +1912,7 @@ public:
 	[[nodiscard]] bool CreateTextGraphicsPipeline(const char *pVertName, const char *pFragName);
 
 	template<bool HasSampler>
-	[[nodiscard]] bool CreateTileGraphicsPipelineImpl(const char *pVertName, const char *pFragName, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
+	[[nodiscard]] bool CreateTileGraphicsPipelineImpl(const char *pVertName, const char *pFragName, bool IsBorder, SPipelineContainer &PipeContainer, EVulkanBackendTextureModes TexMode, EVulkanBackendBlendModes BlendMode)
 	{
 		std::array<VkVertexInputAttributeDescription, HasSampler ? 2 : 1> aAttributeDescriptions = {};
 		const uint32_t Stride = FillVertexInput(HasSampler ? IGraphics::EVertexLayout::TILE_TEXTURED : IGraphics::EVertexLayout::TILE, aAttributeDescriptions);
@@ -1967,24 +1921,27 @@ public:
 		aSetLayouts[0] = m_Standard3DTexturedDescriptorSetLayout;
 
 		uint32_t VertPushConstantSize = sizeof(SUniformTileGPos);
+		if(IsBorder)
+			VertPushConstantSize = sizeof(SUniformTileGPosBorder);
+
 		uint32_t FragPushConstantSize = sizeof(SUniformTileGVertColor);
 
 		std::array<VkPushConstantRange, 2> aPushConstants{};
 		aPushConstants[0] = {VK_SHADER_STAGE_VERTEX_BIT, 0, VertPushConstantSize};
-		aPushConstants[1] = {VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPos) + sizeof(SUniformTileGVertColorAlign), FragPushConstantSize};
+		aPushConstants[1] = {VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPosBorder) + sizeof(SUniformTileGVertColorAlign), FragPushConstantSize};
 
 		return CreateGraphicsPipeline<false>(pVertName, pFragName, PipeContainer, Stride, aAttributeDescriptions, aSetLayouts, aPushConstants, TexMode, BlendMode);
 	}
 
 	template<bool HasSampler>
-	[[nodiscard]] bool CreateTileGraphicsPipeline(const char *pVertName, const char *pFragName)
+	[[nodiscard]] bool CreateTileGraphicsPipeline(const char *pVertName, const char *pFragName, bool IsBorder)
 	{
 		bool Ret = true;
 
 		EVulkanBackendTextureModes TexMode = HasSampler ? VULKAN_BACKEND_TEXTURE_MODE_TEXTURED : VULKAN_BACKEND_TEXTURE_MODE_NOT_TEXTURED;
 
 		for(size_t i = 0; i < VULKAN_BACKEND_BLEND_MODE_COUNT; ++i)
-			Ret &= CreateTileGraphicsPipelineImpl<HasSampler>(pVertName, pFragName, m_ArrayColorPipeline, TexMode, EVulkanBackendBlendModes(i));
+			Ret &= CreateTileGraphicsPipelineImpl<HasSampler>(pVertName, pFragName, IsBorder, !IsBorder ? m_ArrayColorPipeline : m_ArrayColorTransformPipeline, TexMode, EVulkanBackendBlendModes(i));
 
 		return Ret;
 	}
@@ -2163,11 +2120,7 @@ public:
 
 		// The fences a pending readback is waiting on are about to go. The device
 		// is idle by now, so the pixels are there and the caller still gets them.
-		// Nothing can be done about a device that will not go idle during a
-		// teardown, but the readbacks below then hand out whatever they find.
-		const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
-		if(IdleResult != VK_SUCCESS)
-			log_error("gfx/vulkan", "Waiting for the device to go idle before cleanup failed: %d", (int)IdleResult);
+		vkDeviceWaitIdle(m_VKDevice);
 		for(size_t Index = 0; Index < m_vReadbackSlots.size(); ++Index)
 			(void)CollectReadbackSlot(Index);
 
@@ -2197,7 +2150,7 @@ public:
 	 * MEMORY MANAGEMENT
 	 ************************/
 
-	[[nodiscard]] bool FindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties, uint32_t &MemoryType) const;
+	uint32_t FindMemoryType(VkPhysicalDevice PhyDevice, uint32_t TypeFilter, VkMemoryPropertyFlags Properties);
 
 	[[nodiscard]] bool CreateBuffer(VkDeviceSize BufferSize, EMemoryBlockUsage MemUsage, VkBufferUsageFlags BufferUsage, VkMemoryPropertyFlags MemoryProperties, VkBuffer &VKBuffer, SDeviceMemoryBlock &VKBufferMemory);
 
@@ -2226,17 +2179,6 @@ public:
 	VkSampleCountFlagBits GetSampleCount() const;
 
 	[[nodiscard]] bool CreateGraphicsPipelines();
-
-	void DestroyGraphicsPipelines();
-
-	// The blob a driver hands back is only meaningful to the device that wrote
-	// it, so it is kept next to the config and thrown away when it does not
-	// belong to this one.
-	static constexpr const char *PIPELINE_CACHE_FILE = "pipeline_cache_vulkan.bin";
-
-	void CreatePipelineCache();
-
-	void DestroyPipelineCache();
 
 	int InitVulkanSwapChain(VkSwapchainKHR &OldSwapChain, const VkSurfaceCapabilitiesKHR *pSurfaceCapabilities = nullptr);
 
@@ -2750,10 +2692,6 @@ void CCommandProcessorFragment_Vulkan::ErroneousCleanup()
 
 bool CCommandProcessorFragment_Vulkan::WaitForFrameSlot()
 {
-	// Whatever a readback left the slot recording into is done with here, so
-	// the next frame starts in the slot's first command buffer again.
-	if(m_CurImageIndex < m_vUsingReadbackDrawCommandBuffer.size())
-		m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] = false;
 	if(m_CurImageIndex >= m_vQueueSubmitFences.size())
 		return true;
 	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex], VK_TRUE, std::numeric_limits<uint64_t>::max());
@@ -2768,23 +2706,7 @@ bool CCommandProcessorFragment_Vulkan::WaitForFrameSlot()
 		return false;
 	// The readback that rode on this slot is finished with it, and the slot
 	// is about to be overwritten, so this is the last moment to read it.
-	return WaitForReadback(m_CurImageIndex);
-}
-
-bool CCommandProcessorFragment_Vulkan::WaitForReadback(size_t Slot)
-{
-	if(Slot < m_vReadbackPending.size() && m_vReadbackPending[Slot])
-	{
-		m_vReadbackPending[Slot] = false;
-		const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vReadbackFences[Slot], VK_TRUE, std::numeric_limits<uint64_t>::max());
-		if(WaitResult != VK_SUCCESS)
-		{
-			AbandonReadbackSlot(m_vReadbackSlots[Slot]);
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for the image readback failed.", CheckVulkanCriticalError(WaitResult));
-			return false;
-		}
-	}
-	return CollectReadbackSlot(Slot);
+	return CollectReadbackSlot(m_CurImageIndex);
 }
 
 bool CCommandProcessorFragment_Vulkan::FlushRenderCommands()
@@ -2803,15 +2725,13 @@ bool CCommandProcessorFragment_Vulkan::CollectGpuTimestamp(uint32_t ImageIndex)
 		return true;
 	m_vGpuTimestampPending[ImageIndex] = false;
 
-	const uint32_t IntervalCount = m_vGpuTimestampIntervalCounts[ImageIndex];
-	const uint32_t QueryCount = 2 + IntervalCount * 2;
-	std::array<uint64_t, GPU_TIMESTAMP_QUERY_COUNT> aTimestamps{};
+	std::array<uint64_t, 2> aTimestamps;
 	const VkResult Result = vkGetQueryPoolResults(
 		m_VKDevice,
 		m_GpuTimestampQueryPool,
-		ImageIndex * GPU_TIMESTAMP_QUERY_COUNT,
-		QueryCount,
-		QueryCount * sizeof(aTimestamps[0]),
+		ImageIndex * 2,
+		aTimestamps.size(),
+		sizeof(aTimestamps),
 		aTimestamps.data(),
 		sizeof(aTimestamps[0]),
 		VK_QUERY_RESULT_64_BIT);
@@ -2833,38 +2753,21 @@ bool CCommandProcessorFragment_Vulkan::CollectGpuTimestamp(uint32_t ImageIndex)
 	const uint64_t DeltaTicks = TimestampTickDelta(aTimestamps[0], aTimestamps[1], m_GpuTimestampValidBits);
 	const long double Nanoseconds = static_cast<long double>(DeltaTicks) * m_GpuTimestampPeriod;
 	const uint64_t TimeNanoseconds = Nanoseconds >= static_cast<long double>(std::numeric_limits<uint64_t>::max()) ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(Nanoseconds + 0.5L);
-	std::array<uint64_t, IGraphics::GPU_RENDER_ZONE_COUNT> aZoneNanoseconds{};
-	const uint32_t ZoneMask = m_vGpuTimestampZoneMasks[ImageIndex];
-	m_vGpuTimestampZoneMasks[ImageIndex] = 0;
-	for(uint32_t Interval = 0; Interval < IntervalCount; ++Interval)
-	{
-		const size_t Zone = static_cast<size_t>(m_vGpuTimestampIntervalZones[ImageIndex][Interval]);
-		if((ZoneMask & (1U << Zone)) == 0)
-			continue;
-		const size_t Query = 2 + Interval * 2;
-		const uint64_t ZoneDeltaTicks = TimestampTickDelta(aTimestamps[Query], aTimestamps[Query + 1], m_GpuTimestampValidBits);
-		const long double ZoneNanoseconds = static_cast<long double>(ZoneDeltaTicks) * m_GpuTimestampPeriod;
-		const uint64_t IntervalNanoseconds = ZoneNanoseconds >= static_cast<long double>(std::numeric_limits<uint64_t>::max()) ? std::numeric_limits<uint64_t>::max() : static_cast<uint64_t>(ZoneNanoseconds + 0.5L);
-		aZoneNanoseconds[Zone] = std::numeric_limits<uint64_t>::max() - aZoneNanoseconds[Zone] < IntervalNanoseconds ? std::numeric_limits<uint64_t>::max() : aZoneNanoseconds[Zone] + IntervalNanoseconds;
-	}
-	if(m_pGpuTiming->CanPublish(m_vGpuTimestampGenerations[ImageIndex]))
-		m_pGpuTiming->Publish(TimeNanoseconds, aZoneNanoseconds, ZoneMask);
+	m_pGpuTiming->Publish(TimeNanoseconds);
 	return true;
 }
 
 bool CCommandProcessorFragment_Vulkan::BeginGpuTimestamp()
 {
 	m_GpuTimestampRecording = false;
-	m_GpuTimestampZones.Reset();
 	if(m_GpuTimestampQueryPool == VK_NULL_HANDLE || !m_pGpuTiming->m_Enabled.load(std::memory_order_relaxed))
 		return true;
 
 	VkCommandBuffer *pMemoryCommandBuffer;
 	if(!GetMemoryCommandBuffer(pMemoryCommandBuffer))
 		return false;
-	const uint32_t FirstQuery = m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT;
-	m_vGpuTimestampGenerations[m_CurImageIndex] = m_pGpuTiming->Generation();
-	vkCmdResetQueryPool(*pMemoryCommandBuffer, m_GpuTimestampQueryPool, FirstQuery, GPU_TIMESTAMP_QUERY_COUNT);
+	const uint32_t FirstQuery = m_CurImageIndex * 2;
+	vkCmdResetQueryPool(*pMemoryCommandBuffer, m_GpuTimestampQueryPool, FirstQuery, 2);
 	vkCmdWriteTimestamp(*pMemoryCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery);
 	m_GpuTimestampRecording = true;
 	return true;
@@ -2874,26 +2777,8 @@ bool CCommandProcessorFragment_Vulkan::EndGpuTimestamp(VkCommandBuffer CommandBu
 {
 	if(!m_GpuTimestampRecording)
 		return false;
-	const uint32_t FirstQuery = m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT;
-	m_GpuTimestampZones.CloseOpenZones([&](uint32_t Query) {
-		vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery + Query);
-	});
-	vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, FirstQuery + 1);
-	m_vGpuTimestampZoneMasks[m_CurImageIndex] = m_GpuTimestampZones.ZoneMask();
-	m_vGpuTimestampIntervalCounts[m_CurImageIndex] = m_GpuTimestampZones.IntervalCount();
-	m_vGpuTimestampIntervalZones[m_CurImageIndex] = m_GpuTimestampZones.IntervalZones();
+	vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, m_CurImageIndex * 2 + 1);
 	m_GpuTimestampRecording = false;
-	return true;
-}
-
-bool CCommandProcessorFragment_Vulkan::Cmd_GpuRenderZone(const CCommandBuffer::SCommand_GpuRenderZone *pCommand)
-{
-	if(!m_GpuTimestampRecording)
-		return true;
-	uint32_t Query;
-	if(!(pCommand->m_Begin ? m_GpuTimestampZones.Begin(pCommand->m_Zone, Query) : m_GpuTimestampZones.End(pCommand->m_Zone, Query)))
-		return true;
-	vkCmdWriteTimestamp(GetMainGraphicCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_GpuTimestampQueryPool, m_CurImageIndex * GPU_TIMESTAMP_QUERY_COUNT + Query);
 	return true;
 }
 
@@ -2928,11 +2813,7 @@ bool CCommandProcessorFragment_Vulkan::SubmitFrameCommands()
 	if(m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
-		if(vkEndCommandBuffer(MemoryCommandBuffer) != VK_SUCCESS)
-		{
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "The memory command buffer of this frame cannot be ended anymore.");
-			return false;
-		}
+		vkEndCommandBuffer(MemoryCommandBuffer);
 
 		aCommandBuffers[0] = MemoryCommandBuffer;
 		aCommandBuffers[1] = CommandBuffer;
@@ -2955,13 +2836,7 @@ bool CCommandProcessorFragment_Vulkan::SubmitFrameCommands()
 	SubmitInfo.signalSemaphoreCount = m_RenderingPaused || !m_Presentation.IsPresentable() ? 0 : aSignalSemaphores.size();
 	SubmitInfo.pSignalSemaphores = aSignalSemaphores.data();
 
-	// A fence left signalled lets the slot be taken again while the device is
-	// still working in it, which is worse than not drawing the frame.
-	if(vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]) != VK_SUCCESS)
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Resetting the frame fence failed.");
-		return false;
-	}
+	vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]);
 
 	VkResult QueueSubmitRes = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, m_vQueueSubmitFences[m_CurImageIndex]);
 	if(QueueSubmitRes != VK_SUCCESS)
@@ -3108,13 +2983,9 @@ bool CCommandProcessorFragment_Vulkan::BeginFrameCommands()
 	ClearFrameMemoryUsage();
 
 	// clear frame
-	auto &CommandBuffer = GetMainGraphicCommandBuffer();
-	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the frame command buffer failed.");
-		return false;
-	}
+	vkResetCommandBuffer(GetMainGraphicCommandBuffer(), VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
 
+	auto &CommandBuffer = GetMainGraphicCommandBuffer();
 	VkCommandBufferBeginInfo BeginInfo{};
 	BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -3148,7 +3019,7 @@ bool CCommandProcessorFragment_Vulkan::PrepareOffscreenCommands()
 	// now be destroyed or returned to the backend caches.
 	ClearFrameMemoryUsage();
 	auto &CommandBuffer = GetMainGraphicCommandBuffer();
-	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
+	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the offscreen command buffer failed.");
 		return false;
@@ -3272,27 +3143,6 @@ void CCommandProcessorFragment_Vulkan::UnregisterDebugCallback()
 #endif
 }
 
-void CCommandProcessorFragment_Vulkan::NameObject(VkObjectType Type, uint64_t Handle, const char *pName, int Index)
-{
-#ifdef VK_EXT_debug_utils
-	if(m_pfnSetDebugUtilsObjectName == nullptr)
-		return;
-
-	char aName[64];
-	if(Index >= 0)
-		str_format(aName, sizeof(aName), "%s %d", pName, Index);
-	else
-		str_copy(aName, pName);
-
-	VkDebugUtilsObjectNameInfoEXT NameInfo{};
-	NameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
-	NameInfo.objectType = Type;
-	NameInfo.objectHandle = Handle;
-	NameInfo.pObjectName = aName;
-	m_pfnSetDebugUtilsObjectName(m_VKDevice, &NameInfo);
-#endif
-}
-
 bool CCommandProcessorFragment_Vulkan::CreateCommandPool()
 {
 	VkCommandPoolCreateInfo CreatePoolInfo{};
@@ -3317,8 +3167,6 @@ void CCommandProcessorFragment_Vulkan::DestroyCommandPool()
 bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 {
 	m_vMainDrawCommandBuffers.resize(m_SwapChainImageCount);
-	m_vReadbackDrawCommandBuffers.resize(m_SwapChainImageCount);
-	m_vUsingReadbackDrawCommandBuffer.resize(m_SwapChainImageCount, false);
 	m_vMemoryCommandBuffers.resize(m_SwapChainImageCount);
 	m_vUsedMemoryCommandBuffer.resize(m_SwapChainImageCount, false);
 
@@ -3328,8 +3176,7 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 	AllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	AllocInfo.commandBufferCount = (uint32_t)m_vMainDrawCommandBuffers.size();
 
-	if(vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vMainDrawCommandBuffers.data()) != VK_SUCCESS ||
-		vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vReadbackDrawCommandBuffers.data()) != VK_SUCCESS)
+	if(vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vMainDrawCommandBuffers.data()) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Allocating command buffers failed.");
 		return false;
@@ -3343,24 +3190,14 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 		return false;
 	}
 
-	for(size_t i = 0; i < m_SwapChainImageCount; ++i)
-	{
-		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vMainDrawCommandBuffers[i], "draw", (int)i);
-		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vReadbackDrawCommandBuffers[i], "draw after readback", (int)i);
-		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vMemoryCommandBuffers[i], "memory", (int)i);
-	}
-
 	m_vMemoryCommandBufferFences.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
-	m_vMemoryCommandBufferPending.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
-	m_vReadbackFences.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
-	m_vReadbackPending.resize(m_SwapChainImageCount, false);
+	m_vMemoryCommandBufferPending.resize(m_SwapChainImageCount, false);
 	VkFenceCreateInfo FenceInfo{};
 	FenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	FenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-	for(size_t i = 0; i < m_SwapChainImageCount; ++i)
+	for(auto &Fence : m_vMemoryCommandBufferFences)
 	{
-		if(vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &m_vMemoryCommandBufferFences[i]) != VK_SUCCESS ||
-			vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &m_vReadbackFences[i]) != VK_SUCCESS)
+		if(vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &Fence) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating the memory command buffer fences failed.");
 			return false;
@@ -3373,28 +3210,18 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 void CCommandProcessorFragment_Vulkan::DestroyCommandBuffer()
 {
 	// Nothing is in flight here: the device was waited for before.
-	for(VkFence Fence : m_vMemoryCommandBufferFences)
-	{
-		if(Fence != VK_NULL_HANDLE)
-			vkDestroyFence(m_VKDevice, Fence, nullptr);
-	}
-	for(VkFence Fence : m_vReadbackFences)
+	for(auto &Fence : m_vMemoryCommandBufferFences)
 	{
 		if(Fence != VK_NULL_HANDLE)
 			vkDestroyFence(m_VKDevice, Fence, nullptr);
 	}
 	m_vMemoryCommandBufferFences.clear();
 	m_vMemoryCommandBufferPending.clear();
-	m_vReadbackFences.clear();
-	m_vReadbackPending.clear();
 
 	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vMemoryCommandBuffers.size()), m_vMemoryCommandBuffers.data());
 	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vMainDrawCommandBuffers.size()), m_vMainDrawCommandBuffers.data());
-	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vReadbackDrawCommandBuffers.size()), m_vReadbackDrawCommandBuffers.data());
 
 	m_vMainDrawCommandBuffers.clear();
-	m_vReadbackDrawCommandBuffers.clear();
-	m_vUsingReadbackDrawCommandBuffer.clear();
 	m_vMemoryCommandBuffers.clear();
 	m_vUsedMemoryCommandBuffer.clear();
 }
@@ -3452,11 +3279,6 @@ void CCommandProcessorFragment_Vulkan::DestroySyncObjects()
 void CCommandProcessorFragment_Vulkan::CreateGpuTimestampQueries()
 {
 	m_vGpuTimestampPending.assign(m_SwapChainImageCount, false);
-	m_vGpuTimestampZoneMasks.assign(m_SwapChainImageCount, 0);
-	m_vGpuTimestampGenerations.assign(m_SwapChainImageCount, 0);
-	m_vGpuTimestampIntervalCounts.assign(m_SwapChainImageCount, 0);
-	m_vGpuTimestampIntervalZones.resize(m_SwapChainImageCount);
-	m_GpuTimestampZones.Reset();
 	m_GpuTimestampRecording = false;
 	m_GpuTimestampNotReadyWarningLogged = false;
 	if(m_pGpuTiming == nullptr || !m_Presentation.IsPresentable() || m_GpuTimestampValidBits == 0 || !(m_GpuTimestampPeriod > 0.0f))
@@ -3465,7 +3287,7 @@ void CCommandProcessorFragment_Vulkan::CreateGpuTimestampQueries()
 	VkQueryPoolCreateInfo CreateInfo{};
 	CreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
 	CreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-	CreateInfo.queryCount = m_SwapChainImageCount * GPU_TIMESTAMP_QUERY_COUNT;
+	CreateInfo.queryCount = m_SwapChainImageCount * 2;
 	const VkResult Result = vkCreateQueryPool(m_VKDevice, &CreateInfo, nullptr, &m_GpuTimestampQueryPool);
 	if(Result != VK_SUCCESS)
 	{
@@ -3481,11 +3303,6 @@ void CCommandProcessorFragment_Vulkan::DestroyGpuTimestampQueries()
 		vkDestroyQueryPool(m_VKDevice, m_GpuTimestampQueryPool, nullptr);
 	m_GpuTimestampQueryPool = VK_NULL_HANDLE;
 	m_vGpuTimestampPending.clear();
-	m_vGpuTimestampZoneMasks.clear();
-	m_vGpuTimestampGenerations.clear();
-	m_vGpuTimestampIntervalCounts.clear();
-	m_vGpuTimestampIntervalZones.clear();
-	m_GpuTimestampZones.Reset();
 	m_GpuTimestampRecording = false;
 	if(m_pGpuTiming != nullptr)
 		m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
@@ -3507,9 +3324,7 @@ int CCommandProcessorFragment_Vulkan::InitVulkanOffscreenResources()
 
 VkCommandBuffer &CCommandProcessorFragment_Vulkan::GetMainGraphicCommandBuffer()
 {
-	// After a readback the slot's first buffer is still executing the copy, so
-	// the rest of the frame is recorded into the second one.
-	return m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] ? m_vReadbackDrawCommandBuffers[m_CurImageIndex] : m_vMainDrawCommandBuffers[m_CurImageIndex];
+	return m_vMainDrawCommandBuffers[m_CurImageIndex];
 }
 
 bool CCommandProcessorFragment_Vulkan::IsRenderCommandValid(const CCommandBuffer::SCommand *pCommand) const
@@ -3598,7 +3413,6 @@ ERunCommandReturnTypes CCommandProcessorFragment_Vulkan::RunCommand(const CComma
 	case CCommandBuffer::CMD_BEGIN_RENDER_PASS: return CommandResult(Cmd_BeginRenderPass(static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_END_RENDER_PASS: return CommandResult(Cmd_EndRenderPass(static_cast<const CCommandBuffer::SCommand_EndRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_FLUSH_RENDER_PASS: return CommandResult(Cmd_FlushRenderPass(static_cast<const CCommandBuffer::SCommand_FlushRenderPass *>(pBaseCommand)));
-	case CCommandBuffer::CMD_GPU_RENDER_ZONE: return CommandResult(Cmd_GpuRenderZone(static_cast<const CCommandBuffer::SCommand_GpuRenderZone *>(pBaseCommand)));
 	case CCommandBuffer::CMD_CLEAR:
 	{
 		if(!m_RenderPassActive || !IsRenderCommandValid(pBaseCommand))
@@ -3693,7 +3507,6 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 	pCommand->m_pCapabilities->m_ContextPatch = 0;
 
 	m_GlobalTextureLodBIAS = g_Config.m_GfxGLTextureLODBIAS;
-	m_pStorage = pCommand->m_pStorage;
 	m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 	m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 	m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
@@ -3712,8 +3525,6 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 		*pCommand->m_pInitError = -2;
 		return false;
 	}
-
-	CreatePipelineCache();
 
 	if(InitVulkan<true>() != 0)
 	{
@@ -3736,11 +3547,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 
 bool CCommandProcessorFragment_Vulkan::Cmd_Shutdown(const SCommand_Shutdown *pCommand)
 {
-	// Everything is freed below whether the device answers or not; there is no
-	// shutdown left to refuse.
-	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
-	if(IdleResult != VK_SUCCESS)
-		log_error("gfx/vulkan", "Waiting for the device to go idle before shutdown failed: %d", (int)IdleResult);
+	vkDeviceWaitIdle(m_VKDevice);
 	CleanupVulkan<true>(m_SwapChainImageCount);
 	m_TextureHandles.Clear();
 	m_BufferHandles.Clear();
@@ -3793,6 +3600,8 @@ std::set<std::string> CCommandProcessorFragment_Vulkan::OurVKLayers()
 	if(g_Config.m_DbgGfx == DEBUG_GFX_MODE_MINIMUM || g_Config.m_DbgGfx == DEBUG_GFX_MODE_ALL)
 	{
 		OurLayers.emplace("VK_LAYER_KHRONOS_validation");
+		// deprecated, but VK_LAYER_KHRONOS_validation was released after vulkan 1.1
+		OurLayers.emplace("VK_LAYER_LUNARG_standard_validation");
 	}
 
 	return OurLayers;
@@ -4152,32 +3961,23 @@ bool CCommandProcessorFragment_Vulkan::SelectGpu(char *pRendererName, char *pVen
 	uint32_t QueueNodeIndex = std::numeric_limits<uint32_t>::max();
 	for(uint32_t i = 0; i < FamQueueCount; i++)
 	{
-		if(vQueuePropList[i].queueCount == 0 || !(vQueuePropList[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
-			continue;
-		// The same queue carries the present, so a family that cannot reach the
-		// surface is no candidate. Asking only after the fact turns a queue's
-		// shortcoming into a message blaming the GPU that was picked. Without a
-		// window there is nothing to present to and nothing to ask.
-		VkBool32 CanPresent = VK_TRUE;
-		if(m_VKPresentSurface != VK_NULL_HANDLE)
-			vkGetPhysicalDeviceSurfaceSupportKHR(CurDevice, i, m_VKPresentSurface, &CanPresent);
-		if(CanPresent)
+		if(vQueuePropList[i].queueCount > 0 && (vQueuePropList[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
 		{
 			QueueNodeIndex = i;
-			break;
 		}
+		/*if(vQueuePropList[i].queueCount > 0 && (vQueuePropList[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
+		{
+			QueueNodeIndex = i;
+		}*/
 	}
 
 	if(QueueNodeIndex == std::numeric_limits<uint32_t>::max())
 	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, m_VKPresentSurface != VK_NULL_HANDLE ? "No Vulkan queue found that can both draw and present to the window." : "No Vulkan queue found that matches the requirements: graphics queue.");
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "No Vulkan queue found that matches the requirements: graphics queue.");
 		return false;
 	}
 
 	m_VKGPU = CurDevice;
-	// The heaps of a device do not change while it exists, and every allocation
-	// used to ask for them again.
-	vkGetPhysicalDeviceMemoryProperties(m_VKGPU, &m_MemoryProperties);
 	m_VKGraphicsQueueIndex = QueueNodeIndex;
 	m_GpuTimestampValidBits = vQueuePropList[QueueNodeIndex].timestampValidBits;
 	return true;
@@ -4279,13 +4079,6 @@ bool CCommandProcessorFragment_Vulkan::CreateLogicalDevice(const std::vector<std
 		return false;
 	}
 
-#ifdef VK_EXT_debug_utils
-	// Only asked for along with the messenger, and only then is there anything
-	// listening to a name.
-	if(m_DebugMessenger != VK_NULL_HANDLE)
-		m_pfnSetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetDeviceProcAddr(m_VKDevice, "vkSetDebugUtilsObjectNameEXT");
-#endif
-
 #ifdef VK_EXT_device_fault
 	if(DeviceFaultRequested && FaultFeatures.deviceFault)
 	{
@@ -4301,11 +4094,17 @@ bool CCommandProcessorFragment_Vulkan::CreateLogicalDevice(const std::vector<std
 
 bool CCommandProcessorFragment_Vulkan::CreateSurface()
 {
-	// Whether the queue can present to it is decided when the queue is picked,
-	// which is why this has to run before the device is selected.
 	if(!m_Presentation.m_pSurface->CreateVulkanSurface(&m_VKInstance, &m_VKPresentSurface))
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating a Vulkan surface for the window failed.");
+		return false;
+	}
+
+	VkBool32 IsSupported = false;
+	vkGetPhysicalDeviceSurfaceSupportKHR(m_VKGPU, m_VKGraphicsQueueIndex, m_VKPresentSurface, &IsSupported);
+	if(!IsSupported)
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "The device surface does not support presenting the framebuffer to a screen. Maybe the wrong GPU was selected?");
 		return false;
 	}
 
@@ -4695,14 +4494,19 @@ void CCommandProcessorFragment_Vulkan::DestroyFramebuffers()
 
 void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChainDestruct)
 {
-	// The pipelines survive a recreation; only the teardown that takes the
-	// device with it has to take them too. What is bound in a command buffer
-	// does not survive, so the bind cache has to go either way.
-	if(ForceSwapChainDestruct)
-		DestroyGraphicsPipelines();
-	m_LastPipeline = VK_NULL_HANDLE;
-	m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-	m_HasDynamicState = false;
+	m_PrimitivePipeline.Destroy(m_VKDevice);
+	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
+	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
+	m_BlurPipeline.Destroy(m_VKDevice);
+	m_PlanarYuvPipeline.Destroy(m_VKDevice);
+	m_DualAtlasPipeline.Destroy(m_VKDevice);
+	m_ArrayColorPipeline.Destroy(m_VKDevice);
+	m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
+	m_PrimitiveUniformColorPipeline.Destroy(m_VKDevice);
+	m_PrimitiveInstancedPipeline.Destroy(m_VKDevice);
+	m_PrimitiveInstancedPushPipeline.Destroy(m_VKDevice);
+	m_QuadPerItemPipeline.Destroy(m_VKDevice);
+	m_QuadSharedPipeline.Destroy(m_VKDevice);
 
 	DestroyFramebuffers();
 	DestroyAllTextureTargets();
@@ -4724,67 +4528,10 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChai
 	m_SwapchainCreated = false;
 }
 
-void CCommandProcessorFragment_Vulkan::CreatePipelineCache()
-{
-	if(m_PipelineCache != VK_NULL_HANDLE)
-		return;
-
-	VkPipelineCacheCreateInfo CacheInfo{};
-	CacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-
-	void *pData = nullptr;
-	unsigned DataSize = 0;
-	if(m_pStorage != nullptr && m_pStorage->ReadFile(PIPELINE_CACHE_FILE, IStorage::TYPE_SAVE, &pData, &DataSize) && DataSize > sizeof(VkPipelineCacheHeaderVersionOne))
-	{
-		VkPhysicalDeviceProperties Properties;
-		vkGetPhysicalDeviceProperties(m_VKGPU, &Properties);
-		VkPipelineCacheHeaderVersionOne Header;
-		mem_copy(&Header, pData, sizeof(Header));
-		// A blob written by another driver or another device is not merely
-		// useless to this one, it is what a driver is entitled to choke on.
-		if(Header.headerSize == sizeof(Header) &&
-			Header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
-			Header.vendorID == Properties.vendorID &&
-			Header.deviceID == Properties.deviceID &&
-			mem_comp(Header.pipelineCacheUUID, Properties.pipelineCacheUUID, VK_UUID_SIZE) == 0)
-		{
-			CacheInfo.initialDataSize = DataSize;
-			CacheInfo.pInitialData = pData;
-		}
-	}
-
-	if(vkCreatePipelineCache(m_VKDevice, &CacheInfo, nullptr, &m_PipelineCache) != VK_SUCCESS)
-		m_PipelineCache = VK_NULL_HANDLE;
-	free(pData);
-}
-
-void CCommandProcessorFragment_Vulkan::DestroyPipelineCache()
-{
-	if(m_PipelineCache == VK_NULL_HANDLE)
-		return;
-
-	size_t DataSize = 0;
-	if(m_PipelineCacheDirty && m_pStorage != nullptr && vkGetPipelineCacheData(m_VKDevice, m_PipelineCache, &DataSize, nullptr) == VK_SUCCESS && DataSize > 0)
-	{
-		std::vector<uint8_t> vData(DataSize);
-		IOHANDLE File = vkGetPipelineCacheData(m_VKDevice, m_PipelineCache, &DataSize, vData.data()) == VK_SUCCESS ? m_pStorage->OpenFile(PIPELINE_CACHE_FILE, IOFLAG_WRITE, IStorage::TYPE_SAVE) : nullptr;
-		if(File != nullptr)
-		{
-			io_write(File, vData.data(), DataSize);
-			io_close(File);
-		}
-	}
-
-	vkDestroyPipelineCache(m_VKDevice, m_PipelineCache, nullptr);
-	m_PipelineCache = VK_NULL_HANDLE;
-	m_PipelineCacheDirty = false;
-}
-
 void CCommandProcessorFragment_Vulkan::CleanupVulkanDevice()
 {
 	if(m_VKInstance != VK_NULL_HANDLE)
 	{
-		DestroyPipelineCache();
 		DestroySurface();
 		vkDestroyDevice(m_VKDevice, nullptr);
 
@@ -4799,14 +4546,7 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanDevice()
 
 int CCommandProcessorFragment_Vulkan::RecreateSwapChain()
 {
-	// The images and framebuffers destroyed below are still referenced by
-	// whatever the device has not finished, so this wait is not optional.
-	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
-	if(IdleResult != VK_SUCCESS)
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_SWAP_FAILED, "Waiting for the device before recreating the swap chain failed.", CheckVulkanCriticalError(IdleResult));
-		return -1;
-	}
+	vkDeviceWaitIdle(m_VKDevice);
 
 	VkSurfaceCapabilitiesKHR SurfaceCapabilities;
 	if(!GetSurfaceProperties(SurfaceCapabilities))
@@ -4901,9 +4641,6 @@ int CCommandProcessorFragment_Vulkan::InitVulkanDevice(const CCommandProcessorFr
 		}
 	}
 
-	if(m_Presentation.IsPresentable() && !CreateSurface())
-		return -1;
-
 	if(!SelectGpu(pRendererString, pVendorString, pVersionString))
 		return -1;
 
@@ -4921,6 +4658,8 @@ int CCommandProcessorFragment_Vulkan::InitVulkanDevice(const CCommandProcessorFr
 	else
 	{
 		vkGetDeviceQueue(m_VKDevice, m_VKGraphicsQueueIndex, 0, &m_VKPresentQueue);
+		if(!CreateSurface())
+			return -1;
 	}
 
 	return 0;
@@ -5098,12 +4837,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_WindowDestroyNtf(const CCommandBuffer
 	// The surface is gone once this returns, so everything still referencing it
 	// has to have finished. This is not Android specific, the window is
 	// destroyed on every platform that can minimize.
-	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
-	if(IdleResult != VK_SUCCESS)
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_SWAP_FAILED, "Waiting for the device before the surface is destroyed failed.", CheckVulkanCriticalError(IdleResult));
-		return false;
-	}
+	vkDeviceWaitIdle(m_VKDevice);
 #ifdef CONF_PLATFORM_ANDROID
 	if(m_SwapchainCreated)
 		CleanupVulkanSwapChain(true);
@@ -5155,11 +4889,10 @@ EGfxErrorType CCommandProcessorFragment_Vulkan::MemoryErrorType(VkResult Result,
 
 bool CCommandProcessorFragment_Vulkan::WaitForMemoryCommandBuffer(size_t Slot)
 {
-	if(Slot >= m_vMemoryCommandBufferPending.size() || m_vMemoryCommandBufferPending[Slot] == VK_NULL_HANDLE)
+	if(Slot >= m_vMemoryCommandBufferPending.size() || !m_vMemoryCommandBufferPending[Slot])
 		return true;
-	VkFence Fence = m_vMemoryCommandBufferPending[Slot];
-	m_vMemoryCommandBufferPending[Slot] = VK_NULL_HANDLE;
-	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &Fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
+	m_vMemoryCommandBufferPending[Slot] = false;
+	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vMemoryCommandBufferFences[Slot], VK_TRUE, std::numeric_limits<uint64_t>::max());
 	if(WaitResult != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for a memory upload failed.", CheckVulkanCriticalError(WaitResult));
@@ -5230,11 +4963,7 @@ bool CCommandProcessorFragment_Vulkan::GetImageMemoryImpl(VkDeviceSize RequiredS
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = RequiredSize;
-	if(!FindMemoryType(RequiredMemoryTypeBits, BufferProperties, MemAllocInfo.memoryTypeIndex))
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "No memory type matches what the image needs.");
-		return false;
-	}
+	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, RequiredMemoryTypeBits, BufferProperties);
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &BufferMemory.m_Mem);
 	if(AllocateResult != VK_SUCCESS)
@@ -5424,14 +5153,7 @@ void CCommandProcessorFragment_Vulkan::ExecuteMemoryCommandBuffer()
 	if(m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
-		if(vkEndCommandBuffer(MemoryCommandBuffer) != VK_SUCCESS)
-		{
-			// Submitting a buffer that was never ended is worse than dropping
-			// the upload, and the slot must not be left waiting for it either.
-			m_vUsedMemoryCommandBuffer[m_CurImageIndex] = false;
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Ending the memory command buffer failed.");
-			return;
-		}
+		vkEndCommandBuffer(MemoryCommandBuffer);
 
 		VkSubmitInfo SubmitInfo{};
 		SubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -5451,7 +5173,7 @@ void CCommandProcessorFragment_Vulkan::ExecuteMemoryCommandBuffer()
 			return;
 		}
 		if(Fence != VK_NULL_HANDLE)
-			m_vMemoryCommandBufferPending[m_CurImageIndex] = Fence;
+			m_vMemoryCommandBufferPending[m_CurImageIndex] = true;
 		else
 			vkQueueWaitIdle(m_VKGraphicsQueue);
 
@@ -5469,11 +5191,7 @@ void CCommandProcessorFragment_Vulkan::UploadStagingBuffers()
 {
 	if(!m_vNonFlushedStagingBufferRange.empty())
 	{
-		// The copy that reads these is already recorded and there is no undoing
-		// it, so all this can do is keep the frame from being finished.
-		const VkResult FlushResult = vkFlushMappedMemoryRanges(m_VKDevice, m_vNonFlushedStagingBufferRange.size(), m_vNonFlushedStagingBufferRange.data());
-		if(FlushResult != VK_SUCCESS)
-			SetError(MemoryErrorType(FlushResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_STAGING), "Flushing the staging buffers failed.");
+		vkFlushMappedMemoryRanges(m_VKDevice, m_vNonFlushedStagingBufferRange.size(), m_vNonFlushedStagingBufferRange.data());
 
 		m_vNonFlushedStagingBufferRange.clear();
 	}
@@ -5481,11 +5199,6 @@ void CCommandProcessorFragment_Vulkan::UploadStagingBuffers()
 
 bool CCommandProcessorFragment_Vulkan::PureMemoryFrame()
 {
-	// The submit below is what reads the staging memory, so the host writes
-	// have to be out of the cache before it and not after, as they were when
-	// UploadNonFlushedBuffers got to it further down. Nothing shows on x86,
-	// where the staging heap is coherent anyway; on ARM it is the upload.
-	UploadStagingBuffers();
 	ExecuteMemoryCommandBuffer();
 	// The slot's memory is cleared below, so this frame's upload has to be
 	// through with it - the wait is the frame's, not the whole queue's.
@@ -5638,20 +5351,20 @@ void CCommandProcessorFragment_Vulkan::DestroyUniBufferOfFrame(size_t ImageIndex
 		FreeDescriptorSetFromPool(DescrSet);
 }
 
-bool CCommandProcessorFragment_Vulkan::FindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties, uint32_t &MemoryType) const
+uint32_t CCommandProcessorFragment_Vulkan::FindMemoryType(VkPhysicalDevice PhyDevice, uint32_t TypeFilter, VkMemoryPropertyFlags Properties)
 {
-	for(uint32_t i = 0; i < m_MemoryProperties.memoryTypeCount; i++)
+	VkPhysicalDeviceMemoryProperties MemProperties;
+	vkGetPhysicalDeviceMemoryProperties(PhyDevice, &MemProperties);
+
+	for(uint32_t i = 0; i < MemProperties.memoryTypeCount; i++)
 	{
-		if((TypeFilter & (1 << i)) && (m_MemoryProperties.memoryTypes[i].propertyFlags & Properties) == Properties)
+		if((TypeFilter & (1 << i)) && (MemProperties.memoryTypes[i].propertyFlags & Properties) == Properties)
 		{
-			MemoryType = i;
-			return true;
+			return i;
 		}
 	}
 
-	// Type 0 is a memory type like any other, so handing it back as a fallback
-	// allocates something that does not do what the caller asked for.
-	return false;
+	return 0;
 }
 
 bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMemoryBlockUsage MemUsage, VkBufferUsageFlags BufferUsage, VkMemoryPropertyFlags MemoryProperties, VkBuffer &VKBuffer, SDeviceMemoryBlock &VKBufferMemory)
@@ -5672,7 +5385,6 @@ bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMe
 		SetError(MemoryErrorType(CreateResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER), "Buffer creation failed.");
 		return false;
 	}
-	NameObject(VK_OBJECT_TYPE_BUFFER, (uint64_t)VKBuffer, MemoryUsageName(MemUsage));
 
 	VkMemoryRequirements MemRequirements;
 	vkGetBufferMemoryRequirements(m_VKDevice, VKBuffer, &MemRequirements);
@@ -5680,13 +5392,7 @@ bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMe
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = MemRequirements.size;
-	if(!FindMemoryType(MemRequirements.memoryTypeBits, MemoryProperties, MemAllocInfo.memoryTypeIndex))
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "No memory type matches what the buffer needs.");
-		vkDestroyBuffer(m_VKDevice, VKBuffer, nullptr);
-		VKBuffer = VK_NULL_HANDLE;
-		return false;
-	}
+	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, MemRequirements.memoryTypeBits, MemoryProperties);
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &VKBufferMemory.m_Mem);
 	if(AllocateResult != VK_SUCCESS)
@@ -5738,11 +5444,7 @@ bool CCommandProcessorFragment_Vulkan::GetMemoryCommandBuffer(VkCommandBuffer *&
 			return false;
 		m_vUsedMemoryCommandBuffer[m_CurImageIndex] = true;
 
-		if(vkResetCommandBuffer(MemCommandBuffer, 0) != VK_SUCCESS)
-		{
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the memory command buffer failed.");
-			return false;
-		}
+		vkResetCommandBuffer(MemCommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
 
 		VkCommandBufferBeginInfo BeginInfo{};
 		BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -6296,7 +5998,6 @@ bool CCommandProcessorFragment_Vulkan::CreateImage(uint32_t Width, uint32_t Heig
 		SetError(MemoryErrorType(CreateResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE), "Image creation failed.");
 		return false;
 	}
-	NameObject(VK_OBJECT_TYPE_IMAGE, (uint64_t)Image, "texture");
 
 	VkMemoryRequirements MemRequirements;
 	vkGetImageMemoryRequirements(m_VKDevice, Image, &MemRequirements);
@@ -6412,32 +6113,29 @@ bool CCommandProcessorFragment_Vulkan::ImageBarrierIn(VkCommandBuffer &MemComman
 		SourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
-	// A readback image lives in GENERAL, where the host reads it through its
-	// mapping, and visits TRANSFER_DST for the copy that fills it. Naming both
-	// is what the blanket memory access was standing in for.
 	else if(OldLayout == VK_IMAGE_LAYOUT_UNDEFINED && NewLayout == VK_IMAGE_LAYOUT_GENERAL)
 	{
 		Barrier.srcAccessMask = 0;
-		Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 
 		SourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
 	else if(OldLayout == VK_IMAGE_LAYOUT_GENERAL && NewLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 	{
-		Barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
+		Barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 		Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-		SourceStage = VK_PIPELINE_STAGE_HOST_BIT;
+		SourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
 	else if(OldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && NewLayout == VK_IMAGE_LAYOUT_GENERAL)
 	{
 		Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		Barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 
 		SourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-		DestinationStage = VK_PIPELINE_STAGE_HOST_BIT;
+		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
 	else
 	{
@@ -6687,14 +6385,20 @@ VkPipeline &CCommandProcessorFragment_Vulkan::GetStandardPipe(bool IsLineGeometr
 		return GetPipeline(m_PrimitivePipeline, IsTextured, BlendModeIndex);
 }
 
-VkPipelineLayout &CCommandProcessorFragment_Vulkan::GetArrayColorPipeLayout(bool IsTextured, size_t BlendModeIndex)
+VkPipelineLayout &CCommandProcessorFragment_Vulkan::GetArrayColorPipeLayout(bool HasTransform, bool IsTextured, size_t BlendModeIndex)
 {
-	return GetPipeLayout(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
+	if(!HasTransform)
+		return GetPipeLayout(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
+	else
+		return GetPipeLayout(m_ArrayColorTransformPipeline, IsTextured, BlendModeIndex);
 }
 
-VkPipeline &CCommandProcessorFragment_Vulkan::GetArrayColorPipe(bool IsTextured, size_t BlendModeIndex)
+VkPipeline &CCommandProcessorFragment_Vulkan::GetArrayColorPipe(bool HasTransform, bool IsTextured, size_t BlendModeIndex)
 {
-	return GetPipeline(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
+	if(!HasTransform)
+		return GetPipeline(m_ArrayColorPipeline, IsTextured, BlendModeIndex);
+	else
+		return GetPipeline(m_ArrayColorTransformPipeline, IsTextured, BlendModeIndex);
 }
 
 void CCommandProcessorFragment_Vulkan::BindPipeline(VkCommandBuffer &CommandBuffer, const SRenderCommandExecuteBuffer &ExecBuffer, VkPipeline &BindingPipe)
@@ -7318,37 +7022,8 @@ void CCommandProcessorFragment_Vulkan::FreeDescriptorSetFromPool(SDeviceDescript
 	DescrSet = {};
 }
 
-void CCommandProcessorFragment_Vulkan::DestroyGraphicsPipelines()
-{
-	m_PrimitivePipeline.Destroy(m_VKDevice);
-	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
-	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
-	m_BlurPipeline.Destroy(m_VKDevice);
-	m_PlanarYuvPipeline.Destroy(m_VKDevice);
-	m_DualAtlasPipeline.Destroy(m_VKDevice);
-	m_ArrayColorPipeline.Destroy(m_VKDevice);
-	m_PrimitiveUniformColorPipeline.Destroy(m_VKDevice);
-	m_PrimitiveInstancedPipeline.Destroy(m_VKDevice);
-	m_PrimitiveInstancedPushPipeline.Destroy(m_VKDevice);
-	m_QuadPerItemPipeline.Destroy(m_VKDevice);
-	m_QuadSharedPipeline.Destroy(m_VKDevice);
-
-	m_PipelinesFormat = VK_FORMAT_UNDEFINED;
-}
-
 bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 {
-	// Half of these are built for RENDER_TARGET_FORMAT, which nothing can
-	// change, and the other half only take the surface format and the sample
-	// count from outside. Recompiling them for a window that merely got bigger
-	// costs over a hundred compiles for an identical result.
-	const VkSampleCountFlagBits SampleCount = GetSampleCount();
-	if(m_PipelinesFormat == m_VKSurfFormat.format && m_PipelinesSampleCount == SampleCount)
-		return true;
-	DestroyGraphicsPipelines();
-	m_PipelinesSampleCount = SampleCount;
-	m_PipelineCacheDirty = true;
-
 	if(!CreateStandardGraphicsPipeline("vulkan/prim.vert.spv", "vulkan/prim.frag.spv", false, false))
 		return false;
 
@@ -7373,10 +7048,16 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 	if(!CreateTextGraphicsPipeline("vulkan/text.vert.spv", "vulkan/text.frag.spv"))
 		return false;
 
-	if(!CreateTileGraphicsPipeline<false>("vulkan/tile.vert.spv", "vulkan/tile.frag.spv"))
+	if(!CreateTileGraphicsPipeline<false>("vulkan/tile.vert.spv", "vulkan/tile.frag.spv", false))
 		return false;
 
-	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_textured.vert.spv", "vulkan/tile_textured.frag.spv"))
+	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_textured.vert.spv", "vulkan/tile_textured.frag.spv", false))
+		return false;
+
+	if(!CreateTileGraphicsPipeline<false>("vulkan/tile_border.vert.spv", "vulkan/tile_border.frag.spv", true))
+		return false;
+
+	if(!CreateTileGraphicsPipeline<true>("vulkan/tile_border_textured.vert.spv", "vulkan/tile_border_textured.frag.spv", true))
 		return false;
 
 	if(!CreatePrimExGraphicsPipeline("vulkan/primex.vert.spv", "vulkan/primex.frag.spv", false))
@@ -7403,7 +7084,6 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 	if(!CreateQuadGroupedGraphicsPipeline<true>("vulkan/quad_grouped_textured.vert.spv", "vulkan/quad_grouped_textured.frag.spv"))
 		return false;
 
-	m_PipelinesFormat = m_VKSurfFormat.format;
 	return true;
 }
 
@@ -7595,8 +7275,7 @@ void CCommandProcessorFragment_Vulkan::ExecBufferFillDynamicStates(const CComman
 	// if there is a dynamic viewport make sure the scissor data is scaled down to that.
 	// A zero-sized viewport can be reached while the window is minimized, and dividing
 	// by it would turn the whole scissor into NaN.
-	const bool ScaleToViewport = !RenderToTarget && m_HasDynamicViewport && ClipSpace.width > 0 && ClipSpace.height > 0;
-	if(ScaleToViewport)
+	if(!RenderToTarget && m_HasDynamicViewport && ClipSpace.width > 0 && ClipSpace.height > 0)
 	{
 		Scissor.offset.x = (int32_t)(((float)Scissor.offset.x / (float)ClipSpace.width) * (float)m_DynamicViewportSize.width) + m_DynamicViewportOffset.x;
 		Scissor.offset.y = (int32_t)(((float)Scissor.offset.y / (float)ClipSpace.height) * (float)m_DynamicViewportSize.height) + m_DynamicViewportOffset.y;
@@ -7607,19 +7286,8 @@ void CCommandProcessorFragment_Vulkan::ExecBufferFillDynamicStates(const CComman
 	Viewport.x = std::clamp(Viewport.x, 0.0f, std::numeric_limits<decltype(Viewport.x)>::max());
 	Viewport.y = std::clamp(Viewport.y, 0.0f, std::numeric_limits<decltype(Viewport.y)>::max());
 
-	// Moving the near edge without shrinking the rectangle moves the far edge
-	// with it, so a clip that starts off-screen ends up drawing what it is
-	// there to cut away. Both edges are cropped against the space the scissor
-	// is expressed in instead, which is also what keeps it inside the
-	// attachment.
-	const VkOffset2D ClipMin = ScaleToViewport ? m_DynamicViewportOffset : VkOffset2D{0, 0};
-	const VkExtent2D ClipBounds = ScaleToViewport ? m_DynamicViewportSize : ClipSpace;
-	const int32_t ClipRight = std::min(Scissor.offset.x + (int32_t)Scissor.extent.width, ClipMin.x + (int32_t)ClipBounds.width);
-	const int32_t ClipBottom = std::min(Scissor.offset.y + (int32_t)Scissor.extent.height, ClipMin.y + (int32_t)ClipBounds.height);
-	Scissor.offset.x = std::max({Scissor.offset.x, ClipMin.x, 0});
-	Scissor.offset.y = std::max({Scissor.offset.y, ClipMin.y, 0});
-	Scissor.extent.width = (uint32_t)std::max(ClipRight - Scissor.offset.x, 0);
-	Scissor.extent.height = (uint32_t)std::max(ClipBottom - Scissor.offset.y, 0);
+	Scissor.offset.x = std::clamp(Scissor.offset.x, 0, std::numeric_limits<decltype(Scissor.offset.x)>::max());
+	Scissor.offset.y = std::clamp(Scissor.offset.y, 0, std::numeric_limits<decltype(Scissor.offset.y)>::max());
 
 	ExecBuffer.m_Viewport = Viewport;
 	ExecBuffer.m_Scissor = Scissor;
@@ -7641,7 +7309,7 @@ void CCommandProcessorFragment_Vulkan::RenderArrayColor_FillExecuteBuffer(SRende
 	ExecBufferFillDynamicStates(State, ExecBuffer);
 }
 
-bool CCommandProcessorFragment_Vulkan::RenderArrayColor(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, const ColorRGBA &Color, const vec2 &Scale, const vec2 &Off, uint32_t IndexCount, size_t IndexOffset)
+bool CCommandProcessorFragment_Vulkan::RenderArrayColor(SRenderCommandExecuteBuffer &ExecBuffer, const CCommandBuffer::SState &State, bool HasTransform, const ColorRGBA &Color, const vec2 &Scale, const vec2 &Off, uint32_t IndexCount, size_t IndexOffset)
 {
 	std::array<float, (size_t)4 * 2> m;
 	GetStateMatrix(State, m);
@@ -7650,8 +7318,8 @@ bool CCommandProcessorFragment_Vulkan::RenderArrayColor(SRenderCommandExecuteBuf
 	size_t BlendModeIndex;
 	size_t AddressModeIndex;
 	GetStateIndices(State, IsTextured, BlendModeIndex, AddressModeIndex);
-	auto &PipeLayout = GetArrayColorPipeLayout(IsTextured, BlendModeIndex);
-	auto &PipeLine = GetArrayColorPipe(IsTextured, BlendModeIndex);
+	auto &PipeLayout = GetArrayColorPipeLayout(HasTransform, IsTextured, BlendModeIndex);
+	auto &PipeLine = GetArrayColorPipe(HasTransform, IsTextured, BlendModeIndex);
 
 	auto &CommandBuffer = GetMainGraphicCommandBuffer();
 
@@ -7666,16 +7334,23 @@ bool CCommandProcessorFragment_Vulkan::RenderArrayColor(SRenderCommandExecuteBuf
 		BindDescriptorSet(CommandBuffer, PipeLayout, 0, ExecBuffer.m_aDescriptors[0].m_Descriptor);
 	}
 
-	SUniformTileGPos VertexPushConstants;
+	SUniformTileGPosBorder VertexPushConstants;
+	size_t VertexPushConstantSize = sizeof(SUniformTileGPos);
 	SUniformTileGVertColor FragPushConstants;
+	size_t FragPushConstantSize = sizeof(SUniformTileGVertColor);
 
 	mem_copy(VertexPushConstants.m_aPos, m.data(), m.size() * sizeof(float));
-	VertexPushConstants.m_Offset = Off;
-	VertexPushConstants.m_Scale = Scale;
 	FragPushConstants = Color;
 
-	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(VertexPushConstants), &VertexPushConstants);
-	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPos) + sizeof(SUniformTileGVertColorAlign), sizeof(FragPushConstants), &FragPushConstants);
+	if(HasTransform)
+	{
+		VertexPushConstants.m_Scale = Scale;
+		VertexPushConstants.m_Offset = Off;
+		VertexPushConstantSize = sizeof(SUniformTileGPosBorder);
+	}
+
+	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, VertexPushConstantSize, &VertexPushConstants);
+	vkCmdPushConstants(CommandBuffer, PipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(SUniformTileGPosBorder) + sizeof(SUniformTileGVertColorAlign), FragPushConstantSize, &FragPushConstants);
 
 	vkCmdBindIndexBuffer(CommandBuffer, ExecBuffer.m_IndexBuffer, static_cast<VkDeviceSize>(ExecBuffer.m_IndexBufferOff + IndexOffset), VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexed(CommandBuffer, IndexCount, 1, 0, 0, 0);
@@ -7848,7 +7523,7 @@ CCommandProcessorFragment_Vulkan::SRenderCommandExecuteBuffer CCommandProcessorF
 	{
 		VertexBuffer_FillExecuteBuffer(ExecBuffer, pCommand->m_State, (size_t)pCommand->m_VertexBuffer.Id());
 	}
-	else if(Program == EPipelineProgram::ARRAY_COLOR)
+	else if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
 		RenderArrayColor_FillExecuteBuffer(ExecBuffer, pCommand->m_State, (size_t)pCommand->m_VertexBuffer.Id());
 	else
 		VertexBuffer_FillExecuteBuffer(ExecBuffer, pCommand->m_State, (size_t)pCommand->m_VertexBuffer.Id());
@@ -7885,7 +7560,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexed(const CCommandBuffer::SCo
 		return Cmd_DrawIndexedDualAtlas(pCommand, ExecBuffer);
 	if(Program == EPipelineProgram::PRIMITIVE_INSTANCED)
 		return Cmd_DrawIndexedInstanced(pCommand, ExecBuffer);
-	if(Program == EPipelineProgram::ARRAY_COLOR)
+	if(Program == EPipelineProgram::ARRAY_COLOR || Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM)
 		return Cmd_DrawIndexedArrayColor(pCommand, ExecBuffer);
 	if(Program == EPipelineProgram::QUAD_PER_ITEM || Program == EPipelineProgram::QUAD_SHARED)
 		return Cmd_DrawIndexedQuadRecords(pCommand, ExecBuffer);
@@ -7998,10 +7673,15 @@ bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedDualAtlas(const CCommandBu
 
 bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedArrayColor(const CCommandBuffer::SCommand_DrawIndexed *pCommand, SRenderCommandExecuteBuffer &ExecBuffer)
 {
-	const auto *pColorData = pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
-	if(pColorData == nullptr)
+	const bool HasTransform = pCommand->m_Program == EPipelineProgram::ARRAY_COLOR_TRANSFORM;
+	const auto *pColorData = HasTransform ? nullptr : pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColor>();
+	const auto *pTransformData = HasTransform ? pCommand->m_DrawData.Get<CCommandBuffer::SDrawDataArrayColorTransform>() : nullptr;
+	if((HasTransform && pTransformData == nullptr) || (!HasTransform && pColorData == nullptr))
 		return true;
-	return RenderArrayColor(ExecBuffer, pCommand->m_State, pColorData->m_Color, pColorData->m_Scale, pColorData->m_Offset, pCommand->m_IndexCount, pCommand->m_IndexOffset);
+	const ColorRGBA &Color = HasTransform ? pTransformData->m_Color : pColorData->m_Color;
+	const vec2 Scale = HasTransform ? pTransformData->m_Scale : vec2();
+	const vec2 Offset = HasTransform ? pTransformData->m_Offset : vec2();
+	return RenderArrayColor(ExecBuffer, pCommand->m_State, HasTransform, Color, Scale, Offset, pCommand->m_IndexCount, pCommand->m_IndexOffset);
 }
 
 bool CCommandProcessorFragment_Vulkan::Cmd_DrawIndexedQuadRecords(const CCommandBuffer::SCommand_DrawIndexed *pCommand, SRenderCommandExecuteBuffer &ExecBuffer)
@@ -8193,7 +7873,6 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 	SubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	SubmitInfo.commandBufferCount = 1;
 	SubmitInfo.pCommandBuffers = &CommandBuffer;
-	bool MemoryCommandBufferSubmitted = false;
 	if(WithFrame && m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
@@ -8205,7 +7884,6 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 		aCommandBuffers = {MemoryCommandBuffer, CommandBuffer};
 		SubmitInfo.commandBufferCount = aCommandBuffers.size();
 		SubmitInfo.pCommandBuffers = aCommandBuffers.data();
-		MemoryCommandBufferSubmitted = true;
 	}
 	m_vUsedMemoryCommandBuffer[m_CurImageIndex] = false;
 
@@ -8222,24 +7900,17 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 	// twice without a wait in between, which is not allowed. Without a surface
 	// nothing waits on it at all.
 
-	// A fence of its own, so that the frame fence stays the frame's and the
-	// copy can be waited for - or polled for - without one standing in for the
-	// other.
-	VkFence ReadbackFence = m_vReadbackFences[m_CurImageIndex];
-	if(vkResetFences(m_VKDevice, 1, &ReadbackFence) != VK_SUCCESS)
+	if(vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Resetting the image readback fence failed.");
 		return false;
 	}
-	const VkResult SubmitResult = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, ReadbackFence);
+	const VkResult SubmitResult = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, m_vQueueSubmitFences[m_CurImageIndex]);
 	if(SubmitResult != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Submitting the image readback failed.", CheckVulkanCriticalError(SubmitResult));
 		return false;
 	}
-	m_vReadbackPending[m_CurImageIndex] = true;
-	if(MemoryCommandBufferSubmitted)
-		m_vMemoryCommandBufferPending[m_CurImageIndex] = ReadbackFence;
 	if(WithFrame)
 	{
 		if(HasGpuTimestamp)
@@ -8259,20 +7930,14 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 		// recording off until the next swap dropped every render pass in
 		// between: the pass never opened, the target it draws into never left
 		// its initial layout, and the readback after it found nothing to copy.
-		// It comes back in the slot's other command buffer, because the one
-		// just submitted is still executing the copy; waiting for it here
-		// would make every screenshot and every exported frame a full drain of
-		// the device. The one switched to is free because the readback that
-		// last used it was waited for before this one was started.
-		m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] = !m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex];
-		return RestartReadbackCommandBuffer(GetMainGraphicCommandBuffer());
+		return WaitForFrameSlot() && RestartReadbackCommandBuffer(GetMainGraphicCommandBuffer());
 	}
 	return true;
 }
 
 bool CCommandProcessorFragment_Vulkan::RestartReadbackCommandBuffer(VkCommandBuffer CommandBuffer)
 {
-	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
+	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the readback command buffer failed.");
 		return false;
@@ -8324,12 +7989,7 @@ bool CCommandProcessorFragment_Vulkan::PrepareReadbackSlotImage(SReadbackSlot &S
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = MemRequirements.size;
-	if(!FindMemoryType(MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemAllocInfo.memoryTypeIndex))
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "No host readable memory type for the image readback.");
-		DeleteReadbackSlotImage(Slot);
-		return false;
-	}
+	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &Slot.m_Mem.m_Mem);
 	if(AllocateResult != VK_SUCCESS)
@@ -8471,11 +8131,10 @@ bool CCommandProcessorFragment_Vulkan::CollectFinishedReadbacks()
 {
 	for(size_t Index = 0; Index < m_vReadbackSlots.size(); ++Index)
 	{
-		if(m_vReadbackSlots[Index].m_pResult == nullptr || Index >= m_vReadbackPending.size() || !m_vReadbackPending[Index])
+		if(m_vReadbackSlots[Index].m_pResult == nullptr || Index >= m_vQueueSubmitFences.size())
 			continue;
-		if(vkGetFenceStatus(m_VKDevice, m_vReadbackFences[Index]) != VK_SUCCESS)
+		if(vkGetFenceStatus(m_VKDevice, m_vQueueSubmitFences[Index]) != VK_SUCCESS)
 			continue;
-		m_vReadbackPending[Index] = false;
 		if(!CollectReadbackSlot(Index))
 			return false;
 	}
@@ -8488,12 +8147,19 @@ bool CCommandProcessorFragment_Vulkan::FinishReadbacks()
 	{
 		if(m_vReadbackSlots[Index].m_pResult == nullptr)
 			continue;
-		if(Index >= m_vReadbackFences.size())
+		if(Index >= m_vQueueSubmitFences.size())
 		{
 			AbandonReadbackSlot(m_vReadbackSlots[Index]);
 			continue;
 		}
-		if(!WaitForReadback(Index))
+		const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[Index], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		if(WaitResult != VK_SUCCESS)
+		{
+			AbandonReadbackSlot(m_vReadbackSlots[Index]);
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for the image readback failed.", CheckVulkanCriticalError(WaitResult));
+			return false;
+		}
+		if(!CollectReadbackSlot(Index))
 			return false;
 	}
 	return true;
@@ -8537,12 +8203,6 @@ bool CCommandProcessorFragment_Vulkan::StartImageReadback(VkImage SourceImage, V
 		Height = SourceHeight;
 	}
 	SrcOffset.z = 0;
-
-	// One slot holds one readback at a time, so a second one in the same slot
-	// takes the pixels of the first out of the way first. That is also what
-	// frees the command buffer this one will leave the frame recording in.
-	if(m_vReadbackSlots[m_CurImageIndex].m_pResult != nullptr && !WaitForReadback(m_CurImageIndex))
-		return false;
 
 	// The frame that is being read back has just been recorded, and the
 	// copy that reads it can go into the same command buffer. Submitting

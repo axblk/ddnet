@@ -193,6 +193,30 @@ class CMapEditor extends Program {
 		this.addEventListener("exit", () => this.autosave(0), { once: true });
 	}
 
+	/**
+	 * The pixels of a picture that is packed into the map file, as an
+	 * `ImageData` the page can draw - `null` for a picture that lies beside
+	 * the map, which the browser fetches itself.
+	 *
+	 * The bytes are copied out of the program on the spot, because what the
+	 * program hands over is where they lie rather than a copy, and where they
+	 * lie stops being true the moment the map changes.
+	 */
+	imageData(index, id) {
+		const map = this.which(id);
+		const width = this.ask("MapEditorImageWidth", "number", [map, index]);
+		const height = this.ask("MapEditorImageHeight", "number", [map, index]);
+		const address = this.ask("MapEditorImagePixels", "number", [map, index]);
+		if (!width || !height || !address) {
+			return null;
+		}
+		const heap = this.module == null ? undefined : this.module.HEAPU8;
+		if (heap === undefined) {
+			return null;
+		}
+		return new ImageData(new Uint8ClampedArray(heap.subarray(address, address + width * height * 4)), width, height);
+	}
+
 	/** What the map is made of: groups, layers, envelopes, images, sounds. */
 	structure(id) {
 		return this.json("MapEditorStructure", [this.which(id)]);
@@ -1231,11 +1255,18 @@ class CEditorPanels {
 		// which has none at all, gets a grid of numbers: the tiles are still
 		// there to be picked, they just cannot be shown.
 		const image = layer.image >= 0 && layer.image < this.map.images.length ? this.map.images[layer.image] : null;
-		const source = image !== null && image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : null;
+		// A picture that lies beside the map is fetched by the browser; one
+		// that is packed into the map file is already unpacked in the program
+		// and is asked for. Only a layer with no picture at all is left with
+		// a grid of numbers - the tiles are still there to be picked, they
+		// just cannot be shown.
+		const source = image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
 		if (source !== this.tilesetSource) {
 			this.tilesetSource = source;
 			this.tileset = null;
-			if (source !== null) {
+			if (image !== null && !image.external) {
+				this.tileset = this.editor.imageData(layer.image);
+			} else if (source !== null) {
 				const picture = new Image();
 				picture.addEventListener("load", () => {
 					if (this.tilesetSource === source) {
@@ -1254,7 +1285,18 @@ class CEditorPanels {
 		const paint = canvas.getContext("2d");
 		const side = canvas.width / TILESET_SIDE;
 		paint.clearRect(0, 0, canvas.width, canvas.height);
-		if (this.tileset !== null) {
+		if (this.tileset instanceof ImageData) {
+			// `putImageData` ignores the size of the target, so the pixels go
+			// through a canvas of their own to be drawn at the size of this
+			// one - and without smoothing, because a tile is sixteen pixels
+			// and smoothing it makes it somebody else's tile at the edges.
+			const packed = document.createElement("canvas");
+			packed.width = this.tileset.width;
+			packed.height = this.tileset.height;
+			packed.getContext("2d").putImageData(this.tileset, 0, 0);
+			paint.imageSmoothingEnabled = false;
+			paint.drawImage(packed, 0, 0, canvas.width, canvas.height);
+		} else if (this.tileset !== null) {
 			paint.imageSmoothingEnabled = false;
 			paint.drawImage(this.tileset, 0, 0, canvas.width, canvas.height);
 		} else {

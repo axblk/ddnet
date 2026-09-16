@@ -104,6 +104,8 @@ export declare class MapEditor {
 	autosave(seconds: number): void;
 
 	structure(id?: MapId): Structure | null;
+	/** The pixels of a picture packed into the map file, or null for one beside it. */
+	imageData(index: number, id?: MapId): ImageData | null;
 	history(id?: MapId): History | null;
 	apply(command: Command, id?: MapId): Answer;
 	undo(id?: MapId): Answer;

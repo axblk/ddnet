@@ -926,6 +926,12 @@ bool CMapEditor::UseBrush(size_t Slot)
 	return true;
 }
 
+void CMapEditor::ClearBrush()
+{
+	m_Brush = map_document::CBrush();
+	m_Numbers = map_document::CBrushNumbers();
+}
+
 void CMapEditor::OnResize(int Width, int Height)
 {
 	m_View.OnResize(Width, Height);

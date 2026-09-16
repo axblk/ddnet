@@ -770,6 +770,12 @@ EMSCRIPTEN_KEEPALIVE void MapEditorRotateBrush()
 		g_pEditor->RotateBrush();
 }
 
+EMSCRIPTEN_KEEPALIVE void MapEditorClearBrush()
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->ClearBrush();
+}
+
 EMSCRIPTEN_KEEPALIVE int MapEditorStoreBrush(int Slot)
 {
 	return g_pEditor != nullptr && Slot >= 0 && g_pEditor->StoreBrush((size_t)Slot) ? 1 : 0;

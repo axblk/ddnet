@@ -719,6 +719,14 @@ public:
 	void RotateBrush();
 
 	/**
+	 * Puts the brush down: nothing in hand.
+	 *
+	 * An empty brush is what grabs, so this is the way to a rectangle - and
+	 * on a tablet it is a button, because there is no Escape to press.
+	 */
+	void ClearBrush();
+
+	/**
 	 * Puts the brush in hand into one of the slots, or takes one out again.
 	 *
 	 * @param Slot Which slot, below `NUM_STORED_BRUSHES`.

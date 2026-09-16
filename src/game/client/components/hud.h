@@ -9,6 +9,7 @@
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 #include <game/client/ui.h>
 
 #include <optional>
@@ -50,25 +51,29 @@ class CHud : public CComponent
 	float m_Width, m_Height;
 
 	int m_HudQuadContainerIndex;
-	SScoreInfo m_aScoreInfo[2];
-	uint64_t m_ScoreHudSessionId = 0;
-	uint64_t m_ScoreHudStateId = 0;
-	uint64_t m_ScoreHudViewId = 0;
-	uint64_t m_ScoreHudOutputKey = 0;
-	int m_ScoreHudViewportX = 0;
-	int m_ScoreHudViewportY = 0;
-	int m_ScoreHudViewportWidth = 0;
-	int m_ScoreHudViewportHeight = 0;
-	int m_ScoreHudGameFlags = 0;
-	bool m_ScoreHudHasGameData = false;
-	bool m_ScoreHudCacheValid = false;
+	class CScoreHudLayout
+	{
+	public:
+		SScoreInfo m_aScoreInfo[2];
+		int m_GameFlags = 0;
+		bool m_HasGameData = false;
+		int m_LastLocalClientId = -1;
+	};
+	CLayoutCache<CScoreHudLayout> m_ScoreHudLayouts;
+	void ClearScoreHud(CScoreHudLayout &Layout);
 	STextContainerIndex m_FPSTextContainerIndex;
 	int m_LastFPS = -1;
 	STextContainerIndex m_DDRaceEffectsTextContainerIndex;
-	CCachedText m_GameTimerText;
-	std::optional<int> m_LastGameTimerTime;
+	class CGameTimerLayout
+	{
+	public:
+		CCachedText m_Text;
+		std::optional<int> m_LastTime;
+	};
+	// Every view has its own round and its own spectator target.
+	CLayoutCache<CGameTimerLayout> m_GameTimerLayouts;
 	CCachedText m_LocalTimeText;
-	CCachedText m_SpectatorHudText;
+	CLayoutCache<CCachedText> m_SpectatorHudTexts;
 
 	void ResetScoreHudContainers();
 
@@ -103,7 +108,6 @@ class CHud : public CComponent
 	void RenderSuddenDeath(const CRenderContext &Context);
 
 	void RenderScoreHud(const CRenderContext &Context);
-	int m_LastLocalClientId = -1;
 
 	void RenderSpectatorHud(const CRenderContext &Context);
 	void RenderWarmupTimer(const CRenderContext &Context);

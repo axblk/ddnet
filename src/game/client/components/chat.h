@@ -40,10 +40,7 @@ class CChat : public CComponent
 
 		uint64_t m_LineId = 0;
 		uint64_t m_Revision = 0;
-		CGameStateId m_StateId;
-		CGameViewId m_ViewId;
-		CViewport m_Viewport;
-		uint64_t m_OutputCacheKey = 0;
+		CLayoutKey m_LayoutKey;
 		bool m_ScoreboardOpen = false;
 		bool m_ShowLargeArea = false;
 		float m_YOffset = -1.0f;

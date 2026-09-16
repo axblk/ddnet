@@ -9,6 +9,7 @@
 #include <engine/client/session.h>
 #include <engine/shared/video.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -344,6 +345,73 @@ public:
 	bool IsOtherTeamFromLocalPlayer(int ClientId) const;
 };
 
+// Everything besides the content that decides how an overlay lays out what it
+// draws in a view: whose it is, and the size of the view in pixels on the
+// output. Where on the screen the view sits does not move a glyph, so views of
+// the same size share what was laid out for any of them.
+class CLayoutKey
+{
+public:
+	CSessionId m_SessionId;
+	CGameStateId m_StateId;
+	int m_Width = 0;
+	int m_Height = 0;
+	uint64_t m_Output = 0;
+
+	bool operator==(const CLayoutKey &Other) const = default;
+};
+
+// What an overlay laid out, kept once for each differently keyed view it is
+// drawn in. The views of a frame take turns, and with a single copy every one of
+// them would throw away and build again what the one before it laid out.
+template<class TLayout>
+class CLayoutCache
+{
+	class CSlot
+	{
+	public:
+		CLayoutKey m_Key;
+		uint64_t m_LastUse = 0;
+		TLayout m_Layout;
+	};
+	// A column for the player, the dummy and the demo.
+	std::array<CSlot, 3> m_aSlots;
+	uint64_t m_Uses = 0;
+
+public:
+	// The layout kept for the key. When there is none, the one used longest ago
+	// is handed to Clear and then taken over.
+	template<class FClear>
+	TLayout &Find(const CLayoutKey &Key, FClear &&Clear)
+	{
+		CSlot *pOldest = m_aSlots.data();
+		for(CSlot &Slot : m_aSlots)
+		{
+			if(Slot.m_LastUse != 0 && Slot.m_Key == Key)
+			{
+				Slot.m_LastUse = ++m_Uses;
+				return Slot.m_Layout;
+			}
+			if(Slot.m_LastUse < pOldest->m_LastUse)
+				pOldest = &Slot;
+		}
+		Clear(pOldest->m_Layout);
+		pOldest->m_Key = Key;
+		pOldest->m_LastUse = ++m_Uses;
+		return pOldest->m_Layout;
+	}
+
+	template<class FClear>
+	void ClearAll(FClear &&Clear)
+	{
+		for(CSlot &Slot : m_aSlots)
+		{
+			Clear(Slot.m_Layout);
+			Slot.m_LastUse = 0;
+		}
+	}
+};
+
 class CRenderContext
 {
 public:
@@ -359,6 +427,9 @@ public:
 	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, uint64_t OutputCacheKey = 0, bool IsVideoOutput = false, CVideoExportSettings VideoSettings = {});
 
 	float AspectRatio(float DefaultAspectRatio) const;
+	// For what differs between the game states of one session, such as whose
+	// name plate is the local one, pass true.
+	CLayoutKey LayoutKey(bool PerState) const;
 	bool IsOtherTeam(int ClientId) const;
 	float AlphaForOwner(int OwnerClientId, float OtherTeamAlpha) const;
 };

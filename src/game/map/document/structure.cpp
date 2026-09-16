@@ -3,6 +3,7 @@
 #include <game/map/document/structure.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <variant>
 #include <vector>
@@ -26,6 +27,21 @@ namespace map_document
 			T Moved = (*pvList)[From];
 			pvList->erase(pvList->begin() + From);
 			pvList->insert(pvList->begin() + To, std::move(Moved));
+		}
+	} // namespace
+
+	namespace
+	{
+		/**
+		 * The nearest multiple of `Step`, rounding half away from zero.
+		 *
+		 * Integer division truncates towards zero, so a point at -3 with a
+		 * step of 8 would land on 0 rather than on -8 if it were left to it.
+		 */
+		int Nearest(int Value, int Step)
+		{
+			const int Half = Step / 2;
+			return Value >= 0 ? (Value + Half) / Step * Step : -((-Value + Half) / Step * Step);
 		}
 	} // namespace
 
@@ -204,6 +220,69 @@ namespace map_document
 		dbg_assert(Quad < Layers.m_Quads.Size(), "Quad out of range");
 		Layers.m_Quads.Mutable()[Quad] = Changed;
 		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Layers));
+	}
+
+	bool ShapeQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, EQuadShape Shape, int Grid)
+	{
+		const CQuadLayer *pQuads = std::get_if<CQuadLayer>(Doc.Edit().Layer(Layer.m_Group, Layer.m_Layer));
+		dbg_assert(pQuads != nullptr, "Layer %d of group %d holds no quads", (int)Layer.m_Layer, (int)Layer.m_Group);
+		dbg_assert(Quad < pQuads->m_Quads.Size(), "Quad out of range");
+		CQuad Changed = pQuads->m_Quads[Quad];
+
+		// The rectangle the four corners span. A quad that was dragged out of
+		// shape is inside it; a quad that is already a rectangle is it.
+		int Left = Changed.m_aPoints[0].x;
+		int Right = Changed.m_aPoints[0].x;
+		int Top = Changed.m_aPoints[0].y;
+		int Bottom = Changed.m_aPoints[0].y;
+		for(int Corner = 1; Corner < 4; ++Corner)
+		{
+			Left = std::min(Left, Changed.m_aPoints[Corner].x);
+			Right = std::max(Right, Changed.m_aPoints[Corner].x);
+			Top = std::min(Top, Changed.m_aPoints[Corner].y);
+			Bottom = std::max(Bottom, Changed.m_aPoints[Corner].y);
+		}
+
+		if(Shape == EQuadShape::ASPECT)
+		{
+			if(pQuads->m_Image < 0 || (size_t)pQuads->m_Image >= Doc.Edit().NumImages())
+				return false;
+			const CImage *pImage = Doc.Edit().Image(pQuads->m_Image);
+			if(pImage->m_Width <= 0 || pImage->m_Height <= 0)
+				return false;
+			// As wide as it is; the height follows from the picture. The
+			// top-left corner stays where it is, so the quad grows downwards
+			// rather than out of both sides.
+			Bottom = Top + (int)((int64_t)(Right - Left) * pImage->m_Height / pImage->m_Width);
+		}
+
+		if(Shape == EQuadShape::SQUARE || Shape == EQuadShape::ASPECT)
+		{
+			Changed.m_aPoints[0] = CPoint{Left, Top};
+			Changed.m_aPoints[1] = CPoint{Right, Top};
+			Changed.m_aPoints[2] = CPoint{Left, Bottom};
+			Changed.m_aPoints[3] = CPoint{Right, Bottom};
+		}
+		else if(Shape == EQuadShape::CENTER_PIVOT)
+		{
+			Changed.m_aPoints[4] = CPoint{Left + (Right - Left) / 2, Top + (Bottom - Top) / 2};
+		}
+		else
+		{
+			dbg_assert(Grid > 0, "A grid is at least one unit wide: %d", Grid);
+			// Every corner to the nearest crossing, the pivot with them - the
+			// editor in the client leaves the first corner where it is, which
+			// is a slip rather than a rule.
+			const int Step = i2fx(Grid);
+			for(CPoint &Point : Changed.m_aPoints)
+			{
+				Point.x = Nearest(Point.x, Step);
+				Point.y = Nearest(Point.y, Step);
+			}
+		}
+
+		SetQuad(Doc, Layer, Quad, Changed);
+		return true;
 	}
 
 	size_t AddImage(CDocument &Doc, CImage Image)

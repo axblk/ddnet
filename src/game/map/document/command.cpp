@@ -407,6 +407,22 @@ namespace map_document
 			return true;
 		}
 
+		/** The four ways a quad is put into shape, by name. */
+		bool ReadQuadShape(const char *pName, EQuadShape *pOut)
+		{
+			if(str_comp(pName, "square") == 0)
+				*pOut = EQuadShape::SQUARE;
+			else if(str_comp(pName, "aspect") == 0)
+				*pOut = EQuadShape::ASPECT;
+			else if(str_comp(pName, "centerPivot") == 0)
+				*pOut = EQuadShape::CENTER_PIVOT;
+			else if(str_comp(pName, "align") == 0)
+				*pOut = EQuadShape::ALIGN;
+			else
+				return false;
+			return true;
+		}
+
 		/** How long a side of a tile layer may be, as in the client. */
 		constexpr int MAX_LAYER_SIDE = 100000;
 
@@ -654,6 +670,7 @@ namespace map_document
 
 		if(str_comp(pOp, "quad.add") == 0 || str_comp(pOp, "quad.delete") == 0 ||
 			str_comp(pOp, "quad.setPoint") == 0 || str_comp(pOp, "quad.setColor") == 0 ||
+			str_comp(pOp, "quad.setTexcoord") == 0 || str_comp(pOp, "quad.shape") == 0 ||
 			str_comp(pOp, "quad.setProp") == 0)
 		{
 			const size_t Group = Arguments.Index("group", Map.NumGroups());
@@ -693,8 +710,44 @@ namespace map_document
 				return Succeeded();
 			}
 
+			if(str_comp(pOp, "quad.shape") == 0)
+			{
+				const char *pShape = Arguments.Str("shape", nullptr);
+				const int Grid = Arguments.Int("grid", 32);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pShape == nullptr)
+					return Failed("The command has no 'shape'");
+				EQuadShape Shape;
+				if(!ReadQuadShape(pShape, &Shape))
+					return Failed(std::string("there is no way of shaping a quad called '") + pShape + "'");
+				if(Grid <= 0)
+					return Failed("a grid is at least one unit wide");
+				Document.Begin(Arguments.Str("label", pShape), pMerge);
+				if(!ShapeQuad(Document, Address, Quad, Shape, Grid))
+				{
+					Document.Abort();
+					return Failed("this layer is drawn with no picture, so it has no proportions");
+				}
+				Document.Commit();
+				return Succeeded();
+			}
+
 			CQuad Changed = pQuads->m_Quads[Quad];
-			if(str_comp(pOp, "quad.setPoint") == 0)
+			if(str_comp(pOp, "quad.setTexcoord") == 0)
+			{
+				// Where a corner sits in the picture, in the same numbers the
+				// file holds and the editor in the client shows: 1024 is the
+				// whole picture across, so 0 and 1024 are its two edges and
+				// anything else repeats or crops it.
+				const size_t Corner = Arguments.Index("corner", std::size(Changed.m_aTexcoords));
+				const int U = Arguments.Int("u");
+				const int V = Arguments.Int("v");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Changed.m_aTexcoords[Corner] = CPoint{U, V};
+			}
+			else if(str_comp(pOp, "quad.setPoint") == 0)
 			{
 				// Five points: four corners in the order the file keeps them,
 				// and the pivot it turns about.

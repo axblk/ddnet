@@ -150,6 +150,40 @@ namespace map_document
 	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
 
 	/**
+	 * The four ways a quad is put in order rather than dragged into it.
+	 *
+	 * All four are what the editor in the client offers beside a quad, and
+	 * all four are worth having because a quad dragged by four corners is
+	 * almost never the rectangle somebody meant.
+	 */
+	enum class EQuadShape
+	{
+		/** The rectangle its corners span - top, left, bottom, right. */
+		SQUARE,
+		/** As wide as it is, and as tall as its picture's proportions ask. */
+		ASPECT,
+		/** The pivot into the middle of the corners. */
+		CENTER_PIVOT,
+		/** Every corner onto the nearest crossing of a grid. */
+		ALIGN,
+	};
+
+	/**
+	 * Puts one quad into shape.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a quad layer.
+	 * @param Quad Which quad of it.
+	 * @param Shape Which of the four.
+	 * @param Grid How far apart the crossings are for `ALIGN`, in world
+	 * units; a tile is thirty-two. Means nothing to the other three.
+	 *
+	 * @return Whether it could be done, which is false only for `ASPECT` on a
+	 * layer that is drawn with no picture - there are no proportions to ask.
+	 */
+	bool ShapeQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, EQuadShape Shape, int Grid = 32);
+
+	/**
 	 * Adds a picture at the end, and says where it went.
 	 *
 	 * @param Doc The document being changed.

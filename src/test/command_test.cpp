@@ -573,6 +573,41 @@ TEST(Command, DraggingThePivotCarriesTheCornersAlong)
 	EXPECT_EQ(fx2i(Quad.m_aPoints[0].y), 60) << "and did not move in the other direction";
 }
 
+TEST(Command, AQuadsCornersAreMovedAroundInThePicture)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0})");
+	// 1024 is the whole picture across, so this corner sits three pictures in.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":3072,"v":0})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(Quad.m_aTexcoords[1].x, 3072);
+	EXPECT_EQ(Quad.m_aTexcoords[1].y, 0);
+	EXPECT_EQ(Quad.m_aTexcoords[0].x, 0) << "the other corners are left alone";
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":4,"u":0,"v":0})"),
+		"'corner' is 4, which is not there");
+}
+
+TEST(Command, AQuadIsPutIntoShapeByName)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":0,"y":0,"width":70,"height":40})");
+	Commands.Ok(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"align","grid":32})");
+	const CQuad &Quad = QuadsOf(Commands.m_Document.Map()).m_Quads[0];
+	EXPECT_EQ(fx2i(Quad.m_aPoints[0].x), -32);
+	EXPECT_EQ(fx2i(Quad.m_aPoints[1].x), 32);
+
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"round"})"),
+		"there is no way of shaping a quad called 'round'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"align","grid":0})"),
+		"a grid is at least one unit wide");
+	// The layer is drawn with no picture, so there are no proportions.
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.shape","group":2,"layer":0,"quad":0,"shape":"aspect"})"),
+		"this layer is drawn with no picture, so it has no proportions");
+	// And a refused shaping leaves the map and the history where they were.
+	EXPECT_EQ(fx2i(QuadsOf(Commands.m_Document.Map()).m_Quads[0].m_aPoints[0].x), -32);
+}
+
 TEST(Command, AQuadsColoursAndEnvelopesAreSetAndChecked)
 {
 	CCommands Commands(WithQuads());

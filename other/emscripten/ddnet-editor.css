@@ -274,6 +274,18 @@
 	min-width: 0;
 }
 
+/* The four ways a quad is put into shape, between the list and the fields. */
+.editor-shape {
+	display: flex;
+	gap: 4px;
+	margin-top: 6px;
+}
+
+.editor-shape button {
+	flex: 1;
+	min-width: 0;
+}
+
 /* The thirteen construct operations, under the properties of a layer that
    lies over the game layer. Hidden for every other layer. */
 .editor-construct {

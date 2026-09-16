@@ -179,6 +179,35 @@
 	opacity: 1;
 }
 
+/* The envelope as a curve. It is stretched to fill the panel, so nothing in
+   it may be drawn in its own units - the points set their radius in pixels
+   and the lines ask for a stroke that is not scaled with the box. */
+.editor-curve {
+	width: 100%;
+	height: 140px;
+	background: #141418;
+	border-radius: 4px;
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.editor-curve-zero {
+	stroke: #ffffff28;
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-curve-point {
+	cursor: grab;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-curve-picked {
+	stroke: #ffffff;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
 /* The numbers that go beside a physics tile, under the tileset. Empty for a
    layer that has none, and then it takes up no room. */
 .editor-numbers {

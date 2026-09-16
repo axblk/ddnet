@@ -68,6 +68,29 @@ changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.
 
+## Envelopes
+
+The envelope panel is an SVG, not a canvas, and that is the point: a few dozen
+points that are dragged one at a time is exactly what an SVG is for - the
+browser hit-tests them and hands over a pointer, and nothing has to be drawn
+twice to find out what was clicked. A click where there is no point makes one,
+a point is dragged where it belongs, and a drag is one history entry however
+far it travelled. A point dragged past its neighbour changes places with it,
+because the points of an envelope are in time order and the sum that reads them
+counts on that - the document sees to it and says where the point ended up.
+
+Times are whole milliseconds and values are the map's own 22.10 fixed point:
+whole numbers out through `editor.envelope(index)` and whole numbers back in,
+so a map that is read and written again comes back byte for byte. What a value
+means is a question about the channels - four are a colour, three a place and a
+turn, one a volume - and that is the panel's business, not the document's.
+
+Taking an envelope away takes it off everything that was bound to it: a layer
+or a quad names an envelope by its place, so the bindings above it come down
+one and a binding to the one that is gone becomes no binding at all. A layer
+that was bound to nothing is left as the node it is, which is why this costs
+the layers that used the envelope rather than the map.
+
 ## The brush
 
 The left button paints, held shift it takes a piece of the layer into the
@@ -99,7 +122,7 @@ and 17 ms.
 
 ## What it is not, yet
 
-Quads, envelopes, images, sounds and the automapper are looked at but not
-changed. A layer with
+Quads, images, sounds and the automapper are looked at but not changed. A layer
+with
 no picture at all is shown as a grid of numbers - the tiles are still there to
 be picked, they just cannot be shown.

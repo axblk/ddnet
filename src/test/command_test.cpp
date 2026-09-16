@@ -297,3 +297,72 @@ TEST(Command, WithoutSayingSoNothingMerges)
 	}
 	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 6u);
 }
+
+// Envelopes through the text. What they are made of is points in time order,
+// so what is tested here is that the order is the document's business and not
+// the caller's, and that taking one away puts right what was bound to it.
+
+namespace
+{
+	CMapState WithAnEnvelope()
+	{
+		CMapState Map = TwoGroups();
+		CEnvelope Envelope;
+		Envelope.m_Name = "colour";
+		Map.AddEnvelope(std::move(Envelope));
+		CTileLayer Bound = *Map.TileLayer(0, 0);
+		Bound.m_ColorEnvelope = 0;
+		Map.ReplaceLayer(0, 0, std::move(Bound));
+		return Map;
+	}
+} // namespace
+
+TEST(Command, AnEnvelopeIsAddedAndItsPointsGoInTimeOrder)
+{
+	CCommands Commands(WithAnEnvelope());
+	const CJson pAdded = Commands.Ok(R"({"op":"envelope.add","name":"moving","channels":3})");
+	EXPECT_EQ(Number(pAdded, "envelope"), 1);
+	ASSERT_EQ(Commands.m_Document.Map().NumEnvelopes(), 2u);
+	EXPECT_EQ(Commands.m_Document.Map().Envelope(1)->m_Channels, 3);
+
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.add","envelope":1,"time":2000,"values":[1,2,3]})"), "point"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.add","envelope":1,"time":1000,"values":[4,5,6]})"), "point"), 0);
+	const CEnvelope *pEnvelope = Commands.m_Document.Map().Envelope(1);
+	ASSERT_EQ(pEnvelope->m_Points.Size(), 2u);
+	EXPECT_EQ(pEnvelope->m_Points[0].m_Time.GetInternal(), 1000);
+	EXPECT_EQ(pEnvelope->m_Points[1].m_aValues[0], 1);
+
+	// Dragged past its neighbour, which the answer says.
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"envelope.point.set","envelope":1,"point":0,"time":3000})"), "point"), 1);
+	EXPECT_EQ(Commands.m_Document.Map().Envelope(1)->m_Points[1].m_aValues[0], 4) << "and it took its values along";
+
+	Commands.Ok(R"({"op":"envelope.setProp","envelope":1,"prop":"synchronized","value":true})");
+	EXPECT_TRUE(Commands.m_Document.Map().Envelope(1)->m_Synchronized);
+}
+
+TEST(Command, AnEnvelopeThatIsTakenAwayIsTakenOffWhatUsedIt)
+{
+	CCommands Commands(WithAnEnvelope());
+	Commands.Ok(R"({"op":"envelope.add","name":"second"})");
+	// The layer is bound to the first one; taking the second one away leaves
+	// it where it is.
+	Commands.Ok(R"({"op":"envelope.delete","envelope":1})");
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, 0);
+	// And taking away the one it uses leaves it bound to nothing.
+	Commands.Ok(R"({"op":"envelope.delete","envelope":0})");
+	EXPECT_EQ(Commands.m_Document.Map().NumEnvelopes(), 0u);
+	EXPECT_EQ(Commands.m_Document.Map().TileLayer(0, 0)->m_ColorEnvelope, -1);
+}
+
+TEST(Command, AnEnvelopeCommandThatMakesNoSenseIsRefused)
+{
+	CCommands Commands(WithAnEnvelope());
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.add","channels":2})"), "an envelope has one, three or four channels");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.point.add","envelope":0,"time":0,"values":[1,2]})"),
+		"a point carries one value for each of the envelope's channels");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.setProp","envelope":0,"prop":"channels","value":3})"),
+		"an envelope has no 'channels'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"envelope.point.delete","envelope":0,"point":0})"), "'point' is 0, which is not there");
+	// Nothing of that reached the map.
+	EXPECT_EQ(Commands.m_Document.History().NumEntries(), 1u);
+}

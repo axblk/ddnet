@@ -242,6 +242,16 @@ public:
 	const map_document::CImage *Image(int Id, int Index) const;
 
 	/**
+	 * The points of one envelope, as JSON - see `map_document::EnvelopeJson`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Index Which envelope of it.
+	 *
+	 * @return The JSON text, or `null` where there is no such envelope.
+	 */
+	std::string EnvelopeJson(int Id, int Index) const;
+
+	/**
 	 * Where a map is being looked at.
 	 *
 	 * @param Id The number of the map.

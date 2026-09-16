@@ -217,6 +217,14 @@ const map_document::CImage *CMapEditor::Image(int Id, int Index) const
 	return (size_t)Index >= Map.NumImages() ? nullptr : Map.Image((size_t)Index);
 }
 
+std::string CMapEditor::EnvelopeJson(int Id, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Index < 0)
+		return "null";
+	return map_document::EnvelopeJson(pMap->m_Document.Map(), (size_t)Index);
+}
+
 map_document::CView *CMapEditor::View(int Id)
 {
 	CMap *pMap = Find(Id);

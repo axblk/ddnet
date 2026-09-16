@@ -2699,6 +2699,8 @@ list(FILTER ENGINE_SHARED EXCLUDE REGEX "${ENGINE_NET_PATTERN}")
 
 set_src(GAME_MAP GLOB_RECURSE src/game/map
   # tidy-alphabetical-start
+  document/art.cpp
+  document/art.h
   document/assets.h
   document/automap.cpp
   document/automap.h
@@ -4552,6 +4554,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set_src(TESTS GLOB src/test
     # tidy-alphabetical-start
     aio_test.cpp
+    art_test.cpp
     asset_loader_test.cpp
     assets_test.cpp
     automap_test.cpp

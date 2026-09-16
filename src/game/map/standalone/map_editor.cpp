@@ -10,6 +10,7 @@
 #include <engine/shared/jsonwriter.h>
 #include <engine/storage.h>
 
+#include <game/map/document/art.h>
 #include <game/map/document/automap.h>
 #include <game/map/document/command.h>
 #include <game/map/document/edit.h>
@@ -466,6 +467,43 @@ int CMapEditor::AddImage(int Id, const char *pName, int Width, int Height, const
 	pMap->m_Document.Commit();
 	Touch();
 	return (int)Index;
+}
+
+int CMapEditor::AddTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	pMap->m_Document.Begin("Tile art");
+	const size_t Group = map_document::AddTileArt(pMap->m_Document, pName, Width, Height, pPixels);
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Group;
+}
+
+int CMapEditor::CountArtColors(int Width, int Height, const uint8_t *pPixels) const
+{
+	return Width <= 0 || Height <= 0 || pPixels == nullptr ?
+		       0 :
+		       (int)map_document::CountArtColors(Width, Height, pPixels);
+}
+
+int CMapEditor::AddQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+	int PixelStep, int QuadSize, bool Centralize, bool Merge)
+{
+	CMap *pMap = Find(Id);
+	if(pMap == nullptr || Width <= 0 || Height <= 0 || pPixels == nullptr)
+		return -1;
+	map_document::CQuadArtOptions Options;
+	Options.m_PixelStep = PixelStep;
+	Options.m_QuadSize = QuadSize;
+	Options.m_Centralize = Centralize;
+	Options.m_Merge = Merge;
+	pMap->m_Document.Begin("Quad art");
+	const size_t Group = map_document::AddQuadArt(pMap->m_Document, pName, Width, Height, pPixels, Options);
+	pMap->m_Document.Commit();
+	Touch();
+	return (int)Group;
 }
 
 bool CMapEditor::SetImagePixels(int Id, int Index, int Width, int Height, const uint8_t *pPixels)

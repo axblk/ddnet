@@ -257,6 +257,35 @@ envelope: what pointed past it comes down one, what pointed at it points at
 nothing. Going the other way - beside the map back into it - is not something
 a command can do, because the bytes are not in the command.
 
+## A picture, turned into map
+
+Two ways of doing it, and which one is wanted is a question about the picture
+rather than about the map, so both are offered and neither is the default.
+
+**As tiles**, the picture becomes its own tileset: every colour in it gets a
+tile of that colour on a 16-by-16 sheet, and the layer is those tiles. Tile 0
+is nothing, which is what a pixel that is not opaque becomes. A picture of more
+than 255 colours needs more than one sheet and gets a layer for each; together
+they are the picture, one layer over the next, and no pixel is drawn twice. The
+colours are sorted rather than taken as found, so the same picture always gives
+the same palette and a map made twice is the same map.
+
+**As quads**, each pixel becomes a quad of one colour. A run of one colour
+becomes *one* quad - grow right as far as the colour holds, then down as far as
+whole rows of it hold - which makes a flat picture cheap and leaves a
+photograph exactly as dear as it was. The group clips to what was drawn, so a
+picture put on a map stays where it was put. `pixelStep` reads every second or
+fourth pixel, `quadSize` says how big one is on the map, and `centralize` puts
+every pivot in the same place, which is what an envelope wants: one envelope
+then turns the whole picture rather than every pixel on the spot.
+
+Both read pixels rather than a file, the same as `addImage`: a browser decodes
+a PNG and the map already keeps RGBA, so a decoder in the program would be a
+second one. Both ask before doing something expensive - `artColors` says how
+many palettes a picture would need, and a quad count above a few thousand is
+put to the user first, because a quad per pixel of a photograph is not
+something anybody means to ask for.
+
 ## Appending a map
 
 Another map's groups go into this one: everything it draws, the pictures,
@@ -411,6 +440,5 @@ and 17 ms.
 
 ## What it is not, yet
 
-Turning a quad or a piece of a layer into art, and typing with tiles, are
-not here. A layer with no picture at all is shown as a grid of numbers - the
+Typing with tiles is not here. A layer with no picture at all is shown as a grid of numbers - the
 tiles are still there to be picked, they just cannot be shown.

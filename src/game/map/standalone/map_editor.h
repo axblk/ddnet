@@ -476,6 +476,26 @@ public:
 	int AddImage(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
 
 	/**
+	 * Turns a picture into tile layers of its own colours - see
+	 * `map_document::AddTileArt`.
+	 *
+	 * @return Which group of the map it became, or -1.
+	 */
+	int AddTileArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels);
+
+	/** How many colours a picture holds, so a page can warn before it asks. */
+	int CountArtColors(int Width, int Height, const uint8_t *pPixels) const;
+
+	/**
+	 * Turns a picture into one quad per pixel - see
+	 * `map_document::AddQuadArt`.
+	 *
+	 * @return Which group of the map it became, or -1.
+	 */
+	int AddQuadArt(int Id, const char *pName, int Width, int Height, const uint8_t *pPixels,
+		int PixelStep, int QuadSize, bool Centralize, bool Merge);
+
+	/**
 	 * Puts other pixels into a picture the map already has, keeping every
 	 * layer that is drawn with it.
 	 *

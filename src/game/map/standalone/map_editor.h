@@ -876,9 +876,9 @@ private:
 	 *
 	 * @return The map, or `nullptr` when any of that does not hold.
 	 */
+	CMap *ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush);
 	/** The brush as it is to be put down, with unused tiles taken out unless allowed. */
 	const map_document::CBrush &BrushToPlace();
-	CMap *ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush);
 	/**
 	 * Puts one tile index in a brush, in whichever plane the kind keeps it.
 	 *

@@ -294,6 +294,15 @@ void CMapEditor::Render()
 	Params.m_HighDetail = pMap->m_Display.m_HighDetail;
 	Params.m_EntityOverlayVal = pMap->m_Display.m_EntityOverlayVal;
 	Params.m_TimeOffsetMillis = pMap->m_Display.m_TimeOffsetMillis;
+	Params.m_pHidden = &pMap->m_Display.m_vHidden;
+	Params.m_Grid = pMap->m_Display.m_Grid;
+	Params.m_Marked = pMap->m_Display.m_Marked;
+	// The grid belongs to the group that is being worked in, and the editor
+	// itself holds no selection - so it follows the group the game layer is
+	// in, which is the one the tiles of a map are measured against.
+	const std::optional<map_document::CLayerAddress> Game = map_document::FindGameLayer(pMap->m_Document.Map());
+	if(Game.has_value())
+		Params.m_GridGroup = Game->m_Group;
 
 	IGraphics *pGraphics = m_View.Graphics();
 	pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));

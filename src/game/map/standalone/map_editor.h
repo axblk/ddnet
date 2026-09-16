@@ -10,10 +10,12 @@
 #include <game/map/document_render.h>
 #include <game/map/standalone/map_view.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 class IEngineGraphicsWindow;
@@ -57,6 +59,41 @@ public:
 		 */
 		bool m_Animate = false;
 		int m_TimeOffsetMillis = 0;
+		/**
+		 * Which layers are switched off, as the number of the group and the
+		 * number of the layer in it. Hiding is a thing about looking rather
+		 * than a thing about the map, so it lives here and not in the
+		 * document: it survives no undo and goes into no file.
+		 *
+		 * Because it names layers by their place, moving a layer moves what
+		 * is hidden with the place rather than with the layer. That is the
+		 * cheap answer, and the one an editor can afford to have wrong for
+		 * one click.
+		 */
+		std::vector<std::pair<size_t, size_t>> m_vHidden;
+		/** How many tiles apart the lines of the grid are, 0 for no grid. */
+		int m_Grid = 0;
+		/**
+		 * The rectangle of tiles that is marked, for a gesture that is about
+		 * an area: taking a piece of a layer into the brush, filling it,
+		 * rubbing it out. Empty while nothing is marked.
+		 */
+		CDocumentRenderer::CParams::CMarked m_Marked;
+
+		/** Whether that layer is drawn. */
+		bool Visible(size_t Group, size_t Layer) const
+		{
+			return std::find(m_vHidden.begin(), m_vHidden.end(), std::make_pair(Group, Layer)) == m_vHidden.end();
+		}
+		/** Switches that layer on or off. */
+		void SetVisible(size_t Group, size_t Layer, bool Visible)
+		{
+			const auto It = std::find(m_vHidden.begin(), m_vHidden.end(), std::make_pair(Group, Layer));
+			if(Visible && It != m_vHidden.end())
+				m_vHidden.erase(It);
+			else if(!Visible && It == m_vHidden.end())
+				m_vHidden.emplace_back(Group, Layer);
+		}
 	};
 
 	explicit CMapEditor(const char *pLogContext);

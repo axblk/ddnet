@@ -37,11 +37,35 @@ still work, they are just unpainted.
 * **The keyboard is the page's.** The program never listens at the document.
   Not a key reaches it that the page did not hand it.
 
+## Looking rather than changing
+
+Some of what an editor does changes nothing about the map, and none of it
+writes a history entry or reaches a file: `editor.highDetail()` leaves out what
+is only there to be looked at, `editor.entities(100)` draws what the tiles do
+instead of what they look like, `editor.animate()` lets the envelopes run,
+`editor.visible(group, layer, false)` switches one layer off to look under it,
+and `editor.grid(10)` puts lines every ten tiles. The grid follows the group
+the game layer is in, so its lines sit on that group's tiles at every zoom, and
+it leaves itself out when it would be closer together than a few pixels. The
+panels put all of these on the bar, the eye beside each layer in the list, and
+`G` on the keyboard for the grid.
+
+## The panels
+
+The layer list is the map's own order: a layer or a group can be dragged to
+where it belongs, or moved a step at a time with the arrows, and either way it
+is the same command and the same one history entry. The eye beside a layer
+switches it off, the bar carries the switches above, and a map that has been
+changed and not written out says so - the page asks before the tab is closed,
+and every minute what has changed goes into the browser's own storage by
+itself.
+
 ## The brush
 
 The left button paints, held shift it takes a piece of the layer into the
-brush instead, held control it rubs out; the right and middle buttons move the
-map. `X` and `Y` turn the brush over, `R` turns it a quarter, and the digits
+brush instead, held alt it fills a rectangle with it, held control it rubs out;
+the right and middle buttons move the map. What a rectangle gesture is about
+is drawn on the map while the button is down. `X` and `Y` turn the brush over, `R` turns it a quarter, and the digits
 are ten slots to put one away in (`Shift` and a digit stores).
 
 A stroke is one change made of many stamps, which is why it costs what it

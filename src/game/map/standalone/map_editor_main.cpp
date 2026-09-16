@@ -66,6 +66,9 @@ namespace
 		log_info(TOOL_NAME, "  -w <width>   Surface width (default: %d)", DEFAULT_WIDTH);
 		log_info(TOOL_NAME, "  -h <height>  Surface height (default: %d)", DEFAULT_HEIGHT);
 		log_info(TOOL_NAME, "  -o <output>  Draw the map once, write it there and stop");
+		log_info(TOOL_NAME, "  -g <tiles>   Draw a grid every so many tiles (default: none)");
+		log_info(TOOL_NAME, "  -x <g>:<l>   Leave that layer out, as an editor hiding it would");
+		log_info(TOOL_NAME, "  -m <g>:<x>:<y>:<w>:<h>  Mark that rectangle of tiles");
 		log_info(TOOL_NAME, "There is nothing to press here: the editor is driven from outside,");
 		log_info(TOOL_NAME, "which on a page is the page and on the command line is -o.");
 	}
@@ -195,7 +198,11 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorName(int Id)
 
 // Writing the map out is one of the two calls that wait: the file is written,
 // closed and handed to the browser, and the page hears about it afterwards.
-EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id)
+// Writing the map out. `Handout` says whether it also goes to wherever the
+// user keeps their files: an autosave writes into the browser's own storage
+// and stops there, because a browser that dropped a file into the downloads
+// every minute would be a browser nobody leaves open.
+EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id, int Handout)
 {
 	if(g_pEditor == nullptr || g_pEditor->Document(Id) == nullptr)
 		return 0;
@@ -210,8 +217,9 @@ EMSCRIPTEN_KEEPALIVE int MapEditorSave(int Id)
 	// Into the browser's own storage, so that a map survives the tab, and
 	// then out to wherever the user keeps their files.
 	g_pEditor->Storage()->SyncPersistentStorage();
-	g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
-	Say("saved", "{\"map\":" + std::to_string(Id) + "}");
+	if(Handout != 0)
+		g_pEditor->Storage()->SendFileToUser(aFilename, IStorage::TYPE_SAVE);
+	Say("saved", "{\"map\":" + std::to_string(Id) + ",\"handout\":" + (Handout != 0 ? "true" : "false") + "}");
 	return 1;
 }
 
@@ -395,6 +403,55 @@ EMSCRIPTEN_KEEPALIVE int MapEditorAnimate(int Id)
 	return g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr && g_pEditor->Display(Id)->m_Animate ? 1 : 0;
 }
 
+// Hiding a layer is a thing about looking: it changes no version, writes no
+// history entry, and is gone when the page is closed.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetLayerVisible(int Id, int Group, int Layer, int On)
+{
+	if(g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr && Group >= 0 && Layer >= 0)
+	{
+		g_pEditor->Display(Id)->SetVisible((size_t)Group, (size_t)Layer, On != 0);
+		g_pEditor->Touch();
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorLayerVisible(int Id, int Group, int Layer)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr || Group < 0 || Layer < 0)
+		return 1;
+	return g_pEditor->Display(Id)->Visible((size_t)Group, (size_t)Layer) ? 1 : 0;
+}
+
+// How many tiles apart the lines of the grid are, 0 for no grid.
+EMSCRIPTEN_KEEPALIVE void MapEditorSetGrid(int Id, int Spacing)
+{
+	if(g_pEditor != nullptr && g_pEditor->Display(Id) != nullptr)
+	{
+		g_pEditor->Display(Id)->m_Grid = std::max(0, Spacing);
+		g_pEditor->Touch();
+	}
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorGrid(int Id)
+{
+	return g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr ? 0 : g_pEditor->Display(Id)->m_Grid;
+}
+
+// What a gesture about an area is doing while it is being done: the rectangle
+// is drawn in the tiles of the group it is in, so it sits on them at every
+// zoom. A width or height of zero takes the mark away again.
+EMSCRIPTEN_KEEPALIVE void MapEditorMark(int Id, int Group, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr)
+		return;
+	CDocumentRenderer::CParams::CMarked &Marked = g_pEditor->Display(Id)->m_Marked;
+	Marked.m_Group = (size_t)std::max(0, Group);
+	Marked.m_X = X;
+	Marked.m_Y = Y;
+	Marked.m_Width = std::max(0, Width);
+	Marked.m_Height = std::max(0, Height);
+	g_pEditor->Touch();
+}
+
 // The brush: what is in hand and what putting it down does. A stroke is the
 // page opening a change when the button goes down, calling `Paint` on every
 // move and closing it when the button comes up - one entry in the history,
@@ -493,6 +550,9 @@ int main(int argc, const char **argv)
 	int Height = DEFAULT_HEIGHT;
 	std::string OutputFile;
 	std::string InputMap;
+	int Grid = 0;
+	std::vector<std::pair<size_t, size_t>> vHide;
+	std::string Marked;
 	bool InvalidUsage = false;
 
 	for(int i = 1; i < argc; i++)
@@ -508,6 +568,25 @@ int main(int argc, const char **argv)
 		else if(str_comp(argv[i], "-o") == 0 && i + 1 < argc)
 		{
 			OutputFile = argv[++i];
+		}
+		else if(str_comp(argv[i], "-g") == 0 && i + 1 < argc)
+		{
+			Grid = std::max(0, str_toint(argv[++i]));
+		}
+		else if(str_comp(argv[i], "-m") == 0 && i + 1 < argc)
+		{
+			Marked = argv[++i];
+		}
+		else if(str_comp(argv[i], "-x") == 0 && i + 1 < argc)
+		{
+			const char *pWhich = argv[++i];
+			const char *pColon = str_find(pWhich, ":");
+			if(pColon == nullptr)
+			{
+				InvalidUsage = true;
+				break;
+			}
+			vHide.emplace_back((size_t)std::max(0, str_toint(pWhich)), (size_t)std::max(0, str_toint(pColon + 1)));
 		}
 		else if(argv[i][0] != '-' && InputMap.empty())
 		{
@@ -552,6 +631,27 @@ int main(int argc, const char **argv)
 		const int Id = Editor.Open(InputMap.c_str(), fs_is_file(InputMap.c_str()) ? IStorage::TYPE_ABSOLUTE : IStorage::TYPE_ALL);
 		if(Id < 0)
 			return 1;
+		if(Grid > 0)
+			Editor.Display(Id)->m_Grid = Grid;
+		for(const auto &[Group, Layer] : vHide)
+			Editor.Display(Id)->SetVisible(Group, Layer, false);
+		if(!Marked.empty())
+		{
+			int aNumbers[5] = {0, 0, 0, 0, 0};
+			const char *pRead = Marked.c_str();
+			for(int &Number : aNumbers)
+			{
+				Number = str_toint(pRead);
+				const char *pColon = str_find(pRead, ":");
+				pRead = pColon == nullptr ? "" : pColon + 1;
+			}
+			CDocumentRenderer::CParams::CMarked &Where = Editor.Display(Id)->m_Marked;
+			Where.m_Group = (size_t)std::max(0, aNumbers[0]);
+			Where.m_X = aNumbers[1];
+			Where.m_Y = aNumbers[2];
+			Where.m_Width = std::max(0, aNumbers[3]);
+			Where.m_Height = std::max(0, aNumbers[4]);
+		}
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		// The page is already listening by now: starting the graphics gives
 		// the browser its thread back, and that is the moment the page was

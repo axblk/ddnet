@@ -10,8 +10,6 @@
 #include <engine/client/viewer_controls.h>
 #include <engine/client/viewer_fullscreen.h>
 #include <engine/client/window_sdl.h>
-#include <engine/config.h>
-#include <engine/console.h>
 #include <engine/graphics.h>
 #include <engine/graphics_window.h>
 #include <engine/input.h>
@@ -310,16 +308,6 @@ int main(int argc, const char **argv)
 	CStandaloneMapView View(TOOL_NAME);
 	if(!View.Init(argc, argv))
 		return 1;
-
-	// The input reads the settings and talks to the console, so both of them
-	// are in the kernel before the window opens - registering the settings is
-	// what puts their defaults in place.
-	IConsole *pConsole = CreateConsole(CFGFLAG_CLIENT).release();
-	View.Kernel()->RegisterInterface(pConsole);
-	IConfigManager *pConfigManager = CreateConfigManager();
-	View.Kernel()->RegisterInterface(pConfigManager);
-	pConsole->Init();
-	pConfigManager->Init();
 
 	// The same way out the client has where there is no display: it draws into
 	// a surface on no screen. Nobody can look around in one, so all that is

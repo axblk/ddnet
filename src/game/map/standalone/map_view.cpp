@@ -7,6 +7,8 @@
 #include <base/time.h>
 
 #include <engine/client/graphics_threaded.h>
+#include <engine/config.h>
+#include <engine/console.h>
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
 #include <engine/graphics.h>
@@ -94,6 +96,19 @@ bool CStandaloneMapView::Init(int NumArgs, const char **ppArguments)
 	m_AssetLoader.Init(m_pEngine, MapViewSupport::JOB_THREADS, m_pHttp);
 	m_pKernel->RegisterInterface(m_pEngine);
 	m_pKernel->RegisterInterface(m_pStorage.get(), false);
+
+	// The settings have to be registered - which is what puts their defaults
+	// in place - before the window or the graphics look at one of them, and
+	// after the storage, which is what the console reads its own from. Every
+	// program that draws a map wants the same settings, so it is done here
+	// rather than in each of them: the picture a tool writes is then the
+	// picture the viewer shows.
+	m_pConsole = CreateConsole(CFGFLAG_CLIENT).release();
+	m_pKernel->RegisterInterface(m_pConsole);
+	m_pConfigManager = CreateConfigManager();
+	m_pKernel->RegisterInterface(m_pConfigManager);
+	m_pConsole->Init();
+	m_pConfigManager->Init();
 	return true;
 }
 

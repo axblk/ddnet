@@ -72,6 +72,21 @@ export interface Quad {
 	colorEnvOffset: number;
 }
 
+/** Proof mode: a rectangle as left, top, right, bottom in world units. */
+export type ProofRect = [number, number, number, number];
+
+export interface Proof {
+	menu: boolean;
+	/** Where the camera stands, in the game layer's coordinates. */
+	center: [number, number];
+	/** Twenty-one shapes from square to 16:9; together they are one outline. */
+	steps: ProofRect[];
+	/** The two shapes a mapper is told to check, with their names. */
+	named: { name: string; rect: ProofRect }[];
+	/** Where a menu background can stand in this map; empty outside menu mode. */
+	positions: { index: number; position: [number, number] }[];
+}
+
 export interface SoundSource {
 	/** Where it is, in world units. */
 	position: [number, number];
@@ -196,6 +211,8 @@ export declare class MapEditor {
 	loadRules(name: string, text: string): number;
 	/** The sound sources of one layer, or null for a layer that holds none. */
 	sources(group: number, layer: number, id?: number): SoundSource[] | null;
+	/** What a player would see from where the view is looking, in world units. */
+	proof(menu?: boolean, id?: MapId): Proof | null;
 
 	/** Where a place in one group's coordinates is on the canvas, in pixels. */
 	groupPixelAt(group: number, x: number, y: number, id?: number): { x: number; y: number } | null;

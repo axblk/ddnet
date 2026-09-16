@@ -277,6 +277,11 @@ EMSCRIPTEN_KEEPALIVE const char *MapEditorSoundSources(int Id, int Group, int La
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->SoundSourcesJson(Id, Group, Layer));
 }
 
+EMSCRIPTEN_KEEPALIVE const char *MapEditorProof(int Id, int Menu)
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->ProofJson(Id, Menu != 0));
+}
+
 EMSCRIPTEN_KEEPALIVE const char *MapEditorQuads(int Id, int Group, int Layer)
 {
 	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->QuadsJson(Id, Group, Layer));

@@ -34,6 +34,7 @@ addIcons({
 	undo: '<path d="M4 11h10a5 5 0 0 1 0 10h-6M4 11l5-5M4 11l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+	proof: '<rect x="1.8" y="5" width="20.4" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.2" y="8" width="11.6" height="8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.4 1.8"/>',
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -458,6 +459,19 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * What a player would see from where the view is looking, in the game
+	 * layer's world units.
+	 *
+	 * Asked afresh whenever the view moves, because that is what it is about:
+	 * the rectangle belongs to the place, not to the moment.
+	 *
+	 * @param menu Whether to answer for a menu background rather than a game.
+	 */
+	proof(menu, id) {
+		return this.json("MapEditorProof", [this.which(id), menu ? 1 : 0]);
+	}
+
+	/**
 	 * The lowest number no tile of a physics layer is using yet, or -1 where
 	 * all 255 are taken.
 	 *
@@ -789,6 +803,7 @@ const PANELS_HTML = `
 	<button class="editor-button" data-role="entities" data-icon="entities" title="What the tiles do" aria-pressed="false"></button>
 	<button class="editor-button" data-role="animate" data-icon="play" title="Let the envelopes run" aria-pressed="false"></button>
 	<button class="editor-button" data-role="grid" data-icon="grid" title="A grid on the tiles (G)" aria-pressed="false"></button>
+	<button class="editor-button" data-role="proof" data-icon="proof" title="What a player would see (P); again for a menu background" aria-pressed="false"></button>
 	<button class="editor-button" data-role="save" data-icon="save" title="Save the map" aria-label="Save the map"></button>
 	<span class="editor-status" data-role="status" role="status"></span>
 </div>
@@ -1168,6 +1183,9 @@ class CEditorPanels {
 		// The shapes drawn over the canvas, made once the canvas has a parent
 		// to hang them in.
 		this.overlay = null;
+		// Whether what a player would see is drawn, and at which zoom:
+		// "off", "game" or "menu".
+		this.proof = "off";
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -1251,6 +1269,14 @@ class CEditorPanels {
 			this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
 			this.refreshBar();
 		});
+		// Off, then a game, then a menu background, then off again: three
+		// states on one button, because the two on-states are the same
+		// question asked at two zooms.
+		on("proof", () => {
+			this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
+			this.refreshBar();
+			this.refreshOverlay();
+		});
 		on("add-group", () => this.change(() => this.editor.apply({ op: "group.add", name: "group" })));
 		on("add-layer", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "tiles" })));
 		on("add-quads", () => this.change(() => this.editor.apply({ op: "layer.add", group: this.selection.group, type: "quads" })));
@@ -1318,6 +1344,13 @@ class CEditorPanels {
 			if (key === "g") {
 				this.editor.grid(this.editor.grid() > 0 ? 0 : GRID_SPACING);
 				this.refreshBar();
+				event.preventDefault();
+				return;
+			}
+			if (key === "p") {
+				this.proof = this.proof === "off" ? "game" : (this.proof === "game" ? "menu" : "off");
+				this.refreshBar();
+				this.refreshOverlay();
 				event.preventDefault();
 				return;
 			}
@@ -1574,6 +1607,9 @@ class CEditorPanels {
 		set("entities", this.editor.entities() > 0);
 		set("animate", this.editor.animate());
 		set("grid", this.editor.grid() > 0);
+		const proof = this.part("proof");
+		proof.setAttribute("aria-pressed", this.proof === "off" ? "false" : "true");
+		proof.dataset.proof = this.proof;
 	}
 
 	refreshTree() {
@@ -2531,21 +2567,142 @@ class CEditorPanels {
 		if (overlay === null) {
 			return;
 		}
+		const canvas = this.editor.canvas;
+		if (canvas === null || canvas === undefined) {
+			return;
+		}
+		overlay.textContent = "";
+		// The canvas is drawn in the pixels the screen has and laid out in
+		// the units the page uses; the SVG is laid out, so it is told about
+		// the drawn ones and scales itself.
+		overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
+		const drawn = this.paintProof(overlay) + this.paintSources(overlay, known);
+		overlay.hidden = drawn === 0;
+	}
+
+	/**
+	 * What a player would see, drawn over the map.
+	 *
+	 * Twenty-one rectangles are one outline: the widest screen and the
+	 * tallest one are the two ends of it, and everything in between is a
+	 * shape somebody's window actually has. The two named ones are drawn on
+	 * top, because they are the two a mapper is told to check.
+	 *
+	 * It is all in the game layer's coordinates - proof mode asks what a
+	 * *player* sees, and a player sees the game.
+	 */
+	paintProof(overlay) {
+		if (this.proof === "off" || this.map === null) {
+			return 0;
+		}
+		const group = this.map.groups.findIndex(g => g.layers.some(l => l.kind === "game"));
+		if (group < 0) {
+			return 0;
+		}
+		const proof = this.editor.proof(this.proof === "menu");
+		if (proof === null) {
+			return 0;
+		}
+		const spot = (x, y) => this.editor.groupPixelAt(group, x, y);
+		const corners = rect => {
+			const a = spot(rect[0], rect[1]);
+			const b = spot(rect[2], rect[3]);
+			return a === null || b === null ? null : [a, b];
+		};
+		const box = (rect, kind, name) => {
+			const both = corners(rect);
+			if (both === null) {
+				return 0;
+			}
+			const shape = document.createElementNS(SVG_NAMESPACE, "rect");
+			shape.setAttribute("x", String(both[0].x));
+			shape.setAttribute("y", String(both[0].y));
+			shape.setAttribute("width", String(Math.max(1, both[1].x - both[0].x)));
+			shape.setAttribute("height", String(Math.max(1, both[1].y - both[0].y)));
+			shape.setAttribute("class", `editor-proof editor-proof-${kind}`);
+			shape.dataset.role = "proof-rect";
+			shape.dataset.proof = kind;
+			if (name !== undefined) {
+				shape.dataset.name = name;
+			}
+			overlay.append(shape);
+			return 1;
+		};
+
+		let drawn = 0;
+		// The two ends of the outline first, then the shapes in between as one
+		// path, so that the middle is a hint and the ends are the answer.
+		const steps = proof.steps;
+		drawn += box(steps[0], "step");
+		drawn += box(steps[steps.length - 1], "step");
+		const path = document.createElementNS(SVG_NAMESPACE, "path");
+		const along = (pick, from, to) => {
+			const points = [];
+			for (let i = from; i !== to; i += from < to ? 1 : -1) {
+				const both = corners(steps[i]);
+				if (both !== null) {
+					points.push(pick(both));
+				}
+			}
+			return points;
+		};
+		// Each corner walks its own way from the tall screen to the wide one:
+		// four lines, which together are the edge of everything anybody sees.
+		const line = points => points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x} ${p.y}`).join("");
+		const last = steps.length;
+		path.setAttribute("d", [
+			line(along(b => ({ x: b[0].x, y: b[0].y }), 0, last)),
+			line(along(b => ({ x: b[1].x, y: b[0].y }), 0, last)),
+			line(along(b => ({ x: b[0].x, y: b[1].y }), 0, last)),
+			line(along(b => ({ x: b[1].x, y: b[1].y }), 0, last)),
+		].join(""));
+		path.setAttribute("class", "editor-proof editor-proof-outline");
+		path.dataset.role = "proof-outline";
+		overlay.append(path);
+		drawn += 1;
+
+		proof.named.forEach((named, index) => {
+			drawn += box(named.rect, index === 0 ? "first" : "second", named.name);
+		});
+
+		// Where the camera stands, and - behind a menu - the other places it
+		// could stand in this map, each moved as if it were the one standing.
+		const here = spot(proof.center[0], proof.center[1]);
+		if (here !== null) {
+			const dot = document.createElementNS(SVG_NAMESPACE, "circle");
+			dot.setAttribute("cx", String(here.x));
+			dot.setAttribute("cy", String(here.y));
+			dot.setAttribute("r", "6");
+			dot.setAttribute("class", "editor-proof-tee");
+			dot.dataset.role = "proof-tee";
+			overlay.append(dot);
+			drawn += 1;
+		}
+		proof.positions.forEach(position => {
+			const at = spot(position.position[0], position.position[1]);
+			if (at === null) {
+				return;
+			}
+			const mark = document.createElementNS(SVG_NAMESPACE, "circle");
+			mark.setAttribute("cx", String(at.x));
+			mark.setAttribute("cy", String(at.y));
+			mark.setAttribute("r", "6");
+			mark.setAttribute("class", "editor-proof-position");
+			mark.dataset.role = "proof-position";
+			mark.dataset.index = String(position.index);
+			overlay.append(mark);
+			drawn += 1;
+		});
+		return drawn;
+	}
+
+	/** The shapes a sound layer's sources are heard within. */
+	paintSources(overlay, known) {
 		const layer = this.selectedLayer();
 		const where = this.selection;
 		const sources = layer !== null && layer.type === "sounds"
 			? (known || this.editor.sources(where.group, where.layer) || [])
 			: [];
-		overlay.textContent = "";
-		overlay.hidden = sources.length === 0;
-		if (overlay.hidden) {
-			return;
-		}
-		const canvas = this.editor.canvas;
-		// The canvas is drawn in the pixels the screen has and laid out in
-		// the units the page uses; the SVG is laid out, so it is told about
-		// the drawn ones and scales itself.
-		overlay.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
 		const spot = (x, y) => this.editor.groupPixelAt(where.group, x, y);
 		sources.forEach((source, index) => {
 			const at = spot(source.position[0], source.position[1]);
@@ -2582,6 +2739,7 @@ class CEditorPanels {
 			dot.dataset.source = String(index);
 			overlay.append(dot);
 		});
+		return sources.length;
 	}
 
 	/**

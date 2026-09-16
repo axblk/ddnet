@@ -1,9 +1,12 @@
 #include "report.h"
 
+#include <base/math.h>
+
 #include <engine/shared/jsonwriter.h>
 
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
+#include <game/map/document/proof.h>
 
 #include <variant>
 
@@ -32,6 +35,24 @@ namespace map_document
 			Writer.BeginArray();
 			Writer.WriteIntValue(First);
 			Writer.WriteIntValue(Second);
+			Writer.EndArray();
+		}
+
+		/**
+		 * A proof rectangle as four whole world units: left, top, right,
+		 * bottom.
+		 *
+		 * Whole units, because a world unit is a thirty-second of a tile and
+		 * nobody can see a thirty-second of a tile - and because everything
+		 * else that leaves here is a whole number too.
+		 */
+		void WriteProofRect(CJsonWriter &Writer, const CProofRect &Rect)
+		{
+			Writer.BeginArray();
+			Writer.WriteIntValue(round_to_int(Rect.m_TopLeft.x));
+			Writer.WriteIntValue(round_to_int(Rect.m_TopLeft.y));
+			Writer.WriteIntValue(round_to_int(Rect.m_BottomRight.x));
+			Writer.WriteIntValue(round_to_int(Rect.m_BottomRight.y));
 			Writer.EndArray();
 		}
 
@@ -376,6 +397,72 @@ namespace map_document
 			Writer.EndObject();
 		}
 		Writer.EndArray();
+		return Writer.GetOutputString();
+	}
+
+	std::string ProofJson(const CMapState &Map, vec2 Center, bool Menu)
+	{
+		// A menu stands further back than a game does.
+		const float Zoom = Menu ? 0.7f : 1.0f;
+
+		CJsonStringWriter Writer;
+		Writer.BeginObject();
+		Writer.WriteAttribute("menu");
+		Writer.WriteBoolValue(Menu);
+		WriteIntPair(Writer, "center", round_to_int(Center.x), round_to_int(Center.y));
+
+		// From a square screen to 16:9 in twenty steps. What the page draws
+		// from it is one outline, so the corners come in order and the page
+		// does not have to know which end is which.
+		Writer.WriteAttribute("steps");
+		Writer.BeginArray();
+		constexpr int NUM_STEPS = 20;
+		for(int Step = 0; Step <= NUM_STEPS; ++Step)
+		{
+			const float Aspect = 1.0f + (16.0f / 9.0f - 1.0f) * (Step / (float)NUM_STEPS);
+			WriteProofRect(Writer, ProofScreen(Center, Aspect, Zoom));
+		}
+		Writer.EndArray();
+
+		// The two a mapper is told to check by name, so the page can say which
+		// is which rather than colouring two rectangles and hoping.
+		Writer.WriteAttribute("named");
+		Writer.BeginArray();
+		static const struct
+		{
+			const char *m_pName;
+			float m_Aspect;
+		} s_aNamed[] = {
+			{"4:3", 4.0f / 3.0f},
+			{"16:10", 16.0f / 10.0f}};
+		for(const auto &Named : s_aNamed)
+		{
+			Writer.BeginObject();
+			Writer.WriteAttribute("name");
+			Writer.WriteStrValue(Named.m_pName);
+			Writer.WriteAttribute("rect");
+			WriteProofRect(Writer, ProofScreen(Center, Named.m_Aspect, Zoom));
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+
+		// Only in menu mode, and only the places the map itself names.
+		Writer.WriteAttribute("positions");
+		Writer.BeginArray();
+		if(Menu)
+		{
+			for(const CMenuPosition &Position : MenuPositions(Map))
+			{
+				Writer.BeginObject();
+				Writer.WriteAttribute("index");
+				Writer.WriteIntValue(Position.m_Index);
+				WriteIntPair(Writer, "position", round_to_int(Position.m_Position.x), round_to_int(Position.m_Position.y));
+				Writer.EndObject();
+			}
+		}
+		Writer.EndArray();
+
+		Writer.EndObject();
 		return Writer.GetOutputString();
 	}
 

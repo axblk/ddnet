@@ -294,6 +294,16 @@ public:
 	std::string SoundSourcesJson(int Id, int Group, int Layer) const;
 
 	/**
+	 * Proof mode around where the view is looking - see
+	 * `map_document::ProofJson`.
+	 *
+	 * The place is the view's own centre rather than something the page
+	 * passes in, because proof mode asks "what would a player standing where
+	 * I am looking see", and where that is, is the view's answer.
+	 */
+	std::string ProofJson(int Id, bool Menu) const;
+
+	/**
 	 * Where a pixel of the surface is, in the coordinates one group is drawn
 	 * in - which is the plain view for a group without parallax and somewhere
 	 * else entirely for one with it.

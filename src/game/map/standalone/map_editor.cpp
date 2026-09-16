@@ -238,6 +238,14 @@ std::string CMapEditor::SoundSourcesJson(int Id, int Group, int Layer) const
 	return map_document::SoundSourcesJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
 }
 
+std::string CMapEditor::ProofJson(int Id, bool Menu) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr)
+		return "null";
+	return map_document::ProofJson(pMap->m_Document.Map(), pMap->m_View.Center(), Menu);
+}
+
 std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 {
 	const CMap *pMap = Find(Id);

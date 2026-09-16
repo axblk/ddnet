@@ -479,3 +479,44 @@ circle.editor-source-dot.editor-source-picked {
 	cursor: crosshair;
 	touch-action: none;
 }
+
+/* Proof mode: what a player would see. The colours are the ones the editor in
+   the client uses, because somebody who knows one should not have to learn the
+   other - white for the range of shapes, red for 4:3, green for 16:10. */
+.editor-proof {
+	fill: none;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-proof-step,
+.editor-proof-outline {
+	stroke: #ffffff;
+	stroke-opacity: 0.55;
+}
+
+.editor-proof-first {
+	stroke: #e2544a;
+	stroke-width: 2;
+}
+
+.editor-proof-second {
+	stroke: #5ac26a;
+	stroke-width: 2;
+}
+
+.editor-proof-tee {
+	fill: #5a9ce8;
+	fill-opacity: 0.45;
+	stroke: #5a9ce8;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}
+
+.editor-proof-position {
+	fill: #5ac26a;
+	fill-opacity: 0.35;
+	stroke: #5ac26a;
+	stroke-width: 1.5;
+	vector-effect: non-scaling-stroke;
+}

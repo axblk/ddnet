@@ -2243,6 +2243,7 @@ if(TARGET_OS STREQUAL "emscripten")
     other/emscripten/map.html
     other/emscripten/packages/demo-player/demo-player.js
     other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-editor/commands.js
     other/emscripten/packages/map-editor/map-editor.js
     other/emscripten/packages/map-viewer/map-viewer.js
     other/emscripten/render.html
@@ -4028,7 +4029,7 @@ if(CLIENT)
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
         "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer$<SEMICOLON>ddnet-map-editor"
-        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-base.js$<SEMICOLON>ddnet-editor.css$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo-player.js$<SEMICOLON>demo-renderer.js$<SEMICOLON>demo.html$<SEMICOLON>editor.html$<SEMICOLON>index.html$<SEMICOLON>map-editor.js$<SEMICOLON>map-viewer.js$<SEMICOLON>map.html$<SEMICOLON>render.html"
+        "-DPAGE_FILES=coi-serviceworker.js$<SEMICOLON>commands.js$<SEMICOLON>DDNet.ico$<SEMICOLON>ddnet-base.js$<SEMICOLON>ddnet-editor.css$<SEMICOLON>ddnet-page.css$<SEMICOLON>ddnet-render.css$<SEMICOLON>ddnet-viewer.css$<SEMICOLON>demo-player.js$<SEMICOLON>demo-renderer.js$<SEMICOLON>demo.html$<SEMICOLON>editor.html$<SEMICOLON>index.html$<SEMICOLON>map-editor.js$<SEMICOLON>map-viewer.js$<SEMICOLON>map.html$<SEMICOLON>render.html"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start

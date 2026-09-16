@@ -32,17 +32,14 @@
 		<ddnet-editor id="editor" urlparam="map" remember>
 			<div class="open" slot="header">
 				<strong>DDNet Map Editor</strong>
-				<button class="editor-small" id="open-button">Open a map&hellip;</button>
 				<button class="editor-small" id="new-button">New map</button>
 				<p id="message" role="status">Starting&hellip;</p>
-				<input id="open-file" type="file" accept=".map" hidden>
 			</div>
 		</ddnet-editor>
 		<script type="module">
 			import "@ddnet/map-editor";
 			const box = document.getElementById("editor");
 			const message = document.getElementById("message");
-			const openFile = document.getElementById("open-file");
 			const say = text => { message.textContent = text; };
 			const editor = await box.ready.catch(error => { say((error && error.message) || String(error)); throw error; });
 			// The page's own handle on what it started - for the console and for
@@ -59,21 +56,9 @@
 			describe();
 			for (const type of ["document", "saved", "loaded", "closed"]) { editor.addEventListener(type, () => describe()); }
 			editor.addEventListener("error", event => say(`Could not ${event.detail && event.detail.what === "save" ? "save" : "open"} that.`));
-
-			document.getElementById("open-button").addEventListener("click", () => openFile.click());
-			openFile.addEventListener("change", () => {
-				const file = openFile.files[0];
-				// The same file twice is still a choice; without this the second
-				// time would go unnoticed.
-				openFile.value = "";
-				if (file == null) { return; }
-				say("Reading…");
-				editor.loadFile(file).catch(error => say((error && error.message) || String(error)));
-			});
-			document.getElementById("new-button").addEventListener("click", () => {
-				editor.create(100, 50, "untitled");
-				box.panels.refresh();
-			});
+			// Opening and making a map are commands of the editor's; this page
+			// only says where one of the buttons for them sits.
+			document.getElementById("new-button").addEventListener("click", () => box.panels.run("file.new"));
 		</script>
 	</body>
 </html>

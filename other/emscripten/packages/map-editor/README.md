@@ -65,6 +65,39 @@ inside it; with the focus nowhere at all it answers only when it is the one
 editor on the page, because with two there would be no way to say which was
 meant.
 
+## One list of everything it can do
+
+The tool bar is not a row of buttons somebody wrote out; it is what the list of
+commands says wants one. The keyboard is a lookup in the same list, the
+tooltips take their key from it, and the menus and the palette will read it
+too. A new thing the editor can do is an entry in `commands.js`, not a new
+button:
+
+```js
+{
+	id: "view.grid", label: "A grid on the tiles", group: "View",
+	icon: "grid", bar: true, keys: ["G", "Ctrl+G"],
+	pressed: p => p.editor.grid() > 0,
+	run: p => { p.editor.grid(p.editor.grid() > 0 ? 0 : 10); p.refreshBar(); },
+}
+```
+
+`panels.run("view.grid")` does one by name, and answers whether it could be
+done at all - a command that says `enabled` is false is not done and its button
+is grey. Eighty-one commands answer to eighty-seven keys today.
+
+Six of the native editor's keys cannot be had in a browser - Chrome keeps them
+whatever a page does - so they are said differently here:
+
+| There | Here | Why |
+|---|---|---|
+| Ctrl+N (new map) | Ctrl+Alt+N | Ctrl+N opens a window |
+| Ctrl+L (load) | Ctrl+O | Ctrl+L is the address bar |
+| Ctrl+T (the physics numbers) | T | Ctrl+T opens a tab |
+| Ctrl+Q (add a quad) | Q | Ctrl+Q quits, on Linux |
+| Ctrl+W, Ctrl+F4 (close the map) | Ctrl+Alt+W | both close the tab |
+| Ctrl+Shift+I (hex tile info) | Ctrl+I | Ctrl+Shift+I opens the developer tools |
+
 ## What it is made of
 
 * **The map is asked, not told.** `editor.structure()` answers what the map is

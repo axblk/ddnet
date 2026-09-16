@@ -130,6 +130,9 @@ TEST(Assets, TheServerSettingsAreVersionedToo)
 TEST(Assets, ASharedListOfSettingsIsCountedOnce)
 {
 	const CMapState Before = WithAssets();
+	// The copy is what is being tested - it has to be a second version, not a
+	// second name for the first one.
+	// NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
 	const CMapState After = Before;
 
 	std::unordered_set<const void *> Seen;

@@ -270,7 +270,18 @@ namespace
 			ASSERT_EQ(pOne->m_Points.Size(), pOther->m_Points.Size()) << Name;
 			for(size_t p = 0; p < pOne->m_Points.Size(); ++p)
 			{
-				EXPECT_EQ(std::memcmp(&pOne->m_Points[p], &pOther->m_Points[p], sizeof(CEnvPoint)), 0) << Name;
+				// Field by field rather than byte by byte: a point is a
+				// `CEnvPoint_runtime`, which inherits, and what a compiler
+				// puts between the base and what was added is its own
+				// business.
+				const CEnvPoint &OnePoint = pOne->m_Points[p];
+				const CEnvPoint &OtherPoint = pOther->m_Points[p];
+				EXPECT_EQ(OnePoint.m_Time, OtherPoint.m_Time) << Name;
+				EXPECT_EQ(OnePoint.m_Curvetype, OtherPoint.m_Curvetype) << Name;
+				for(int Channel = 0; Channel < CEnvPoint::MAX_CHANNELS; ++Channel)
+				{
+					EXPECT_EQ(OnePoint.m_aValues[Channel], OtherPoint.m_aValues[Channel]) << Name;
+				}
 			}
 		}
 
@@ -377,7 +388,7 @@ TEST(MapFile, WritingAMapThatWasReadGivesTheSameMapBack)
 	{
 		std::cerr << " " << Same;
 	}
-	std::cerr << std::endl;
+	std::cerr << "\n";
 }
 
 TEST(MapFile, NothingInTheseFilesGoesUnread)

@@ -766,6 +766,17 @@ const PANELS_HTML = `
 		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
 		<div class="editor-props" data-role="point-props"></div>
 	</section>
+	<section class="editor-panel" data-role="info-panel">
+		<header class="editor-panel-head">
+			<h2>Map</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
+				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
+			</span>
+		</header>
+		<div class="editor-props" data-role="info-props"></div>
+		<ol class="editor-settings" data-role="setting-list"></ol>
+	</section>
 	<section class="editor-panel" data-role="history-panel">
 		<header class="editor-panel-head">
 			<h2>History</h2>
@@ -791,6 +802,15 @@ const GROUP_PROPS = [
 	{ prop: "clipY", label: "Clip Y", kind: "number" },
 	{ prop: "clipW", label: "Clip W", kind: "number" },
 	{ prop: "clipH", label: "Clip H", kind: "number" },
+];
+
+// What a map says about itself. The lines a server runs are a list and are
+// not here; everything else is a word.
+const MAP_INFO_PROPS = [
+	{ prop: "author", label: "Author", kind: "text" },
+	{ prop: "mapVersion", label: "Version", kind: "text" },
+	{ prop: "credits", label: "Credits", kind: "text" },
+	{ prop: "license", label: "Licence", kind: "text" },
 ];
 
 const LAYER_PROPS = {
@@ -895,6 +915,8 @@ class CEditorPanels {
 		this.quad = -1;
 		// Which picture of the map is picked in the image panel.
 		this.image = -1;
+		// Which line of the server settings is picked.
+		this.setting = -1;
 		// The rules files that were fetched, by the name of the picture they
 		// belong to. `null` means there are none for that picture - asked
 		// once and then remembered, so a layer without rules costs one 404.
@@ -967,6 +989,7 @@ class CEditorPanels {
 		this.wireEnvelopes();
 		this.wireQuads();
 		this.wireImages();
+		this.wireInfo();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -1248,6 +1271,7 @@ class CEditorPanels {
 		this.refreshQuads();
 		this.refreshImages();
 		this.refreshEnvelopes();
+		this.refreshInfo();
 		this.refreshHistory();
 	}
 
@@ -2169,6 +2193,89 @@ class CEditorPanels {
 				this.image = index;
 				this.refreshImages();
 			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+	}
+
+	/**
+	 * What the map says about itself, and the lines a server runs when it
+	 * loads it.
+	 *
+	 * A change here is a version like any other - the editor in the client
+	 * changes the map's own description without an undo entry, and that is
+	 * the one thing about it worth not copying.
+	 */
+	wireInfo() {
+		const signal = this.stopping.signal;
+		this.part("add-setting").addEventListener("click", () => {
+			const answer = this.change(() => this.editor.apply({ op: "info.settings.add", value: "sv_setting 0" }));
+			if (answer && answer.ok) {
+				this.setting = answer.line;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-setting").addEventListener("click", () => {
+			if (this.setting < 0) {
+				return;
+			}
+			this.change(() => this.editor.apply({ op: "info.settings.delete", line: this.setting }));
+			this.setting = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshInfo() {
+		const panel = this.part("info-panel");
+		panel.hidden = this.map === null;
+		if (panel.hidden) {
+			return;
+		}
+		const info = this.map.info;
+		const props = this.part("info-props");
+		// Only rebuilt when a field is not being typed in, so that a name
+		// being written is not taken away mid-word.
+		if (!props.contains(document.activeElement)) {
+			props.textContent = "";
+			for (const description of MAP_INFO_PROPS) {
+				props.append(this.field(info, description,
+					value => ({ op: "info.setProp", prop: description.prop, value: value })));
+			}
+		}
+
+		const settings = info.settings || [];
+		if (this.setting >= settings.length) {
+			this.setting = -1;
+		}
+		this.part("delete-setting").disabled = this.setting < 0;
+		const list = this.part("setting-list");
+		if (list.contains(document.activeElement)) {
+			return;
+		}
+		list.textContent = "";
+		settings.forEach((line, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "setting";
+			const input = document.createElement("input");
+			input.type = "text";
+			input.dataset.role = "setting-line";
+			input.dataset.line = String(index);
+			input.value = line;
+			input.addEventListener("focus", () => {
+				this.setting = index;
+				this.part("delete-setting").disabled = false;
+				for (const other of list.querySelectorAll(".editor-row")) {
+					other.classList.remove("editor-selected");
+				}
+				row.classList.add("editor-selected");
+			}, { signal: this.stopping.signal });
+			input.addEventListener("change", () => {
+				this.change(() => this.editor.apply({ op: "info.settings.set", line: index, value: input.value }));
+			}, { signal: this.stopping.signal });
+			if (index === this.setting) {
+				row.classList.add("editor-selected");
+			}
+			row.append(input);
 			list.append(row);
 		});
 	}

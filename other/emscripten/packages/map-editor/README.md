@@ -161,6 +161,19 @@ what is drawn and what is caught cannot drift apart. A new quad appears in the
 middle of the view of *its group*, not of the plain view: in a group with no
 parallax at all those are nowhere near each other.
 
+## What the map says about itself
+
+Author, version, credits, licence, and the lines a server runs when it loads
+the map. All of it goes through the same commands as everything else, which is
+the one thing here worth saying: the editor in the client changes a map's own
+description without an undo entry, and that is not copied - `info.setProp` and
+`info.settings.add/set/delete` make versions like any other change.
+
+A setting is one line. A line with a break in it would come back as two lines
+and then the map would not be the map that was written, so it is refused.
+There is no checking of what the line *says*: that would need the console's
+own list of commands, which is the server's business and not the document's.
+
 ## The brush
 
 The left button paints, held shift it takes a piece of the layer into the

@@ -332,6 +332,43 @@ namespace
 	}
 } // namespace
 
+TEST(Command, WhatAMapSaysAboutItselfIsChangedLikeEverythingElse)
+{
+	CCommands Commands(TwoGroups());
+	Commands.Ok(R"({"op":"info.setProp","prop":"author","value":"redix"})");
+	Commands.Ok(R"({"op":"info.setProp","prop":"license","value":"CC-BY-SA"})");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Author, "redix");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_License, "CC-BY-SA");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.setProp","prop":"mood","value":"sunny"})"), "a map has no 'mood'");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.setProp","prop":"author","value":7})"), "that is a word");
+
+	// And it is a version like any other: one undo takes it back.
+	Commands.m_Document.Undo();
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_License, "");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Author, "redix");
+}
+
+TEST(Command, TheLinesAServerRunsAreAddedChangedAndTakenAway)
+{
+	CCommands Commands(TwoGroups());
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"info.settings.add","value":"sv_deepfly 0"})"), "line"), 0);
+	EXPECT_EQ(Number(Commands.Ok(R"({"op":"info.settings.add","value":"sv_test 1"})"), "line"), 1);
+	ASSERT_EQ(Commands.m_Document.Map().m_Info.m_Settings.Size(), 2u);
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[0], "sv_deepfly 0");
+
+	Commands.Ok(R"({"op":"info.settings.set","line":1,"value":"sv_test 2"})");
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[1], "sv_test 2");
+
+	// One line, because a line with a break in it comes back as two and then
+	// the map is not the map that was written.
+	EXPECT_EQ(Commands.Refused("{\"op\":\"info.settings.add\",\"value\":\"one\\ntwo\"}"), "a setting is one line");
+
+	Commands.Ok(R"({"op":"info.settings.delete","line":0})");
+	ASSERT_EQ(Commands.m_Document.Map().m_Info.m_Settings.Size(), 1u);
+	EXPECT_EQ(Commands.m_Document.Map().m_Info.m_Settings[0], "sv_test 2");
+	EXPECT_EQ(Commands.Refused(R"({"op":"info.settings.delete","line":5})"), "'line' is 5, which is not there");
+}
+
 TEST(Command, APictureBesideTheMapIsAddedAndNamed)
 {
 	CCommands Commands(WithAPicture());

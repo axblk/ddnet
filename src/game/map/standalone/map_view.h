@@ -191,10 +191,16 @@ public:
 	 * is and how to draw a piece of it, and the sweep is the one sweep there
 	 * is.
 	 *
+	 * @param pPath The file to write, as for `BeginFullImage`.
+	 * @param TimeOffsetMillis The moment of the envelopes to draw.
+	 * @param PixelBudget How many pixels the picture may have at most, or 0
+	 * for the map at its own size.
 	 * @param WorldSize How big the map is, in world units.
 	 * @param Draw Draws one piece for the parameters given, into the surface
 	 * as it is at that moment: the view sets the surface to the piece's size
 	 * before it calls.
+	 *
+	 * @return `true` when there is a picture to step through.
 	 */
 	bool BeginFullImageOf(const char *pPath, int TimeOffsetMillis, size_t PixelBudget, vec2 WorldSize, FDrawPiece Draw);
 

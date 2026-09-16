@@ -929,6 +929,18 @@ void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
 	map_document::SetBrushNumbers(m_Brush, m_Numbers);
 }
 
+const map_document::CBrush &CMapEditor::BrushToPlace()
+{
+	m_LastDropped = 0;
+	if(m_AllowUnused)
+		return m_Brush;
+	// A copy only where there is something to take out: the brush's stores
+	// are shared, so the copy costs pointers until a tile is changed in it.
+	m_PlacedBrush = m_Brush;
+	m_LastDropped = map_document::DropUnusedTiles(m_PlacedBrush);
+	return m_LastDropped == 0 ? m_Brush : m_PlacedBrush;
+}
+
 bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
 {
 	CMap *pMap = ForTiles(Id, Group, Layer, true);
@@ -938,7 +950,7 @@ bool CMapEditor::Paint(int Id, size_t Group, size_t Layer, int x, int y)
 	// button went down - so a stroke is one entry and a single stamp is one
 	// as well.
 	pMap->m_Document.Begin("Draw");
-	map_document::PaintTiles(pMap->m_Document, Group, Layer, x, y, m_Brush);
+	map_document::PaintTiles(pMap->m_Document, Group, Layer, x, y, BrushToPlace());
 	pMap->m_Document.Commit();
 	Touch();
 	return true;
@@ -951,7 +963,7 @@ bool CMapEditor::Fill(int Id, size_t Group, size_t Layer, int x, int y, int Widt
 		return false;
 	pMap->m_Document.Begin("Fill");
 	map_document::EditTileLayer(pMap->m_Document, Group, Layer, [&](map_document::CTileLayer &Changed) {
-		map_document::FillTiles(Changed, x, y, Width, Height, m_Brush);
+		map_document::FillTiles(Changed, x, y, Width, Height, BrushToPlace());
 	});
 	pMap->m_Document.Commit();
 	Touch();

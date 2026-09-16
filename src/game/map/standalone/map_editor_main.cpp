@@ -114,6 +114,22 @@ namespace
 		Say("document", "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}");
 	}
 
+	/**
+	 * Tells the page that tiles went down as air because they do nothing
+	 * there - once per frame at most, however many stamps a stroke was.
+	 */
+	void SayDropped()
+	{
+		if(g_pEditor == nullptr || g_pEditor->LastDropped() == 0)
+			return;
+		for(const auto &[Type, Json] : g_vSaid)
+		{
+			if(Type == "unused")
+				return;
+		}
+		Say("unused", "{\"tiles\":" + std::to_string(g_pEditor->LastDropped()) + "}");
+	}
+
 	/** Tells the page everything that has happened since the last frame. */
 	void SayEverything()
 	{
@@ -821,7 +837,20 @@ EMSCRIPTEN_KEEPALIVE int MapEditorPaint(int Id, int Group, int Layer, int X, int
 	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Paint(Id, (size_t)Group, (size_t)Layer, X, Y))
 		return 0;
 	SayChanged(Id);
+	SayDropped();
 	return 1;
+}
+
+/** Whether tiles that do nothing in a physics layer may be put there. */
+EMSCRIPTEN_KEEPALIVE void MapEditorSetAllowUnused(int Allow)
+{
+	if(g_pEditor != nullptr)
+		g_pEditor->SetAllowUnused(Allow != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE int MapEditorAllowUnused()
+{
+	return g_pEditor != nullptr && g_pEditor->AllowUnused() ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int Y, int Width, int Height)
@@ -829,6 +858,7 @@ EMSCRIPTEN_KEEPALIVE int MapEditorFill(int Id, int Group, int Layer, int X, int 
 	if(g_pEditor == nullptr || Group < 0 || Layer < 0 || !g_pEditor->Fill(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height))
 		return 0;
 	SayChanged(Id);
+	SayDropped();
 	return 1;
 }
 

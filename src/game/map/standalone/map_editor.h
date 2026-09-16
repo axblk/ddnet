@@ -778,6 +778,15 @@ public:
 	 */
 	bool BeginPicture(int Id, const char *pPath, size_t PixelBudget);
 
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there.
+	 * Off, as in the native editor: such a tile is put down as air.
+	 */
+	void SetAllowUnused(bool Allow) { m_AllowUnused = Allow; }
+	bool AllowUnused() const { return m_AllowUnused; }
+	/** How many tiles the last paint or fill put down as air for that reason. */
+	int LastDropped() const { return m_LastDropped; }
+
 	/** Draws pieces of it for that long; `false` once it is done or failed. */
 	bool StepPicture(std::chrono::nanoseconds Budget) { return m_View.StepFullImage(Budget); }
 	bool PictureRunning() const { return m_View.FullImageRunning(); }
@@ -856,6 +865,8 @@ private:
 	 *
 	 * @return The map, or `nullptr` when any of that does not hold.
 	 */
+	/** The brush as it is to be put down, with unused tiles taken out unless allowed. */
+	const map_document::CBrush &BrushToPlace();
 	CMap *ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush);
 	/**
 	 * Puts one tile index in a brush, in whichever plane the kind keeps it.
@@ -874,6 +885,11 @@ private:
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
 	map_document::CBrush m_Brush;
+	// What is actually put down when unused tiles are not allowed, and how
+	// many tiles that took out the last time.
+	map_document::CBrush m_PlacedBrush;
+	bool m_AllowUnused = false;
+	int m_LastDropped = 0;
 	map_document::CBrushNumbers m_Numbers;
 	std::array<map_document::CBrush, NUM_STORED_BRUSHES> m_aStoredBrushes;
 	// The `.rules` files that were handed in, by the name they came under.

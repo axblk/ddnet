@@ -224,6 +224,11 @@ export declare class MapEditor {
 	dirty(id?: MapId): boolean;
 	/** The maps in the browser's own storage, by name, with their size in bytes. */
 	saved(): { name: string; size: number }[];
+	/**
+	 * Whether a tile that does nothing in a physics layer may be put there -
+	 * off by default, as in the native editor. Called with a value it sets it.
+	 */
+	allowUnused(on?: boolean): boolean;
 	/** Asks for a PNG of the whole map, drawn over the next frames and handed out. */
 	picture(id?: MapId): boolean;
 	/** 0 never asked, 1 being drawn, 2 handed over, 3 failed. */
@@ -467,6 +472,8 @@ export declare class EditorPanels {
 	askYesNo(title: string, text: string, yes: string, done: () => void): void;
 	/** Every key the editor answers to, on one sheet. */
 	showKeys(): void;
+	/** Whether the tileset is shown in the colour of the layer it is for. */
+	brushColouring: boolean;
 	/** A picture of the whole map, with a note that counts while it is drawn. */
 	exportPicture(): boolean;
 	/** The outer ring of the selected tile layer, drawn with the brush. */

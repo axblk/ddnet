@@ -2617,6 +2617,8 @@ set_src(GAME_SHARED GLOB src/game
   alloc.h
   collision.cpp
   collision.h
+  explanations.cpp
+  explanations.h
   gamecore.cpp
   gamecore.h
   ghost_data.h
@@ -2705,6 +2707,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/document.h
   document/edit.cpp
   document/edit.h
+  document/explain.cpp
+  document/explain.h
   document/history.h
   document/layer.h
   document/map_file.cpp
@@ -3177,8 +3181,6 @@ if(CLIENT)
     enums.h
     envelope_editor.cpp
     envelope_editor.h
-    explanations.cpp
-    explanations.h
     file_browser.cpp
     file_browser.h
     font_typer.cpp
@@ -4568,6 +4570,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     document_test.cpp
     edit_test.cpp
     editor_test.cpp
+    explain_test.cpp
     font_loading_test.cpp
     fs_test.cpp
     game_mode_registry_test.cpp

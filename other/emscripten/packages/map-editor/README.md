@@ -171,6 +171,25 @@ one and a binding to the one that is gone becomes no binding at all. A layer
 that was bound to nothing is left as the node it is, which is why this costs
 the layers that used the envelope rather than the map.
 
+## What a tile is, and what it does
+
+The bar says what is under the pointer: where it is, which tile stands there
+in decimal and in hex, and what that tile does. Hex because the entities sheet
+is sixteen wide, so `0x23` names row 2 and column 3 in one go; decimal because
+that is how mappers talk about tiles.
+
+The sentence is the one the editor in the client shows. Those sentences moved
+out of `game/editor/` into `game/` for this - they were always only a table
+about `game/mapitems.h`, and somebody who learned what a tile does in one
+editor should not be told something else in the other.
+
+Which number a tile *is* turns out to be a question the file format answers
+rather than the layer: the three kinds that draw their own tiles keep it where
+it is drawn from, and a physics layer draws nothing, so its plane of tiles is
+air and the meaning sits beside it in the extra plane.
+`map_document::TileMeaning` is the one place that knows which, so
+`editor.tileIndex` on a tele layer gives 26 rather than the 0 it draws.
+
 ## Proof mode
 
 The one question an editor cannot answer by looking: is this still on screen

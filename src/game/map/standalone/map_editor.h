@@ -355,6 +355,23 @@ public:
 	int TileIndex(int Id, int Group, int Layer, int x, int y) const;
 
 	/**
+	 * What a tile of a physics layer does, in a sentence - see
+	 * `map_document::ExplainTile`.
+	 *
+	 * The index rather than a place, because the two things that want it are
+	 * the map under the pointer and the tileset a brush is picked from, and
+	 * only one of those has places.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, whose kind decides what a number means.
+	 * @param Index The tile, 0 to 255.
+	 *
+	 * @return The sentence, or `nullptr` where there is nothing to say.
+	 */
+	const char *Explain(int Id, int Group, int Layer, int Index) const;
+
+	/**
 	 * Keeps a `.rules` file under a name, parsed, for automapping with.
 	 *
 	 * The file is not read here: natively it comes off the disk and in the

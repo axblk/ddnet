@@ -55,6 +55,22 @@
 	opacity: 0.75;
 }
 
+/* What is under the pointer. It changes on every move, so it is given a whole
+   line of its own rather than being allowed to push the buttons about. */
+.editor-hover {
+	flex-basis: 100%;
+	min-width: 0;
+	opacity: 0.7;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.editor-hover:empty {
+	display: none;
+}
+
 .editor-columns {
 	display: flex;
 	flex-direction: column;

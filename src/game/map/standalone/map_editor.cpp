@@ -13,6 +13,7 @@
 #include <game/map/document/automap.h>
 #include <game/map/document/command.h>
 #include <game/map/document/edit.h>
+#include <game/map/document/explain.h>
 #include <game/map/document/map_file.h>
 #include <game/map/document/report.h>
 #include <game/map/document/structure.h>
@@ -263,9 +264,23 @@ int CMapEditor::TileIndex(int Id, int Group, int Layer, int x, int y) const
 	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
 		return -1;
 	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
-	if(pTiles == nullptr || x >= pTiles->Width() || y >= pTiles->Height())
+	if(pTiles == nullptr)
 		return -1;
-	return pTiles->m_Tiles.Get(x, y).m_Index;
+	return map_document::TileMeaning(*pTiles, x, y);
+}
+
+const char *CMapEditor::Explain(int Id, int Group, int Layer, int Index) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return nullptr;
+	const map_document::CMapState &Map = pMap->m_Document.Map();
+	if((size_t)Group >= Map.NumGroups() || (size_t)Layer >= Map.NumLayers((size_t)Group))
+		return nullptr;
+	const auto *pTiles = std::get_if<map_document::CTileLayer>(Map.Layer((size_t)Group, (size_t)Layer));
+	if(pTiles == nullptr)
+		return nullptr;
+	return map_document::ExplainTile(pTiles->m_Kind, Index);
 }
 
 size_t CMapEditor::LoadRules(const char *pName, const char *pText)

@@ -9,6 +9,7 @@
 #include <game/map/document/structure.h>
 
 #include <algorithm>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -186,6 +187,64 @@ namespace map_document
 				return false;
 			}
 			*pOut = json_string_get(pValue);
+			return true;
+		}
+
+		/** A quad's corner colour, which is four whole numbers from 0 to 255. */
+		bool ReadQuadColor(const json_value *pValue, CColor *pColor, std::string *pError)
+		{
+			if(pValue->type != json_array || json_array_length(pValue) != 4)
+			{
+				*pError = "a colour is four whole numbers";
+				return false;
+			}
+			int aChannels[4];
+			for(int Channel = 0; Channel < 4; ++Channel)
+			{
+				const json_value *pChannel = json_array_get(pValue, Channel);
+				if(pChannel->type != json_integer)
+				{
+					*pError = "a colour is four whole numbers";
+					return false;
+				}
+				aChannels[Channel] = std::clamp(json_int_get(pChannel), 0, 255);
+			}
+			*pColor = CColor(aChannels[0], aChannels[1], aChannels[2], aChannels[3]);
+			return true;
+		}
+
+		/**
+		 * What a quad has beside its points and colours: which envelopes move and
+		 * colour it, and how far into them it starts.
+		 *
+		 * An envelope is named by its place, so -1 for none and anything else has
+		 * to be an envelope the map has - a binding to one that is not there is a
+		 * map that reads back differently than it was written.
+		 */
+		bool SetQuadProp(CQuad &Quad, const char *pProp, const json_value *pValue, size_t NumEnvelopes, std::string *pError)
+		{
+			int Value = 0;
+			if(!ReadInt(pValue, &Value, pError))
+				return false;
+			const bool Envelope = str_comp(pProp, "posEnv") == 0 || str_comp(pProp, "colorEnv") == 0;
+			if(Envelope && (Value < -1 || Value >= (int)NumEnvelopes))
+			{
+				*pError = "there is no such envelope";
+				return false;
+			}
+			if(str_comp(pProp, "posEnv") == 0)
+				Quad.m_PosEnv = Value;
+			else if(str_comp(pProp, "posEnvOffset") == 0)
+				Quad.m_PosEnvOffset = Value;
+			else if(str_comp(pProp, "colorEnv") == 0)
+				Quad.m_ColorEnv = Value;
+			else if(str_comp(pProp, "colorEnvOffset") == 0)
+				Quad.m_ColorEnvOffset = Value;
+			else
+			{
+				*pError = std::string("a quad has no '") + pProp + "'";
+				return false;
+			}
 			return true;
 		}
 
@@ -508,6 +567,105 @@ namespace map_document
 				return Failed(Error);
 			Document.Begin(Arguments.Str("label", pProp), pMerge);
 			Document.Edit().ReplaceLayer(Group, Layer, std::move(Changed));
+			Document.Commit();
+			return Succeeded();
+		}
+
+		if(str_comp(pOp, "quad.add") == 0 || str_comp(pOp, "quad.delete") == 0 ||
+			str_comp(pOp, "quad.setPoint") == 0 || str_comp(pOp, "quad.setColor") == 0 ||
+			str_comp(pOp, "quad.setProp") == 0)
+		{
+			const size_t Group = Arguments.Index("group", Map.NumGroups());
+			const size_t Layer = Arguments.Index("layer", Arguments.Failed() ? 0 : Map.NumLayers(Group));
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			const CQuadLayer *pQuads = Arguments.Failed() ? nullptr : std::get_if<CQuadLayer>(Map.Layer(Group, Layer));
+			if(pQuads == nullptr)
+				return Failed("that layer holds no quads");
+			const CLayerAddress Address{Group, Layer};
+
+			if(str_comp(pOp, "quad.add") == 0)
+			{
+				// In world units, which is what the page has after turning a
+				// click into a place; a tile is thirty-two of them.
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				const int Width = Arguments.Int("width", 64);
+				const int Height = Arguments.Int("height", 64);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				Document.Begin(Arguments.Str("label", "Add quad"), pMerge);
+				const size_t Index = AddQuad(Document, Address, MakeQuad(X, Y, Width, Height));
+				Document.Commit();
+				return Succeeded("quad", (int)Index);
+			}
+
+			const size_t Quad = Arguments.Index("quad", pQuads->m_Quads.Size());
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+
+			if(str_comp(pOp, "quad.delete") == 0)
+			{
+				Document.Begin(Arguments.Str("label", "Delete quad"), pMerge);
+				DeleteQuad(Document, Address, Quad);
+				Document.Commit();
+				return Succeeded();
+			}
+
+			CQuad Changed = pQuads->m_Quads[Quad];
+			if(str_comp(pOp, "quad.setPoint") == 0)
+			{
+				// Five points: four corners in the order the file keeps them,
+				// and the pivot it turns about.
+				const size_t Point = Arguments.Index("point", std::size(Changed.m_aPoints));
+				const int X = Arguments.Int("x");
+				const int Y = Arguments.Int("y");
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				// The pivot carries the corners with it, because that is what
+				// a pivot is: dragging it moves the quad rather than bending
+				// it out of shape.
+				if(Point + 1 == std::size(Changed.m_aPoints))
+				{
+					const int MovedX = i2fx(X) - Changed.m_aPoints[Point].x;
+					const int MovedY = i2fx(Y) - Changed.m_aPoints[Point].y;
+					for(CPoint &Corner : Changed.m_aPoints)
+					{
+						Corner.x += MovedX;
+						Corner.y += MovedY;
+					}
+				}
+				else
+				{
+					Changed.m_aPoints[Point] = CPoint{i2fx(X), i2fx(Y)};
+				}
+			}
+			else if(str_comp(pOp, "quad.setColor") == 0)
+			{
+				const size_t Corner = Arguments.Index("corner", std::size(Changed.m_aColors));
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				CColor Color;
+				std::string Error;
+				if(!ReadQuadColor(json_object_get(pParsed.get(), "value"), &Color, &Error))
+					return Failed(Error);
+				Changed.m_aColors[Corner] = Color;
+			}
+			else
+			{
+				const char *pProp = Arguments.Str("prop", nullptr);
+				if(Arguments.Failed())
+					return Failed(Arguments.Error());
+				if(pProp == nullptr)
+					return Failed("The command has no 'prop'");
+				std::string Error;
+				if(!SetQuadProp(Changed, pProp, json_object_get(pParsed.get(), "value"), Map.NumEnvelopes(), &Error))
+					return Failed(Error);
+			}
+			if(Arguments.Failed())
+				return Failed(Arguments.Error());
+			Document.Begin(Arguments.Str("label", str_comp(pOp, "quad.setPoint") == 0 ? "Move quad" : "Quad"), pMerge);
+			SetQuad(Document, Address, Quad, Changed);
 			Document.Commit();
 			return Succeeded();
 		}

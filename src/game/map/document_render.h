@@ -106,6 +106,23 @@ public:
 			bool Empty() const { return m_Width <= 0 || m_Height <= 0; }
 		};
 		CMarked m_Marked;
+		/**
+		 * The quad whose corners are shown, for somebody dragging them.
+		 *
+		 * Drawn here for the same reason the grid and the mark are: a quad
+		 * lies in the world, in the coordinates of the group it is in, and
+		 * whatever is around the renderer would have to do the parallax sum
+		 * again to put a handle on one.
+		 */
+		class CShownQuad
+		{
+		public:
+			size_t m_Group = 0;
+			size_t m_Layer = 0;
+			size_t m_Quad = 0;
+			bool m_Shown = false;
+		};
+		CShownQuad m_ShownQuad;
 	};
 
 	/**
@@ -166,6 +183,24 @@ private:
 	 * @return Whether anything of the group is on the screen at all.
 	 */
 	bool UseGroup(const map_document::CGroup &Group, const CParams &Params, CScreenRect *pWorld = nullptr);
+
+public:
+	/**
+	 * The piece of the world a group shows, for the view these parameters
+	 * describe.
+	 *
+	 * Out here because it is the only sum that turns a place on the surface
+	 * into a place in a group - what a pointer over a quad needs - and having
+	 * it twice would mean two answers that slowly stop agreeing.
+	 *
+	 * @param Group The group to look through.
+	 * @param Params Where the view looks.
+	 *
+	 * @return The rectangle of that group's world that fills the surface.
+	 */
+	CScreenRect GroupScreen(const map_document::CGroup &Group, const CParams &Params) const;
+
+private:
 	/**
 	 * Draws the grid over the group that was last put on the screen.
 	 *
@@ -180,6 +215,13 @@ private:
 	 * @param Marked Which tiles are marked.
 	 */
 	void RenderMarked(const CParams::CMarked &Marked);
+	/**
+	 * Draws the outline of one quad and a handle on each of its five points,
+	 * over the group that was last put on the screen.
+	 *
+	 * @param Quad The quad to draw handles on.
+	 */
+	void RenderQuadHandles(const CQuad &Quad);
 	void RenderTileLayer(const map_document::CTileLayer &Layer, CLayerCache &Cache, const CParams &Params);
 	void RenderQuadLayer(const map_document::CQuadLayer &Layer, CLayerCache &Cache, const CParams &Params);
 	/** Points a cache at the layer it draws, and says what changed about it. */

@@ -223,6 +223,42 @@ class CMapEditor extends Program {
 	}
 
 	/**
+	 * The quads of one layer: their five points in world units, their four
+	 * corner colours, and which envelopes move and colour them.
+	 *
+	 * `null` for a layer that holds no quads, which is how a caller finds out
+	 * what sort of layer it is looking at.
+	 */
+	quads(group, layer, id) {
+		return this.json("MapEditorQuads", [this.which(id), group, layer]);
+	}
+
+	/**
+	 * Puts handles on the corners of one quad, or takes them away when called
+	 * with nothing. Drawn by the program because a quad lies in its group's
+	 * coordinates, parallax and all.
+	 */
+	showQuad(group, layer, quad, id) {
+		return group === undefined || group === null
+			? this.setNumbers("MapEditorShowQuad", [this.which(id), 0, 0, 0, 0])
+			: this.setNumbers("MapEditorShowQuad", [this.which(id), group, layer, quad, 1]);
+	}
+
+	/**
+	 * Where a point on the canvas is in the coordinates of one group, in
+	 * world units.
+	 *
+	 * Not the same as `worldAt`, which answers for the plain view: a group
+	 * with parallax shows a different piece of the world, and a quad in it
+	 * lives in that piece.
+	 */
+	groupWorldAt(group, x, y, id) {
+		const map = this.which(id);
+		const wx = this.ask("MapEditorGroupWorldX", "number", [map, group, x, y]);
+		return wx === null ? null : { x: wx, y: this.ask("MapEditorGroupWorldY", "number", [map, group, x, y]) };
+	}
+
+	/**
 	 * The points of one envelope.
 	 *
 	 * Not in `structure()`, which says only how many there are: a long
@@ -556,6 +592,16 @@ const PANELS_HTML = `
 		<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
 		<div class="editor-numbers" data-role="numbers"></div>
 	</section>
+	<section class="editor-panel" data-role="quads-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Quads</h2>
+			<span class="editor-panel-tools">
+				<button class="editor-small" data-role="add-quad" title="A quad in the middle of the view">+</button>
+				<button class="editor-small" data-role="delete-quad" title="Delete the quad that is picked">-</button>
+			</span>
+		</header>
+		<ol class="editor-quads" data-role="quad-list"></ol>
+	</section>
 	<section class="editor-panel" data-role="envelopes-panel">
 		<header class="editor-panel-head">
 			<h2>Envelopes</h2>
@@ -668,6 +714,8 @@ class CEditorPanels {
 		// Which envelope is being drawn, and which of its points is picked.
 		this.envelope = 0;
 		this.point = -1;
+		// Which quad of the selected layer has handles on it.
+		this.quad = -1;
 		// The picture of the tiles, what it was fetched from, and the
 		// rectangle that was taken out of it.
 		this.dataBase = settings.dataBase || new URL("data/", location.href).href;
@@ -730,6 +778,7 @@ class CEditorPanels {
 		on("rotate", () => { this.editor.rotateBrush(); this.refreshTiles(); });
 		this.wireTileset();
 		this.wireEnvelopes();
+		this.wireQuads();
 		on("delete", () => this.deleteSelected());
 		on("up", () => this.moveSelected(-1));
 		on("down", () => this.moveSelected(1));
@@ -1008,6 +1057,7 @@ class CEditorPanels {
 		this.refreshTree();
 		this.refreshProps();
 		this.refreshTiles();
+		this.refreshQuads();
 		this.refreshEnvelopes();
 		this.refreshHistory();
 	}
@@ -1251,6 +1301,19 @@ class CEditorPanels {
 	wireTileset() {
 		const canvas = this.part("tileset");
 		let from = null;
+		// A refused capture must not take the pick with it; see the canvas
+		// pointer, which holds on the same way.
+		const capture = (pointerId, hold) => {
+			try {
+				if (hold) {
+					canvas.setPointerCapture(pointerId);
+				} else {
+					canvas.releasePointerCapture(pointerId);
+				}
+			} catch (error) {
+				// The pick still works; it just stops at the edge.
+			}
+		};
 		const at = event => {
 			const box = canvas.getBoundingClientRect();
 			return {
@@ -1260,7 +1323,7 @@ class CEditorPanels {
 		};
 		canvas.addEventListener("pointerdown", event => {
 			from = at(event);
-			canvas.setPointerCapture(event.pointerId);
+			capture(event.pointerId, true);
 			this.pick(from, from);
 		}, { signal: this.stopping.signal });
 		canvas.addEventListener("pointermove", event => {
@@ -1272,7 +1335,7 @@ class CEditorPanels {
 			if (from !== null) {
 				this.pick(from, at(event));
 				from = null;
-				canvas.releasePointerCapture(event.pointerId);
+				capture(event.pointerId, false);
 			}
 		};
 		canvas.addEventListener("pointerup", release, { signal: this.stopping.signal });
@@ -1506,6 +1569,88 @@ class CEditorPanels {
 		// half outside the box.
 		const air = Math.max(1, (high - low) * 0.08);
 		return { time: last, low: low - air, high: high + air };
+	}
+
+	/**
+	 * The quads of the layer that is selected, as a list to pick from.
+	 *
+	 * Picking one puts handles on its corners - drawn by the program, because
+	 * a quad lies in its group's coordinates and the parallax sum belongs
+	 * where the drawing is. Dragging them is the pointer's business, not the
+	 * panel's.
+	 */
+	wireQuads() {
+		const signal = this.stopping.signal;
+		this.part("add-quad").addEventListener("click", () => {
+			const where = this.selection;
+			const canvas = this.editor.canvas;
+			// In the middle of the view - but asked of the group, not of the
+			// plain view: a quad lives in its group's coordinates, and in a
+			// group with no parallax at all the middle of the world is
+			// nowhere near the middle of the screen.
+			const middle = this.editor.groupWorldAt(where.group, canvas.width / 2, canvas.height / 2);
+			if (middle === null) {
+				return;
+			}
+			const answer = this.change(() => this.editor.apply({
+				op: "quad.add", group: where.group, layer: where.layer,
+				x: Math.round(middle.x), y: Math.round(middle.y),
+			}));
+			if (answer && answer.ok) {
+				this.quad = answer.quad;
+			}
+			this.refresh();
+		}, { signal: signal });
+		this.part("delete-quad").addEventListener("click", () => {
+			if (this.quad < 0) {
+				return;
+			}
+			const where = this.selection;
+			this.change(() => this.editor.apply({ op: "quad.delete", group: where.group, layer: where.layer, quad: this.quad }));
+			this.quad = -1;
+			this.refresh();
+		}, { signal: signal });
+	}
+
+	refreshQuads() {
+		const panel = this.part("quads-panel");
+		const layer = this.selectedLayer();
+		panel.hidden = layer === null || layer.type !== "quads";
+		if (panel.hidden) {
+			this.quad = -1;
+			this.editor.showQuad();
+			return;
+		}
+		const where = this.selection;
+		const quads = this.editor.quads(where.group, where.layer) || [];
+		if (this.quad >= quads.length) {
+			this.quad = -1;
+		}
+		this.part("delete-quad").disabled = this.quad < 0;
+		const list = this.part("quad-list");
+		list.textContent = "";
+		quads.forEach((quad, index) => {
+			const row = document.createElement("li");
+			row.className = "editor-row";
+			row.dataset.role = "quad";
+			row.dataset.quad = String(index);
+			// Where it is rather than what it is called, because a quad has
+			// no name - the place of its pivot is what tells two apart.
+			row.textContent = `${index}: ${Math.round(quad.points[8] / MAP_TILE_SIZE)}, ${Math.round(quad.points[9] / MAP_TILE_SIZE)}`;
+			if (index === this.quad) {
+				row.classList.add("editor-selected");
+			}
+			row.addEventListener("click", () => {
+				this.quad = index;
+				this.refreshQuads();
+			}, { signal: this.stopping.signal });
+			list.append(row);
+		});
+		if (this.quad < 0) {
+			this.editor.showQuad();
+		} else {
+			this.editor.showQuad(where.group, where.layer, this.quad);
+		}
 	}
 
 	refreshEnvelopes() {
@@ -1872,6 +2017,20 @@ function steerWithPointer(editor, options) {
 		const where = settings.target === null ? null : settings.target();
 		return where == null || where.layer < 0 ? null : where;
 	};
+	// Holding on to the pointer, or letting go of it. Either may be refused -
+	// a pointer that has already gone is not there to be caught - and a drag
+	// that gave up over it would be a stroke that never started.
+	const capture = (pointerId, hold) => {
+		try {
+			if (hold) {
+				canvas.setPointerCapture(pointerId);
+			} else {
+				canvas.releasePointerCapture(pointerId);
+			}
+		} catch (error) {
+			// The stroke still works; it just stops when the pointer leaves.
+		}
+	};
 	const changed = () => {
 		if (settings.onChange !== null) {
 			settings.onChange();
@@ -1886,6 +2045,55 @@ function steerWithPointer(editor, options) {
 		height: Math.abs(other.y - one.y) + 1,
 	});
 
+	// Which quad point is being dragged, while one is. A quad layer is found
+	// out by asking for its quads: a layer that holds none answers nothing.
+	let quadPoint = null;
+
+	/**
+	 * Takes hold of a quad point under the pointer, if there is one.
+	 *
+	 * The points are in the coordinates of the group the layer is in, which
+	 * for a group with parallax is not where the plain view says - so the
+	 * pointer is asked for in those coordinates too, and the two are compared
+	 * where they both mean the same thing.
+	 */
+	const takeQuadPoint = (event, where) => {
+		const quads = editor.quads(where.group, where.layer);
+		if (quads === null) {
+			return false;
+		}
+		const spot = atCanvas(event);
+		const world = editor.groupWorldAt(where.group, spot.x, spot.y);
+		if (world === null) {
+			return false;
+		}
+		// How near counts, in world units: a handful of pixels, turned into
+		// world units by what a pixel is worth right now.
+		const step = editor.groupWorldAt(where.group, spot.x + HANDLE_REACH_PIXELS, spot.y);
+		const reach = step === null ? 32 : Math.abs(step.x - world.x);
+
+		let best = null;
+		quads.forEach((quad, index) => {
+			for (let point = 0; point < 5; ++point) {
+				const dx = quad.points[point * 2] - world.x;
+				const dy = quad.points[point * 2 + 1] - world.y;
+				const away = Math.hypot(dx, dy);
+				if (away <= reach && (best === null || away < best.away)) {
+					best = { quad: index, point: point, away: away };
+				}
+			}
+		});
+		if (best === null) {
+			return false;
+		}
+		doing = "quad";
+		quadPoint = { group: where.group, layer: where.layer, quad: best.quad, point: best.point };
+		editor.showQuad(where.group, where.layer, best.quad);
+		editor.begin(best.point === 4 ? "Move quad" : "Move corner");
+		changed();
+		return true;
+	};
+
 	canvas.addEventListener("contextmenu", event => event.preventDefault(), { signal: signal });
 	canvas.addEventListener("pointerdown", event => {
 		if (doing !== null) {
@@ -1893,8 +2101,11 @@ function steerWithPointer(editor, options) {
 		}
 		pointer = event.pointerId;
 		last = { x: event.clientX, y: event.clientY };
-		canvas.setPointerCapture(pointer);
+		capture(pointer, true);
 		const where = target();
+		if (event.button === 0 && where !== null && takeQuadPoint(event, where)) {
+			return;
+		}
 		const tile = tileAt(event);
 		if (event.button !== 0 || where === null || tile === null) {
 			doing = "move";
@@ -1930,6 +2141,18 @@ function steerWithPointer(editor, options) {
 			last = { x: event.clientX, y: event.clientY };
 			return;
 		}
+		if (doing === "quad") {
+			const spot = atCanvas(event);
+			const world = editor.groupWorldAt(quadPoint.group, spot.x, spot.y);
+			if (world !== null) {
+				editor.apply({
+					op: "quad.setPoint", group: quadPoint.group, layer: quadPoint.layer,
+					quad: quadPoint.quad, point: quadPoint.point,
+					x: Math.round(world.x), y: Math.round(world.y),
+				});
+			}
+			return;
+		}
 		if (doing === "paint") {
 			const where = target();
 			const tile = tileAt(event);
@@ -1954,6 +2177,14 @@ function steerWithPointer(editor, options) {
 		if (doing === null || pointer !== event.pointerId) {
 			return;
 		}
+		if (doing === "quad") {
+			doing = null;
+			quadPoint = null;
+			editor.commit();
+			changed();
+			capture(event.pointerId, false);
+			return;
+		}
 		const where = target();
 		const tile = tileAt(event);
 		if (doing === "paint") {
@@ -1976,10 +2207,14 @@ function steerWithPointer(editor, options) {
 		}
 		doing = null;
 		editor.mark();
-		canvas.releasePointerCapture(event.pointerId);
+		capture(event.pointerId, false);
 	};
 	canvas.addEventListener("pointerup", release, { signal: signal });
 	canvas.addEventListener("pointercancel", event => {
+		if (doing === "quad") {
+			editor.commit();
+			changed();
+		}
 		if (doing === "paint") {
 			// A pointer that was taken away mid-stroke leaves what it has
 			// painted: throwing it out would be a surprise, and the one entry
@@ -1998,6 +2233,10 @@ function steerWithPointer(editor, options) {
 	}, { signal: signal, passive: false });
 	return { destroy: () => stopping.abort() };
 }
+
+// How near a pointer has to come to a quad's handle for it to be the one that
+// is taken hold of, in pixels of the canvas.
+const HANDLE_REACH_PIXELS = 10;
 
 // What one notch of the wheel does, the same step the map viewer takes.
 const WHEEL_ZOOM_STEP = 1.1;

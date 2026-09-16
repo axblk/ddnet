@@ -179,6 +179,16 @@
 	opacity: 1;
 }
 
+/* The quads of a layer, as a list to pick from. */
+.editor-quads {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	max-height: 140px;
+	overflow: auto;
+	font-variant-numeric: tabular-nums;
+}
+
 /* The envelope as a curve. It is stretched to fill the panel, so nothing in
    it may be drawn in its own units - the points set their radius in pixels
    and the lines ask for a stroke that is not scaled with the box. */

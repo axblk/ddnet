@@ -79,6 +79,8 @@ public:
 		 * rubbing it out. Empty while nothing is marked.
 		 */
 		CDocumentRenderer::CParams::CMarked m_Marked;
+		/** The quad whose corners are shown, for somebody dragging them. */
+		CDocumentRenderer::CParams::CShownQuad m_ShownQuad;
 
 		/** Whether that layer is drawn. */
 		bool Visible(size_t Group, size_t Layer) const
@@ -240,6 +242,33 @@ public:
 	 * @return The picture, or `nullptr` where there is none.
 	 */
 	const map_document::CImage *Image(int Id, int Index) const;
+
+	/**
+	 * The quads of one layer, as JSON - see `map_document::QuadsJson`.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it.
+	 *
+	 * @return The JSON text, or `null` for a layer that holds no quads.
+	 */
+	std::string QuadsJson(int Id, int Group, int Layer) const;
+
+	/**
+	 * Where a pixel of the surface is, in the coordinates one group is drawn
+	 * in - which is the plain view for a group without parallax and somewhere
+	 * else entirely for one with it.
+	 *
+	 * This is what a pointer over a quad needs: a quad's points are in its
+	 * group's coordinates, and a click is on the surface.
+	 *
+	 * @param Id The number of the map.
+	 * @param Group Which group.
+	 * @param Pixel Where on the surface, in pixels from its top left.
+	 *
+	 * @return The place, in world units.
+	 */
+	vec2 WorldInGroup(int Id, size_t Group, vec2 Pixel) const;
 
 	/**
 	 * The points of one envelope, as JSON - see `map_document::EnvelopeJson`.
@@ -470,6 +499,9 @@ private:
 		explicit CMap(map_document::CMapState Opened) :
 			m_Document(std::move(Opened)) {}
 	};
+
+	/** What the renderer is told about a map, in one place because two callers ask. */
+	CDocumentRenderer::CParams ParamsFor(const CMap &Map) const;
 
 	CMap *Find(int Id);
 	const CMap *Find(int Id) const;

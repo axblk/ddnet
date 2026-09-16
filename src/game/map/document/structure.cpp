@@ -113,6 +113,64 @@ namespace map_document
 		return To;
 	}
 
+	namespace
+	{
+		/** A quad layer of the map being changed, to be written to. */
+		CQuadLayer QuadsOf(CDocument &Doc, const CLayerAddress &Layer)
+		{
+			const CLayer *pLayer = Doc.Edit().Layer(Layer.m_Group, Layer.m_Layer);
+			dbg_assert(std::holds_alternative<CQuadLayer>(*pLayer), "That layer holds no quads");
+			return std::get<CQuadLayer>(*pLayer);
+		}
+	} // namespace
+
+	CQuad MakeQuad(int CenterX, int CenterY, int Width, int Height)
+	{
+		CQuad Quad = {};
+		Quad.m_PosEnv = -1;
+		Quad.m_ColorEnv = -1;
+		const int HalfWidth = Width / 2;
+		const int HalfHeight = Height / 2;
+		Quad.m_aPoints[0] = CPoint{i2fx(CenterX - HalfWidth), i2fx(CenterY - HalfHeight)};
+		Quad.m_aPoints[1] = CPoint{i2fx(CenterX + HalfWidth), i2fx(CenterY - HalfHeight)};
+		Quad.m_aPoints[2] = CPoint{i2fx(CenterX - HalfWidth), i2fx(CenterY + HalfHeight)};
+		Quad.m_aPoints[3] = CPoint{i2fx(CenterX + HalfWidth), i2fx(CenterY + HalfHeight)};
+		Quad.m_aPoints[4] = CPoint{i2fx(CenterX), i2fx(CenterY)};
+		Quad.m_aTexcoords[0] = CPoint{i2fx(0), i2fx(0)};
+		Quad.m_aTexcoords[1] = CPoint{i2fx(1), i2fx(0)};
+		Quad.m_aTexcoords[2] = CPoint{i2fx(0), i2fx(1)};
+		Quad.m_aTexcoords[3] = CPoint{i2fx(1), i2fx(1)};
+		for(CColor &Color : Quad.m_aColors)
+			Color = CColor{255, 255, 255, 255};
+		return Quad;
+	}
+
+	size_t AddQuad(CDocument &Doc, const CLayerAddress &Layer, const CQuad &Quad)
+	{
+		CQuadLayer Changed = QuadsOf(Doc, Layer);
+		Changed.m_Quads.Mutable().push_back(Quad);
+		const size_t Index = Changed.m_Quads.Size() - 1;
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Changed));
+		return Index;
+	}
+
+	void DeleteQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad)
+	{
+		CQuadLayer Changed = QuadsOf(Doc, Layer);
+		dbg_assert(Quad < Changed.m_Quads.Size(), "Quad out of range");
+		std::vector<CQuad> &vQuads = Changed.m_Quads.Mutable();
+		vQuads.erase(vQuads.begin() + Quad);
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Changed));
+	}
+
+	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed)
+	{
+		CQuadLayer Layers = QuadsOf(Doc, Layer);
+		dbg_assert(Quad < Layers.m_Quads.Size(), "Quad out of range");
+		Layers.m_Quads.Mutable()[Quad] = Changed;
+		Doc.Edit().ReplaceLayer(Layer.m_Group, Layer.m_Layer, std::move(Layers));
+	}
+
 	size_t AddEnvelope(CDocument &Doc, CEnvelope Envelope)
 	{
 		Doc.Edit().AddEnvelope(std::move(Envelope));

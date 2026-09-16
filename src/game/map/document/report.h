@@ -53,6 +53,30 @@ namespace map_document
 	std::string EnvelopeJson(const CMapState &Map, size_t Index);
 
 	/**
+	 * The quads of one layer, for the panel that lists them and the pointer
+	 * that drags their corners.
+	 *
+	 * Left out of `StructureJson` for the same reason the tiles are: a quad
+	 * layer says how many it has, and this says what they are when somebody
+	 * is working in one.
+	 *
+	 * Points come out in **world units** rather than the 22.10 fixed point
+	 * the file keeps, because that is the only number a page can do anything
+	 * with: it turns a click into a world place and back. What that costs is
+	 * the tenth of a unit below the point, which is a thousandth of a tile -
+	 * and a quad that is not touched is not written again, so nothing drifts
+	 * from being looked at.
+	 *
+	 * @param Map The version to read.
+	 * @param Group Which group.
+	 * @param Layer Which layer of it, which has to be a quad layer.
+	 *
+	 * @return The JSON text, which is an array, or `null` for a layer that
+	 * holds no quads.
+	 */
+	std::string QuadsJson(const CMapState &Map, size_t Group, size_t Layer);
+
+	/**
 	 * The history as the history panel shows it: what was done, when, where
 	 * in it the map stands, and what it all costs.
 	 *

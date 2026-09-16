@@ -264,6 +264,51 @@ namespace map_document
 		return Writer.GetOutputString();
 	}
 
+	std::string QuadsJson(const CMapState &Map, size_t Group, size_t Layer)
+	{
+		if(Group >= Map.NumGroups() || Layer >= Map.NumLayers(Group))
+			return "null";
+		const CQuadLayer *pQuads = std::get_if<CQuadLayer>(Map.Layer(Group, Layer));
+		if(pQuads == nullptr)
+			return "null";
+		CJsonStringWriter Writer;
+		Writer.BeginArray();
+		for(size_t Index = 0; Index < pQuads->m_Quads.Size(); ++Index)
+		{
+			const CQuad &Quad = pQuads->m_Quads[Index];
+			Writer.BeginObject();
+			Writer.WriteAttribute("points");
+			Writer.BeginArray();
+			for(const CPoint &Point : Quad.m_aPoints)
+			{
+				Writer.WriteIntValue(fx2i(Point.x));
+				Writer.WriteIntValue(fx2i(Point.y));
+			}
+			Writer.EndArray();
+			Writer.WriteAttribute("colors");
+			Writer.BeginArray();
+			for(const CColor &Color : Quad.m_aColors)
+			{
+				Writer.WriteIntValue(Color.r);
+				Writer.WriteIntValue(Color.g);
+				Writer.WriteIntValue(Color.b);
+				Writer.WriteIntValue(Color.a);
+			}
+			Writer.EndArray();
+			Writer.WriteAttribute("posEnv");
+			Writer.WriteIntValue(Quad.m_PosEnv);
+			Writer.WriteAttribute("posEnvOffset");
+			Writer.WriteIntValue(Quad.m_PosEnvOffset);
+			Writer.WriteAttribute("colorEnv");
+			Writer.WriteIntValue(Quad.m_ColorEnv);
+			Writer.WriteAttribute("colorEnvOffset");
+			Writer.WriteIntValue(Quad.m_ColorEnvOffset);
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+		return Writer.GetOutputString();
+	}
+
 	std::string HistoryJson(const CDocument &Document)
 	{
 		const CHistory &History = Document.History();

@@ -88,6 +88,48 @@ namespace map_document
 	CLayerAddress MoveLayer(CDocument &Doc, const CLayerAddress &From, const CLayerAddress &To);
 
 	/**
+	 * A square quad of that size around that place, in world units - what
+	 * "add a quad" means before anybody has dragged a corner of it.
+	 *
+	 * Its four corners are the order the file keeps them in: top left, top
+	 * right, bottom left, bottom right, and the fifth point is the pivot it
+	 * turns about. It is drawn white and takes the whole of its picture.
+	 *
+	 * @param CenterX Where the middle of it goes, in world units.
+	 * @param CenterY The same, downwards.
+	 * @param Width How wide it is, in world units.
+	 * @param Height How tall it is.
+	 *
+	 * @return The quad, which is not in any layer yet.
+	 */
+	CQuad MakeQuad(int CenterX, int CenterY, int Width, int Height);
+
+	/**
+	 * Puts a quad at the end of a quad layer, and says which one it became.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to be a quad layer.
+	 * @param Quad The quad to put in.
+	 *
+	 * @return Which quad of that layer it is.
+	 */
+	size_t AddQuad(CDocument &Doc, const CLayerAddress &Layer, const CQuad &Quad);
+
+	/** Takes one quad out of a quad layer. */
+	void DeleteQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad);
+
+	/**
+	 * Puts a changed quad back in place of the one that was there - which is
+	 * what dragging a corner, a colour or a pivot comes down to.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer.
+	 * @param Quad Which quad of it.
+	 * @param Changed What the quad is to be.
+	 */
+	void SetQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const CQuad &Changed);
+
+	/**
 	 * Adds an envelope at the end, and says where it went.
 	 *
 	 * @param Doc The document being changed.

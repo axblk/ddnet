@@ -217,6 +217,14 @@ const map_document::CImage *CMapEditor::Image(int Id, int Index) const
 	return (size_t)Index >= Map.NumImages() ? nullptr : Map.Image((size_t)Index);
 }
 
+std::string CMapEditor::QuadsJson(int Id, int Group, int Layer) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group < 0 || Layer < 0)
+		return "null";
+	return map_document::QuadsJson(pMap->m_Document.Map(), (size_t)Group, (size_t)Layer);
+}
+
 std::string CMapEditor::EnvelopeJson(int Id, int Index) const
 {
 	const CMap *pMap = Find(Id);
@@ -288,6 +296,44 @@ void CMapEditor::Update()
 	pMap->m_pImages->Update();
 }
 
+CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
+{
+	CDocumentRenderer::CParams Params;
+	Params.m_Center = Map.m_View.Center();
+	Params.m_Zoom = Map.m_View.Zoom();
+	Params.m_ViewSize = Map.m_View.ViewSize();
+	Params.m_HighDetail = Map.m_Display.m_HighDetail;
+	Params.m_EntityOverlayVal = Map.m_Display.m_EntityOverlayVal;
+	Params.m_TimeOffsetMillis = Map.m_Display.m_TimeOffsetMillis;
+	Params.m_pHidden = &Map.m_Display.m_vHidden;
+	Params.m_Grid = Map.m_Display.m_Grid;
+	Params.m_Marked = Map.m_Display.m_Marked;
+	Params.m_ShownQuad = Map.m_Display.m_ShownQuad;
+	// The grid belongs to the group that is being worked in, and the editor
+	// itself holds no selection - so it follows the group the game layer is
+	// in, which is the one the tiles of a map are measured against.
+	const std::optional<map_document::CLayerAddress> Game = map_document::FindGameLayer(Map.m_Document.Map());
+	if(Game.has_value())
+		Params.m_GridGroup = Game->m_Group;
+	return Params;
+}
+
+vec2 CMapEditor::WorldInGroup(int Id, size_t Group, vec2 Pixel) const
+{
+	const CMap *pMap = Find(Id);
+	if(pMap == nullptr || Group >= pMap->m_Document.Map().NumGroups())
+		return vec2(0.0f, 0.0f);
+	// The same sum the renderer draws that group with, asked of the renderer
+	// itself - so that where a pointer says it is and where a quad is drawn
+	// cannot be two different answers.
+	const CScreenRect Shown = pMap->m_pRenderer->GroupScreen(*pMap->m_Document.Map().m_vpGroups[Group], ParamsFor(*pMap));
+	const float Width = std::max(1, m_View.Width());
+	const float Height = std::max(1, m_View.Height());
+	return vec2(
+		Shown.m_TopLeft.x + Pixel.x / Width * Shown.Width(),
+		Shown.m_TopLeft.y + Pixel.y / Height * Shown.Height());
+}
+
 void CMapEditor::Render()
 {
 	CMap *pMap = Find(m_Active);
@@ -304,22 +350,7 @@ void CMapEditor::Render()
 	const auto pShown = std::make_shared<const map_document::CMapState>(pMap->m_Document.Map());
 	pMap->m_pRenderer->Use(pShown);
 
-	CDocumentRenderer::CParams Params;
-	Params.m_Center = pMap->m_View.Center();
-	Params.m_Zoom = pMap->m_View.Zoom();
-	Params.m_ViewSize = pMap->m_View.ViewSize();
-	Params.m_HighDetail = pMap->m_Display.m_HighDetail;
-	Params.m_EntityOverlayVal = pMap->m_Display.m_EntityOverlayVal;
-	Params.m_TimeOffsetMillis = pMap->m_Display.m_TimeOffsetMillis;
-	Params.m_pHidden = &pMap->m_Display.m_vHidden;
-	Params.m_Grid = pMap->m_Display.m_Grid;
-	Params.m_Marked = pMap->m_Display.m_Marked;
-	// The grid belongs to the group that is being worked in, and the editor
-	// itself holds no selection - so it follows the group the game layer is
-	// in, which is the one the tiles of a map are measured against.
-	const std::optional<map_document::CLayerAddress> Game = map_document::FindGameLayer(pMap->m_Document.Map());
-	if(Game.has_value())
-		Params.m_GridGroup = Game->m_Group;
+	const CDocumentRenderer::CParams Params = ParamsFor(*pMap);
 
 	IGraphics *pGraphics = m_View.Graphics();
 	pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));

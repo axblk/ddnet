@@ -57,6 +57,17 @@ export interface Structure {
 	sounds: { name: string; external: boolean; bytes: number }[];
 }
 
+export interface Quad {
+	/** Five points as ten numbers: four corners then the pivot, in world units. */
+	points: number[];
+	/** Four colours as sixteen numbers, each 0 to 255. */
+	colors: number[];
+	posEnv: number;
+	posEnvOffset: number;
+	colorEnv: number;
+	colorEnvOffset: number;
+}
+
 export interface Envelope {
 	name: string;
 	channels: number;
@@ -94,6 +105,11 @@ export type Command =
 	| { op: "layer.delete"; group: number; layer: number; label?: string }
 	| { op: "layer.move"; group: number; layer: number; toGroup: number; to: number; label?: string }
 	| { op: "layer.setProp"; group: number; layer: number; prop: string; value: unknown; label?: string }
+	| { op: "quad.add"; group: number; layer: number; x: number; y: number; width?: number; height?: number; label?: string }
+	| { op: "quad.delete"; group: number; layer: number; quad: number; label?: string }
+	| { op: "quad.setPoint"; group: number; layer: number; quad: number; point: number; x: number; y: number; label?: string }
+	| { op: "quad.setColor"; group: number; layer: number; quad: number; corner: number; value: number[]; label?: string }
+	| { op: "quad.setProp"; group: number; layer: number; quad: number; prop: string; value: number; label?: string }
 	| { op: "envelope.add"; name?: string; channels?: number; label?: string }
 	| { op: "envelope.delete"; envelope: number; label?: string }
 	| { op: "envelope.setProp"; envelope: number; prop: string; value: unknown; label?: string }
@@ -128,6 +144,12 @@ export declare class MapEditor {
 	structure(id?: MapId): Structure | null;
 	/** The pixels of a picture packed into the map file, or null for one beside it. */
 	imageData(index: number, id?: MapId): ImageData | null;
+	/** The quads of one layer, points in world units; null for a layer without them. */
+	quads(group: number, layer: number, id?: MapId): Quad[] | null;
+	/** Puts handles on one quad's corners, or takes them away when called with nothing. */
+	showQuad(group?: number, layer?: number, quad?: number, id?: MapId): void;
+	/** Where a canvas point is in one group's coordinates, in world units. */
+	groupWorldAt(group: number, x: number, y: number, id?: MapId): { x: number; y: number } | null;
 	/** The points of one envelope; times in ms, values in 22.10 fixed point. */
 	envelope(index: number, id?: MapId): Envelope | null;
 	history(id?: MapId): History | null;

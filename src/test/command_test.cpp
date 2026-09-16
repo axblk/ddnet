@@ -8,8 +8,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace map_document;
 
@@ -655,6 +658,98 @@ TEST(Command, WhatASoundSourceIsHeardWithinIsOneThingOrTheOther)
 		"there is no such envelope");
 	EXPECT_EQ(Commands.Refused(R"({"op":"source.setProp","group":2,"layer":0,"source":0,"prop":"pitch","value":1})"),
 		"a sound source has no 'pitch'");
+}
+
+TEST(Command, TheKnifeCutsAPieceOutOfAQuadAndItKeepsWhatItWasCutFrom)
+{
+	CCommands Commands(WithQuads());
+	// A quad 128 wide and 128 tall about (128, 128), so its corners are at
+	// 64 and 192 - and colours that differ from corner to corner, so that a
+	// piece cut out of it can be held against where it came from.
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":128,"y":128,"width":128,"height":128})");
+	for(int Corner = 0; Corner < 4; ++Corner)
+	{
+		const std::string Set = R"({"op":"quad.setColor","group":2,"layer":0,"quad":0,"corner":)" +
+					std::to_string(Corner) + R"(,"value":[)" + std::to_string(Corner * 80) + R"(,0,0,255]})";
+		Commands.Ok(Set.c_str());
+	}
+	// And the whole picture across it, so a piece keeps the part of the
+	// picture it sits over.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":0,"u":0,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":1024,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":2,"u":0,"v":1024})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":3,"u":1024,"v":1024})");
+
+	// The middle quarter of it, clicked round as a ring.
+	const CJson pCut = Commands.Ok(
+		R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96,160,160,96,160]})");
+	EXPECT_EQ(Number(pCut, "quad"), 1);
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 2u) << "the quad it was cut from stays";
+
+	const CQuad &Piece = QuadsOf(Commands.m_Document.Map()).m_Quads[1];
+	EXPECT_EQ(fx2i(Piece.m_aPoints[0].x), 96);
+	EXPECT_EQ(fx2i(Piece.m_aPoints[1].x), 160) << "the ring became two rows";
+	EXPECT_EQ(fx2i(Piece.m_aPoints[2].y), 160);
+	EXPECT_EQ(fx2i(Piece.m_aPoints[4].x), 128) << "the pivot in the middle of the piece";
+	EXPECT_EQ(fx2i(Piece.m_aPoints[4].y), 128);
+
+	// A quarter in from each edge is a quarter of the way through every
+	// mixture, so the corner colours come out a quarter and three quarters
+	// of the way between the old ones: 0, 80, 160, 240 becomes 60, 100, 180, 140.
+	EXPECT_EQ(Piece.m_aColors[0].r, 60);
+	EXPECT_EQ(Piece.m_aColors[1].r, 100);
+	EXPECT_EQ(Piece.m_aColors[2].r, 140);
+	EXPECT_EQ(Piece.m_aColors[3].r, 180);
+	// And the part of the picture it sits over is the middle quarter of it.
+	EXPECT_EQ(Piece.m_aTexcoords[0].x, 256);
+	EXPECT_EQ(Piece.m_aTexcoords[0].y, 256);
+	EXPECT_EQ(Piece.m_aTexcoords[3].x, 768);
+	EXPECT_EQ(Piece.m_aTexcoords[3].y, 768);
+}
+
+TEST(Command, TheKnifeCutsInsideTheQuadAndNowhereElse)
+{
+	CCommands Commands(WithQuads());
+	Commands.Ok(R"({"op":"quad.add","group":2,"layer":0,"x":128,"y":128,"width":128,"height":128})");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,300,96,160,160,96,160]})"),
+		"a knife cuts inside the quad, not outside it");
+	EXPECT_EQ(Commands.Refused(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96]})"),
+		"a knife cuts along four places, which is eight numbers");
+	EXPECT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 1u);
+
+	// The same four places clicked the other way round cover the same piece of
+	// map. Which corner is which differs, and it does not matter: what each
+	// corner shows comes from where it sits rather than from which corner it
+	// is, so the piece looks the same either way.
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":0,"u":0,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":1,"u":1024,"v":0})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":2,"u":0,"v":1024})");
+	Commands.Ok(R"({"op":"quad.setTexcoord","group":2,"layer":0,"quad":0,"corner":3,"u":1024,"v":1024})");
+	Commands.Ok(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,96,160,96,160,160,96,160]})");
+	Commands.Ok(R"({"op":"quad.carve","group":2,"layer":0,"quad":0,"points":[96,160,160,160,160,96,96,96]})");
+	ASSERT_EQ(QuadsOf(Commands.m_Document.Map()).m_Quads.Size(), 3u);
+
+	const auto &&Places = [](const CQuad &Quad) {
+		std::vector<std::pair<int, int>> vPlaces;
+		for(size_t Corner = 0; Corner < 4; ++Corner)
+			vPlaces.emplace_back(fx2i(Quad.m_aPoints[Corner].x), fx2i(Quad.m_aPoints[Corner].y));
+		std::sort(vPlaces.begin(), vPlaces.end());
+		return vPlaces;
+	};
+	const CQuad &One = QuadsOf(Commands.m_Document.Map()).m_Quads[1];
+	const CQuad &Other = QuadsOf(Commands.m_Document.Map()).m_Quads[2];
+	EXPECT_EQ(Places(One), Places(Other)) << "the same four places";
+
+	// A quarter of the way in on the map is a quarter of the way into the
+	// picture, whichever corner is standing there.
+	for(const CQuad *pPiece : {&One, &Other})
+	{
+		for(size_t Corner = 0; Corner < 4; ++Corner)
+		{
+			EXPECT_EQ(pPiece->m_aTexcoords[Corner].x, (fx2i(pPiece->m_aPoints[Corner].x) - 64) * 8);
+			EXPECT_EQ(pPiece->m_aTexcoords[Corner].y, (fx2i(pPiece->m_aPoints[Corner].y) - 64) * 8);
+		}
+	}
 }
 
 TEST(Command, ASoundFileIsAddedNamedAndTakenOffTheLayersPlayingIt)

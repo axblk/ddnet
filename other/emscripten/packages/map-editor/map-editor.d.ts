@@ -170,6 +170,7 @@ export type Command =
 	| { op: "layer.resize"; group: number; layer: number; width?: number; height?: number; label?: string }
 	| { op: "layer.constructGameTiles"; group: number; layer: number; tile: string; label?: string }
 	| { op: "quad.setTexcoord"; group: number; layer: number; quad: number; corner: number; u: number; v: number; label?: string }
+	| { op: "quad.carve"; group: number; layer: number; quad: number; points: number[]; label?: string }
 	| { op: "quad.shape"; group: number; layer: number; quad: number; shape: "square" | "aspect" | "centerPivot" | "align"; grid?: number; label?: string }
 	| { op: "source.add"; group: number; layer: number; x: number; y: number; radius?: number; label?: string }
 	| { op: "source.delete"; group: number; layer: number; source: number; label?: string }
@@ -350,6 +351,11 @@ export declare function steerEditor(
 		/** Which layer the pointer paints in - the panels know. */
 		target?: (() => { group: number; layer: number } | null) | null;
 		onChange?: (() => void) | null;
+		/**
+		 * Called with a click in the painted layer's own coordinates before
+		 * anything else is done with it. Answering `true` takes the click.
+		 */
+		onClickInGroup?: ((world: { x: number; y: number }, where: { group: number; layer: number }) => boolean) | null;
 		/** Called with the tile under the pointer on every move, or null once it has left. */
 		onHover?: ((tile: { x: number; y: number } | null) => void) | null;
 		/** Called when only the view moved - panned or zoomed. */

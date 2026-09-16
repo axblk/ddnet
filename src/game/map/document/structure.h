@@ -219,6 +219,32 @@ namespace map_document
 	 *
 	 * @return Which picture of the map it became.
 	 */
+	/**
+	 * Makes a new quad out of four places inside an existing one - the knife.
+	 *
+	 * The old quad is left alone. What it gives the new one is its picture and
+	 * its colours: each of the four places is written as a mixture of three of
+	 * the old quad's corners, in the proportion of the three triangles the
+	 * place makes with them, and the colour and the place in the picture come
+	 * out of that same mixture. A piece cut out of a wall therefore still
+	 * shows the part of the wall it was cut from.
+	 *
+	 * The four places are taken as a ring, the way somebody clicks them, and
+	 * put into the order the file keeps corners in. A ring wound the other way
+	 * round, or folded over itself, is straightened rather than refused.
+	 *
+	 * @param Doc The document being changed.
+	 * @param Layer Which layer, which has to hold quads.
+	 * @param Quad Which quad of it to cut from.
+	 * @param apPoints Four places, in world units.
+	 *
+	 * @return Which quad of the layer the new one became.
+	 */
+	size_t CarveQuad(CDocument &Doc, const CLayerAddress &Layer, size_t Quad, const vec2 *apPoints);
+
+	/** Whether a place lies inside a quad at all, so a knife can refuse it. */
+	bool PointInQuad(const CQuad &Quad, vec2 Point);
+
 	/** What one map took from another - for saying so, and for testing it. */
 	class CAppendReport
 	{

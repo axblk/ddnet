@@ -314,6 +314,23 @@ what is drawn and what is caught cannot drift apart. A new quad appears in the
 middle of the view of *its group*, not of the plain view: in a group with no
 parallax at all those are nowhere near each other.
 
+The knife cuts a piece out of a quad. Four clicks inside it make a new quad of
+those four places; the one that was cut from is left alone, which is what the
+editor in the client does too - a knife here adds rather than divides.
+
+What the piece keeps is what it was cut from. Each of the four places is
+written as a mixture of three of the old quad's corners, in the proportion of
+the three triangles the place makes with them, and the colour and the place in
+the picture come out of that same mixture - so a piece cut out of a wall still
+shows the part of the wall it sits over. A quarter of the way in on the map is
+a quarter of the way into the picture.
+
+The four places come in as a ring, because that is how somebody clicks them,
+and the file keeps corners as two rows; a ring that folds over itself is
+unfolded rather than refused. A ring clicked the other way round gives the same
+piece: which corner is which differs, and it does not matter, because what each
+corner shows comes from where it sits.
+
 ## What the map says about itself
 
 Author, version, credits, licence, and the lines a server runs when it loads
@@ -394,6 +411,6 @@ and 17 ms.
 
 ## What it is not, yet
 
-The knife, turning a quad or a piece of a layer into art, and typing with
-tiles are not here. A layer with no picture at all is shown as a grid of numbers - the
+Turning a quad or a piece of a layer into art, and typing with tiles, are
+not here. A layer with no picture at all is shown as a grid of numbers - the
 tiles are still there to be picked, they just cannot be shown.

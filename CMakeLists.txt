@@ -3027,6 +3027,8 @@ if(CLIENT)
     render_map.h
     tile_chunk_cache.cpp
     tile_chunk_cache.h
+    tile_run_store.cpp
+    tile_run_store.h
     # tidy-alphabetical-end
   )
   set(GAME_GENERATED_CLIENT
@@ -3112,8 +3114,6 @@ if(CLIENT)
     text.vert
     tile.frag
     tile.vert
-    tile_border.frag
-    tile_border.vert
     # tidy-alphabetical-end
   )
   set(EMBED_SHADER_ARGS)
@@ -3765,6 +3765,7 @@ if(TOOLS)
           src/game/map/render_layer.cpp
           src/game/map/render_map.cpp
           src/game/map/tile_chunk_cache.cpp
+          src/game/map/tile_run_store.cpp
           # tidy-alphabetical-end
         )
       endif()
@@ -3893,6 +3894,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     test.h
     thread_test.cpp
     tile_chunk_cache_test.cpp
+    tile_run_store_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
@@ -3906,11 +3908,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/asset_loader.cpp
     src/engine/client/asset_loader.h
-    src/engine/client/graph.cpp
     src/engine/client/font_loading.cpp
     src/engine/client/font_loading.h
     src/engine/client/ghost.cpp
     src/engine/client/ghost.h
+    src/engine/client/graph.cpp
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
@@ -3935,6 +3937,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/client/map_context.h
     src/game/client/session_game_config.cpp
     src/game/client/session_game_config.h
+    src/game/map/tile_run_store.cpp
+    src/game/map/tile_run_store.h
     # tidy-alphabetical-end
   )
 

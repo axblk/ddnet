@@ -15,6 +15,7 @@ using offset_ptr32 = unsigned int;
 #include <game/map/render_component.h>
 #include <game/map/render_map.h>
 #include <game/map/tile_chunk_cache.h>
+#include <game/map/tile_run_store.h>
 #include <game/mapitems.h>
 #include <game/mapitems_ex.h>
 
@@ -32,7 +33,7 @@ typedef std::function<void(int GroupId, int LayerId)> FCallbackLayerInit;
 
 constexpr int BorderRenderDistance = 201;
 
-bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, int SpanX, int SpanY, bool DoTextureCoords, bool FillSpeedup = false, int AngleRotate = -1, const ivec2 &Offset = ivec2{0, 0}, int Scale = 32);
 bool UploadTileBuffer(IGraphics *pGraphics, const std::vector<CGraphicTile> &vTiles, const std::vector<CGraphicTileTextureCoords> &vTextureCoords, IGraphics::CBufferHandle &BufferObject);
 // Returns whether the buffer was given up. A buffer that could not be handed
 // back keeps its handle, so the caller can keep the object that owns it alive.
@@ -59,6 +60,12 @@ public:
 	vec2 m_Center;
 	float m_Zoom;
 	bool m_RenderText;
+	/**
+	 * Whether layers the map marks as detail are drawn. In the game this is
+	 * the graphics setting of the same name; whoever draws a picture of a map
+	 * rather than a game says what belongs in that picture itself.
+	 */
+	bool m_HighDetail;
 	bool m_RenderInvalidTiles;
 	bool m_RenderTileBorder;
 	bool m_DebugRenderGroupClips;
@@ -141,7 +148,10 @@ public:
 	void OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CRenderMap *pRenderMap, std::shared_ptr<CEnvelopeManager> &pEnvelopeManager, IMap *pMap, IMapImages *pMapImages, std::optional<FCallbackLayerInit> &CallbackLayerInitOptional) override;
 
 	virtual int GetDataIndex() const;
-	bool IsValid() const override { return GetRawData() != nullptr; }
+	// Once the tiles are kept as stretches the layer does not need the map's
+	// copy of them any more, and asking the map for it again would read and
+	// unpack the whole layer a second time.
+	bool IsValid() const override { return m_RunStore.IsBuilt() || GetRawData() != nullptr; }
 	void Unload() override;
 
 protected:
@@ -152,9 +162,23 @@ protected:
 	virtual ColorRGBA GetRenderColor(const CRenderLayerParams &Params) const;
 	virtual void InitTileData();
 	virtual void GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const;
+	/**
+	 * Whether the layer may hand the map's tiles back once it has read them.
+	 *
+	 * A plain tile layer is the only one that looks at them, so it may. The
+	 * physics layers may not: the collision holds the very same pointer, and
+	 * they are drawn from more than the index and the flags of a tile.
+	 */
+	virtual bool GivesTilesBack() const { return true; }
 	IGraphics::CTextureHandle GetTexture() const override;
 	bool HasTexture() const override;
 	CTile *m_pTiles;
+	/**
+	 * The layer as stretches of the same tile. A plain tile layer reads the
+	 * map once into this and lets the map's copy go: four bytes per tile is
+	 * what a map covers, and the tile layers of Abyss are 677 MiB of it.
+	 */
+	CTileRunStore m_RunStore;
 
 	/**
 	 * One drawable tile set of a layer: the tiles themselves and, for the map
@@ -316,6 +340,11 @@ protected:
 
 class CRenderLayerEntityBase : public CRenderLayerTile
 {
+protected:
+	// The collision reads the very same tiles, and these layers draw from more
+	// than a tile's index and flags.
+	bool GivesTilesBack() const override { return false; }
+
 public:
 	CRenderLayerEntityBase(int GroupId, int LayerId, int Flags, CMapItemLayerTilemap *pLayerTilemap);
 	~CRenderLayerEntityBase() override = default;

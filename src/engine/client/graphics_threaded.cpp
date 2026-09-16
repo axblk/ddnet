@@ -1188,6 +1188,8 @@ void CGraphics_Threaded::RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayo
 		Cmd.m_IndexBuffer = m_QuadIndexBuffer;
 		if(!SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColor>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColor *pData) {
 			   pData->m_Color = Color;
+			   pData->m_Offset = vec2(0.0f, 0.0f);
+			   pData->m_Scale = vec2(1.0f, 1.0f);
 		   }))
 			return;
 	}
@@ -1204,13 +1206,13 @@ void CGraphics_Threaded::RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLa
 	}
 	CCommandBuffer::SCommand_DrawIndexed Cmd;
 	Cmd.m_State = m_State;
-	Cmd.m_Program = EPipelineProgram::ARRAY_COLOR_TRANSFORM;
+	Cmd.m_Program = EPipelineProgram::ARRAY_COLOR;
 	Cmd.m_IndexCount = DrawNum * 6;
 	Cmd.m_IndexOffset = static_cast<size_t>(FirstIndex) * sizeof(uint32_t);
 	Cmd.m_VertexBuffer = VertexBuffer;
 	Cmd.m_Layout = Layout;
 	Cmd.m_IndexBuffer = m_QuadIndexBuffer;
-	SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColorTransform>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColorTransform *pData) {
+	SubmitIndexedDraw<CCommandBuffer::SDrawDataArrayColor>(Cmd, 1, false, [&](CCommandBuffer::SDrawDataArrayColor *pData) {
 		pData->m_Color = Color;
 		pData->m_Offset = Offset;
 		pData->m_Scale = Scale;
@@ -1859,14 +1861,21 @@ void CGraphics_Threaded::AdjustViewport(bool SendViewportChangeToBackend)
 }
 
 void CGraphics_Threaded::UpdateViewport(int X, int Y, int W, int H, bool ByResize)
-
 {
-	UpdateViewportInternal(X, Y, W, H, ByResize, W, H);
+	const bool Whole = ByResize || (X == 0 && Y == 0 && W == ScreenWidth() && H == ScreenHeight());
+	m_DrawViewportX = Whole ? 0 : X;
+	m_DrawViewportY = Whole ? 0 : Y;
+	m_DrawViewportWidth = Whole ? 0 : W;
+	m_DrawViewportHeight = Whole ? 0 : H;
+	// A backend with its origin at the bottom flips the rectangle within what is
+	// drawn to, which is the screen and not the rectangle itself.
+	UpdateViewportInternal(X, Y, W, H, ByResize, ByResize ? W : ScreenWidth(), ByResize ? H : ScreenHeight());
 }
 
 void CGraphics_Threaded::UpdateViewportInternal(int X, int Y, int W, int H, bool ByResize, int SurfaceW, int SurfaceH)
 {
-	if(!HasPresentationSurface())
+	// A picture drawn without a window is still drawn into parts of itself.
+	if(ByResize && !HasPresentationSurface())
 		return;
 	CCommandBuffer::SCommand_Update_Viewport Cmd;
 	Cmd.m_X = X;
@@ -1876,6 +1885,8 @@ void CGraphics_Threaded::UpdateViewportInternal(int X, int Y, int W, int H, bool
 	Cmd.m_SurfaceWidth = SurfaceW;
 	Cmd.m_SurfaceHeight = SurfaceH;
 	Cmd.m_ByResize = ByResize;
+	if(!ByResize)
+		Cmd.m_Cmd = CCommandBuffer::CMD_DRAW_VIEWPORT;
 	AddCmd(Cmd);
 }
 

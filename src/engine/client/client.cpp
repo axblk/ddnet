@@ -148,6 +148,19 @@ static bool NormalizeQuicTrustHost(const char *pHost, char *pBuffer, int BufferS
 	}
 	return true;
 }
+static ITextRender::CTextRenderStats TextRenderStatsDelta(const ITextRender::CTextRenderStats &Current, const ITextRender::CTextRenderStats &Previous)
+{
+	ITextRender::CTextRenderStats Delta;
+	Delta.m_LayoutTimeNanoseconds = Current.m_LayoutTimeNanoseconds - Previous.m_LayoutTimeNanoseconds;
+	Delta.m_LayoutCalls = Current.m_LayoutCalls - Previous.m_LayoutCalls;
+	Delta.m_GlyphsLaidOut = Current.m_GlyphsLaidOut - Previous.m_GlyphsLaidOut;
+	Delta.m_ContainerCreates = Current.m_ContainerCreates - Previous.m_ContainerCreates;
+	Delta.m_ContainerSoftRecreates = Current.m_ContainerSoftRecreates - Previous.m_ContainerSoftRecreates;
+	Delta.m_ContainerDeletes = Current.m_ContainerDeletes - Previous.m_ContainerDeletes;
+	Delta.m_ContainerRenders = Current.m_ContainerRenders - Previous.m_ContainerRenders;
+	Delta.m_UploadBytes = Current.m_UploadBytes - Previous.m_UploadBytes;
+	return Delta;
+}
 
 CSnapshotDelta *CClient::SnapshotDelta()
 {

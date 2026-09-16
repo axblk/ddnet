@@ -323,7 +323,7 @@ TEST(GraphicsThreaded, BufferCommandsRetainGenerations)
 {
 	CGenerationHandlePool<IGraphics::CBufferHandle> BufferPool;
 	BufferPool.Reset(2);
-	constexpr EPipelineProgram TransformProgram = EPipelineProgram::ARRAY_COLOR_TRANSFORM;
+	constexpr EPipelineProgram TransformProgram = EPipelineProgram::ARRAY_COLOR;
 	constexpr EPipelineProgram QuadProgram = EPipelineProgram::QUAD_PER_ITEM;
 	auto Buffer = BufferPool.Allocate();
 	auto IndexBuffer = BufferPool.Allocate();
@@ -432,6 +432,7 @@ TEST(GraphicsThreaded, CommandChannelsCoverAllCoreCommands)
 		CCommandBuffer::CMD_BEGIN_RENDER_PASS,
 		CCommandBuffer::CMD_END_RENDER_PASS,
 		CCommandBuffer::CMD_FLUSH_RENDER_PASS,
+		CCommandBuffer::CMD_DRAW_VIEWPORT,
 		CCommandBuffer::CMD_DRAW,
 		CCommandBuffer::CMD_DRAW_INDEXED,
 		CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK,

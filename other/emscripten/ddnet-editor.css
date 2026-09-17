@@ -106,7 +106,7 @@ ddnet-editor[data-big="yes"],
 	--bar-button: 44px;
 	--rail: 56px;
 	--topbar: 48px;
-	--statusbar: 32px;
+	--statusbar: 36px;
 }
 
 ddnet-editor[data-big="no"],
@@ -137,7 +137,7 @@ ddnet-editor[data-big="no"],
 		--bar-button: 44px;
 		--rail: 56px;
 		--topbar: 48px;
-		--statusbar: 32px;
+		--statusbar: 36px;
 	}
 }
 
@@ -246,8 +246,9 @@ ddnet-editor button:focus,
 	color: inherit;
 }
 
-ddnet-editor button,
-.editor-panels button {
+/* Said with no weight of its own, so that every button class below wins
+   over it with its own height. */
+:where(ddnet-editor, .editor-panels) button {
 	min-height: 0;
 	font-family: var(--font-ui);
 }
@@ -406,7 +407,7 @@ ddnet-editor :focus-visible,
 }
 
 .editor-dock-tab {
-	min-height: calc(var(--statusbar) - 6px);
+	min-height: calc(var(--statusbar) - 4px);
 	min-width: var(--button-small);
 	padding: 0 var(--space-2);
 	color: var(--text-2);
@@ -593,8 +594,8 @@ ddnet-editor :focus-visible,
 	align-items: center;
 	justify-content: center;
 	flex: none;
-	width: calc(var(--topbar) - 12px);
-	height: calc(var(--topbar) - 12px);
+	width: var(--bar-button);
+	height: var(--bar-button);
 	padding: 0;
 	color: var(--text-2);
 	background: none;
@@ -699,6 +700,7 @@ ddnet-editor :focus-visible,
 	gap: 2px;
 	flex: none;
 	width: calc(var(--rail) - 8px);
+	min-height: var(--tool);
 	margin-top: var(--space-2);
 	padding: var(--space-1) 0;
 	border: 0;

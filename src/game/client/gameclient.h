@@ -228,6 +228,11 @@ private:
 	// and selections whichever of them has focus.
 	static constexpr int PANE_DEMO = NUM_DUMMIES;
 	std::array<CGameViewId, NUM_DUMMIES + 1> m_aPaneViewIds;
+	// Whether the input view holds the camera of the demo, which otherwise waits
+	// in the demo pane.
+	bool m_InputCameraIsDemo = false;
+	// Counts focus changes, so that a frame can tell one happened while it was drawn.
+	int m_FocusChanges = 0;
 #if defined(CONF_VIDEORECORDER)
 	CGameViewId m_VideoGameViewId;
 #endif

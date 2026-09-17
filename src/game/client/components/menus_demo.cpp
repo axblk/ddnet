@@ -1186,31 +1186,69 @@ void CMenus::RenderDemoBrowser(CUIRect MainView)
 {
 	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 
-	CUIRect ListView, DetailsView, ButtonsView, DemoControls;
-	// A demo that plays out of sight is shown above the details, with its
-	// controls under the browser.
-	const bool DemoAside = Client()->IsSessionShowable(Client()->DemoSessionId()) && Client()->FocusedSessionId() != Client()->DemoSessionId();
-	if(DemoAside)
-		MainView.HSplitBottom(75.0f, &MainView, &DemoControls);
+	CUIRect ListView, DetailsView, ButtonsView;
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(10.0f, &MainView);
 	MainView.HSplitBottom(22.0f * 2.0f + 5.0f, &ListView, &ButtonsView);
 	ListView.VSplitRight(205.0f, &ListView, &DetailsView);
 	ListView.VSplitRight(5.0f, &ListView, nullptr);
 
-	if(DemoAside)
+	// A demo that plays out of sight is shown above the details, with the
+	// controls it needs there right under it. The picture itself is drawn over
+	// the menu later, into the rectangle left here.
+	if(Client()->IsSessionShowable(Client()->DemoSessionId()) && Client()->FocusedSessionId() != Client()->DemoSessionId())
 	{
+		CUIRect Controls, Button;
 		DetailsView.HSplitTop(DetailsView.w * 9.0f / 16.0f, &m_DemoPreview, &DetailsView);
+		DetailsView.HSplitTop(20.0f, &Controls, &DetailsView);
 		DetailsView.HSplitTop(5.0f, nullptr, &DetailsView);
-		m_DemoPreview.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f), IGraphics::CORNER_ALL, 0.0f);
+		m_DemoPreview.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f), IGraphics::CORNER_T, 5.0f);
+		Controls.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f), IGraphics::CORNER_B, 5.0f);
+
+		const IDemoPlayer::CInfo *pInfo = DemoPlayer()->BaseInfo();
+		Controls.VSplitLeft(20.0f, &Button, &Controls);
+		static CButtonContainer s_PlayPauseButton;
+		if(Ui()->DoButton_FontIcon(&s_PlayPauseButton, pInfo->m_Paused ? FontIcon::PLAY : FontIcon::PAUSE, 0, &Button, BUTTONFLAG_LEFT))
+		{
+			if(pInfo->m_Paused)
+				DemoPlayer()->Unpause();
+			else
+				DemoPlayer()->Pause();
+		}
+		Controls.VSplitRight(20.0f, &Controls, &Button);
+		static CButtonContainer s_CloseButton;
+		if(Ui()->DoButton_FontIcon(&s_CloseButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT))
+		{
+			Client()->CloseDemo();
+			DemolistOnUpdate(false);
+		}
+		GameClient()->m_Tooltips.DoToolTip(&s_CloseButton, &Button, Localize("Close the demo player"));
+		Controls.VSplitRight(20.0f, &Controls, &Button);
+		static CButtonContainer s_MaximizeButton;
+		if(Ui()->DoButton_FontIcon(&s_MaximizeButton, FontIcon::WINDOW_MAXIMIZE, 0, &Button, BUTTONFLAG_LEFT))
+		{
+			Client()->FocusDemo(true);
+			SetActive(false);
+		}
+		GameClient()->m_Tooltips.DoToolTip(&s_MaximizeButton, &Button, Localize("Maximize the demo player"));
+
+		// The seek bar, which jumps to where it is clicked.
+		Controls.Margin(5.0f, &Controls);
+		const int TotalTicks = pInfo->m_LastTick - pInfo->m_FirstTick;
+		const float Amount = TotalTicks > 0 ? std::clamp((pInfo->m_CurrentTick - pInfo->m_FirstTick) / (float)TotalTicks, 0.0f, 1.0f) : 0.0f;
+		Controls.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.25f), IGraphics::CORNER_ALL, Controls.h / 2.0f);
+		CUIRect Filled = Controls;
+		Filled.w *= Amount;
+		Filled.Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.75f), IGraphics::CORNER_ALL, Controls.h / 2.0f);
+		static CButtonContainer s_SeekBar;
+		if(Ui()->DoButtonLogic(&s_SeekBar, 0, &Controls, BUTTONFLAG_LEFT))
+			HandleDemoSeeking(std::clamp((Ui()->MouseX() - Controls.x) / Controls.w, 0.0f, 1.0f), 0.0f);
 	}
 
 	bool WasListboxItemActivated;
 	RenderDemoBrowserList(ListView, WasListboxItemActivated);
 	RenderDemoBrowserDetails(DetailsView);
 	RenderDemoBrowserButtons(ButtonsView, WasListboxItemActivated);
-	if(DemoAside)
-		RenderDemoPlayer(DemoControls);
 }
 
 void CMenus::RenderDemoBrowserList(CUIRect ListView, bool &WasListboxItemActivated)

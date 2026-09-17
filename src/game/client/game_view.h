@@ -202,7 +202,7 @@ public:
 		float m_ZoomSmoothingTarget = 0.0f;
 		bool m_AutoSpecCameraZooming = false;
 		bool m_AutoSpecCamera = true;
-		float m_UserZoomTarget = 0.0f;
+		float m_UserZoomTarget = 1.0f;
 		vec2 m_DyncamTargetCameraOffset = vec2(0.0f, 0.0f);
 		vec2 m_DynamicCameraOffset = vec2(0.0f, 0.0f);
 		vec2 m_LastInputPosition = vec2(0.0f, 0.0f);

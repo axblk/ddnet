@@ -1234,7 +1234,10 @@ void CMenus::Render()
 	{
 		static CButtonContainer s_InsetButton;
 		if(Ui()->DoButtonLogic(&s_InsetButton, 0, &GameClient()->InsetRect(), BUTTONFLAG_LEFT))
+		{
 			Client()->SwitchSessionFocus();
+			SetActive(false);
+		}
 	}
 
 	static int s_Frame = 0;

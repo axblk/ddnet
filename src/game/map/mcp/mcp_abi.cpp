@@ -73,7 +73,7 @@ struct ddnet_map_mcp
 		std::packaged_task<std::string()> Task(std::move(Job));
 		std::future<std::string> Answer = Task.get_future();
 		{
-			const std::lock_guard<std::mutex> Lock(m_Mutex);
+			const std::unique_lock<std::mutex> Lock(m_Mutex);
 			m_Queue.push_back(std::move(Task));
 		}
 		m_Wake.notify_all();
@@ -92,7 +92,7 @@ struct ddnet_map_mcp
 		}
 		auto pMcp = std::make_unique<CMapMcp>(Options, std::move(pRenderer));
 		{
-			const std::lock_guard<std::mutex> Lock(m_Mutex);
+			const std::unique_lock<std::mutex> Lock(m_Mutex);
 			if(pMcp->Ok())
 				m_pMcp = std::move(pMcp);
 			else

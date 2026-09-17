@@ -2741,6 +2741,12 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   envelope_manager.h
   map_renderer.cpp
   map_renderer.h
+  mcp/mcp_core.cpp
+  mcp/mcp_core.h
+  mcp/mcp_json.cpp
+  mcp/mcp_json.h
+  mcp/mcp_tools.cpp
+  mcp/mcp_tools.h
   quad_buffer_cache.cpp
   quad_buffer_cache.h
   render_component.cpp
@@ -2780,6 +2786,13 @@ list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "/map_editor")
 set(GAME_MAP_DOCUMENT ${GAME_MAP})
 list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
 list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
+# The map as a set of tools for a language model, on top of the document:
+# everything but the renderer knows no graphics either, so that the tools can
+# be tested where the document is.
+set(GAME_MAP_MCP ${GAME_MAP})
+list(FILTER GAME_MAP_MCP INCLUDE REGEX "/mcp/")
+list(FILTER GAME_MAP EXCLUDE REGEX "/mcp/")
+set(GAME_MAP_MCP_CORE ${GAME_MAP_MCP})
 
 # Libraries
 # Everything that links engine-shared needs these. SQLite is not among them:
@@ -2809,6 +2822,7 @@ add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_S
 # and, later, the editor itself build the same objects rather than each their
 # own copy. It knows nothing of the client, so it is built without one too.
 add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
+add_library(game-map-mcp EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_MCP_CORE})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
@@ -2818,7 +2832,7 @@ add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-net engine-shared game-map-document game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-shared game-map-document game-map-mcp game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -4610,6 +4624,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     match_journal_test.cpp
     match_report_test.cpp
     math_test.cpp
+    mcp_test.cpp
     mem_test.cpp
     mutes_test.cpp
     name_ban_test.cpp
@@ -4792,6 +4807,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-map-document>
+    $<TARGET_OBJECTS:game-map-mcp>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>

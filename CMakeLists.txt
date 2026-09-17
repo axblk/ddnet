@@ -4440,6 +4440,17 @@ if(TOOLS)
     )
     list(APPEND TARGETS_OWN map-mcp-core)
     list(APPEND TARGETS_LINK map-mcp-core)
+    # The server itself, built by Cargo against that library and copied next
+    # to the data directory, where it finds the game's data the way every
+    # other program here does.
+    if(RUST_CARGO)
+      add_custom_target(ddnet-map-mcp
+        COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR}/map-mcp-server DDNET_MAP_MCP_LIB_DIR=$<TARGET_FILE_DIR:map-mcp-core> ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/src/game/map/mcp/server/Cargo.toml" $<$<NOT:$<CONFIG:Debug>>:--release>
+        COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_BINARY_DIR}/map-mcp-server/$<IF:$<CONFIG:Debug>,debug,release>/ddnet-map-mcp${CMAKE_EXECUTABLE_SUFFIX}" "${PROJECT_BINARY_DIR}/"
+        DEPENDS map-mcp-core
+        USES_TERMINAL
+      )
+    endif()
   endif()
 
   set_src(TOOLS_SRC GLOB src/tools

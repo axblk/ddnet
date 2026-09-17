@@ -5,6 +5,11 @@ members = [
   "src/engine/shared",
   "src/rust-bridge/test",
 ]
+# The MCP server is a program with a runtime and an HTTP stack of its own,
+# built by its own workspace on request - see src/game/map/mcp/server.
+exclude = [
+  "src/game/map/mcp/server",
+]
 
 resolver = "2"
 

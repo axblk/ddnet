@@ -2144,8 +2144,10 @@ void CClient::DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void 
 const char *CClient::DemoPlayer_Play(const char *pFilename, int StorageType)
 {
 #if defined(CONF_VIDEORECORDER)
-	if(m_ActiveVideoExport.has_value() && !m_LoadingQueuedVideoExport)
-		return "A queued video export is active.";
+	// A queued export plays in a session of its own; only a recording of the
+	// demo being watched ends when another demo replaces it.
+	if(IVideo::Current() && m_VideoSessionId == m_DemoSessionId)
+		return "The demo being watched is recording.";
 #endif
 	return DemoPlayer_Play(m_DemoSessionId, pFilename, StorageType, true);
 }
@@ -2297,9 +2299,7 @@ void CClient::UpdateVideoExportQueue()
 	const CSessionId SessionId = m_VideoExportSessionId;
 	m_VideoSessionId = SessionId;
 	m_VideoOfflineAudio = true;
-	m_LoadingQueuedVideoExport = true;
 	const char *pError = DemoPlayer_Play(SessionId, Job.m_aDemoPath, Job.m_StorageType, false);
-	m_LoadingQueuedVideoExport = false;
 	if(!pError)
 		pError = StartVideo(SessionId, Job.m_aVideoName, false, Job.m_Settings, Job.m_ExactVideoPath);
 	if(pError)

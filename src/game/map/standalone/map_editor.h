@@ -84,6 +84,11 @@ public:
 		CDocumentRenderer::CParams::CMarked m_Marked;
 		/** The quad whose corners are shown, for somebody dragging them. */
 		CDocumentRenderer::CParams::CShownQuad m_ShownQuad;
+		/**
+		 * What the brush would do under the pointer, drawn before the button
+		 * goes down - see `CDocumentRenderer::CParams::CGhost`.
+		 */
+		CDocumentRenderer::CParams::CGhost m_Ghost;
 
 		/** Whether that layer is drawn. */
 		bool Visible(size_t Group, size_t Layer) const
@@ -749,6 +754,21 @@ public:
 	bool UseBrush(size_t Slot);
 
 	/**
+	 * The brush in hand, or the one in a slot, as JSON: what kind of layer it
+	 * came out of, which picture it draws with and in what colour, how large
+	 * it is, and for every tile the index and the flags as they are drawn -
+	 * so a tele or a switch tile answers the picture the renderer would give
+	 * it rather than the number that is stored. For whoever draws a picture
+	 * of the brush outside the map.
+	 *
+	 * @param Slot Which slot, or `NUM_STORED_BRUSHES` for the one in hand.
+	 *
+	 * @return The JSON text, or `null` where there is no such slot or
+	 * nothing in it.
+	 */
+	std::string BrushJson(size_t Slot = NUM_STORED_BRUSHES) const;
+
+	/**
 	 * How large a map is in world units, taken from its game layer, or the
 	 * size of the surface where it has none.
 	 *
@@ -859,6 +879,8 @@ private:
 
 	/** What the renderer is told about a map, in one place because two callers ask. */
 	CDocumentRenderer::CParams ParamsFor(const CMap &Map) const;
+	/** The tiles the ghost is drawn with for this frame, or nothing. */
+	std::shared_ptr<const map_document::CLayer> GhostTiles(const CDocumentRenderer::CParams::CGhost &Ghost);
 
 	CMap *Find(int Id);
 	const CMap *Find(int Id) const;
@@ -896,6 +918,25 @@ private:
 	int m_NextId = 1;
 	bool m_NeedsRedraw = true;
 	map_document::CBrush m_Brush;
+	// Counted up by everything that changes the brush, so that the frame
+	// knows when the copy the ghost is drawn from has to be made again.
+	int m_BrushVersion = 0;
+	int m_ShownBrushVersion = -1;
+	// The brush as the renderer draws it, which is a node like a layer's -
+	// the same pointer twice keeps the geometry.
+	std::shared_ptr<const map_document::CLayer> m_pShownBrush;
+	// For a fill: the brush already repeated over the rectangle, and which
+	// rectangle and brush that was made for.
+	std::shared_ptr<const map_document::CLayer> m_pShownFill;
+	int m_ShownFillWidth = 0;
+	int m_ShownFillHeight = 0;
+	int m_ShownFillVersion = -1;
+	/** Says that the brush is another one now. */
+	void BrushChanged()
+	{
+		++m_BrushVersion;
+		m_NeedsRedraw = true;
+	}
 	// What is actually put down when unused tiles are not allowed, and how
 	// many tiles that took out the last time.
 	map_document::CBrush m_PlacedBrush;

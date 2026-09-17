@@ -15,23 +15,23 @@
 
 namespace map_document
 {
+	const char *TileLayerKindName(ETileLayerKind Kind)
+	{
+		switch(Kind)
+		{
+		case ETileLayerKind::TILES: return "tiles";
+		case ETileLayerKind::GAME: return "game";
+		case ETileLayerKind::FRONT: return "front";
+		case ETileLayerKind::TELE: return "tele";
+		case ETileLayerKind::SPEEDUP: return "speedup";
+		case ETileLayerKind::SWITCH: return "switch";
+		case ETileLayerKind::TUNE: return "tune";
+		}
+		return "tiles";
+	}
+
 	namespace
 	{
-		const char *TileLayerKindName(ETileLayerKind Kind)
-		{
-			switch(Kind)
-			{
-			case ETileLayerKind::TILES: return "tiles";
-			case ETileLayerKind::GAME: return "game";
-			case ETileLayerKind::FRONT: return "front";
-			case ETileLayerKind::TELE: return "tele";
-			case ETileLayerKind::SPEEDUP: return "speedup";
-			case ETileLayerKind::SWITCH: return "switch";
-			case ETileLayerKind::TUNE: return "tune";
-			}
-			return "tiles";
-		}
-
 		void WriteIntPair(CJsonWriter &Writer, const char *pName, int First, int Second)
 		{
 			Writer.WriteAttribute(pName);

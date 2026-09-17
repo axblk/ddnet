@@ -400,7 +400,21 @@ ddnet-editor :focus-visible,
 	background: var(--line-strong);
 }
 
-/* The four strips below the map, as switches in the status line. */
+/* The history in the inspector: as tall as the column, scrolling by itself
+   rather than in a 160-pixel box. */
+.editor-left [data-role="history-panel"] {
+	flex: 1;
+}
+
+.editor-left .editor-history {
+	flex: 1;
+	min-height: 0;
+	max-height: none;
+	overflow: auto;
+}
+
+/* The panels looked at now and then, as switches in the status line - each
+   opens its panel wherever that stands. */
 .editor-dock-tabs {
 	display: flex;
 	gap: 2px;
@@ -1120,6 +1134,17 @@ ddnet-editor button:disabled,
 	text-overflow: ellipsis;
 }
 
+/* The picture a layer draws with, after its name, in small print. */
+.editor-row-sub {
+	flex: none;
+	max-width: 40%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-2);
+	font: var(--type-xs);
+}
+
 .editor-layer-game .editor-row-name {
 	font-weight: 600;
 }
@@ -1439,10 +1464,19 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	padding: var(--space-1) 0;
 }
 
+/* A slot shows the brush in it as a picture, with its digit small in the
+   corner; an empty one is its digit alone. */
 .editor-slot {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	flex: 1 0 auto;
 	min-width: var(--button-small);
 	min-height: var(--button-small);
+	width: 36px;
+	height: 36px;
+	padding: 2px;
 	border: 0;
 	border-radius: var(--radius-1);
 	background: var(--bg-2);
@@ -1451,8 +1485,35 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	cursor: pointer;
 }
 
+.editor-slot-picture {
+	width: 28px;
+	height: 28px;
+	image-rendering: pixelated;
+}
+
+.editor-slot-key {
+	position: absolute;
+	right: 2px;
+	bottom: 1px;
+	font: 500 9px/1 var(--font-ui);
+	color: var(--text-3);
+}
+
+.editor-slot-empty .editor-slot-picture {
+	display: none;
+}
+
+.editor-slot-empty .editor-slot-key {
+	position: static;
+	font: var(--type-mono);
+	color: var(--text-2);
+}
+
 .editor-slot[aria-pressed="true"] {
 	background: var(--accent-soft);
+}
+
+.editor-slot[aria-pressed="true"] .editor-slot-key {
 	color: var(--accent);
 }
 
@@ -1913,6 +1974,65 @@ ddnet-editor[data-big="no"] .editor-zoom {
 }
 
 /* ---------------------------------------------------------------------- */
+/* A panel carried to another area                                        */
+
+/* The tabs and the heads of panels are handles: a drag of eight pixels
+   carries the panel, a shorter one is a click. A finger must not scroll
+   the page with it. */
+.editor-tab,
+.editor-panel-head {
+	touch-action: none;
+}
+
+@media (hover: hover) {
+	.editor-tab,
+	.editor-panel-head h2 {
+		cursor: grab;
+	}
+}
+
+ddnet-editor[data-carrying="yes"],
+ddnet-editor[data-carrying="yes"] * {
+	cursor: grabbing !important;
+}
+
+/* The three places it can be dropped, over the editor. */
+.editor-drop {
+	position: absolute;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	color: var(--text-2);
+	font: var(--type-sm);
+	background: var(--accent-soft);
+	border: 2px dashed var(--line-strong);
+	border-radius: var(--radius-2);
+	pointer-events: none;
+}
+
+.editor-drop[data-over="yes"] {
+	color: var(--text-1);
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* The name of the panel, under the pointer. */
+.editor-carry {
+	position: absolute;
+	z-index: 7;
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: var(--bg-3);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-1);
+	box-shadow: var(--shadow);
+	pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------- */
 /* What floats over the whole editor                                      */
 
 .editor-over {
@@ -2354,6 +2474,23 @@ ddnet-editor[data-stack="yes"] .editor-dock .editor-panel-always {
 	border-right: 1px solid var(--line);
 }
 
+/* And the history under whatever the inspector shows, sharing the height. */
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel-always {
+	flex: 1 1 200px;
+	min-height: 160px;
+	border-top: 1px solid var(--line);
+	padding-top: var(--space-2);
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-area-body {
+	overflow: hidden;
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel:not(.editor-panel-always) {
+	flex: 0 1 auto;
+	overflow: auto;
+}
+
 /* The handle between a column and the map. Seven pixels wide to catch, one
    to look at. */
 .editor-grip {
@@ -2401,4 +2538,11 @@ ddnet-editor[data-left="drawer"] .editor-grip-left,
 ddnet-editor[data-right="drawer"] .editor-grip-right,
 .editor-dock-shut .editor-grip-dock {
 	display: none;
+}
+
+/* The line an empty list of server settings shows instead of nothing. */
+.editor-settings-empty {
+	padding: var(--space-2) var(--space-1);
+	font: var(--type-xs);
+	list-style: none;
 }

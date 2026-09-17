@@ -3,6 +3,8 @@
 
 #include <base/vmath.h>
 
+#include <game/map/document/layer.h>
+
 #include <cstddef>
 #include <string>
 
@@ -10,6 +12,12 @@ namespace map_document
 {
 	class CDocument;
 	class CMapState;
+
+	/**
+	 * The name a kind of tile layer goes by in every JSON here: "tiles",
+	 * "game", "front", "tele", "speedup", "switch" or "tune".
+	 */
+	const char *TileLayerKindName(ETileLayerKind Kind);
 
 	/**
 	 * What the map is made of, as JSON, for the shadow copy the interface

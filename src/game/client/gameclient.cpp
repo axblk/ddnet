@@ -1696,6 +1696,23 @@ void CGameClient::OnRender()
 			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
 				Graphics()->GpuRenderZoneEnd(GpuZone);
 		}
+		if(Context.m_View.IsInset())
+		{
+			// A frame, so that the picture does not run into what it covers.
+			const vec2 Size = Graphics()->ViewportSize();
+			const float Border = std::max(1.0f, std::round(Size.y / 150.0f));
+			Graphics()->MapScreenToSize(Size.x, Size.y);
+			Graphics()->TextureClear();
+			Graphics()->QuadsBegin();
+			Graphics()->SetColor(1.0f, 1.0f, 1.0f, 0.5f);
+			const IGraphics::CQuadItem aFrame[] = {
+				{0.0f, 0.0f, Size.x, Border},
+				{0.0f, Size.y - Border, Size.x, Border},
+				{0.0f, Border, Border, Size.y - 2 * Border},
+				{Size.x - Border, Border, Border, Size.y - 2 * Border}};
+			Graphics()->QuadsDrawTL(aFrame, std::size(aFrame));
+			Graphics()->QuadsEnd();
+		}
 		Output.EndView();
 	};
 	Graphics()->GpuRenderZoneBegin(IGraphics::EGpuRenderZone::WORLD);
@@ -1810,8 +1827,8 @@ void CGameClient::OnRender()
 	m_RenderScheduler.Run(
 		m_vRenderRequests,
 		[](const CPresentationContext &) {},
-		[&RenderWorld](const CRenderContext &Context, CRenderOutput &Output) {
-			if(Context.m_View.IsInset())
+		[this, &RenderWorld](const CRenderContext &Context, CRenderOutput &Output) {
+			if(Context.m_View.IsInset() && !m_PreparedMenuPreview)
 				RenderWorld(Context, Output);
 		});
 	Graphics()->GpuRenderZoneEnd(IGraphics::EGpuRenderZone::WORLD);
@@ -1880,6 +1897,16 @@ void CGameClient::OnRender()
 			pComponent->OnRenderApplicationOverlay();
 			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
 				Graphics()->GpuRenderZoneEnd(GpuZone);
+			if(pComponent == &m_Menus && m_PreparedMenuPreview)
+			{
+				m_RenderScheduler.Run(
+					m_vRenderRequests,
+					[](const CPresentationContext &) {},
+					[&RenderWorld](const CRenderContext &Context, CRenderOutput &Output) {
+						if(Context.m_View.IsInset())
+							RenderWorld(Context, Output);
+					});
+			}
 		}
 		// Nothing captured what was drawn over the scene, so it goes to the screen
 		// as it is.
@@ -1983,15 +2010,14 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	// focused one on the split screen, or in a corner of it. Sessions keep the
 	// order they were opened in, so moving focus between them does not move
 	// them around.
-	const bool PictureInPicture = g_Config.m_ClPictureInPicture != 0 && !VideoOutput;
-	CGameSessionContext *pOther = nullptr;
+	const CUIRect MenuPreview = m_Menus.TakeDemoPreview();
+	m_PreparedMenuPreview = !VideoOutput && m_Menus.IsActive() && MenuPreview.w > 0.0f && &FocusedSession != FindSessionContext(Client()->DemoSessionId()) && Client()->IsSessionShowable(Client()->DemoSessionId());
+	const bool PictureInPicture = (g_Config.m_ClPictureInPicture != 0 || m_PreparedMenuPreview) && !VideoOutput;
+	CGameSessionContext *pOther = m_PreparedMenuPreview ? FindSessionContext(Client()->DemoSessionId()) : nullptr;
 	for(const auto &pSession : m_SessionContexts.Contexts())
 	{
-		if((SplitScreen || PictureInPicture) && pSession.get() != &FocusedSession && Client()->IsSessionShowable(pSession->Id()))
-		{
+		if(pOther == nullptr && (SplitScreen || PictureInPicture) && pSession.get() != &FocusedSession && Client()->IsSessionShowable(pSession->Id()))
 			pOther = pSession.get();
-			break;
-		}
 	}
 	const bool OtherBeside = pOther != nullptr && !PictureInPicture;
 	for(const auto &pSession : m_SessionContexts.Contexts())
@@ -2005,17 +2031,31 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	const int ScreenWidth = Graphics()->ScreenWidth();
 	const int ScreenHeight = Graphics()->ScreenHeight();
 	const int NumColumns = std::count_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return !Entry.m_Inset; });
+	const CUIRect &UiScreen = *Ui()->Screen();
+	m_PreparedInset = {0.0f, 0.0f, 0.0f, 0.0f};
 	int Column = 0;
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
 		if(Entry.m_Inset)
 		{
-			// In the shape of the screen, in the corner furthest from the chat,
-			// the HUD and the kill messages.
-			const int Width = ScreenWidth * g_Config.m_ClPictureInPictureSize / 100;
-			const int Height = Width * ScreenHeight / std::max(ScreenWidth, 1);
-			const int Margin = ScreenHeight / 50;
-			Entry.m_pView->SetViewport({ScreenWidth - Width - Margin, ScreenHeight - Height - Margin, Width, Height}, true);
+			CViewport Inset;
+			if(m_PreparedMenuPreview)
+			{
+				Inset = {(int)((MenuPreview.x - UiScreen.x) * ScreenWidth / UiScreen.w), (int)((MenuPreview.y - UiScreen.y) * ScreenHeight / UiScreen.h),
+					(int)(MenuPreview.w * ScreenWidth / UiScreen.w), (int)(MenuPreview.h * ScreenHeight / UiScreen.h)};
+			}
+			else
+			{
+				// In the shape of the screen, in the corner furthest from the chat,
+				// the HUD and the kill messages.
+				const int Width = ScreenWidth * g_Config.m_ClPictureInPictureSize / 100;
+				const int Height = Width * ScreenHeight / std::max(ScreenWidth, 1);
+				const int Margin = ScreenHeight / 50;
+				Inset = {ScreenWidth - Width - Margin, ScreenHeight - Height - Margin, Width, Height};
+			}
+			Entry.m_pView->SetViewport(Inset, true);
+			m_PreparedInset = {UiScreen.x + Inset.m_X * UiScreen.w / ScreenWidth, UiScreen.y + Inset.m_Y * UiScreen.h / ScreenHeight,
+				Inset.m_Width * UiScreen.w / ScreenWidth, Inset.m_Height * UiScreen.h / ScreenHeight};
 		}
 		else
 		{

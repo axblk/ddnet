@@ -338,8 +338,9 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	CUIRect DemoControls;
 	MainView.HSplitBottom(TotalHeight, nullptr, &DemoControls);
 	DemoControls.VSplitLeft(50.0f, nullptr, &DemoControls);
-	// Room for the two buttons that only a demo beside a server has.
-	DemoControls.VSplitLeft(600.0f + (ServerReady ? 2 * (ButtonbarHeight + Margins) : 0.0f), &DemoControls, nullptr);
+	// Room for the button that moves the demo aside or back, and for the one
+	// that picks what is heard, which only a demo beside a server has.
+	DemoControls.VSplitLeft(600.0f + (ButtonbarHeight + Margins) * (ServerReady ? 2 : 1), &DemoControls, nullptr);
 	const CUIRect DemoControlsOriginal = DemoControls;
 	DemoControls.x += m_DemoControlsPositionOffset.x;
 	DemoControls.y += m_DemoControlsPositionOffset.y;
@@ -760,21 +761,28 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_ExitButton, &Button, Localize("Close the demo player"));
 
+	// Moves the demo out of sight and back. It keeps playing either way, beside
+	// the server or in the demo browser.
+	ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
+	ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
+	static CButtonContainer s_FocusButton;
+	if(Ui()->DoButton_FontIcon(&s_FocusButton, DemoFocused ? FontIcon::WINDOW_MINIMIZE : FontIcon::WINDOW_MAXIMIZE, 0, &Button, BUTTONFLAG_LEFT))
+	{
+		Client()->FocusDemo(!DemoFocused);
+		// Entering the other state closes the menu, as it does after joining.
+		SetActive(true);
+		if(DemoFocused && !ServerReady)
+			SetMenuPage(PAGE_DEMOS);
+	}
+	if(ServerReady)
+		GameClient()->m_Tooltips.DoToolTip(&s_FocusButton, &Button,
+			DemoFocused ? Localize("Back to the server. While you watch the demo, your player stands still and the server may move it to the spectators for being inactive.") : Localize("Watch the demo, and show the server in the corner instead"));
+	else
+		GameClient()->m_Tooltips.DoToolTip(&s_FocusButton, &Button, DemoFocused ? Localize("Minimize the demo player. The demo keeps playing in the demo browser.") : Localize("Maximize the demo player"));
+
 	if(ServerReady)
 	{
-		// Which of the two has focus, and which of them is heard.
-		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
-		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
-		static CButtonContainer s_SwitchFocusButton;
-		if(Ui()->DoButton_FontIcon(&s_SwitchFocusButton, FontIcon::ARROWS_LEFT_RIGHT, 0, &Button, BUTTONFLAG_LEFT))
-		{
-			Client()->SwitchSessionFocus();
-			// Entering the other state closes the menu, as it does after joining.
-			SetActive(true);
-		}
-		GameClient()->m_Tooltips.DoToolTip(&s_SwitchFocusButton, &Button,
-			DemoFocused ? Localize("Back to the server. While you watch the demo, your player stands still and the server may move it to the spectators for being inactive.") : Localize("Watch the demo, and show the server in the corner instead"));
-
+		// Which of the two is heard.
 		ButtonBar.VSplitRight(Margins, &ButtonBar, nullptr);
 		ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
 		static CButtonContainer s_OtherSoundButton;
@@ -1178,17 +1186,31 @@ void CMenus::RenderDemoBrowser(CUIRect MainView)
 {
 	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 
-	CUIRect ListView, DetailsView, ButtonsView;
+	CUIRect ListView, DetailsView, ButtonsView, DemoControls;
+	// A demo that plays out of sight is shown above the details, with its
+	// controls under the browser.
+	const bool DemoAside = Client()->IsSessionShowable(Client()->DemoSessionId()) && Client()->FocusedSessionId() != Client()->DemoSessionId();
+	if(DemoAside)
+		MainView.HSplitBottom(75.0f, &MainView, &DemoControls);
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(10.0f, &MainView);
 	MainView.HSplitBottom(22.0f * 2.0f + 5.0f, &ListView, &ButtonsView);
 	ListView.VSplitRight(205.0f, &ListView, &DetailsView);
 	ListView.VSplitRight(5.0f, &ListView, nullptr);
 
+	if(DemoAside)
+	{
+		DetailsView.HSplitTop(DetailsView.w * 9.0f / 16.0f, &m_DemoPreview, &DetailsView);
+		DetailsView.HSplitTop(5.0f, nullptr, &DetailsView);
+		m_DemoPreview.Draw(ColorRGBA(0.0f, 0.0f, 0.0f, 0.3f), IGraphics::CORNER_ALL, 0.0f);
+	}
+
 	bool WasListboxItemActivated;
 	RenderDemoBrowserList(ListView, WasListboxItemActivated);
 	RenderDemoBrowserDetails(DetailsView);
 	RenderDemoBrowserButtons(ButtonsView, WasListboxItemActivated);
+	if(DemoAside)
+		RenderDemoPlayer(DemoControls);
 }
 
 void CMenus::RenderDemoBrowserList(CUIRect ListView, bool &WasListboxItemActivated)

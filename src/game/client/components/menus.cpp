@@ -1227,6 +1227,16 @@ void CMenus::Render()
 	Ui()->MapScreen();
 	Ui()->SetMouseSlow(false);
 
+	// A click on the picture in picture brings what it shows to the front.
+	// Checked before everything else, so that anything the menu draws over the
+	// picture keeps its clicks.
+	if(GameClient()->InsetRect().w > 0.0f)
+	{
+		static CButtonContainer s_InsetButton;
+		if(Ui()->DoButtonLogic(&s_InsetButton, 0, &GameClient()->InsetRect(), BUTTONFLAG_LEFT))
+			Client()->SwitchSessionFocus();
+	}
+
 	static int s_Frame = 0;
 	if(s_Frame == 0)
 	{

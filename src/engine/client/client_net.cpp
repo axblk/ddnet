@@ -1412,6 +1412,13 @@ void CClientWithConnection::CloseDemo()
 
 void CClientWithConnection::SwitchSessionFocus()
 {
+	// A demo moved aside while there is no server leaves only the menu, and from
+	// there the only other thing to look at is the demo.
+	if(FocusedSessionId() == m_NetworkSessionId && SessionSource(m_NetworkSessionId).State() == ESessionState::OFFLINE)
+	{
+		FocusDemo(true);
+		return;
+	}
 	if(SessionSource(FocusedSessionId()).State() != ESessionState::READY)
 		return;
 	// The next session there is something to look at in, in the order they were opened.
@@ -1426,6 +1433,15 @@ void CClientWithConnection::SwitchSessionFocus()
 			return;
 		}
 	}
+	FocusDemo(false);
+}
+
+void CClientWithConnection::FocusDemo(bool Focus)
+{
+	if(!Focus && FocusedSessionId() == DemoSessionId())
+		FocusSessionWithSnapshot(m_NetworkSessionId);
+	else if(Focus && FocusedSessionId() != DemoSessionId() && IsSessionShowable(DemoSessionId()))
+		FocusSessionWithSnapshot(DemoSessionId());
 }
 
 void CClientWithConnection::FocusSessionWithSnapshot(CSessionId SessionId)

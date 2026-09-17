@@ -40,6 +40,7 @@ addIcons({
 	fill: stroked("M4.5 11.5l7-7 7 7-7 7zM9 4.5v-2M20.5 14c0 1.6 1.5 3 1.5 4.5a1.5 1.5 0 0 1-3 0c0-1.5 1.5-2.9 1.5-4.5z"),
 	erase: stroked("M8.5 20l-4.6-4.6a1.5 1.5 0 0 1 0-2.1l8.9-8.9a1.5 1.5 0 0 1 2.1 0l5.6 5.6a1.5 1.5 0 0 1 0 2.1L13 19.6M8.5 20H20M7 10l7 7"),
 	pick: stroked("M17 3.5l3.5 3.5-2 2-3.5-3.5zM14.5 6l3.5 3.5-8.7 8.7a1 1 0 0 1-.5.3L5 19.5l1-3.8a1 1 0 0 1 .3-.5z"),
+	move: stroked("M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"),
 	hand: stroked("M7.5 11V6.5a1.5 1.5 0 0 1 3 0V11M10.5 10.5V4.5a1.5 1.5 0 0 1 3 0v6M13.5 10.5V6a1.5 1.5 0 0 1 3 0v6.5M16.5 12.5V9a1.5 1.5 0 0 1 3 0v6a6 6 0 0 1-6 6h-1.6a6 6 0 0 1-5-2.7L4 14.7a1.6 1.6 0 0 1 2.6-1.9l.9 1.2V11"),
 	undo: stroked("M4 10h10a5 5 0 0 1 0 10H9M8 6l-4 4 4 4"),
 	redo: stroked("M20 10H10a5 5 0 0 0 0 10h5M16 6l4 4-4 4"),
@@ -1754,6 +1755,9 @@ class CEditorPanels {
 		this.shape = null;
 		this.readonly = false;
 		this.askingLayer = false;
+		// What the pointer code offers for letting go of its selection, once
+		// the pointer is wired - see `letGo`.
+		this.pointerLetGo = null;
 		// Where the pointer last was over the map. On a big screen the tile
 		// chooser opens there rather than in the middle of a monitor that is
 		// eighty centimetres wide.
@@ -4847,9 +4851,21 @@ class CEditorPanels {
 			this.knife();
 			return;
 		}
+		// A selection of the move tool goes too.
+		this.letGo();
 		const canvas = this.editor.canvas;
 		if (canvas !== null && canvas !== undefined) {
 			canvas.focus();
+		}
+	}
+
+	/**
+	 * Lets go of whatever the pointer code holds between two drags - the
+	 * move tool's selection. Whoever wires the pointer says how.
+	 */
+	letGo() {
+		if (this.pointerLetGo !== null && this.pointerLetGo !== undefined) {
+			this.pointerLetGo();
 		}
 	}
 
@@ -4966,6 +4982,8 @@ class CEditorPanels {
 	 * @param work What moves the history.
 	 */
 	stepHistory(work) {
+		// A selection of the move tool is about tiles that are now elsewhere.
+		this.letGo();
 		const before = this.editor.history();
 		const answer = this.change(work, true);
 		const after = this.editor.history();
@@ -8441,6 +8459,10 @@ function steerWithPointer(editor, options) {
 		let kind = null;
 		if (tool === "hand") {
 			kind = null;
+		} else if (tool === "move") {
+			// Over the selection nothing: the mark says it all. Elsewhere the
+			// tile under the pointer, where a new selection would begin.
+			kind = moveBox !== null && insideBox(moveBox, tile) ? null : "spot";
 		} else if (tool === "erase" || event.ctrlKey || event.metaKey) {
 			kind = "erase";
 		} else if (tool === "paint" && !event.altKey && !event.shiftKey && !editor.brushEmpty()) {
@@ -8493,6 +8515,12 @@ function steerWithPointer(editor, options) {
 	// Which quad point is being dragged, while one is. A quad layer is found
 	// out by asking for its quads: a layer that holds none answers nothing.
 	let quadPoint = null;
+	// The rectangle the move tool has selected, while it has one: it stays
+	// marked after the button comes up, so that the next drag can pick it up.
+	// And where its corner was when a drag began to carry it.
+	let moveBox = null;
+	let carried = null;
+	const insideBox = (box, tile) => tile.x >= box.x && tile.y >= box.y && tile.x < box.x + box.width && tile.y < box.y + box.height;
 
 	/**
 	 * Takes hold of a quad point under the pointer, if there is one.
@@ -8697,6 +8725,11 @@ function steerWithPointer(editor, options) {
 		ghost(null);
 		const where = target();
 		const tool = settings.mode === null ? "paint" : settings.mode();
+		// A selection of the move tool lasts while the tool does, on its layer.
+		if (moveBox !== null && (tool !== "move" || where === null || where.group !== moveBox.group || where.layer !== moveBox.layer)) {
+			moveBox = null;
+			editor.mark();
+		}
 		// The hand only moves the map, whatever is under it.
 		if (event.button === 0 && tool === "hand") {
 			doing = "move";
@@ -8760,6 +8793,25 @@ function steerWithPointer(editor, options) {
 		// fingers: Escape empties the brush, and then dragging picks out a
 		// rectangle.
 		const chosen = asked === "paint" && editor.brushEmpty() ? "grab" : asked;
+		// The move tool: a drag inside the selection carries it, a drag
+		// anywhere else selects anew. The tiles go into the brush when they
+		// are picked up, so the ghost that follows the pointer is what they
+		// look like, and putting them down is a paint.
+		if (chosen === "move") {
+			if (moveBox !== null && moveBox.group === where.group && moveBox.layer === where.layer && insideBox(moveBox, tile)) {
+				editor.grab(where.group, where.layer, moveBox.x, moveBox.y, moveBox.width, moveBox.height);
+				changed();
+				doing = "carry";
+				carried = { x: moveBox.x, y: moveBox.y };
+				ghost("stamp", where, moveBox);
+				return;
+			}
+			moveBox = null;
+			doing = "select";
+			editor.mark(where.group, tile.x, tile.y, 1, 1);
+			ghost("spot", where, tile);
+			return;
+		}
 		if (chosen !== "paint") {
 			doing = chosen;
 		} else {
@@ -8869,6 +8921,16 @@ function steerWithPointer(editor, options) {
 			}
 			return;
 		}
+		if (doing === "carry") {
+			const where = target();
+			const tile = under;
+			if (where !== null && tile !== null && moveBox !== null) {
+				const box = { x: carried.x + tile.x - from.x, y: carried.y + tile.y - from.y, width: moveBox.width, height: moveBox.height };
+				editor.mark(where.group, box.x, box.y, box.width, box.height);
+				ghost("stamp", where, box);
+			}
+			return;
+		}
 		// Grabbing, filling and rubbing out are about the rectangle the
 		// pointer ends on, so while it is moving the rectangle is what there
 		// is to show - and, inside it, what will happen to it.
@@ -8960,6 +9022,32 @@ function steerWithPointer(editor, options) {
 				height: touched.toY - touched.y + brush.height,
 			});
 			editor.commit();
+		} else if (where !== null && tile !== null && doing === "select") {
+			// The selection stays marked, for the next drag to pick up.
+			moveBox = Object.assign({ group: where.group, layer: where.layer }, between(from, tile));
+			doing = null;
+			editor.mark(where.group, moveBox.x, moveBox.y, moveBox.width, moveBox.height);
+			hoverGhost(event);
+			capture(event.pointerId, false);
+			return;
+		} else if (where !== null && tile !== null && doing === "carry" && moveBox !== null) {
+			const box = { x: carried.x + tile.x - from.x, y: carried.y + tile.y - from.y, width: moveBox.width, height: moveBox.height };
+			if (box.x !== moveBox.x || box.y !== moveBox.y) {
+				// Taken away and put down as one step: what was under the
+				// pointer when it went down is what lands where it comes up.
+				editor.begin("Move tiles");
+				editor.erase(where.group, where.layer, moveBox.x, moveBox.y, moveBox.width, moveBox.height);
+				editor.paint(where.group, where.layer, box.x, box.y);
+				afterStroke(where, { x: Math.min(box.x, moveBox.x), y: Math.min(box.y, moveBox.y),
+					width: Math.abs(box.x - moveBox.x) + box.width, height: Math.abs(box.y - moveBox.y) + box.height });
+				editor.commit();
+			}
+			moveBox = Object.assign({ group: where.group, layer: where.layer }, box);
+			doing = null;
+			editor.mark(where.group, moveBox.x, moveBox.y, moveBox.width, moveBox.height);
+			hoverGhost(event);
+			capture(event.pointerId, false);
+			return;
 		} else if (where !== null && tile !== null && (doing === "grab" || doing === "erase" || doing === "fill")) {
 			const box = between(from, tile);
 			if (doing === "grab") {
@@ -9023,7 +9111,15 @@ function steerWithPointer(editor, options) {
 		editor.zoomAt(at.x, at.y, event.deltaY > 0 ? WHEEL_ZOOM_STEP : 1 / WHEEL_ZOOM_STEP);
 		moved();
 	}, { signal: signal, passive: false });
-	return { destroy: () => stopping.abort() };
+	// Lets go of the move tool's selection, for whoever knows it no longer
+	// holds: Escape, another tool, a step through the history.
+	const letGo = () => {
+		if (moveBox !== null) {
+			moveBox = null;
+			editor.mark();
+		}
+	};
+	return { destroy: () => stopping.abort(), letGo: letGo };
 }
 
 // How near a pointer has to come to a quad's handle for it to be the one that
@@ -9719,7 +9815,7 @@ class CEditorElement extends ELEMENT_BASE {
 		// The box already knows its shape - it worked it out before there was
 		// anything to shape - so the panels are told once, now that they exist.
 		this.applyLayout();
-		steerWithPointer(instance, {
+		const steering = steerWithPointer(instance, {
 			canvas: this.editorCanvas,
 			// An editor that is only to be looked at has no layer to paint in,
 			// which is the one place that has to say so - the pointer does not
@@ -9765,6 +9861,7 @@ class CEditorElement extends ELEMENT_BASE {
 			afterStroke: (where, box) => panels.automapAfterStroke(where, box),
 			signal: signal,
 		});
+		panels.pointerLetGo = steering.letGo;
 		this.applyTheme();
 		// Whatever has been changed goes into the browser's own storage every
 		// minute - a safety net, not a place to keep a map.

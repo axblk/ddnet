@@ -6404,7 +6404,23 @@ class CEditorPanels {
 					if (layer.kind === "game") {
 						row.classList.add("editor-layer-game");
 					}
-					row.append(picture, label, eye);
+					row.append(picture, label);
+					// The picture a layer draws with, in small print: three
+					// layers all called "Tiles" are told apart by it, which is
+					// what a thumbnail would be for, at the price of a word
+					// instead of a picture too small to read.
+					const image = typeof layer.image === "number" && layer.image >= 0 && this.map !== null
+						&& this.map.images !== undefined && layer.image < this.map.images.length
+						? this.map.images[layer.image] : null;
+					if (image !== null) {
+						const sub = document.createElement("span");
+						sub.className = "editor-row-sub";
+						sub.dataset.role = "layer-image";
+						sub.textContent = image.name;
+						sub.title = `Drawn with ${image.name}`;
+						row.append(sub);
+					}
+					row.append(eye);
 					if (!shown) {
 						row.classList.add("editor-hidden-layer");
 						row.setAttribute("aria-description", "hidden");

@@ -174,7 +174,9 @@ TEST(Mcp, TheToolsAreListedInAFixedOrderWithSchemas)
 		for(const char *pName : {"tiles.read", "tiles.write", "map.render", "map.open", "map.save"})
 		{
 			if(Tool.Get("name").AsString() == pName)
+			{
 				EXPECT_GT(Schema.Get("required").Size(), 0u) << pName;
+			}
 		}
 	}
 	EXPECT_NE(Server.m_pMcp->Instructions().find("map.open"), std::string::npos);

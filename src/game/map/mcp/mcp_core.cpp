@@ -49,7 +49,11 @@ namespace map_mcp
 			char aBuffer[IO_MAX_PATH_LENGTH];
 			if(_fullpath(aBuffer, pPath, sizeof(aBuffer)) == nullptr)
 				return "";
-			return aBuffer;
+			// The paths are compared with '/' between their parts, and
+			// Windows answers with '\\'.
+			std::string Resolved = aBuffer;
+			std::replace(Resolved.begin(), Resolved.end(), '\\', '/');
+			return Resolved;
 #else
 			char *pResolved = realpath(pPath, nullptr);
 			if(pResolved == nullptr)
@@ -76,7 +80,9 @@ namespace map_mcp
 		{
 			if(Path == Root)
 				return true;
-			return Path.size() > Root.size() && Path.compare(0, Root.size(), Root) == 0 && Path[Root.size()] == '/';
+			// A root that ends in a separator is a drive or `/` itself.
+			const bool Separated = !Root.empty() && Root.back() == '/';
+			return Path.size() > Root.size() && Path.compare(0, Root.size(), Root) == 0 && (Separated || Path[Root.size()] == '/');
 		}
 
 		const char *KindName(map_document::ETileLayerKind Kind)

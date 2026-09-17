@@ -739,6 +739,7 @@ CDocumentRenderer::CParams CMapEditor::ParamsFor(const CMap &Map) const
 	Params.m_Grid = Map.m_Display.m_Grid;
 	Params.m_Marked = Map.m_Display.m_Marked;
 	Params.m_ShownQuad = Map.m_Display.m_ShownQuad;
+	Params.m_Ghost = Map.m_Display.m_Ghost;
 	// The grid belongs to the group that is being worked in, and the editor
 	// itself holds no selection - so it follows the group the game layer is
 	// in, which is the one the tiles of a map are measured against.
@@ -834,6 +835,7 @@ void CMapEditor::Render()
 	pMap->m_pRenderer->Use(pShown);
 
 	const CDocumentRenderer::CParams Params = ParamsFor(*pMap);
+	pMap->m_pRenderer->UseGhost(GhostTiles(Params.m_Ghost));
 
 	IGraphics *pGraphics = m_View.Graphics();
 	pGraphics->MapScreen(CScreenRect(0.0f, 0.0f, m_View.Width(), m_View.Height()));
@@ -843,6 +845,90 @@ void CMapEditor::Render()
 	pMap->m_DrawnCenter = pMap->m_View.Center();
 	pMap->m_DrawnZoom = pMap->m_View.Zoom();
 	m_NeedsRedraw = false;
+}
+
+std::shared_ptr<const map_document::CLayer> CMapEditor::GhostTiles(const CDocumentRenderer::CParams::CGhost &Ghost)
+{
+	using CGhost = CDocumentRenderer::CParams::CGhost;
+	if(Ghost.m_Kind != CGhost::STAMP && Ghost.m_Kind != CGhost::FILL)
+		return nullptr;
+	if(m_Brush.Width() <= 0 || m_Brush.Height() <= 0)
+		return nullptr;
+	if(m_ShownBrushVersion != m_BrushVersion)
+	{
+		m_pShownBrush = std::make_shared<const map_document::CLayer>(m_Brush);
+		m_ShownBrushVersion = m_BrushVersion;
+	}
+	if(Ghost.m_Kind == CGhost::STAMP)
+		return m_pShownBrush;
+	// A fill is the brush repeated, which is a layer of its own. Beyond a
+	// few hundred tiles a side the tiles are smaller than a pixel at any zoom
+	// that shows the whole rectangle, so the preview stops there and the
+	// outline says the rest.
+	constexpr int MAX_FILL_SIDE = 256;
+	const int Width = std::clamp(Ghost.m_Width, 1, MAX_FILL_SIDE);
+	const int Height = std::clamp(Ghost.m_Height, 1, MAX_FILL_SIDE);
+	if(m_pShownFill == nullptr || m_ShownFillVersion != m_BrushVersion || m_ShownFillWidth != Width || m_ShownFillHeight != Height)
+	{
+		map_document::CBrush Filled(m_Brush.m_Kind, Width, Height);
+		Filled.m_Image = m_Brush.m_Image;
+		Filled.m_Color = m_Brush.m_Color;
+		map_document::FillTiles(Filled, 0, 0, Width, Height, m_Brush);
+		m_pShownFill = std::make_shared<const map_document::CLayer>(std::move(Filled));
+		m_ShownFillVersion = m_BrushVersion;
+		m_ShownFillWidth = Width;
+		m_ShownFillHeight = Height;
+	}
+	return m_pShownFill;
+}
+
+std::string CMapEditor::BrushJson(size_t Slot) const
+{
+	const map_document::CBrush *pBrush = Slot == NUM_STORED_BRUSHES ? &m_Brush : Slot < NUM_STORED_BRUSHES ? &m_aStoredBrushes[Slot] :
+														 nullptr;
+	if(pBrush == nullptr || pBrush->Width() <= 0 || pBrush->Height() <= 0)
+		return "null";
+	// Read the way the renderer reads, so that the picture of a switch or a
+	// tele tile is the one the map shows and not the number that is stored.
+	const auto pLayer = std::make_shared<const map_document::CLayer>(*pBrush);
+	const CTileChunkCache::CLayerSource Source = DocumentLayerSource(pLayer);
+
+	CJsonStringWriter Writer;
+	Writer.BeginObject();
+	Writer.WriteAttribute("kind");
+	Writer.WriteStrValue(map_document::TileLayerKindName(pBrush->m_Kind));
+	Writer.WriteAttribute("image");
+	Writer.WriteIntValue(pBrush->m_Image);
+	Writer.WriteAttribute("color");
+	Writer.BeginArray();
+	Writer.WriteIntValue(pBrush->m_Color.r);
+	Writer.WriteIntValue(pBrush->m_Color.g);
+	Writer.WriteIntValue(pBrush->m_Color.b);
+	Writer.WriteIntValue(pBrush->m_Color.a);
+	Writer.EndArray();
+	Writer.WriteAttribute("width");
+	Writer.WriteIntValue(pBrush->Width());
+	Writer.WriteAttribute("height");
+	Writer.WriteIntValue(pBrush->Height());
+	// Flat, index and flags in turn: a brush of a few hundred tiles is a
+	// list, not a table.
+	Writer.WriteAttribute("tiles");
+	Writer.BeginArray();
+	for(int y = 0; y < pBrush->Height(); ++y)
+	{
+		for(int x = 0; x < pBrush->Width(); ++x)
+		{
+			unsigned char Index = 0;
+			unsigned char Flags = 0;
+			int AngleRotate = -1;
+			Source.m_ReadTile(x, y, &Index, &Flags, &AngleRotate);
+			Writer.WriteIntValue(Index);
+			Writer.WriteIntValue(Flags);
+		}
+	}
+	Writer.EndArray();
+	Writer.EndObject();
+	return Writer.GetOutputString();
 }
 
 CMapEditor::CMap *CMapEditor::ForTiles(int Id, size_t Group, size_t Layer, bool NeedsBrush)
@@ -908,6 +994,7 @@ bool CMapEditor::PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int
 	// tileset would suggest, which is nothing.
 	map_document::SetBrushNumbers(Brush, m_Numbers);
 	m_Brush = std::move(Brush);
+	BrushChanged();
 	return true;
 }
 
@@ -921,6 +1008,7 @@ bool CMapEditor::Grab(int Id, size_t Group, size_t Layer, int x, int y, int Widt
 	// are the ones in hand - so putting the piece down somewhere else puts
 	// down what was picked up.
 	m_Numbers = map_document::BrushNumbers(m_Brush);
+	BrushChanged();
 	return true;
 }
 
@@ -928,6 +1016,7 @@ void CMapEditor::SetNumbers(const map_document::CBrushNumbers &Numbers)
 {
 	m_Numbers = Numbers;
 	map_document::SetBrushNumbers(m_Brush, m_Numbers);
+	BrushChanged();
 }
 
 bool CMapEditor::SetEntitiesImage(const char *pName)
@@ -1002,16 +1091,19 @@ bool CMapEditor::Erase(int Id, size_t Group, size_t Layer, int x, int y, int Wid
 void CMapEditor::FlipBrushX()
 {
 	map_document::FlipBrushX(m_Brush);
+	BrushChanged();
 }
 
 void CMapEditor::FlipBrushY()
 {
 	map_document::FlipBrushY(m_Brush);
+	BrushChanged();
 }
 
 void CMapEditor::RotateBrush()
 {
 	map_document::RotateBrush(m_Brush);
+	BrushChanged();
 }
 
 bool CMapEditor::StoreBrush(size_t Slot)
@@ -1027,6 +1119,7 @@ bool CMapEditor::UseBrush(size_t Slot)
 	if(Slot >= m_aStoredBrushes.size() || m_aStoredBrushes[Slot].Width() == 0)
 		return false;
 	m_Brush = m_aStoredBrushes[Slot];
+	BrushChanged();
 	// A brush taken out of a slot brings its own numbers back with it, the
 	// same way a grabbed one does.
 	m_Numbers = map_document::BrushNumbers(m_Brush);
@@ -1037,6 +1130,7 @@ void CMapEditor::ClearBrush()
 {
 	m_Brush = map_document::CBrush();
 	m_Numbers = map_document::CBrushNumbers();
+	BrushChanged();
 }
 
 void CMapEditor::OnResize(int Width, int Height)

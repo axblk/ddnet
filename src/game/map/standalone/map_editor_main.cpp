@@ -108,11 +108,20 @@ namespace
 		g_vSaid.emplace_back(pType, Json);
 	}
 
+	// Once per map and frame, whatever a stroke did in between: the history
+	// the event carries is written when it is sent, so two hundred stamps in
+	// one frame cost one history, not two hundred.
 	void SayChanged(int Id)
 	{
 		if(g_pEditor == nullptr)
 			return;
-		Say("document", "{\"map\":" + std::to_string(Id) + ",\"history\":" + g_pEditor->HistoryJson(Id) + "}");
+		const std::string Map = std::to_string(Id);
+		for(const auto &[Type, Json] : g_vSaid)
+		{
+			if(Type == "document" && Json == Map)
+				return;
+		}
+		Say("document", Map);
 	}
 
 	/**
@@ -139,7 +148,15 @@ namespace
 		std::vector<std::pair<std::string, std::string>> vSaid;
 		vSaid.swap(g_vSaid);
 		for(const auto &[Type, Json] : vSaid)
-			BrowserEditorEvent(Type.c_str(), Json.c_str());
+		{
+			if(Type == "document" && g_pEditor != nullptr)
+			{
+				const std::string Full = "{\"map\":" + Json + ",\"history\":" + g_pEditor->HistoryJson(std::stoi(Json)) + "}";
+				BrowserEditorEvent(Type.c_str(), Full.c_str());
+			}
+			else
+				BrowserEditorEvent(Type.c_str(), Json.c_str());
+		}
 	}
 } // namespace
 
@@ -823,6 +840,41 @@ EMSCRIPTEN_KEEPALIVE int MapEditorPickTiles(int Id, int Group, int Layer, int X,
 			       g_pEditor->PickTiles(Id, (size_t)Group, (size_t)Layer, X, Y, Width, Height) ?
 		       1 :
 		       0;
+}
+
+// What the brush would do under the pointer, drawn before the button goes
+// down: 1 the brush where a stamp would put it, 2 the rectangle a fill would
+// cover, 3 the rectangle a rubber would clear, 4 an outline around the tile
+// alone. 0 takes the ghost away again.
+EMSCRIPTEN_KEEPALIVE void MapEditorGhost(int Id, int Kind, int Group, int X, int Y, int Width, int Height)
+{
+	if(g_pEditor == nullptr || g_pEditor->Display(Id) == nullptr)
+		return;
+	CDocumentRenderer::CParams::CGhost &Ghost = g_pEditor->Display(Id)->m_Ghost;
+	const CDocumentRenderer::CParams::CGhost Before = Ghost;
+	Ghost.m_Kind = std::clamp(Kind, (int)CDocumentRenderer::CParams::CGhost::NONE, (int)CDocumentRenderer::CParams::CGhost::SPOT);
+	Ghost.m_Group = (size_t)std::max(0, Group);
+	Ghost.m_X = X;
+	Ghost.m_Y = Y;
+	Ghost.m_Width = std::max(0, Width);
+	Ghost.m_Height = std::max(0, Height);
+	// A pointer that rests sends the same ghost again and again, and that is
+	// not a frame.
+	if(Before.m_Kind != Ghost.m_Kind || Before.m_Group != Ghost.m_Group || Before.m_X != Ghost.m_X || Before.m_Y != Ghost.m_Y ||
+		Before.m_Width != Ghost.m_Width || Before.m_Height != Ghost.m_Height)
+		g_pEditor->Touch();
+}
+
+/** The brush in hand as JSON - see `CMapEditor::BrushJson`. */
+EMSCRIPTEN_KEEPALIVE const char *MapEditorBrush()
+{
+	return g_pEditor == nullptr ? "null" : Answer(g_pEditor->BrushJson());
+}
+
+/** The brush in that slot as JSON. */
+EMSCRIPTEN_KEEPALIVE const char *MapEditorStoredBrush(int Slot)
+{
+	return g_pEditor == nullptr || Slot < 0 ? "null" : Answer(g_pEditor->BrushJson((size_t)Slot));
 }
 
 EMSCRIPTEN_KEEPALIVE int MapEditorGrab(int Id, int Group, int Layer, int X, int Y, int Width, int Height)

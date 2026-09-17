@@ -123,6 +123,42 @@ public:
 			bool m_Shown = false;
 		};
 		CShownQuad m_ShownQuad;
+		/**
+		 * What the brush would do at the place the pointer is over, before
+		 * the button goes down: the brush itself drawn faintly where a stamp
+		 * would put it, the rectangle a fill would cover with the brush
+		 * repeated over it, the rectangle a rubber would clear, or just an
+		 * outline around the tile that is under the pointer.
+		 *
+		 * Drawn here for the same reason the mark is - it lies in the world,
+		 * in the tiles of one group, and it has to follow that group's
+		 * parallax and offset to sit where the stamp will land.
+		 */
+		class CGhost
+		{
+		public:
+			enum EKind
+			{
+				NONE = 0,
+				/** The brush, once, at the top left corner. */
+				STAMP,
+				/** The rectangle, covered with what a fill would put there. */
+				FILL,
+				/** The rectangle, marked as what a rubber would clear. */
+				ERASE,
+				/** Only the outline of the rectangle. */
+				SPOT,
+			};
+			int m_Kind = NONE;
+			size_t m_Group = 0;
+			int m_X = 0;
+			int m_Y = 0;
+			int m_Width = 0;
+			int m_Height = 0;
+
+			bool Shown() const { return m_Kind != NONE; }
+		};
+		CGhost m_Ghost;
 	};
 
 	/**
@@ -139,6 +175,15 @@ public:
 	 * happens long after this returns.
 	 */
 	void Use(std::shared_ptr<const map_document::CMapState> pMap);
+
+	/**
+	 * The tiles the ghost is drawn with: the brush, or for a fill the brush
+	 * already repeated over the rectangle. Held on to like the version is,
+	 * because its geometry is built lazily; the same pointer twice costs
+	 * nothing, another one is built again on the next frame. `nullptr` or
+	 * anything but a tile layer leaves the ghost as an outline.
+	 */
+	void UseGhost(std::shared_ptr<const map_document::CLayer> pTiles);
 
 	/** Draws the version that was last handed over. */
 	void Render(const CParams &Params);
@@ -216,6 +261,13 @@ private:
 	 */
 	void RenderMarked(const CParams::CMarked &Marked);
 	/**
+	 * Draws the ghost over the group that was last put on the screen.
+	 *
+	 * @param Ghost What the brush would do and where.
+	 * @param World The piece of the world that group shows.
+	 */
+	void RenderGhost(const CParams::CGhost &Ghost, const CScreenRect &World);
+	/**
 	 * Draws the outline of one quad and a handle on each of its five points,
 	 * over the group that was last put on the screen.
 	 *
@@ -256,6 +308,7 @@ private:
 	IMapImages *m_pImages = nullptr;
 	std::shared_ptr<const map_document::CMapState> m_pMap;
 	std::vector<std::unique_ptr<CLayerCache>> m_vpCaches;
+	std::unique_ptr<CLayerCache> m_pGhost;
 	size_t m_InvalidatedChunks = 0;
 };
 

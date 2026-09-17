@@ -382,6 +382,11 @@ export interface EditorCommand {
 	keys: string[];
 	/** Whether it wants a button on the tool bar. */
 	bar?: boolean;
+	/** Whether it is one of the tools in the rail; `hint` is what the status line says a drag does then. */
+	rail?: boolean;
+	hint?: string;
+	/** A switch of the view - what `controls="compact"` leaves out of the bar. */
+	toggle?: boolean;
 	/** The icon on that button. */
 	icon?: string;
 	/** Where in the menu it hangs - `File`, or `Layer/Add a layer`. */
@@ -413,8 +418,8 @@ export declare class EditorPanels {
 	readonly tab: { left: string; dock: string; tiles: string };
 	/** Everything the editor can be told to do - this panel's own copy, keys as they are now. */
 	readonly commands: EditorCommand[];
-	/** Which of the four ways the pointer draws while no modifier says otherwise. */
-	tool: "paint" | "grab" | "fill" | "erase";
+	/** Which tool the pointer is, while no modifier says otherwise. */
+	tool: "paint" | "grab" | "fill" | "erase" | "pick" | "hand";
 	/** How much the line under the pointer says about a tile. */
 	tileInfo: "off" | "dec" | "hex";
 	/** Does one of the commands by name, if it can be done at all. */
@@ -530,9 +535,9 @@ export declare function steerEditor(
 ): { destroy(): void };
 
 /**
- * `<ddnet-editor>` - the whole editor as one element, laid out in six areas
- * a page may fill with `slot="header"`, `"toolbar"`, `"left"`, `"right"`,
- * `"dock"` and `"status"`.
+ * `<ddnet-editor>` - the whole editor as one element, laid out in seven areas
+ * a page may fill with `slot="header"`, `"toolbar"`, `"rail"`, `"left"`,
+ * `"right"`, `"dock"` and `"status"`.
  *
  * Attributes: `src`, `urlparam`, `theme="light"`, `targets="big|small"`, `remember`.
  */
@@ -558,13 +563,15 @@ export declare class EditorElement extends HTMLElement {
 export interface EditorLayout {
 	width: number;
 	height: number;
-	/** `phone`, `small`, `medium`, `wide`, `desk`, `huge`. */
+	/** `small`, `medium`, `wide`, `desk`, `huge`. */
 	size: string;
-	/** `short`, `low`, `tall`, `high`. */
+	/** `low`, `tall`, `high`. */
 	tallness: string;
-	/** `column`, `drawer`, `sheet`, or `none` for the inspector when read-only. */
+	/** `column` or `drawer`; `none` for the right column when read-only. */
 	left: string;
 	right: string;
+	/** Whether the inspector starts `open` or `shut` at this width. */
+	inspector: string;
 	/** `none`, `looking`, `few`, `icons`, `labels`. */
 	bar: string;
 	/** `one` or `two` rows above the map. */

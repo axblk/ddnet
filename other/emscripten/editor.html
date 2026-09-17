@@ -23,17 +23,16 @@
 			/* The editor fills the window; the box lays itself out. */
 			body { margin: 0; height: 100dvh; overflow: hidden; }
 			ddnet-editor { height: 100%; }
-			.open { display: flex; align-items: center; gap: 8px; padding: 8px; }
-			.open p { margin: 0; color: var(--text-2); }
+			/* What the page itself has to say stands in the status line, after
+			   what the editor says: the map's size, or why nothing is open. */
+			.page-note { margin: 0; color: var(--text-2); font: var(--type-sm); white-space: nowrap; }
+			.page-note:empty { display: none; }
 		</style>
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
 		<ddnet-editor id="editor" urlparam="map" remember>
-			<div class="open" slot="header">
-				<strong>DDNet Map Editor</strong>
-				<p id="message" role="status">Starting&hellip;</p>
-			</div>
+			<p class="page-note" id="message" slot="status" role="status">Starting&hellip;</p>
 		</ddnet-editor>
 		<script type="module">
 			import "@ddnet/map-editor";
@@ -45,12 +44,11 @@
 			// the tests. A page may claim a name; the package may not, and does not.
 			window.ddnetEditor = box;
 
-			// What is being shown, asked rather than remembered: a map named in
-			// the address is opened while the page is still being set up.
+			// The one thing the editor does not say about the map itself: how
+			// big it is. Its name and whether it is saved are on its tab.
 			function describe() {
 				const size = editor.map < 0 ? null : editor.size();
-				say(size === null ? "Open a map, or drop one onto this page." :
-					`${editor.name()} — ${size.width} x ${size.height} tiles${editor.dirty() ? " — not saved" : ""}`);
+				say(size === null ? "" : `${size.width} × ${size.height} tiles`);
 			}
 			describe();
 			for (const type of ["document", "saved", "loaded", "closed"]) { editor.addEventListener(type, () => describe()); }

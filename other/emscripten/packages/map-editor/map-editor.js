@@ -25,26 +25,64 @@
 import DDNetBase, { addIcons, followSize, Program } from "@ddnet/base";
 import { COMMANDS, commandRole, commandTitle, keyLabel, keyName, keyTable } from "./commands.js";
 
-// The pictures on the editor's own buttons. Named as the viewer names its
-// own, so that a page which shows both says the same thing twice rather than
-// two different things.
+// The pictures on the editor's own buttons: one set of stroke icons, drawn
+// alike - a 24-unit box, a 1.75-unit line with round ends - so that a button
+// in the rail, one in the top bar and one beside a row look like they belong
+// to the same editor. A shape is filled only where it stands for something
+// that is filled. Named as the viewer names its own where both have one.
+const STROKE = 'fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
+function stroked(d, extra) {
+	return `<path d="${d}" ${STROKE}${extra === undefined ? "" : ` ${extra}`}/>`;
+}
 addIcons({
-	detail: '<path d="M12 1.5 13.9 9.1 21.5 11 13.9 12.9 12 20.5 10.1 12.9 2.5 11 10.1 9.1Z"/>',
-	entities: '<rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/>',
-	play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
-	undo: '<path d="M4 11h10a5 5 0 0 1 0 10h-6M4 11l5-5M4 11l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-	redo: '<path d="M20 11H10a5 5 0 0 0 0 10h6M20 11l-5-5M20 11l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-	grid: '<path d="M9 3v18M15 3v18M3 9h18M3 15h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
-	proof: '<rect x="1.8" y="5" width="20.4" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><rect x="6.2" y="8" width="11.6" height="8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.4 1.8"/>',
-	paint: '<path d="M4 16.5 15.2 5.3a2.4 2.4 0 0 1 3.4 3.4L7.5 19.9 3 21Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
-	grab: '<path d="M6 3.5v9M6 9.5 4.2 13a6 6 0 0 0 5.3 8.5H14a6 6 0 0 0 6-6V9M20 9V7M16.5 9V6.5M13 9V6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
-	fill: '<path d="M11 2.5 3.5 10a1.6 1.6 0 0 0 0 2.3l6.2 6.2a1.6 1.6 0 0 0 2.3 0l7.5-7.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M20.5 15c1.4 2 2 3.2 2 4a2 2 0 1 1-4 0c0-.8.6-2 2-4Z"/>',
-	erase: '<path d="M8.5 20.5 3 15a1.6 1.6 0 0 1 0-2.3l9.2-9.2a1.6 1.6 0 0 1 2.3 0l6.5 6.5a1.6 1.6 0 0 1 0 2.3l-8.2 8.2ZM8 8l8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
-	folder: '<path d="M2.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
-	add: '<path d="M12 4.5v15M4.5 12h15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
-	search: '<circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15 15l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
-	menu: '<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>',
-	info: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 11v5.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="7.8" r="1.2" fill="currentColor"/>',
+	paint: stroked("M14.5 4.5l5 5L9 20H4v-5zM12 7l5 5"),
+	grab: `<rect x="4" y="4" width="16" height="16" rx="1.5" ${STROKE} stroke-dasharray="3 2.6"/>`,
+	fill: stroked("M4.5 11.5l7-7 7 7-7 7zM9 4.5v-2M20.5 14c0 1.6 1.5 3 1.5 4.5a1.5 1.5 0 0 1-3 0c0-1.5 1.5-2.9 1.5-4.5z"),
+	erase: stroked("M8.5 20l-4.6-4.6a1.5 1.5 0 0 1 0-2.1l8.9-8.9a1.5 1.5 0 0 1 2.1 0l5.6 5.6a1.5 1.5 0 0 1 0 2.1L13 19.6M8.5 20H20M7 10l7 7"),
+	pick: stroked("M17 3.5l3.5 3.5-2 2-3.5-3.5zM14.5 6l3.5 3.5-8.7 8.7a1 1 0 0 1-.5.3L5 19.5l1-3.8a1 1 0 0 1 .3-.5z"),
+	hand: stroked("M7.5 11V6.5a1.5 1.5 0 0 1 3 0V11M10.5 10.5V4.5a1.5 1.5 0 0 1 3 0v6M13.5 10.5V6a1.5 1.5 0 0 1 3 0v6.5M16.5 12.5V9a1.5 1.5 0 0 1 3 0v6a6 6 0 0 1-6 6h-1.6a6 6 0 0 1-5-2.7L4 14.7a1.6 1.6 0 0 1 2.6-1.9l.9 1.2V11"),
+	undo: stroked("M4 10h10a5 5 0 0 1 0 10H9M8 6l-4 4 4 4"),
+	redo: stroked("M20 10H10a5 5 0 0 0 0 10h5M16 6l4 4-4 4"),
+	save: stroked("M12 3v11M8 10l4 4 4-4M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"),
+	folder: stroked("M3 6.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
+	add: stroked("M12 5v14M5 12h14"),
+	minus: stroked("M5 12h14"),
+	plus: stroked("M12 5v14M5 12h14"),
+	close: stroked("M6 6l12 12M18 6L6 18"),
+	fit: stroked("M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4M9 9h6v6H9z"),
+	expand: stroked("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"),
+	detail: stroked("M12 3l2.2 6.3L21 11l-6.8 1.7L12 19l-2.2-6.3L3 11l6.8-1.7z"),
+	entities: `<rect x="4" y="4" width="7" height="7" rx="1.2" ${STROKE}/><rect x="13" y="4" width="7" height="7" rx="1.2" ${STROKE}/><rect x="4" y="13" width="7" height="7" rx="1.2" ${STROKE}/>${stroked("M16.5 13.5v6.5M13.3 16.8h6.4")}`,
+	play: stroked("M7 4.5l12 7.5-12 7.5z"),
+	grid: stroked("M9 4v16M15 4v16M4 9h16M4 15h16"),
+	proof: `<rect x="3" y="5" width="18" height="14" rx="2" ${STROKE}/><rect x="7" y="8.5" width="10" height="7" rx="1" ${STROKE}/>`,
+	info: `<circle cx="12" cy="12" r="8.5" ${STROKE}/>${stroked("M12 11v5.5")}<circle cx="12" cy="7.8" r="1.1" fill="currentColor"/>`,
+	search: `<circle cx="10.5" cy="10.5" r="6" ${STROKE}/>${stroked("M15 15l4.5 4.5")}`,
+	menu: stroked("M4 7h16M4 12h16M4 17h16"),
+	more: '<circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/>',
+	chevronRight: stroked("M9.5 6l6 6-6 6"),
+	chevronDown: stroked("M6 9.5l6 6 6-6"),
+	eye: `${stroked("M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z")}<circle cx="12" cy="12" r="2.6" ${STROKE}/>`,
+	eyeOff: `${stroked("M4 4l16 16M10 5.8A9.7 9.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-3.4 4M14.7 15.6A9.7 9.7 0 0 1 12 18.5C6 18.5 2.5 12 2.5 12a16 16 0 0 1 4.2-4.6")}`,
+	layerTiles: `<rect x="4" y="4" width="16" height="16" rx="1.5" ${STROKE}/>${stroked("M9.3 4v16M14.7 4v16M4 9.3h16M4 14.7h16")}`,
+	layerGame: `<rect x="4" y="4" width="16" height="16" rx="1.5" ${STROKE}/><path d="M13.2 6.5L9 12.6h3.4L10.8 17.5 15 11.4h-3.4z" fill="currentColor"/>`,
+	layerPhysics: `<rect x="4" y="4" width="16" height="16" rx="1.5" ${STROKE}/><circle cx="12" cy="12" r="3" fill="currentColor"/>`,
+	layerQuads: stroked("M12 3.5L20.5 12 12 20.5 3.5 12z"),
+	layerSounds: stroked("M4 9.5v5h3.5L12 19V5L7.5 9.5zM15.5 9a4 4 0 0 1 0 6M18.2 6.3a7.8 7.8 0 0 1 0 11.4"),
+	group: stroked("M3 6.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
+	image: `<rect x="3.5" y="5" width="17" height="14" rx="2" ${STROKE}/><circle cx="9" cy="10" r="1.8" ${STROKE}/>${stroked("M20 15.5l-4.5-4.5-7 7")}`,
+	sound: stroked("M4 9.5v5h3.5L12 19V5L7.5 9.5zM15.5 9a4 4 0 0 1 0 6M18.2 6.3a7.8 7.8 0 0 1 0 11.4"),
+	envelope: stroked("M3 16c3 0 3-8 6-8s3 8 6 8 3-8 6-8"),
+	history: `<circle cx="12" cy="12" r="8.5" ${STROKE}/>${stroked("M12 7.5V12l3 2")}`,
+	settings: stroked("M4 7h10M18 7h2M4 17h4M12 17h8M14 4.5v5M8 14.5v5"),
+	rules: stroked("M6 3h8l5 5v13H6zM14 3v5h5M9 13h7M9 17h7"),
+	properties: stroked("M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"),
+	flipX: stroked("M12 3v18M8 7L3 12l5 5M16 7l5 5-5 5"),
+	flipY: stroked("M3 12h18M7 8l5-5 5 5M7 16l5 5 5-5"),
+	rotate: stroked("M20 12a8 8 0 1 1-2.3-5.7M20 4v4.5h-4.5"),
+	check: stroked("M5 12.5l4.5 4.5L19 7.5"),
+	open: stroked("M3 6.5a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"),
+	map: `<rect x="3.5" y="4.5" width="17" height="15" rx="2" ${STROKE}/>${stroked("M9 4.5v15M15 4.5v15")}`,
 });
 
 /** The program, and what its script calls the factory it defines. */
@@ -1014,17 +1052,18 @@ class CMapEditor extends Program {
  * way it always did.
  */
 const PANEL_PLACES = [
-	{ role: "tree-panel", area: "left", tab: "layers", name: "Layers" },
+	{ role: "props-panel", area: "left", tab: "props", name: "Properties" },
 	{ role: "images-panel", area: "left", tab: "images", name: "Images" },
 	{ role: "audio-panel", area: "left", tab: "sounds", name: "Sounds" },
 	{ role: "info-panel", area: "left", tab: "map", name: "Map" },
-	{ role: "props-panel", area: "right" },
+	{ role: "tree-panel", area: "right" },
+	{ role: "group-panel", area: "right" },
 	{ role: "tiles-panel", area: "right" },
 	{ role: "quads-panel", area: "right" },
 	{ role: "sounds-panel", area: "right" },
 	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes" },
 	{ role: "history-panel", area: "dock", tab: "history", name: "History" },
-	{ role: "settings-panel", area: "dock", tab: "settings", name: "Settings" },
+	{ role: "settings-panel", area: "dock", tab: "settings", name: "Server settings" },
 	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules" },
 ];
 
@@ -1061,20 +1100,18 @@ const CONTEXT_LISTS = [
 ];
 
 const BOX_WIDTHS = [
-	{ from: 2560, name: "huge", left: "column", right: "column", bar: "labels" },
-	{ from: 1600, name: "desk", left: "column", right: "column", bar: "labels" },
-	{ from: 1200, name: "wide", left: "column", right: "column", bar: "labels" },
-	{ from: 900, name: "medium", left: "drawer", right: "column", bar: "icons" },
-	{ from: 600, name: "small", left: "drawer", right: "drawer", bar: "icons" },
-	{ from: 0, name: "phone", left: "sheet", right: "sheet", bar: "few" },
+	{ from: 2200, name: "huge", left: "column", right: "column", bar: "labels", inspector: "open" },
+	{ from: 1800, name: "desk", left: "column", right: "column", bar: "labels", inspector: "open" },
+	{ from: 1000, name: "wide", left: "column", right: "column", bar: "labels", inspector: "shut" },
+	{ from: 700, name: "medium", left: "drawer", right: "drawer", bar: "icons", inspector: "shut" },
+	{ from: 0, name: "small", left: "drawer", right: "drawer", bar: "few", inspector: "shut" },
 ];
 
 /** And by height: what there is room for above and below the map. */
 const BOX_HEIGHTS = [
-	{ from: 1400, name: "high", head: "two", status: "line", dock: "strip" },
-	{ from: 600, name: "tall", head: "two", status: "line", dock: "strip" },
-	{ from: 480, name: "low", head: "one", status: "chip", dock: "overlay" },
-	{ from: 0, name: "short", head: "one", status: "chip", dock: "overlay" },
+	{ from: 1300, name: "high", head: "two", status: "line", dock: "strip" },
+	{ from: 560, name: "tall", head: "two", status: "line", dock: "strip" },
+	{ from: 0, name: "low", head: "one", status: "chip", dock: "overlay" },
 ];
 
 // The order the menu puts its headings in: what a map is, then what was just
@@ -1095,185 +1132,202 @@ const DRAG_LIMITS = {
 };
 
 const PANELS_HTML = `
-<div class="editor-bar" data-role="bar">
-	<span class="editor-status" data-role="status" role="status"></span>
+<div class="editor-bar" data-role="bar"></div>
+<div class="editor-rail" data-role="rail" role="toolbar" aria-label="Tools"></div>
+<div class="editor-statusbits">
 	<span class="editor-hover" data-role="hover"></span>
+	<span class="editor-status" data-role="status" role="status"></span>
 </div>
 <div class="editor-columns">
-	<section class="editor-panel" data-role="tree-panel">
+	<section class="editor-panel editor-panel-tree" data-role="tree-panel">
 		<header class="editor-panel-head">
 			<h2>Layers</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="add-group" title="Add a group">+ group</button>
-				<button class="editor-small" data-role="add-layer" title="Add a tile layer">+ layer</button>
-				<button class="editor-small" data-role="add-quads" title="Add a quad layer">+ quads</button>
-				<button class="editor-small" data-role="delete" title="Delete what is selected">-</button>
-				<button class="editor-small" data-role="up" title="Move it up">&uarr;</button>
-				<button class="editor-small" data-role="down" title="Move it down">&darr;</button>
+				<button type="button" class="editor-icon-button" data-role="add-layer-menu" data-icon="add" title="Add a layer or group" aria-label="Add a layer or group" aria-haspopup="menu"></button>
+				<button type="button" class="editor-icon-button" data-role="layer-menu" data-icon="more" title="More" aria-label="Options for the selected layer or group" aria-haspopup="menu"></button>
 			</span>
 		</header>
 		<ul class="editor-tree" data-role="tree"></ul>
-		<div class="editor-art" data-role="art">
-			<button class="editor-small" data-role="tile-art" title="A picture as tiles, with a palette made of its own colours">picture as tiles&hellip;</button>
-			<button class="editor-small" data-role="quad-art" title="A picture as quads, one per pixel">as quads&hellip;</button>
-			<label class="editor-art-field">px <input type="number" data-role="art-step" min="1" max="64" value="1" title="How many pixels of the picture one quad stands for"></label>
-			<label class="editor-art-field">size <input type="number" data-role="art-size" min="1" max="1024" value="64" title="How wide a quad is on the map, in world units"></label>
-			<label class="editor-art-field"><input type="checkbox" data-role="art-merge" checked title="A run of one colour becomes one quad"> merge</label>
-			<label class="editor-art-field"><input type="checkbox" data-role="art-centralize" title="Every quad turns about the same place"> one pivot</label>
-			<input type="file" accept="image/png,image/*" data-role="art-file" hidden>
-		</div>
 	</section>
-	<section class="editor-panel" data-role="props-panel">
-		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2><span class="editor-here" data-role="here"></span></header>
-		<div class="editor-props" data-role="props"></div>
-		<div class="editor-construct" data-role="construct" hidden>
-			<select class="editor-small" data-role="construct-tile"></select>
-			<button class="editor-small" data-role="construct-run" title="Put this physics tile under every tile this layer draws">construct</button>
-		</div>
+	<section class="editor-panel editor-empty" data-role="group-panel" hidden>
+		<p class="editor-empty-text" data-role="group-text">A group holds layers. Select a layer to paint.</p>
+		<button type="button" class="editor-small editor-go" data-role="select-game">Select the game layer</button>
 	</section>
-	<section class="editor-panel" data-role="tiles-panel" hidden>
+	<section class="editor-panel editor-panel-tiles" data-role="tiles-panel" hidden>
 		<header class="editor-panel-head">
-			<h2>Tiles</h2>
+			<h2 data-role="tiles-title">Tiles</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="flip-x" title="Turn the brush over sideways (X)">&harr;</button>
-				<button class="editor-small" data-role="flip-y" title="Turn the brush over (Y)">&updownarrow;</button>
-				<button class="editor-small" data-role="rotate" title="A quarter turn (R)">&#8635;</button>
-				<span data-role="brush-size"></span>
+				<button type="button" class="editor-icon-button" data-role="tiles-zoom-out" data-icon="minus" title="Smaller tiles" aria-label="Smaller tiles"></button>
+				<button type="button" class="editor-icon-button" data-role="tiles-zoom-in" data-icon="plus" title="Bigger tiles" aria-label="Bigger tiles"></button>
+				<button type="button" class="editor-icon-button" data-role="tiles-big" data-command="picker.show" data-icon="expand" aria-pressed="false"></button>
 			</span>
 		</header>
-		<div class="editor-tabs editor-subtabs" role="tablist">
-			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="tiles" role="tab" aria-selected="true">Tiles</button>
-			<button type="button" class="editor-tab" data-role="tiles-tab" data-tab="automap" role="tab" aria-selected="false">Automap</button>
-		</div>
-		<div data-role="tiles-body">
+		<div class="editor-numbers" data-role="numbers"></div>
+		<div class="editor-tileset-scroll" data-role="tiles-body">
 			<canvas class="editor-tileset" data-role="tileset" width="256" height="256"></canvas>
-			<div class="editor-numbers" data-role="numbers"></div>
-			<div class="editor-slots" data-role="slots" role="group" aria-label="Where a brush is put away"></div>
-			<div class="editor-type" data-role="type">
-				<input type="text" data-role="type-text" placeholder="Type with the tiles&hellip;" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
-				<button class="editor-small" data-role="type-place" title="Write it where the view is looking">write</button>
+		</div>
+		<div class="editor-brush-row">
+			<button type="button" class="editor-icon-button" data-role="flip-x" data-command="brush.flipX" data-icon="flipX"></button>
+			<button type="button" class="editor-icon-button" data-role="flip-y" data-command="brush.flipY" data-icon="flipY"></button>
+			<button type="button" class="editor-icon-button" data-role="rotate" data-command="brush.rotate" data-icon="rotate"></button>
+			<span class="editor-brush-size" data-role="brush-size"></span>
+			<button type="button" class="editor-small" data-role="clear-brush" data-command="brush.clear">Clear</button>
+		</div>
+		<details class="editor-section" data-role="slots-section">
+			<summary>Brush slots</summary>
+			<div class="editor-slots" data-role="slots" role="group" aria-label="Brush slots"></div>
+		</details>
+		<details class="editor-section" data-role="automap-section" hidden>
+			<summary>Automap</summary>
+			<div class="editor-automap" data-role="automap">
+				<select class="editor-small" data-role="automap-config" aria-label="Rules configuration"></select>
+				<select class="editor-small" data-role="automap-reference" aria-label="Reference layer"></select>
+				<button type="button" class="editor-small" data-role="automap-run" title="Run the rules over this layer">Run</button>
+				<label class="editor-check" title="Run them after every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> Auto</label>
 			</div>
-		</div>
-		<div class="editor-automap" data-role="automap" hidden>
-			<select class="editor-small" data-role="automap-config"></select>
-			<select class="editor-small" data-role="automap-reference"></select>
-			<button class="editor-small" data-role="automap-run" title="Put the tiles the rules ask for into this layer">automap</button>
-			<label class="editor-small" title="Run them over every stroke, as part of the same change"><input type="checkbox" data-role="automap-auto"> auto</label>
-		</div>
-	</section>
-	<section class="editor-panel" data-role="audio-panel">
-		<header class="editor-panel-head">
-			<h2>Sounds</h2>
-			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="play-sound" title="Play it, through the browser">&#9654;</button>
-				<button class="editor-small" data-role="add-sound" title="Read an Opus file into the map">+</button>
-				<button class="editor-small" data-role="replace-sound" title="Other bytes for this sound">&#8635;</button>
-				<button class="editor-small" data-role="unpack-sound" title="Take the bytes out and name the file instead">out</button>
-				<button class="editor-small" data-role="delete-sound" title="Take this sound out of the map">-</button>
-			</span>
-		</header>
-		<ol class="editor-images" data-role="sound-list"></ol>
-		<input type="file" accept="audio/opus,audio/ogg,.opus" data-role="sound-file" hidden>
-		<audio data-role="sound-player" hidden></audio>
-	</section>
-	<section class="editor-panel" data-role="sounds-panel" hidden>
-		<header class="editor-panel-head">
-			<h2>Sound sources</h2>
-			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="add-source" title="A source in the middle of the view">+</button>
-				<button class="editor-small" data-role="delete-source" title="Delete the source that is picked">-</button>
-			</span>
-		</header>
-		<ol class="editor-quads" data-role="source-list"></ol>
-		<div class="editor-props" data-role="source-props"></div>
-	</section>
-	<section class="editor-panel" data-role="rules-panel" hidden>
-		<header class="editor-panel-head">
-			<h2>Rules</h2>
-			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="rules-apply" title="Read the text as it stands now">apply</button>
-				<button class="editor-small" data-role="rules-revert" title="Fetch the file again as it lies beside the game">revert</button>
-				<button class="editor-small" data-role="rules-save" title="Write the text out as a file">save</button>
-			</span>
-		</header>
-		<div class="editor-code">
-			<pre class="editor-code-view" data-role="rules-view" aria-hidden="true"></pre>
-			<textarea class="editor-code-text" data-role="rules-text" spellcheck="false" wrap="off"></textarea>
-		</div>
-		<p class="editor-code-status" data-role="rules-status"></p>
+		</details>
+		<details class="editor-section" data-role="type-section">
+			<summary>Write text with tiles</summary>
+			<div class="editor-type" data-role="type">
+				<input type="text" data-role="type-text" placeholder="Text" aria-label="Text to write" title="Letters and digits become the tiles of a font tileset; the layer has to be drawn with one">
+				<button type="button" class="editor-small" data-role="type-place" title="Write it where the view is looking">Write</button>
+			</div>
+		</details>
 	</section>
 	<section class="editor-panel" data-role="quads-panel" hidden>
 		<header class="editor-panel-head">
 			<h2>Quads</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="add-quad" title="A quad in the middle of the view">+</button>
-				<button class="editor-small" data-role="delete-quad" title="Delete the quad that is picked">-</button>
-				<button class="editor-small" data-role="knife" title="Cut a piece out of the quad that is picked: four clicks inside it" aria-pressed="false">knife</button>
+				<button type="button" class="editor-icon-button" data-role="add-quad" data-command="quad.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-quad" data-command="quad.delete" data-icon="close"></button>
+				<button type="button" class="editor-small" data-role="knife" data-command="quad.knife" aria-pressed="false">Knife</button>
 			</span>
 		</header>
-		<ol class="editor-quads" data-role="quad-list"></ol>
+		<ol class="editor-list" data-role="quad-list"></ol>
 		<div class="editor-shape" data-role="shape">
-			<button class="editor-small" data-role="shape-square" title="The rectangle the corners span">square</button>
-			<button class="editor-small" data-role="shape-aspect" title="As tall as the picture's proportions ask">aspect</button>
-			<button class="editor-small" data-role="shape-centerPivot" title="The pivot into the middle">pivot</button>
-			<button class="editor-small" data-role="shape-align" title="Every corner onto the nearest tile">align</button>
+			<button type="button" class="editor-small" data-role="shape-square" title="Make the quad a rectangle">Square</button>
+			<button type="button" class="editor-small" data-role="shape-aspect" title="Give the quad the image's proportions">Aspect</button>
+			<button type="button" class="editor-small" data-role="shape-centerPivot" title="Move the pivot to the middle">Pivot</button>
+			<button type="button" class="editor-small" data-role="shape-align" title="Snap every corner to the grid">Align</button>
 		</div>
 		<div class="editor-props" data-role="quad-props"></div>
+	</section>
+	<section class="editor-panel" data-role="sounds-panel" hidden>
+		<header class="editor-panel-head">
+			<h2>Sound sources</h2>
+			<span class="editor-panel-tools">
+				<button type="button" class="editor-icon-button" data-role="add-source" data-command="source.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-source" data-command="source.delete" data-icon="close"></button>
+			</span>
+		</header>
+		<ol class="editor-list" data-role="source-list"></ol>
+		<div class="editor-props" data-role="source-props"></div>
+	</section>
+	<section class="editor-panel" data-role="props-panel">
+		<header class="editor-panel-head"><h2 data-role="props-title">Properties</h2><span class="editor-here" data-role="here"></span></header>
+		<div class="editor-props" data-role="props"></div>
+		<div class="editor-construct" data-role="construct" hidden>
+			<select class="editor-small" data-role="construct-tile" aria-label="Physics tile"></select>
+			<button type="button" class="editor-small" data-role="construct-run" title="Put this physics tile under every tile this layer draws">Build</button>
+		</div>
 	</section>
 	<section class="editor-panel" data-role="images-panel">
 		<header class="editor-panel-head">
 			<h2>Images</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="add-image" title="Read a PNG into the map">+</button>
-				<button class="editor-small" data-role="replace-image" title="Other pixels for this picture">&#8635;</button>
-				<button class="editor-small" data-role="unpack-image" title="Take the pixels out and name the file instead">out</button>
-				<button class="editor-small" data-role="delete-image" title="Take this picture out of the map">-</button>
+				<button type="button" class="editor-icon-button" data-role="add-image" data-command="image.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="replace-image" data-command="image.replace" data-icon="rotate"></button>
+				<button type="button" class="editor-small" data-role="unpack-image" data-command="image.unpack">Unpack</button>
+				<button type="button" class="editor-icon-button" data-role="delete-image" data-command="image.delete" data-icon="close"></button>
 			</span>
 		</header>
-		<ol class="editor-images" data-role="image-list"></ol>
+		<ol class="editor-list editor-images" data-role="image-list"></ol>
 		<input type="file" accept="image/png,image/*" data-role="image-file" hidden>
+		<details class="editor-section" data-role="art-section">
+			<summary>Import an image as map</summary>
+			<div class="editor-art" data-role="art">
+				<button type="button" class="editor-small" data-role="tile-art" title="Turn an image into tiles, with a palette of its own colours">As tiles…</button>
+				<button type="button" class="editor-small" data-role="quad-art" title="Turn an image into quads, one per pixel">As quads…</button>
+				<label class="editor-art-field">px <input type="number" data-role="art-step" min="1" max="64" value="1" title="Pixels of the image per quad"></label>
+				<label class="editor-art-field">size <input type="number" data-role="art-size" min="1" max="1024" value="64" title="Width of a quad on the map, in world units"></label>
+				<label class="editor-art-field editor-check"><input type="checkbox" data-role="art-merge" checked title="Join runs of one colour into one quad"> merge</label>
+				<label class="editor-art-field editor-check"><input type="checkbox" data-role="art-centralize" title="One pivot for all quads"> one pivot</label>
+				<input type="file" accept="image/png,image/*" data-role="art-file" hidden>
+			</div>
+		</details>
 	</section>
-	<section class="editor-panel" data-role="envelopes-panel">
+	<section class="editor-panel" data-role="audio-panel">
 		<header class="editor-panel-head">
-			<h2>Envelopes</h2>
+			<h2>Sounds</h2>
 			<span class="editor-panel-tools">
-				<select class="editor-small" data-role="envelope-list"></select>
-				<button class="editor-small" data-role="add-envelope" title="Add a colour envelope">+</button>
-				<button class="editor-small" data-role="delete-envelope" title="Delete this envelope">-</button>
+				<button type="button" class="editor-icon-button" data-role="play-sound" data-command="sound.play" data-icon="play"></button>
+				<button type="button" class="editor-icon-button" data-role="add-sound" data-command="sound.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="replace-sound" data-command="sound.replace" data-icon="rotate"></button>
+				<button type="button" class="editor-small" data-role="unpack-sound" data-command="sound.unpack">Unpack</button>
+				<button type="button" class="editor-icon-button" data-role="delete-sound" data-command="sound.delete" data-icon="close"></button>
 			</span>
 		</header>
-		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
-		<div class="editor-props" data-role="point-props"></div>
+		<ol class="editor-list" data-role="sound-list"></ol>
+		<input type="file" accept="audio/opus,audio/ogg,.opus" data-role="sound-file" hidden>
+		<audio data-role="sound-player" hidden></audio>
 	</section>
 	<section class="editor-panel" data-role="info-panel">
 		<header class="editor-panel-head">
 			<h2>Map</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="append-map" title="Put another map's groups into this one">append&hellip;</button>
+				<button type="button" class="editor-small" data-role="append-map" data-command="file.append">Append…</button>
 			</span>
 		</header>
 		<div class="editor-props" data-role="info-props"></div>
+		<h3 class="editor-subhead">Open maps</h3>
 		<ul class="editor-memory" data-role="memory"></ul>
 		<input type="file" accept=".map" data-role="append-file" hidden>
+	</section>
+	<section class="editor-panel" data-role="envelopes-panel">
+		<header class="editor-panel-head">
+			<h2>Envelopes</h2>
+			<span class="editor-panel-tools">
+				<select class="editor-small" data-role="envelope-list" aria-label="Envelope"></select>
+				<button type="button" class="editor-icon-button" data-role="add-envelope" data-command="envelope.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-envelope" data-command="envelope.delete" data-icon="close"></button>
+			</span>
+		</header>
+		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+		<div class="editor-props" data-role="point-props"></div>
+	</section>
+	<section class="editor-panel" data-role="history-panel">
+		<header class="editor-panel-head">
+			<h2>History</h2>
+			<span class="editor-panel-tools"><span class="editor-panel-note" data-role="history-bytes"></span></span>
+		</header>
+		<ol class="editor-list editor-history" data-role="history"></ol>
 	</section>
 	<section class="editor-panel" data-role="settings-panel">
 		<header class="editor-panel-head">
 			<h2>Server settings</h2>
 			<span class="editor-panel-tools">
-				<button class="editor-small" data-role="add-setting" title="A line the server runs when it loads the map">+ setting</button>
-				<button class="editor-small" data-role="delete-setting" title="Take this line away">-</button>
+				<button type="button" class="editor-icon-button" data-role="add-setting" data-command="setting.add" data-icon="add"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-setting" data-command="setting.delete" data-icon="close"></button>
 			</span>
 		</header>
 		<ol class="editor-settings" data-role="setting-list"></ol>
 		<p class="editor-setting-said" data-role="setting-said" role="status"></p>
 		<datalist data-role="setting-names"></datalist>
 	</section>
-	<section class="editor-panel" data-role="history-panel">
+	<section class="editor-panel" data-role="rules-panel" hidden>
 		<header class="editor-panel-head">
-			<h2>History</h2>
-			<span class="editor-panel-tools"><span data-role="history-bytes"></span></span>
+			<h2>Rules</h2>
+			<span class="editor-panel-tools">
+				<button type="button" class="editor-small" data-role="rules-apply" data-command="rules.apply">Apply</button>
+				<button type="button" class="editor-small" data-role="rules-revert" data-command="rules.revert">Reload</button>
+				<button type="button" class="editor-small" data-role="rules-save" data-command="rules.save">Save file</button>
+			</span>
 		</header>
-		<ol class="editor-history" data-role="history"></ol>
+		<div class="editor-code">
+			<pre class="editor-code-view" data-role="rules-view" aria-hidden="true"></pre>
+			<textarea class="editor-code-text" data-role="rules-text" spellcheck="false" wrap="off" aria-label="Rules file"></textarea>
+		</div>
+		<p class="editor-code-status" data-role="rules-status"></p>
 	</section>
 </div>
 `;
@@ -1408,6 +1462,34 @@ const PACKED = {
 	width: ["size", 0], height: ["size", 1],
 };
 
+/** What a layer is called on the screen: its name, or what kind of layer it is. */
+function layerName(layer) {
+	if (layer.name) {
+		return layer.name;
+	}
+	const kind = layer.type === "tiles" ? layer.kind : layer.type;
+	return LAYER_KIND_NAMES[kind] || kind;
+}
+
+/** The picture beside a layer's name, by what kind of layer it is. */
+function layerIcon(layer) {
+	if (layer.type === "quads") {
+		return "layerQuads";
+	}
+	if (layer.type === "sounds") {
+		return "layerSounds";
+	}
+	if (layer.kind === "game") {
+		return "layerGame";
+	}
+	return layer.kind === "tiles" || layer.kind === undefined ? "layerTiles" : "layerPhysics";
+}
+
+const LAYER_KIND_NAMES = {
+	tiles: "Tiles", game: "Game", front: "Front", tele: "Tele", switch: "Switch", speedup: "Speedup", tune: "Tune",
+	quads: "Quads", sounds: "Sounds",
+};
+
 function propertyValue(thing, prop) {
 	const packed = PACKED[prop];
 	return packed === undefined ? thing[prop] : thing[packed[0]][packed[1]];
@@ -1474,6 +1556,8 @@ class CEditorPanels {
 		// panels and the program has no panels.
 		this.selection = { group: 0, layer: -1 };
 		this.collapsed = new Set();
+		// Whether a frame has been asked for to scroll the tree once it has a height.
+		this.revealPending = false;
 		// What is being dragged in the layer list, while something is.
 		this.dragging = null;
 		// Where the panels stood when each history entry was made, so that
@@ -1592,7 +1676,12 @@ class CEditorPanels {
 		// The box the panels were spread into, if they were.
 		this.box = null;
 		// Which panel each area shows, for the two that show one at a time.
-		this.tab = { left: "layers", dock: "envelopes", tiles: "tiles" };
+		this.tab = { left: "props", dock: "envelopes", tiles: "tiles" };
+		// How big a tile is drawn in the tileset beside the map: null fits the
+		// column, a number is pixels a tile and the tileset scrolls.
+		this.tileZoom = null;
+		// What stands over the map while there is no map.
+		this.welcome = null;
 		// Which of the four ways the pointer draws, while no modifier says
 		// otherwise.
 		this.tool = "paint";
@@ -1910,41 +1999,24 @@ class CEditorPanels {
 	}
 
 	/**
-	 * The strip of open maps.
-	 *
-	 * Light DOM in the element's header slot, like everything else the editor
-	 * draws, so that the one stylesheet dresses it; where there is no room for
-	 * a header row it moves down into the tool bar, which is the one row there
-	 * always is.
+	 * The strip of open maps, in the top bar after the menu: what one is
+	 * editing and whether it is saved are the two things nobody may have to
+	 * look for.
 	 */
 	buildMaps(box) {
 		this.maps = document.createElement("div");
 		this.maps.className = "editor-maps";
 		this.maps.dataset.role = "maps";
 		this.maps.setAttribute("role", "tablist");
-		this.maps.setAttribute("aria-label", "The maps that are open");
-		this.maps.slot = "header";
-		// Before whatever the page put in the header: what the map is called
-		// and whether it is saved are the two things nobody may have to look
-		// for, so they go first.
-		box.prepend(this.maps);
-		this.refreshMaps();
-	}
-
-	/** Puts the strip where this shape of box has room for it. */
-	placeMaps() {
-		if (this.maps === null) {
-			return;
-		}
-		const inBar = this.shape !== null && this.shape.head === "one";
+		this.maps.setAttribute("aria-label", "Open maps");
 		const bar = this.part("bar");
-		if (inBar && bar !== null && this.maps.parentElement !== bar) {
-			this.maps.removeAttribute("slot");
-			bar.prepend(this.maps);
-		} else if (!inBar && this.box !== null && this.box !== undefined && this.maps.parentElement !== this.box) {
-			this.maps.slot = "header";
-			this.box.prepend(this.maps);
+		const space = bar === null ? null : bar.querySelector(".editor-bar-space");
+		if (space !== null) {
+			bar.insertBefore(this.maps, space);
+		} else {
+			box.prepend(this.maps);
 		}
+		this.refreshMaps();
 	}
 
 	refreshMaps() {
@@ -2015,13 +2087,13 @@ class CEditorPanels {
 		add.type = "button";
 		add.className = "editor-map-add";
 		add.dataset.role = "map-add";
-		add.textContent = "+";
+		add.dataset.icon = "add";
 		const command = this.commands.find(which => which.id === "file.new");
 		add.title = command === undefined ? "New map" : commandTitle(command, this.keysShown());
 		add.setAttribute("aria-label", "New map");
 		add.addEventListener("click", () => this.run("file.new"), { signal: this.stopping.signal });
 		this.maps.append(add);
-		this.placeMaps();
+		DDNetBase.paintIcons(this.maps);
 	}
 
 	/**
@@ -2145,14 +2217,10 @@ class CEditorPanels {
 				this.showTab(place.area, place.tab);
 			}
 		}
-		// The tiles panel has two tabs of its own, and some of the buttons
-		// live in the second one.
-		if (found.closest('[data-role="automap"]') !== null) {
-			this.tab.tiles = "automap";
-			this.applyTilesTab();
-		} else if (found.closest('[data-role="tiles-body"]') !== null) {
-			this.tab.tiles = "tiles";
-			this.applyTilesTab();
+		// A button that is folded away is unfolded first.
+		const folded = found.closest("details");
+		if (folded !== null) {
+			folded.open = true;
 		}
 		return found;
 	}
@@ -2162,19 +2230,14 @@ class CEditorPanels {
 	 *
 	 * A side that became a drawer is shut, because a drawer lies over the map
 	 * and an editor that opened with its map covered would be an editor whose
-	 * first act is in the way. A side that became a column again is opened,
-	 * because a column takes room of its own and an empty one is a stripe of
-	 * nothing.
+	 * first act is in the way. The inspector opens where there is room for it
+	 * and shuts where there is not; whoever opened or shut it by hand keeps
+	 * that until the shape changes again.
 	 */
 	applyShape(shape) {
 		const before = this.shape;
 		this.shape = shape;
 		this.readonly = shape.readonly;
-		// The panels say for themselves whether they are drawn for a finger,
-		// so that the stylesheet has one answer to read whether they stand in
-		// the element or on a page of their own. Every area is told as well as
-		// the root: each of them carries `editor-panels` too, and one that was
-		// not told would go on declaring the sizes the query asked for.
 		const big = this.finger() ? "yes" : "no";
 		this.root.dataset.big = big;
 		if (this.areas !== null) {
@@ -2182,48 +2245,48 @@ class CEditorPanels {
 				area.dataset.big = big;
 			}
 		}
-		// The dock is shut to begin with, because what is in it is looked at
-		// now and then; with room enough it is open, because then it costs
-		// nothing. Said once, when the box first says there is room, so that
-		// somebody who shut it keeps it shut.
+		// The dock is open where there is room to stack, and shuts again when
+		// the room goes: what the size opened, the size may close.
 		if (shape.stack && (before === null || !before.stack)) {
 			this.dockOpen = true;
+		} else if (!shape.stack && before !== null && before.stack) {
+			this.dockOpen = false;
 		}
 		for (const side of ["left", "right"]) {
 			const drawer = shape[side] !== "column";
-			if (before === null || drawer !== (before[side] !== "column")) {
+			const wanted = side === "left" ? (!drawer && shape.inspector === "open") : !drawer;
+			if (before === null || drawer !== (before[side] !== "column")
+				|| (side === "left" && shape.inspector !== before.inspector)) {
 				this.drawer[side] = drawer;
-				this.showArea(side, !drawer);
+				this.showArea(side, wanted && !shape.readonly);
 			}
-			if (shape[side] === "none") {
+			if (shape[side] === "none" || (side === "left" && shape.readonly)) {
 				this.showArea(side, false);
 			}
 		}
 		this.applyTabs();
 		this.applyTilesTab();
 		this.applyDragged();
-		this.placeMaps();
 		this.refreshBar();
+		this.refreshTiles();
 	}
 
 	/**
-	 * Whether this shape of box shows that button.
+	 * Whether this shape of box shows that button of the bar or the rail.
 	 *
 	 * `none` shows none of them, `looking` only what does not change the map,
-	 * `few` only what the plan calls the six a phone has room for, and the two
-	 * wide shapes show all of them - with the modes' names written out only
-	 * where there is room for the words.
+	 * `few` only what a small box has room for, `icons` everything but the
+	 * view switches, and the wide shapes show all of them.
 	 */
 	barShows(command) {
 		const how = this.shape === null ? "labels" : this.shape.bar;
 		if (how === "none") {
 			return false;
 		}
-		// Three of the buttons are keys on a desk and have to be buttons for a
-		// finger: there is no Escape to empty the brush with, nothing to hold
-		// to keep the tile chooser open, and no Ctrl to hold while pressing
-		// the right button that a finger also does not have.
 		if (command.touch === true && !this.finger()) {
+			return false;
+		}
+		if (command.whenDrawer !== undefined && (this.shape === null || this.shape[command.whenDrawer] === "column")) {
 			return false;
 		}
 		if (how === "looking") {
@@ -2231,6 +2294,11 @@ class CEditorPanels {
 		}
 		if (how === "few") {
 			return command.always === true;
+		}
+		// `icons` is the compact bar: what is done to the map, without the
+		// switches of how it is looked at.
+		if (how === "icons") {
+			return command.toggle !== true;
 		}
 		return true;
 	}
@@ -2548,7 +2616,7 @@ class CEditorPanels {
 		const listId = `${this.overId}-palette`;
 		this.palette.innerHTML = `<input class="editor-palette-find" data-role="palette-find" type="text"
 	role="combobox" aria-expanded="true" aria-controls="${listId}" aria-autocomplete="list"
-	placeholder="What should happen?" aria-label="What should happen?" spellcheck="false">
+	placeholder="Type a command" aria-label="Command" spellcheck="false">
 <ul class="editor-palette-list" data-role="palette-list" role="listbox" id="${listId}"
 	aria-label="Everything the editor can do"></ul>
 <p class="editor-palette-none" data-role="palette-none" hidden>Nothing is called that.</p>`;
@@ -2723,7 +2791,7 @@ class CEditorPanels {
 		this.menu.dataset.role = "menu";
 		this.menu.hidden = true;
 		this.menu.setAttribute("role", "menu");
-		this.menu.setAttribute("aria-label", "The menu");
+		this.menu.setAttribute("aria-label", "Menu");
 		const heads = new Map();
 		for (const command of this.commands) {
 			if (command.menu === undefined) {
@@ -2922,7 +2990,7 @@ class CEditorPanels {
 		this.context.className = "editor-menu editor-context";
 		this.context.dataset.role = "context";
 		this.context.setAttribute("role", "menu");
-		this.context.setAttribute("aria-label", `What can be done with this ${kind}`);
+		this.context.setAttribute("aria-label", `Options for this ${kind}`);
 		for (const command of commands) {
 			this.context.append(this.menuRow(command));
 		}
@@ -2938,6 +3006,43 @@ class CEditorPanels {
 		}, { signal: this.stopping.signal });
 		home.append(this.context);
 		this.placeAt(this.context, at);
+		const first = this.context.querySelector("button:not(:disabled)");
+		if (first !== null) {
+			first.focus();
+		}
+	}
+
+	/**
+	 * What can be added to the map, under the plus of the layer list: every
+	 * kind of layer, and a group.
+	 */
+	showAddMenu(anchor) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		this.closeContext();
+		this.showMenu(false);
+		this.showPalette(false);
+		this.context = document.createElement("div");
+		this.context.className = "editor-menu editor-context";
+		this.context.dataset.role = "context";
+		this.context.setAttribute("role", "menu");
+		this.context.setAttribute("aria-label", "Add a layer or group");
+		for (const command of this.commands) {
+			if (command.menu === "Layer/Add layer" || command.id === "layer.addGroup") {
+				this.context.append(this.menuRow(command));
+			}
+		}
+		this.context.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.closeContext();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.context);
+		this.placeAt(this.context, anchor);
 		const first = this.context.querySelector("button:not(:disabled)");
 		if (first !== null) {
 			first.focus();
@@ -3007,8 +3112,8 @@ class CEditorPanels {
 				more.className = "editor-more";
 				more.dataset.role = "more";
 				more.textContent = "\u22ef";
-				more.title = "What can be done with this";
-				more.setAttribute("aria-label", "What can be done with this");
+				more.title = "More";
+				more.setAttribute("aria-label", "Options for this row");
 				more.addEventListener("click", event => {
 					event.stopPropagation();
 					row.click();
@@ -3325,7 +3430,7 @@ class CEditorPanels {
 		this.dialog.dataset.role = "dialog";
 		this.dialog.setAttribute("role", "dialog");
 		this.dialog.setAttribute("aria-modal", "true");
-		this.dialog.setAttribute("aria-label", "What the keys do");
+		this.dialog.setAttribute("aria-label", "Keyboard shortcuts");
 		const form = document.createElement("form");
 		form.className = "editor-dialog-body";
 		const head = document.createElement("h2");
@@ -3639,38 +3744,96 @@ class CEditorPanels {
 	}
 
 	/**
-	 * The tool bar, out of the list of commands. Nothing here knows what any
-	 * of the buttons do; a button is a command that said it wanted one.
+	 * The top bar and the rail, out of the list of commands. Nothing here
+	 * knows what any of the buttons do; a button is a command that said it
+	 * wanted one. The rail holds the tools and, under them, what is in the
+	 * brush; the bar holds the menu, the open maps, and what is done to or
+	 * seen of the map.
 	 */
 	buildBar() {
 		const bar = this.root.querySelector('[data-role="bar"]');
-		const status = bar.firstElementChild;
+		const rail = this.root.querySelector('[data-role="rail"]');
+		const button = (command, className) => {
+			const made = document.createElement("button");
+			made.type = "button";
+			made.className = className;
+			made.dataset.role = commandRole(command);
+			made.dataset.command = command.id;
+			made.dataset.icon = command.icon;
+			made.dataset.bar = "";
+			made.title = commandTitle(command, this.keysShown());
+			made.setAttribute("aria-label", command.label);
+			if (command.pressed !== undefined) {
+				made.setAttribute("aria-pressed", "false");
+			}
+			made.addEventListener("click", () => this.run(command.id), { signal: this.stopping.signal });
+			return made;
+		};
+		// The menu first, then the maps that are open (put there once there is
+		// a box to know them), then everything else, with a gap wherever the
+		// group changes.
+		const menu = this.commands.find(command => command.id === "menu.open");
+		if (menu !== undefined) {
+			bar.append(button(menu, "editor-button"));
+		}
+		const spacer = document.createElement("span");
+		spacer.className = "editor-bar-space";
+		bar.append(spacer);
+		let group = null;
 		for (const command of this.commands) {
-			if (command.bar !== true && command.rail !== true) {
+			if (command.bar !== true || command === menu) {
 				continue;
 			}
-			const button = document.createElement("button");
-			button.type = "button";
-			button.className = "editor-button";
-			button.dataset.role = commandRole(command);
-			button.dataset.command = command.id;
-			button.dataset.icon = command.icon;
-			button.title = commandTitle(command, this.keysShown());
-			button.setAttribute("aria-label", command.label);
-			if (command.pressed !== undefined) {
-				button.setAttribute("aria-pressed", "false");
+			if (group !== null && command.group !== group) {
+				const gap = document.createElement("span");
+				gap.className = "editor-bar-gap";
+				gap.dataset.after = group;
+				bar.append(gap);
 			}
-			// The name beside the icon, for the shapes of box that have room
-			// for words. Only the modes carry one: they are the four that are
-			// a choice rather than an action, and a choice wants a name.
-			if (command.text === true) {
-				const name = document.createElement("span");
-				name.className = "editor-button-text";
-				name.textContent = command.label;
-				button.append(name);
+			group = command.group;
+			bar.append(button(command, "editor-button"));
+		}
+		for (const command of this.commands) {
+			if (command.rail !== true) {
+				continue;
 			}
-			button.addEventListener("click", () => this.run(command.id), { signal: this.stopping.signal });
-			bar.insertBefore(button, status);
+			const made = button(command, "editor-rail-button");
+			made.setAttribute("role", "radio");
+			const key = document.createElement("kbd");
+			key.className = "editor-rail-key";
+			key.setAttribute("aria-hidden", "true");
+			made.append(key);
+			rail.append(made);
+		}
+		// What is in hand, as a picture. Pressing it opens the big chooser: the
+		// picture is small, and the thing one wants when looking at it is to
+		// change it.
+		const swatch = document.createElement("button");
+		swatch.type = "button";
+		swatch.className = "editor-swatch";
+		swatch.dataset.role = "brush-swatch";
+		swatch.title = "Brush";
+		swatch.setAttribute("aria-label", "Brush");
+		swatch.innerHTML = '<canvas class="editor-swatch-picture" data-role="brush-picture" width="32" height="32"></canvas><span class="editor-swatch-size" data-role="brush-swatch-size"></span>';
+		swatch.addEventListener("click", () => this.run("picker.show"), { signal: this.stopping.signal });
+		rail.append(swatch);
+		const gap = document.createElement("span");
+		gap.className = "editor-rail-space";
+		rail.append(gap);
+		// The inspector's switch, at the foot of the rail where Photopea keeps
+		// its colours: the one panel that is not always there wants a button
+		// that always is.
+		const inspector = this.commands.find(command => command.id === "area.left");
+		if (inspector !== undefined) {
+			rail.append(button(Object.assign({}, inspector, { icon: "properties" }), "editor-rail-button editor-rail-foot"));
+		}
+	}
+
+	/** The key a tool answers to, written on its button once a keyboard has been seen. */
+	refreshRailKeys() {
+		for (const key of this.parts("rail").flatMap(rail => [...rail.querySelectorAll(".editor-rail-key")])) {
+			const command = this.commands.find(which => which.id === key.parentElement.dataset.command);
+			key.textContent = command === undefined ? "" : this.keyText(command);
 		}
 	}
 
@@ -3712,15 +3875,17 @@ class CEditorPanels {
 	}
 
 	/**
-	 * Moves the panels out of the one column and into the areas of a box -
-	 * the tree and the pictures to the left, the inspector to the right, the
-	 * envelopes and the history below, the bar above and the status line at
-	 * the bottom. Nothing about a panel changes; only where it stands.
+	 * Moves the panels out of the one column and into the areas of a box: the
+	 * rail and the inspector to the left, the layers and the tileset to the
+	 * right, the envelopes and the history below, the bar above and the
+	 * status line at the bottom. Nothing about a panel changes; only where it
+	 * stands.
 	 */
 	spread(areas, box) {
 		// Taken before anything moves: `part` looks in the column, and the
 		// column is about to be empty.
 		const bar = this.part("bar");
+		const rail = this.part("rail");
 		const status = this.part("status");
 		const hover = this.part("hover");
 		const panels = new Map(PANEL_PLACES.map(place => [place.role, this.part(place.role)]));
@@ -3730,15 +3895,55 @@ class CEditorPanels {
 		// is "the panels" any more - the box is.
 		this.box = box === undefined ? null : box;
 		areas.toolbar.append(bar);
-		// The status line: what is under the pointer on the left, what is being
-		// worked in next to it, and what just happened on the right.
+		if (areas.rail !== undefined) {
+			areas.rail.append(rail);
+		} else {
+			areas.left.append(rail);
+		}
+		// The status line: what is under the pointer on the left, then what
+		// just happened, then what is being worked in; on the right the four
+		// strips below the map as switches, and the zoom.
 		const line = document.createElement("div");
 		line.className = "editor-statusline";
-		line.innerHTML = '<span data-role="status-layer"></span><span data-role="status-brush"></span><span data-role="status-zoom"></span>';
-		areas.status.append(hover, line, status);
+		line.innerHTML = '<span data-role="status-layer"></span><span data-role="status-brush"></span>';
+		const hint = document.createElement("span");
+		hint.className = "editor-tool-hint";
+		hint.dataset.role = "tool-hint";
+		const space = document.createElement("span");
+		space.className = "editor-bar-space";
+		const docks = document.createElement("div");
+		docks.className = "editor-dock-tabs";
+		docks.dataset.role = "dock-tabs";
+		docks.setAttribute("role", "tablist");
+		docks.setAttribute("aria-label", "Below the map");
+		for (const place of PANEL_PLACES.filter(where => where.area === "dock" && where.tab !== undefined)) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-dock-tab";
+			button.dataset.role = "dock-tab";
+			button.dataset.tab = place.tab;
+			button.dataset.command = `dock.${place.tab}`;
+			button.setAttribute("role", "tab");
+			button.textContent = place.name;
+			button.title = `${place.name} below the map; press again to close`;
+			button.addEventListener("click", () => {
+				// The tab in front shuts the strip; any other puts itself in front.
+				if (this.dockOpen && this.tab.dock === place.tab) {
+					this.dockOpen = false;
+					this.applyTabs();
+				} else {
+					this.showTab("dock", place.tab);
+				}
+			}, { signal: this.stopping.signal });
+			docks.append(button);
+		}
+		const zoom = document.createElement("span");
+		zoom.dataset.role = "status-zoom";
+		zoom.className = "editor-status-zoom";
+		areas.status.append(hover, status, line, hint, space, docks, zoom);
 		for (const area of ["left", "right", "dock"]) {
 			const here = PANEL_PLACES.filter(place => place.area === area);
-			if (TABBED_AREAS[area] !== undefined) {
+			if (area === "left") {
 				areas[area].append(this.makeTabs(area, here));
 			}
 			const body = document.createElement("div");
@@ -3754,6 +3959,8 @@ class CEditorPanels {
 		for (const area of ["left", "right", "dock"]) {
 			areas[area].append(this.makeGrip(area));
 		}
+		DDNetBase.paintIcons(areas.status);
+		DDNetBase.paintIcons(areas.dock);
 		this.applyTabs();
 		if (this.box !== null) {
 			this.buildMaps(this.box);
@@ -3873,6 +4080,7 @@ class CEditorPanels {
 	}
 
 	// The strip of names above an area that shows one panel at a time.
+	// The strip of names above an area that shows one panel at a time.
 	makeTabs(area, places) {
 		const strip = document.createElement("div");
 		strip.className = "editor-tabs";
@@ -3892,48 +4100,31 @@ class CEditorPanels {
 			button.addEventListener("click", () => this.showTab(area, place.tab), { signal: this.stopping.signal });
 			strip.append(button);
 		}
-		if (area === "dock") {
-			const toggle = document.createElement("button");
-			toggle.type = "button";
-			toggle.className = "editor-tab editor-dock-toggle";
-			toggle.dataset.role = "dock-toggle";
-			toggle.title = "Open or close the strip at the bottom";
-			toggle.addEventListener("click", () => {
-				this.dockOpen = !this.dockOpen;
-				this.applyTabs();
-			}, { signal: this.stopping.signal });
-			strip.append(toggle);
+		if (area === "left") {
+			const shut = document.createElement("button");
+			shut.type = "button";
+			shut.className = "editor-icon-button editor-tabs-close";
+			shut.dataset.role = "inspector-close";
+			shut.dataset.icon = "close";
+			shut.title = "Close";
+			shut.setAttribute("aria-label", "Close the inspector");
+			shut.addEventListener("click", () => this.showArea("left", false), { signal: this.stopping.signal });
+			strip.append(shut);
+			DDNetBase.paintIcons(strip);
 		}
 		return strip;
 	}
 
 	/**
-	 * The two sides of the tile panel: the tileset one paints with, and the
-	 * rules that paint by themselves. They are one panel with two tabs rather
-	 * than two panels, because both are about the same layer and only one of
-	 * them is wanted at a time.
+	 * The parts of the tile panel that are only there when they have
+	 * something to say: the rules that paint by themselves, for a layer
+	 * whose picture has rules.
 	 */
 	applyTilesTab() {
 		const there = this.automapThere === true;
-		if (!there && this.tab.tiles === "automap") {
-			this.tab.tiles = "tiles";
-		}
-		// The same with the inspector's own two: with room they stand above
-		// each other, and the strip that chose between them goes away.
-		const roomy = this.shape !== null && this.shape.stack === true;
-		const body = this.part("tiles-body");
-		if (body !== null) {
-			body.hidden = !roomy && this.tab.tiles !== "tiles";
-		}
-		const automap = this.part("automap");
-		if (automap !== null) {
-			automap.hidden = !there || (!roomy && this.tab.tiles !== "automap");
-		}
-		for (const button of this.parts("tiles-tab")) {
-			button.hidden = roomy;
-			button.disabled = button.dataset.tab === "automap" && !there;
-			button.setAttribute("aria-selected", button.dataset.tab === this.tab.tiles ? "true" : "false");
-			button.tabIndex = button.dataset.tab === this.tab.tiles ? 0 : -1;
+		const section = this.part("automap-section");
+		if (section !== null) {
+			section.hidden = !there;
 		}
 	}
 
@@ -3964,18 +4155,15 @@ class CEditorPanels {
 				const first = here.find(has);
 				this.tab[area] = first === undefined ? null : first.tab;
 			}
-			// With room enough, the map's parts stand above each other instead
-			// of behind each other: the layer tree is always there, and one
-			// of the other three is under it. A tab that is always in front
-			// is not a tab, so it leaves the strip.
+			// With room enough the envelopes stand beside whatever else the
+			// strip shows, instead of behind it.
 			const roomy = this.shape !== null && this.shape.stack === true;
-			const always = !roomy ? null
-				: area === "left" ? "layers"
-					: area === "dock" ? "envelopes" : null;
+			const always = roomy && area === "dock" ? "envelopes" : null;
 			if (always !== null && this.tab[area] === always) {
 				const next = here.find(place => place.tab !== always && has(place));
 				this.tab[area] = next === undefined ? always : next.tab;
 			}
+			const buttons = this.parts(`${TABBED_AREAS[area]}-tab`);
 			for (const place of here) {
 				const panel = this.part(place.role);
 				const shown = has(place) && (place.tab === this.tab[area] || place.tab === always);
@@ -3983,11 +4171,15 @@ class CEditorPanels {
 					panel.hidden = !shown;
 					panel.classList.toggle("editor-panel-always", place.tab === always);
 				}
-				const button = this.areas[area].querySelector(`[data-tab="${place.tab}"]`);
-				if (button !== null) {
-					button.hidden = place.tab === always;
+				const button = buttons.find(one => one.dataset.tab === place.tab);
+				if (button !== undefined) {
+					button.hidden = area === "left" && place.tab === always;
 					button.disabled = !has(place);
-					button.setAttribute("aria-selected", place.tab === this.tab[area] ? "true" : "false");
+					const inFront = place.tab === this.tab[area] && (area !== "dock" || this.dockOpen);
+					button.setAttribute("aria-selected", inFront ? "true" : "false");
+					if (area === "dock") {
+						button.setAttribute("aria-pressed", inFront ? "true" : "false");
+					}
 					button.tabIndex = place.tab === this.tab[area] ? 0 : -1;
 				}
 			}
@@ -3995,12 +4187,8 @@ class CEditorPanels {
 		const dock = this.areas.dock;
 		if (dock !== undefined) {
 			dock.classList.toggle("editor-dock-shut", !this.dockOpen);
+			dock.hidden = !this.dockOpen;
 			this.applyDragged();
-			const toggle = dock.querySelector('[data-role="dock-toggle"]');
-			if (toggle !== null) {
-				toggle.setAttribute("aria-expanded", this.dockOpen ? "true" : "false");
-				toggle.textContent = this.dockOpen ? "\u25be" : "\u25b4";
-			}
 		}
 	}
 
@@ -4059,13 +4247,31 @@ class CEditorPanels {
 		const on = (role, handler) => this.part(role).addEventListener("click", handler, { signal: signal });
 		this.wireArt();
 		this.wireType();
-		on("add-group", () => this.run("layer.addGroup"));
-		on("add-layer", () => this.run("layer.addTiles"));
-		on("add-quads", () => this.run("layer.addQuads"));
+		on("add-layer-menu", event => this.showAddMenu(event.currentTarget));
+		on("layer-menu", event => {
+			this.showContext(this.selection.layer < 0 ? "group" : "layer", event.currentTarget);
+		});
+		on("select-game", () => {
+			this.selection = this.defaultSelection();
+			this.refresh();
+		});
 		on("flip-x", () => this.run("brush.flipX"));
 		on("flip-y", () => this.run("brush.flipY"));
 		on("rotate", () => this.run("brush.rotate"));
+		on("clear-brush", () => this.run("brush.clear"));
+		on("tiles-big", () => this.run("picker.show"));
+		on("tiles-zoom-in", () => this.zoomTiles(1));
+		on("tiles-zoom-out", () => this.zoomTiles(-1));
 		this.wireTileset();
+		// The list of layers changes height after the fact - the tileset comes
+		// when its picture has loaded and takes its share of the column - and
+		// the row one is working on must not be pushed out of sight by that.
+		const tree = this.part("tree");
+		if (tree !== null && typeof ResizeObserver === "function") {
+			const watcher = new ResizeObserver(() => this.revealSelected());
+			watcher.observe(tree);
+			signal.addEventListener("abort", () => watcher.disconnect());
+		}
 		this.wireAutomap();
 		this.wireConstruct();
 		this.wireShape();
@@ -4080,9 +4286,6 @@ class CEditorPanels {
 		this.wireClickAway();
 		this.wireDrawers();
 		this.wireTips();
-		on("delete", () => this.run("layer.delete"));
-		on("up", () => this.run("layer.up"));
-		on("down", () => this.run("layer.down"));
 
 		// The program says when the map changed; nothing here asks it in a
 		// loop the way the viewer's buttons do, because an editor calls.
@@ -4599,6 +4802,7 @@ class CEditorPanels {
 		this.refreshInfo();
 		this.refreshHistory();
 		this.refreshStatus();
+		this.refreshWelcome();
 		// The line for the first stroke: there until something was drawn.
 		const history = this.editor.history();
 		if (history !== null && history.entries.length > 1) {
@@ -4662,6 +4866,7 @@ class CEditorPanels {
 	}
 
 	/** What the line along the bottom says about where the work is. */
+	/** What the line along the bottom says about where the work is. */
 	refreshStatus() {
 		const say = (role, text) => {
 			const part = this.part(role);
@@ -4673,14 +4878,34 @@ class CEditorPanels {
 		const where = this.selection;
 		const group = this.map === null || where.group >= this.map.groups.length ? null : this.map.groups[where.group];
 		const groupName = group === null ? "" : (group.name || `Group ${where.group}`);
-		say("status-layer", layer === null ? groupName : `${groupName} \u203a ${layer.name || layer.kind}`);
+		say("status-layer", layer === null ? groupName : `${groupName} \u203a ${layerName(layer)}`);
 		const size = this.editor.brushSize();
 		say("status-brush", size === null || size.width === 0 ? "" : `Brush ${size.width} \u00d7 ${size.height}`);
 		const zoom = this.editor.zoom();
 		const percent = zoom === null ? "" : `${Math.round(100 / zoom)} %`;
 		say("status-zoom", percent);
+		say("brush-swatch-size", size === null || size.width === 0 ? "" : `${size.width}\u00d7${size.height}`);
 		if (this.zoomChip !== null && this.zoomChip !== undefined) {
 			this.zoomChip.querySelector('[data-role="zoom-level"]').textContent = percent;
+		}
+		// What a drag does right now, said in a few words: the tool, and the
+		// keys that make it another for one stroke.
+		const command = this.commands.find(which => which.rail === true && which.pressed !== undefined && which.pressed(this));
+		let hint = command === undefined ? "" : command.hint || command.label;
+		if (this.map === null) {
+			hint = "";
+		} else if (layer === null) {
+			hint = "Select a layer to paint";
+		} else if (layer.type === "tiles" && this.editor.brushEmpty() && this.tool === "paint") {
+			hint = "No brush: drag to select tiles, or click a tile on the right";
+		} else if (layer.type === "tiles" && this.tool === "paint" && this.keysShown() && !this.finger()) {
+			hint += " \u00b7 Shift selects \u00b7 Alt fills \u00b7 Ctrl erases";
+		}
+		say("tool-hint", hint);
+		const swatch = this.part("brush-swatch");
+		if (swatch !== null) {
+			swatch.classList.toggle("editor-swatch-empty", size === null || size.width === 0);
+			swatch.title = size === null || size.width === 0 ? "No brush - click to choose tiles" : `Brush ${size.width} \u00d7 ${size.height} - click to choose tiles`;
 		}
 	}
 
@@ -4701,40 +4926,68 @@ class CEditorPanels {
 	}
 
 	/** The tool bar's button for a command, by the command's own name. */
+	/** The bar's or the rail's button for a command, by the command's own name. */
 	barButton(command) {
-		const bar = this.part("bar");
-		return bar === null ? null : bar.querySelector(`[data-command="${command.id}"]`);
+		return this.commandButtons().find(button => button.dataset.command === command.id && button.dataset.bar !== undefined) || null;
 	}
 
+	/**
+	 * Every button that stands for a command, wherever it stands - in the bar,
+	 * in the rail, in the status line, in a panel - says what its command
+	 * says: whether it can be done, whether it is on, and what it is called.
+	 */
 	refreshBar() {
-		for (const command of this.commands) {
-			if (command.bar !== true && command.rail !== true) {
+		for (const button of this.commandButtons()) {
+			const command = this.commands.find(which => which.id === button.dataset.command);
+			if (command === undefined) {
 				continue;
 			}
-			// By the command's own name, not by the role its button carries:
-			// two commands can end up with the same role - `palette.open` and
-			// `menu.open` are both "open" - and then one of them would be
-			// refreshed twice and the other never.
-			const button = this.barButton(command);
-			if (button === null) {
-				continue;
+			if (button.dataset.bar !== undefined) {
+				button.hidden = !this.barShows(command);
 			}
-			button.hidden = !this.barShows(command);
 			button.disabled = (command.enabled !== undefined && !command.enabled(this))
 				|| (this.readonly && command.safe !== true);
 			// The name is written again rather than once at the start: whether
 			// the shortcut belongs beside it is not known until the first key.
-			button.title = commandTitle(command, this.keysShown());
+			if (button.dataset.role !== "brush-swatch") {
+				button.title = commandTitle(command, this.keysShown());
+				if (button.getAttribute("aria-label") === null || button.dataset.bar !== undefined) {
+					button.setAttribute("aria-label", command.label);
+				}
+			}
 			if (command.pressed !== undefined) {
-				button.setAttribute("aria-pressed", command.pressed(this) ? "true" : "false");
+				const on = command.pressed(this);
+				button.setAttribute(button.getAttribute("role") === "radio" ? "aria-checked" : "aria-pressed", on ? "true" : "false");
+				if (button.getAttribute("role") === "radio") {
+					button.setAttribute("aria-pressed", on ? "true" : "false");
+				}
 			}
 		}
+		this.refreshRailKeys();
 		// Proof mode has three states on one button, and which of the two
 		// on-states it is in is not a thing `aria-pressed` can say.
 		const proof = this.part("proof");
 		if (proof !== null) {
 			proof.dataset.proof = this.proof;
 		}
+	}
+
+	/** Every button that carries a command's name, wherever the panels stand. */
+	commandButtons() {
+		const found = [...this.root.querySelectorAll("[data-command]")];
+		if (this.areas !== null) {
+			for (const area of Object.values(this.areas)) {
+				found.push(...area.querySelectorAll("[data-command]"));
+			}
+		}
+		if (this.box !== null && this.box !== undefined) {
+			for (const one of this.box.querySelectorAll("[data-command]")) {
+				if (!found.includes(one)) {
+					found.push(one);
+				}
+			}
+		}
+		return found;
 	}
 
 	refreshTree() {
@@ -4770,7 +5023,7 @@ class CEditorPanels {
 			// The row is the one stop for the keyboard; the arrows fold it.
 			fold.tabIndex = -1;
 			fold.setAttribute("aria-hidden", "true");
-			fold.textContent = this.collapsed.has(groupIndex) ? "▸" : "▾";
+			fold.dataset.icon = this.collapsed.has(groupIndex) ? "chevronRight" : "chevronDown";
 			fold.addEventListener("click", event => {
 				event.stopPropagation();
 				if (this.collapsed.has(groupIndex)) {
@@ -4780,10 +5033,12 @@ class CEditorPanels {
 				}
 				this.refreshTree();
 			}, { signal: this.stopping.signal });
+			const picture = DDNetBase.icon("group");
+			picture.classList.add("editor-row-icon");
 			const name = document.createElement("span");
 			name.className = "editor-name";
 			name.textContent = group.name || `Group ${groupIndex}`;
-			head.append(fold, name);
+			head.append(fold, picture, name);
 			if (this.selection.group === groupIndex && this.selection.layer < 0) {
 				head.classList.add("editor-selected");
 			}
@@ -4816,7 +5071,7 @@ class CEditorPanels {
 					const eye = document.createElement("button");
 					eye.className = "editor-eye";
 					eye.dataset.role = "visible";
-					eye.textContent = shown ? "\u25c9" : "\u25cb";
+					eye.dataset.icon = shown ? "eye" : "eyeOff";
 					eye.title = shown ? "Hide this layer" : "Show this layer";
 					eye.setAttribute("aria-pressed", shown ? "true" : "false");
 					// Space on the row does what the eye does.
@@ -4826,9 +5081,16 @@ class CEditorPanels {
 						this.editor.visible(groupIndex, layerIndex, !shown);
 						this.refreshTree();
 					}, { signal: this.stopping.signal });
+					const picture = DDNetBase.icon(layerIcon(layer));
+					picture.classList.add("editor-row-icon");
 					const label = document.createElement("span");
-					label.textContent = `${layer.name || what} (${what})`;
-					row.append(eye, label);
+					label.className = "editor-row-name";
+					label.textContent = layerName(layer);
+					label.title = `${layerName(layer)} (${what})`;
+					if (layer.kind === "game") {
+						row.classList.add("editor-layer-game");
+					}
+					row.append(picture, label, eye);
 					if (!shown) {
 						row.classList.add("editor-hidden-layer");
 						row.setAttribute("aria-description", "hidden");
@@ -4848,6 +5110,7 @@ class CEditorPanels {
 			}
 			tree.append(item);
 		});
+		DDNetBase.paintIcons(tree);
 		// One stop for Tab in the whole tree - the row that is selected, or
 		// its group while the group is folded up - rather than one per layer.
 		const rows = [...tree.querySelectorAll('[role="treeitem"]')];
@@ -4862,11 +5125,46 @@ class CEditorPanels {
 			// The row that is selected is the row one is working on; a list
 			// that has scrolled it out of sight is a list that hides the one
 			// thing it is for.
-			if (stop.getAttribute("aria-selected") === "true" && typeof stop.scrollIntoView === "function") {
-				stop.scrollIntoView({ block: "nearest" });
+			if (stop.getAttribute("aria-selected") === "true") {
+				this.revealSelected();
 			}
 		}
 		this.addMoreButtons();
+	}
+
+	/**
+	 * Scrolls the list of layers so that the selected row is in sight. Done
+	 * by hand rather than with `scrollIntoView`: before the first layout
+	 * there is nothing to scroll yet, so a list that has no height asks again
+	 * after the next frame - and looks the row up again then, because every
+	 * refresh makes the rows anew.
+	 */
+	revealSelected() {
+		const tree = this.part("tree");
+		if (tree === null) {
+			return;
+		}
+		if (tree.clientHeight === 0) {
+			if (this.revealPending !== true) {
+				this.revealPending = true;
+				requestAnimationFrame(() => {
+					this.revealPending = false;
+					this.revealSelected();
+				});
+			}
+			return;
+		}
+		const row = tree.querySelector('[aria-selected="true"]');
+		if (row === null) {
+			return;
+		}
+		const at = row.getBoundingClientRect();
+		const box = tree.getBoundingClientRect();
+		if (at.bottom > box.bottom) {
+			tree.scrollTop += at.bottom - box.bottom;
+		} else if (at.top < box.top) {
+			tree.scrollTop -= box.top - at.top;
+		}
 	}
 
 	/**
@@ -4942,6 +5240,12 @@ class CEditorPanels {
 			if (row.getAttribute("aria-selected") !== "true") {
 				choose(row);
 			}
+			// The name is in the inspector, which may be shut: Enter on a
+			// row is the keyboard's double click, and opens it at Properties.
+			if (this.areas !== null) {
+				this.showArea("left", true);
+				this.showTab("left", "props");
+			}
 			const name = this.part("props").querySelector("input");
 			if (name !== null) {
 				name.focus();
@@ -4990,7 +5294,7 @@ class CEditorPanels {
 		const canvas = this.editor.canvas;
 		const areas = this.areas === null
 			? [this.element, canvas]
-			: [this.maps, this.areas.toolbar, this.areas.left, canvas, this.areas.right, this.areas.dock];
+			: [this.areas.toolbar, this.areas.rail, this.areas.left, canvas, this.areas.right, this.areas.dock];
 		const shown = areas.filter(area => area !== null && area !== undefined && !area.hidden && area.getClientRects().length > 0);
 		if (shown.length === 0) {
 			return false;
@@ -5004,8 +5308,8 @@ class CEditorPanels {
 		}
 		const usable = one => !one.disabled && one.tabIndex >= 0 && one.getClientRects().length > 0 && one.closest("[hidden]") === null;
 		// What is chosen in the area before whatever comes first in it: the
-		// row of the tree, then the tab in front, then anything at all.
-		for (const which of ['[role="treeitem"][tabindex="0"]', '[role="tab"][aria-selected="true"]', 'button, input, select, textarea, [tabindex="0"]']) {
+		// row of the tree, the tool in hand, the tab in front, then anything.
+		for (const which of ['[role="treeitem"][tabindex="0"]', '[role="radio"][aria-checked="true"]', '[role="tab"][aria-selected="true"]', 'button, input, select, textarea, [tabindex="0"]']) {
 			const one = [...next.querySelectorAll(which)].find(usable);
 			if (one !== undefined) {
 				one.focus();
@@ -5019,13 +5323,23 @@ class CEditorPanels {
 		const props = this.part("props");
 		props.textContent = "";
 		this.part("construct").hidden = true;
-		if (this.map === null || this.map.groups.length === 0) {
+		const nothing = this.map === null || this.map.groups.length === 0;
+		// The place the tileset would be, while a group is selected: it says
+		// what to do instead of showing nothing.
+		this.showPanel("group-panel", !nothing && this.selection.layer < 0);
+		if (nothing) {
 			this.part("props-title").textContent = "Properties";
 			return;
 		}
 		const where = this.selection;
 		const group = this.map.groups[where.group];
 		if (where.layer < 0) {
+			const text = this.part("group-text");
+			if (text !== null) {
+				text.textContent = group.layers.length === 0
+					? `${group.name || `Group ${where.group}`} is empty. Add a layer to paint in it.`
+					: "A group holds layers. Select a layer to paint.";
+			}
 			this.part("props-title").textContent = `Group: ${group.name || where.group}`;
 			for (const field of GROUP_PROPS) {
 				props.append(this.field(group, field, value => ({
@@ -5035,7 +5349,7 @@ class CEditorPanels {
 			return;
 		}
 		const layer = group.layers[where.layer];
-		this.part("props-title").textContent = `Layer: ${layer.name || layer.type}`;
+		this.part("props-title").textContent = `Layer: ${layerName(layer)}`;
 		const fields = LAYER_PROPS.common.concat(LAYER_PROPS[layer.type] || []);
 		for (const field of fields) {
 			props.append(this.field(layer, field, value => ({
@@ -5224,14 +5538,6 @@ class CEditorPanels {
 
 	wireTileset() {
 		this.buildSlots();
-		// The two tabs over the tileset: what is painted with, and what paints
-		// by itself.
-		for (const button of this.parts("tiles-tab")) {
-			button.addEventListener("click", () => {
-				this.tab.tiles = button.dataset.tab;
-				this.applyTilesTab();
-			}, { signal: this.stopping.signal });
-		}
 		this.wirePick(this.part("tileset"));
 	}
 
@@ -5259,7 +5565,8 @@ class CEditorPanels {
 		}
 		this.ensureBrush();
 		const size = this.editor.brushSize();
-		this.part("brush-size").textContent = size === null ? "" : `${size.width} x ${size.height}`;
+		this.part("brush-size").textContent = size === null || size.width === 0 ? "No brush" : `${size.width} \u00d7 ${size.height}`;
+		this.applyTileZoom();
 		this.refreshNumbers(layer);
 		this.refreshAutomap(layer);
 		this.refreshRules(layer);
@@ -5280,6 +5587,10 @@ class CEditorPanels {
 		const source = physics
 			? new URL(`editor/entities_clear/${this.editor.entitiesImage()}.png`, this.dataBase).href
 			: image === null ? null : (image.external ? new URL(`mapres/${image.name}.png`, this.dataBase).href : `packed:${layer.image}:${image.name}`);
+		const title = this.part("tiles-title");
+		if (title !== null) {
+			title.textContent = physics ? "Entities" : image === null ? "Tiles (no image)" : image.name;
+		}
 		if (source !== this.tilesetSource) {
 			this.tilesetSource = source;
 			this.tileset = null;
@@ -5299,6 +5610,99 @@ class CEditorPanels {
 		this.refreshSlots();
 		this.paintTileset();
 		this.paintPicker();
+		this.paintSwatch();
+	}
+
+	/**
+	 * How big a tile is in the tileset beside the map. Nothing set fits the
+	 * column; a number is pixels a tile, and the box around it scrolls.
+	 */
+	applyTileZoom() {
+		const canvas = this.part("tileset");
+		if (canvas === null) {
+			return;
+		}
+		const side = this.tileZoom === null ? 512 : this.tileZoom * TILESET_SIDE;
+		if (canvas.width !== side) {
+			canvas.width = side;
+			canvas.height = side;
+		}
+		canvas.style.width = this.tileZoom === null ? "" : `${side}px`;
+		canvas.style.height = this.tileZoom === null ? "" : `${side}px`;
+		const out = this.part("tiles-zoom-out");
+		const into = this.part("tiles-zoom-in");
+		const steps = TILE_ZOOMS.indexOf(this.tileZoom);
+		if (out !== null) {
+			out.disabled = steps <= 0;
+		}
+		if (into !== null) {
+			into.disabled = steps >= TILE_ZOOMS.length - 1;
+		}
+	}
+
+	/** One step bigger or smaller, through the sizes a tile can be drawn at. */
+	zoomTiles(step) {
+		const at = TILE_ZOOMS.indexOf(this.tileZoom);
+		const next = Math.max(0, Math.min(TILE_ZOOMS.length - 1, at + step));
+		this.tileZoom = TILE_ZOOMS[next];
+		this.applyTileZoom();
+		this.paintTileset();
+		try {
+			if (this.remembers()) {
+				localStorage.setItem(TILE_ZOOM_STORAGE, String(this.tileZoom));
+			}
+		} catch (error) {
+			// Not kept; it is the size for this visit.
+		}
+	}
+
+	/**
+	 * What is in hand, drawn small in the rail. The tiles the brush holds
+	 * are known where they were picked out of the tileset; a brush grabbed
+	 * off the map is drawn as its size, which is all that is known of it.
+	 */
+	paintSwatch() {
+		const canvas = this.part("brush-picture");
+		if (canvas === null) {
+			return;
+		}
+		const paint = canvas.getContext("2d");
+		paint.clearRect(0, 0, canvas.width, canvas.height);
+		const size = this.editor.brushSize();
+		if (size === null || size.width === 0) {
+			return;
+		}
+		const picked = this.picked;
+		const layer = this.selectedLayer();
+		if (picked !== null && layer !== null && layer.type === "tiles" && this.tileset !== null
+			&& picked.width === size.width && picked.height === size.height) {
+			const source = this.tileset instanceof ImageData ? (() => {
+				const packed = document.createElement("canvas");
+				packed.width = this.tileset.width;
+				packed.height = this.tileset.height;
+				packed.getContext("2d").putImageData(this.tileset, 0, 0);
+				return packed;
+			})() : this.tileset;
+			const tile = (source.width || source.naturalWidth || 1024) / TILESET_SIDE;
+			const scale = Math.min(canvas.width / (picked.width * tile), canvas.height / (picked.height * tile));
+			const width = picked.width * tile * scale;
+			const height = picked.height * tile * scale;
+			paint.imageSmoothingEnabled = false;
+			paint.drawImage(source, picked.x * tile, picked.y * tile, picked.width * tile, picked.height * tile,
+				(canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+			return;
+		}
+		// Grabbed off the map: a checked square in the accent, the size in
+		// the corner is written beside it by the status refresh.
+		const cell = Math.max(2, Math.floor(canvas.width / Math.max(size.width, size.height, 4)));
+		paint.fillStyle = "#8a8a99";
+		for (let y = 0; y < size.height && y * cell < canvas.height; y++) {
+			for (let x = 0; x < size.width && x * cell < canvas.width; x++) {
+				if ((x + y) % 2 === 0) {
+					paint.fillRect(x * cell, y * cell, cell - 1, cell - 1);
+				}
+			}
+		}
 	}
 
 	/**
@@ -5343,7 +5747,7 @@ class CEditorPanels {
 					free.className = "editor-small";
 					free.dataset.role = "next-free";
 					free.textContent = "free";
-					free.title = "The lowest number this layer is not using";
+					free.title = "Next number this layer does not use yet";
 					row.append(free);
 					const goto_ = document.createElement("button");
 					goto_.className = "editor-small";
@@ -5782,6 +6186,54 @@ class CEditorPanels {
 		away.addEventListener("click", () => this.hideHint(), { signal: this.stopping.signal });
 		this.hint.append(text, away);
 		home.append(this.hint);
+	}
+
+	/**
+	 * What stands over the map while there is no map: how to get one. The
+	 * canvas is black then, and a black box with a bar over it is a box that
+	 * looks broken.
+	 */
+	refreshWelcome() {
+		const home = this.floatHome;
+		if (home === null || home === undefined) {
+			return;
+		}
+		if (this.map !== null) {
+			if (this.welcome !== null) {
+				this.welcome.remove();
+				this.welcome = null;
+			}
+			return;
+		}
+		if (this.welcome !== null) {
+			return;
+		}
+		this.welcome = document.createElement("div");
+		this.welcome.className = "editor-welcome";
+		this.welcome.dataset.role = "welcome";
+		const title = document.createElement("p");
+		title.className = "editor-welcome-title";
+		title.textContent = "No map is open";
+		const text = document.createElement("p");
+		text.className = "editor-welcome-text";
+		text.textContent = "Open a map, drop one onto the editor, or start a new one.";
+		const buttons = document.createElement("div");
+		buttons.className = "editor-welcome-buttons";
+		for (const [id, className] of [["file.open", "editor-small editor-go"], ["file.new", "editor-small"]]) {
+			const command = this.commands.find(which => which.id === id);
+			if (command === undefined) {
+				continue;
+			}
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = className;
+			button.dataset.command = id;
+			button.textContent = command.label;
+			button.addEventListener("click", () => this.run(id), { signal: this.stopping.signal });
+			buttons.append(button);
+		}
+		this.welcome.append(title, text, buttons);
+		home.append(this.welcome);
 	}
 
 	hideHint() {
@@ -6489,13 +6941,6 @@ class CEditorPanels {
 	}
 
 	/**
-	 * The four ways a quad is put in order rather than dragged into it.
-	 *
-	 * A quad dragged by four corners is almost never the rectangle somebody
-	 * meant, so there are buttons for the rectangle, for the proportions of
-	 * the picture, for the pivot in the middle, and for the grid.
-	 */
-	/**
 	 * A picture turned into map: as tiles with a palette of its own colours,
 	 * or as quads, one per pixel.
 	 *
@@ -6613,6 +7058,13 @@ class CEditorPanels {
 		}, { signal: signal });
 	}
 
+	/**
+	 * The four ways a quad is put in order rather than dragged into it.
+	 *
+	 * A quad dragged by four corners is almost never the rectangle somebody
+	 * meant, so there are buttons for the rectangle, for the proportions of
+	 * the picture, for the pivot in the middle, and for the grid.
+	 */
 	wireShape() {
 		for (const shape of ["square", "aspect", "centerPivot", "align"]) {
 			this.part(`shape-${shape}`).addEventListener("click", () => {
@@ -8245,6 +8697,10 @@ const TILE_NUMBERS = {
 // A tileset is sixteen by sixteen, and the index of a tile is its place in
 // that square. Every map there is says it this way.
 const TILESET_SIDE = 16;
+// The sizes a tile can be drawn at in the tileset beside the map: fitted to
+// the column, then pixels a tile with the box scrolling.
+const TILE_ZOOMS = [null, 32, 48, 64];
+const TILE_ZOOM_STORAGE = "ddnet-editor-tile-zoom";
 
 // ---------------------------------------------------------------------------
 // The box.
@@ -8265,9 +8721,9 @@ const BOX_STYLE = `
 	   wide screen. */
 	container-type: inline-size;
 	container-name: editor;
-	background: var(--bg-0, #121216);
-	color: var(--text-1, #ececf1);
-	font: var(--type-sm, 400 12px/16px system-ui, sans-serif);
+	background: var(--bg-0, #16161a);
+	color: var(--text-1, #f1f1f4);
+	font: var(--type-md, 400 13px/18px system-ui, sans-serif);
 	overflow: hidden;
 }
 
@@ -8277,14 +8733,14 @@ const BOX_STYLE = `
 
 .box {
 	display: grid;
-	grid-template-columns: auto minmax(0, 1fr) auto;
+	grid-template-columns: auto auto minmax(0, 1fr) auto;
 	grid-template-rows: auto auto minmax(0, 1fr) auto auto;
 	grid-template-areas:
-		"head head head"
-		"tools tools tools"
-		"left map right"
-		"dock dock dock"
-		"status status status";
+		"head head head head"
+		"tools tools tools tools"
+		"rail left map right"
+		"rail dock dock dock"
+		"status status status status";
 	width: 100%;
 	height: 100%;
 	min-width: 0;
@@ -8299,13 +8755,11 @@ const BOX_STYLE = `
 
 /* A side that is a drawer keeps its place in the grid but is laid over the map
    rather than beside it: the same box, the same panels, the same names - only
-   "grid-area: map" instead of its own column, which takes no arithmetic and
-   cannot be off by the height of a tool bar. A side that is shut holds a box
-   that is switched off, so it takes no width and lies over nothing. */
+   "grid-area: map" instead of its own column. */
 :host([data-left="drawer"]) .area.left,
 :host([data-right="drawer"]) .area.right {
 	grid-area: map;
-	width: min(288px, 80%);
+	width: min(320px, 85%);
 	z-index: 2;
 }
 
@@ -8317,19 +8771,7 @@ const BOX_STYLE = `
 	justify-self: end;
 }
 
-/* Narrower than a drawer is worth: from the floor, half the height, because
-   288 pixels of drawer on a 390-pixel phone leave 102 pixels of map. */
-:host([data-left="sheet"]) .area.left,
-:host([data-right="sheet"]) .area.right {
-	grid-area: map;
-	align-self: end;
-	width: 100%;
-	height: 50%;
-	z-index: 2;
-}
-
-/* Too short for two rows above the map: the page's own header is the one that
-   goes. Ours carries the tools, and the tools are the editor. */
+/* Too short for the page's own row above the tools. */
 :host([data-head="one"]) .area.head {
 	display: none;
 }
@@ -8340,8 +8782,10 @@ const BOX_STYLE = `
 	grid-area: map;
 	align-self: end;
 	justify-self: start;
-	max-width: 60%;
+	max-width: 70%;
 	z-index: 2;
+	background: none;
+	border-top: 0;
 }
 
 /* And the dock lies over the foot of the map instead of pushing it up. */
@@ -8352,11 +8796,8 @@ const BOX_STYLE = `
 	z-index: 2;
 }
 
-/* Above the six areas and over all of them: a menu opened from a row of the
-   tree would otherwise be cut off by the edge of the column the tree stands
-   in, and the column is the narrowest thing on the screen. The layer itself
-   catches nothing - only what is put in it does, or the map under it would
-   stop hearing the pointer. */
+/* Above the areas and over all of them, for what floats. The layer itself
+   catches nothing - only what is put in it does. */
 .over {
 	position: absolute;
 	inset: 0;
@@ -8364,26 +8805,44 @@ const BOX_STYLE = `
 	pointer-events: none;
 }
 
-/* An area nobody filled takes no room at all - not a line, not a gap. The
-   class is set from a slotchange, because a slot with nothing in it is still
-   a box as far as the grid is concerned. */
+/* An area nobody filled takes no room at all. */
 .area.empty {
 	display: none;
 }
 
 .head { grid-area: head; }
 .tools { grid-area: tools; }
+.rail { grid-area: rail; }
 .left { grid-area: left; }
 .map { grid-area: map; position: relative; }
 .right { grid-area: right; }
 .dock { grid-area: dock; }
-.status { grid-area: status; }
+
+/* The status line, and beside it whatever the page has to say: one row. */
+.status {
+	grid-area: status;
+	display: flex;
+	align-items: center;
+	background: var(--bg-0, #16161a);
+	border-top: 1px solid var(--line, #2f2f38);
+}
+
+.status ::slotted(:not(.editor-panels)) {
+	flex: none;
+	padding: 0 12px;
+}
+
+/* A short box has a chip instead of a line, and the chip is the editor's. */
+:host([data-status="chip"]) .status ::slotted(:not(.editor-panels)) {
+	display: none;
+}
 `;
 
 const BOX_HTML = `
 <div class="box" data-role="box">
 	<div class="area head"><slot name="header"></slot></div>
 	<div class="area tools"><slot name="toolbar"></slot></div>
+	<div class="area rail"><slot name="rail"></slot></div>
 	<div class="area left"><slot name="left"></slot></div>
 	<div class="area map"><slot name="map"></slot></div>
 	<div class="area right"><slot name="right"></slot></div>
@@ -8482,7 +8941,7 @@ class CEditorElement extends ELEMENT_BASE {
 		this.areaBoxes = {};
 		// `status` would collide with the status line's own class, so the box
 		// around it is called something else.
-		for (const [area, name] of [["toolbar", "toolbar"], ["left", "left"], ["right", "right"], ["dock", "dock"], ["status", "statusbar"]]) {
+		for (const [area, name] of [["toolbar", "toolbar"], ["rail", "railbox"], ["left", "left"], ["right", "right"], ["dock", "dock"], ["status", "statusbar"]]) {
 			const box = document.createElement("div");
 			box.slot = area;
 			box.className = `editor-panels editor-${name}`;
@@ -8568,6 +9027,7 @@ class CEditorElement extends ELEMENT_BASE {
 			tallness: tall.name,
 			left: wide.left,
 			right: readonly ? "none" : wide.right,
+			inspector: readonly ? "shut" : wide.inspector,
 			bar: bar,
 			head: tall.head,
 			status: tall.status,
@@ -8591,6 +9051,7 @@ class CEditorElement extends ELEMENT_BASE {
 		this.dataset.tall = now.tallness;
 		this.dataset.left = now.left;
 		this.dataset.right = now.right;
+		this.dataset.inspector = now.inspector;
 		this.dataset.bar = now.bar;
 		this.dataset.head = now.head;
 		this.dataset.status = now.status;
@@ -8840,6 +9301,11 @@ class CEditorElement extends ELEMENT_BASE {
 			// And the keys somebody set, which are theirs rather than a map's.
 			try {
 				panels.applyKeys(JSON.parse(localStorage.getItem(KEYS_STORAGE) || "null"));
+				const zoom = localStorage.getItem(TILE_ZOOM_STORAGE);
+				if (zoom !== null && TILE_ZOOMS.includes(zoom === "null" ? null : Number(zoom))) {
+					panels.tileZoom = zoom === "null" ? null : Number(zoom);
+					panels.refreshTiles();
+				}
 			} catch (error) {
 				// Nothing kept, or something that is not keys: the table's.
 			}

@@ -85,6 +85,8 @@ function looking(id, label, icon, keys, read, write) {
 		menu: "View",
 		icon: icon,
 		bar: true,
+		// A switch of the view: what `controls="compact"` leaves out.
+		toggle: true,
 		safe: true,
 		keys: keys,
 		pressed: p => read(p),
@@ -101,12 +103,12 @@ function slots() {
 	for (let slot = 0; slot < 10; slot++) {
 		out.push({
 			id: `brush.use${slot}`,
-			label: `Brush ${slot}`,
+			label: `Brush slot ${slot}`,
 			group: "Brush",
 			// In the menu but not in the palette: ten rows of "Brush 3" would
 			// drown the palette, and without a keyboard the menu is the way -
 			// the strip of slots under the tileset is the quick way.
-			menu: "Tools/Take a brush",
+			menu: "Tools/Brush slots",
 			keys: [String(slot)],
 			palette: false,
 			run: p => {
@@ -116,9 +118,9 @@ function slots() {
 		});
 		out.push({
 			id: `brush.store${slot}`,
-			label: `Put the brush away as ${slot}`,
+			label: `Store brush in slot ${slot}`,
 			group: "Brush",
-			menu: "Tools/Put the brush away",
+			menu: "Tools/Store brush",
 			keys: [`Shift+${slot}`],
 			palette: false,
 			run: p => {
@@ -162,7 +164,6 @@ function tools() {
 	}));
 }
 
-
 // Every kind of layer there is, as one command each. The digits are the order
 // the file keeps them in, and Ctrl+Shift+<digit> is free where Ctrl+<digit> is
 // the browser's.
@@ -178,9 +179,9 @@ function layerKinds() {
 		["Tune", "tiles", "tune"],
 	].map(([name, type, kind], index) => ({
 		id: `layer.add${name}`,
-		label: `Add a ${name.toLowerCase()} layer`,
+		label: `Add ${name.toLowerCase()} layer`,
 		group: "Layer",
-		menu: "Layer/Add a layer",
+		menu: "Layer/Add layer",
 		keys: [`Ctrl+Shift+${index + 1}`],
 		enabled: p => p.map !== null,
 		run: p => p.change(() => {
@@ -196,15 +197,15 @@ function layerKinds() {
 // The four sides of the map's own parts, and which tab each is.
 function structureTabs() {
 	return [
-		["Layers", "layers"],
+		["Properties", "props"],
 		["Images", "images"],
 		["Sounds", "sounds"],
 		["Map", "map"],
 	].map(([name, tab], index) => ({
 		id: `structure.${tab}`,
 		label: name,
-		group: "Areas",
-		menu: "View/The map's parts",
+		group: "Panels",
+		menu: "View/Inspector",
 		safe: true,
 		keys: [`Ctrl+Alt+${index + 1}`],
 		pressed: p => p.areaShown("left") && p.tab.left === tab,
@@ -238,32 +239,32 @@ function panelButton(id, label, group, role, extra) {
 // The buttons of the panels, in the order their panels stand in.
 function panelButtons() {
 	return [
-		panelButton("art.tiles", "A picture as tiles\u2026", "Tools", "tile-art", { menu: "Tools" }),
-		panelButton("art.quads", "A picture as quads\u2026", "Tools", "quad-art", { menu: "Tools" }),
-		panelButton("tiles.write", "Write with the tiles", "Tools", "type-place", { menu: "Tools" }),
-		panelButton("tiles.automap", "Run the layer's rules", "Tools", "automap-run", { menu: "Tools" }),
-		panelButton("layer.construct", "Physics tiles under this layer", "Tools", "construct-run",
+		panelButton("art.tiles", "Import image as tiles…", "Tools", "tile-art", { menu: "Tools" }),
+		panelButton("art.quads", "Import image as quads…", "Tools", "quad-art", { menu: "Tools" }),
+		panelButton("tiles.write", "Write text with tiles", "Tools", "type-place", { menu: "Tools" }),
+		panelButton("tiles.automap", "Run automapper", "Tools", "automap-run", { menu: "Tools" }),
+		panelButton("layer.construct", "Build physics tiles from layer", "Tools", "construct-run",
 			{ menu: "Tools" }),
-		panelButton("image.replace", "Other pixels for this picture", "Layer", "replace-image", { for: "image" }),
-		panelButton("image.unpack", "Take the picture's pixels out", "Layer", "unpack-image", { for: "image" }),
-		panelButton("image.delete", "Take the picture out of the map", "Layer", "delete-image", { for: "image" }),
-		panelButton("sound.play", "Listen to the sound", "Layer", "play-sound", { for: "sound" }),
-		panelButton("sound.replace", "Other bytes for this sound", "Layer", "replace-sound", { for: "sound" }),
-		panelButton("sound.unpack", "Take the sound's bytes out", "Layer", "unpack-sound", { for: "sound" }),
-		panelButton("sound.delete", "Take the sound out of the map", "Layer", "delete-sound", { for: "sound" }),
-		panelButton("quad.delete", "Take the quad away", "Quads", "delete-quad", { for: "quad" }),
-		panelButton("quad.square", "The rectangle the corners span", "Quads", "shape-square", { for: "quad" }),
-		panelButton("quad.aspect", "As tall as the picture asks", "Quads", "shape-aspect", { for: "quad" }),
-		panelButton("quad.pivot", "The pivot into the middle", "Quads", "shape-centerPivot", { for: "quad" }),
-		panelButton("quad.align", "Every corner onto a tile", "Quads", "shape-align", { for: "quad" }),
-		panelButton("source.delete", "Take the sound source away", "Quads", "delete-source", { for: "source" }),
-		panelButton("envelope.add", "Add a colour envelope", "Areas", "add-envelope"),
-		panelButton("envelope.delete", "Delete this envelope", "Areas", "delete-envelope", { for: "envelope" }),
-		panelButton("setting.add", "Add a server setting", "Areas", "add-setting"),
-		panelButton("setting.delete", "Take the server setting away", "Areas", "delete-setting", { for: "setting" }),
-		panelButton("rules.apply", "Read the rules as they stand", "Areas", "rules-apply"),
-		panelButton("rules.revert", "Fetch the rules file again", "Areas", "rules-revert"),
-		panelButton("rules.save", "Write the rules out", "Areas", "rules-save"),
+		panelButton("image.replace", "Replace image…", "Layer", "replace-image", { for: "image" }),
+		panelButton("image.unpack", "Unpack image", "Layer", "unpack-image", { for: "image" }),
+		panelButton("image.delete", "Delete image", "Layer", "delete-image", { for: "image" }),
+		panelButton("sound.play", "Play sound", "Layer", "play-sound", { for: "sound" }),
+		panelButton("sound.replace", "Replace sound…", "Layer", "replace-sound", { for: "sound" }),
+		panelButton("sound.unpack", "Unpack sound", "Layer", "unpack-sound", { for: "sound" }),
+		panelButton("sound.delete", "Delete sound", "Layer", "delete-sound", { for: "sound" }),
+		panelButton("quad.delete", "Delete quad", "Quads", "delete-quad", { for: "quad" }),
+		panelButton("quad.square", "Make square", "Quads", "shape-square", { for: "quad" }),
+		panelButton("quad.aspect", "Match image aspect", "Quads", "shape-aspect", { for: "quad" }),
+		panelButton("quad.pivot", "Center pivot", "Quads", "shape-centerPivot", { for: "quad" }),
+		panelButton("quad.align", "Align to grid", "Quads", "shape-align", { for: "quad" }),
+		panelButton("source.delete", "Delete sound source", "Quads", "delete-source", { for: "source" }),
+		panelButton("envelope.add", "Add envelope", "Areas", "add-envelope"),
+		panelButton("envelope.delete", "Delete envelope", "Areas", "delete-envelope", { for: "envelope" }),
+		panelButton("setting.add", "Add server setting", "Areas", "add-setting"),
+		panelButton("setting.delete", "Delete server setting", "Areas", "delete-setting", { for: "setting" }),
+		panelButton("rules.apply", "Apply rules", "Areas", "rules-apply"),
+		panelButton("rules.revert", "Reload rules", "Areas", "rules-revert"),
+		panelButton("rules.save", "Save rules file", "Areas", "rules-save"),
 	];
 }
 
@@ -292,7 +293,7 @@ export const COMMANDS = [
 		run: p => p.stepHistory(() => p.editor.redo()),
 	},
 	{
-		id: "file.open", label: "Open a map…", group: "File", icon: "folder", menu: "File",
+		id: "file.open", label: "Open map…", group: "File", icon: "folder", menu: "File",
 		keys: ["Ctrl+O"],
 		run: p => p.openMap(),
 	},
@@ -311,7 +312,7 @@ export const COMMANDS = [
 	{
 		// The maps in the browser's storage: what autosave wrote, and what
 		// "Save" always writes on its way out to the downloads.
-		id: "file.openSaved", label: "Open from this browser…", group: "File", menu: "File",
+		id: "file.openSaved", label: "Open from browser storage…", group: "File", menu: "File",
 		keys: ["Ctrl+Alt+O"],
 		run: p => p.askOpenSaved(),
 	},
@@ -321,7 +322,7 @@ export const COMMANDS = [
 		run: p => p.askSaveCopy(),
 	},
 	{
-		id: "file.picture", label: "Export as a picture", group: "File", safe: true, menu: "File",
+		id: "file.picture", label: "Export as image", group: "File", safe: true, menu: "File",
 		keys: ["Ctrl+Shift+E"],
 		enabled: p => p.map !== null && p.editor.pictureState() !== 1,
 		run: p => p.exportPicture(),
@@ -333,41 +334,41 @@ export const COMMANDS = [
 		run: p => p.askSaveAs(),
 	},
 	{
-		id: "file.append", label: "Append a map…", group: "File", menu: "File",
+		id: "file.append", label: "Append map…", group: "File", menu: "File",
 		keys: ["Ctrl+Shift+A"],
 		enabled: p => p.map !== null,
 		run: p => p.part("append-file").click(),
 	},
 	{
-		id: "view.fit", label: "The whole map", group: "View", safe: true, menu: "View", icon: "fit", bar: true,
+		id: "view.fit", label: "Zoom to fit", group: "View", safe: true, menu: "View", icon: "fit", bar: true,
 		keys: ["Home"],
 		run: p => p.editor.fit(),
 	},
 	{
-		id: "view.zoomIn", label: "Closer", group: "View", safe: true, menu: "View",
+		id: "view.zoomIn", label: "Zoom in", group: "View", safe: true, menu: "View",
 		keys: ["NumpadAdd", "+"],
 		run: p => p.editor.zoom(p.editor.zoom() / ZOOM_STEP),
 	},
 	{
-		id: "view.zoomOut", label: "Further away", group: "View", safe: true, menu: "View",
+		id: "view.zoomOut", label: "Zoom out", group: "View", safe: true, menu: "View",
 		keys: ["NumpadSubtract", "-"],
 		run: p => p.editor.zoom(p.editor.zoom() * ZOOM_STEP),
 	},
 	{
-		id: "view.zoomReset", label: "Back to one to one", group: "View", safe: true, menu: "View",
+		id: "view.zoomReset", label: "Zoom to 100 %", group: "View", safe: true, menu: "View",
 		keys: ["NumpadMultiply"],
 		run: p => p.editor.zoom(1),
 	},
-	looking("view.detail", "What is only there to look at", "detail", ["Ctrl+H"],
+	looking("view.detail", "High detail", "detail", ["Ctrl+H"],
 		p => p.editor.highDetail(), (p, on) => p.editor.highDetail(on)),
-	looking("view.entities", "What the tiles do", "entities", ["Ctrl+Alt+E"],
+	looking("view.entities", "Show entities", "entities", ["Ctrl+Alt+E"],
 		p => p.editor.entities() > 0, (p, on) => p.editor.entities(on ? 100 : 0)),
-	looking("view.animate", "Let the envelopes run", "play", ["Ctrl+M"],
+	looking("view.animate", "Play animations", "play", ["Ctrl+M"],
 		p => p.editor.animate(), (p, on) => p.editor.animate(on)),
-	Object.assign(looking("view.grid", "A grid on the tiles", "grid", ["G", "Ctrl+G"],
+	Object.assign(looking("view.grid", "Show grid", "grid", ["G", "Ctrl+G"],
 		p => p.editor.grid() > 0, (p, on) => p.editor.grid(on ? GRID_SPACING : 0)), { always: true }),
 	{
-		id: "view.proof", label: "What a player would see", group: "View", safe: true, menu: "View", icon: "proof", bar: true,
+		id: "view.proof", label: "Proof mode", group: "View", safe: true, menu: "View", icon: "proof", bar: true, toggle: true,
 		keys: ["P"],
 		pressed: p => p.proof !== "off",
 		run: p => {
@@ -377,8 +378,8 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "view.tileInfo", label: "What the tile under the pointer is", group: "View", safe: true, menu: "View",
-		icon: "info", bar: true,
+		id: "view.tileInfo", label: "Tile info", group: "View", safe: true, menu: "View",
+		icon: "info", bar: true, toggle: true,
 		keys: ["Ctrl+I"],
 		pressed: p => p.tileInfo !== "off",
 		run: p => {
@@ -388,7 +389,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.flipX", label: "Turn the brush over sideways", group: "Brush", menu: "Tools",
+		id: "brush.flipX", label: "Flip brush horizontally", group: "Brush", menu: "Tools",
 		keys: ["X", "N"],
 		run: p => {
 			p.editor.flipBrushX();
@@ -396,7 +397,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.flipY", label: "Turn the brush over", group: "Brush", menu: "Tools",
+		id: "brush.flipY", label: "Flip brush vertically", group: "Brush", menu: "Tools",
 		keys: ["Y", "M"],
 		run: p => {
 			p.editor.flipBrushY();
@@ -404,7 +405,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.rotate", label: "A quarter turn", group: "Brush", menu: "Tools",
+		id: "brush.rotate", label: "Rotate brush", group: "Brush", menu: "Tools",
 		keys: ["R"],
 		run: p => {
 			p.editor.rotateBrush();
@@ -412,7 +413,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.rotateBack", label: "A quarter turn the other way", group: "Brush", menu: "Tools",
+		id: "brush.rotateBack", label: "Rotate brush back", group: "Brush", menu: "Tools",
 		keys: ["Shift+R"],
 		run: p => {
 			// Three quarters one way is a quarter the other, and the program
@@ -424,34 +425,34 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "layer.addGroup", label: "Add a group", group: "Layer", menu: "Layer",
+		id: "layer.addGroup", label: "Add group", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+G"],
 		enabled: p => p.map !== null,
 		run: p => p.change(() => p.editor.apply({ op: "group.add", name: "group" })),
 	},
 	...layerKinds(),
 	{
-		id: "layer.next", label: "The layer below", group: "Layer", safe: true,
+		id: "layer.next", label: "Next layer", group: "Layer", safe: true,
 		keys: ["ArrowDown"],
 		run: p => p.stepSelection(1),
 	},
 	{
-		id: "layer.previous", label: "The layer above", group: "Layer", safe: true,
+		id: "layer.previous", label: "Previous layer", group: "Layer", safe: true,
 		keys: ["ArrowUp"],
 		run: p => p.stepSelection(-1),
 	},
 	{
-		id: "layer.up", label: "Move it up", group: "Layer", menu: "Layer", for: ["layer", "group"],
+		id: "layer.up", label: "Move up", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+ArrowUp"],
 		run: p => p.moveSelected(-1),
 	},
 	{
-		id: "layer.down", label: "Move it down", group: "Layer", menu: "Layer", for: ["layer", "group"],
+		id: "layer.down", label: "Move down", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+ArrowDown"],
 		run: p => p.moveSelected(1),
 	},
 	{
-		id: "layer.hide", label: "Draw it, or do not", group: "Layer", safe: true, menu: "Layer", for: "layer",
+		id: "layer.hide", label: "Show or hide layer", group: "Layer", safe: true, menu: "Layer", for: "layer",
 		keys: ["V"],
 		enabled: p => p.selection.layer >= 0,
 		run: p => {
@@ -461,18 +462,18 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "layer.delete", label: "Take the layer away", group: "Layer", menu: "Layer", for: ["layer", "group"],
+		id: "layer.delete", label: "Delete layer or group", group: "Layer", menu: "Layer", for: ["layer", "group"],
 		keys: ["Ctrl+Delete"],
 		enabled: p => p.map !== null,
 		run: p => p.deleteSelected(),
 	},
 	{
-		id: "edit.delete", label: "Take away what is picked", group: "Edit", menu: "Edit",
+		id: "edit.delete", label: "Delete selected", group: "Edit", menu: "Edit",
 		keys: ["Delete"],
 		run: p => p.deletePicked(),
 	},
 	{
-		id: "quad.add", label: "Add a quad", group: "Quads", menu: "Layer",
+		id: "quad.add", label: "Add quad", group: "Quads", menu: "Layer",
 		keys: ["Q"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -481,7 +482,7 @@ export const COMMANDS = [
 		run: p => p.part("add-quad").click(),
 	},
 	{
-		id: "quad.knife", label: "Cut a piece out of a quad", group: "Quads", menu: "Tools",
+		id: "quad.knife", label: "Quad knife", group: "Quads", menu: "Tools",
 		keys: ["K"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -491,7 +492,7 @@ export const COMMANDS = [
 		run: p => p.knife(),
 	},
 	{
-		id: "tiles.numbers", label: "Into the numbers of the physics tile", group: "Brush", menu: "Tools",
+		id: "tiles.numbers", label: "Edit tile numbers", group: "Brush", menu: "Tools",
 		keys: ["T"],
 		enabled: p => p.parts("number-number").length > 0 || p.parts("number-force").length > 0,
 		run: p => {
@@ -503,7 +504,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "tiles.border", label: "A border round the layer", group: "Brush", menu: "Tools",
+		id: "tiles.border", label: "Add border", group: "Brush", menu: "Tools",
 		enabled: p => {
 			const layer = p.selectedLayer();
 			return layer !== null && layer.type === "tiles" && !p.editor.brushEmpty();
@@ -511,54 +512,58 @@ export const COMMANDS = [
 		run: p => p.makeBorder(),
 	},
 	{
-		id: "envelope.deleteUnused", label: "Take out unused envelopes", group: "Envelopes", menu: "Tools",
+		id: "envelope.deleteUnused", label: "Delete unused envelopes", group: "Envelopes", menu: "Tools",
 		enabled: p => p.map !== null && p.map.envelopes !== undefined && p.map.envelopes.length > 0,
 		run: p => p.deleteUnusedEnvelopes(),
 	},
 	{
-		id: "tiles.nextFree", label: "The next unused number", group: "Brush", menu: "Tools",
+		id: "tiles.nextFree", label: "Next free number", group: "Brush", menu: "Tools",
 		keys: ["Ctrl+F"],
 		enabled: p => p.part("next-free") !== null && !p.part("next-free").disabled,
 		run: p => p.part("next-free").click(),
 	},
 	{
-		id: "dock.envelopes", label: "Envelopes", group: "Areas", safe: true, menu: "View/Below the map",
+		id: "dock.envelopes", label: "Envelopes", group: "Panels", safe: true, menu: "View/Dock",
 		keys: ["Ctrl+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "envelopes",
 		run: p => p.showTab("dock", "envelopes"),
 	},
 	{
-		id: "dock.history", label: "History", group: "Areas", safe: true, menu: "View/Below the map",
+		id: "dock.history", label: "History", group: "Panels", safe: true, menu: "View/Dock",
 		keys: ["Ctrl+Shift+H"],
 		pressed: p => p.dockOpen && p.tab.dock === "history",
 		run: p => p.showTab("dock", "history"),
 	},
 	{
-		id: "dock.settings", label: "Server settings", group: "Areas", safe: true, menu: "View/Below the map",
+		id: "dock.settings", label: "Server settings", group: "Panels", safe: true, menu: "View/Dock",
 		keys: ["Ctrl+Shift+E"],
 		pressed: p => p.dockOpen && p.tab.dock === "settings",
 		run: p => p.showTab("dock", "settings"),
 	},
 	{
-		id: "dock.rules", label: "The rules file", group: "Areas", safe: true, menu: "View/Below the map",
+		id: "dock.rules", label: "Rules", group: "Panels", safe: true, menu: "View/Dock",
 		keys: ["Ctrl+Shift+R"],
 		pressed: p => p.dockOpen && p.tab.dock === "rules",
 		run: p => p.showTab("dock", "rules"),
 	},
 	{
-		id: "area.left", label: "The map's parts", group: "Areas", safe: true, menu: "View",
+		id: "area.left", label: "Inspector", group: "Panels", safe: true, menu: "View", icon: "properties",
 		keys: ["["],
 		pressed: p => p.areaShown("left"),
 		run: p => p.showArea("left", !p.areaShown("left")),
 	},
 	{
-		id: "area.right", label: "The inspector", group: "Areas", safe: true, menu: "View",
+		id: "area.right", label: "Layers and tiles", group: "Panels", safe: true, menu: "View",
+		// A button in the bar only while the column is a drawer: a column
+		// that is always there needs no button, a drawer that is not has
+		// nothing else to open it with.
+		icon: "layerTiles", bar: true, whenDrawer: "right",
 		keys: ["]"],
 		pressed: p => p.areaShown("right"),
 		run: p => p.showArea("right", !p.areaShown("right")),
 	},
 	{
-		id: "area.mapOnly", label: "Nothing but the map", group: "Areas", safe: true, menu: "View",
+		id: "area.mapOnly", label: "Map only", group: "Panels", safe: true, menu: "View",
 		keys: ["Tab"],
 		// Only from the map itself: everywhere else Tab is how somebody walks
 		// through the buttons, and taking that away would be worse than the
@@ -575,19 +580,19 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "image.add", label: "Add a picture\u2026", group: "Layer", menu: "Layer",
+		id: "image.add", label: "Add image…", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+I"],
 		enabled: p => p.map !== null,
 		run: p => p.part("image-file").click(),
 	},
 	{
-		id: "sound.add", label: "Add a sound\u2026", group: "Layer", menu: "Layer",
+		id: "sound.add", label: "Add sound…", group: "Layer", menu: "Layer",
 		keys: ["Ctrl+Shift+U"],
 		enabled: p => p.map !== null,
 		run: p => p.part("sound-file").click(),
 	},
 	{
-		id: "source.add", label: "Add a sound source", group: "Quads", menu: "Layer",
+		id: "source.add", label: "Add sound source", group: "Quads", menu: "Layer",
 		keys: ["Ctrl+Shift+S"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -596,7 +601,7 @@ export const COMMANDS = [
 		run: p => p.part("add-source").click(),
 	},
 	{
-		id: "file.close", label: "Close the map", group: "File", menu: "File",
+		id: "file.close", label: "Close map", group: "File", menu: "File",
 		// Ctrl+W and Ctrl+F4 belong to the browser.
 		keys: ["Ctrl+Alt+W"],
 		enabled: p => p.map !== null,
@@ -614,9 +619,10 @@ export const COMMANDS = [
 	},
 	...structureTabs(),
 	{
-		id: "picker.show", label: "The big tile chooser", group: "Brush", safe: true, menu: "Tools",
-		// A key held on a desk; a button where nothing can be held.
-		icon: "paint", bar: true, touch: true, role: "tiles-big",
+		id: "picker.show", label: "Tile picker", group: "Brush", safe: true, menu: "Tools",
+		// A key held on a desk; a button in the tile panel for a hand that
+		// holds nothing.
+		icon: "expand", role: "tiles-big",
 		keys: ["Space"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -626,7 +632,7 @@ export const COMMANDS = [
 		run: p => p.showPicker(p.picker === null || p.picker.hidden),
 	},
 	{
-		id: "picker.pin", label: "Leave the tile chooser open", group: "Brush", safe: true,
+		id: "picker.pin", label: "Pin tile picker", group: "Brush", safe: true,
 		keys: ["Ctrl+Space"],
 		enabled: p => {
 			const layer = p.selectedLayer();
@@ -640,10 +646,10 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "brush.clear", label: "Nothing in hand", group: "Brush", menu: "Tools",
-		// A key on a desk; a button where there is no Escape to press. An
-		// empty brush is what grabs, so this is also the way to a rectangle.
-		icon: "erase", bar: true, touch: true, role: "clear-brush",
+		id: "brush.clear", label: "Clear brush", group: "Brush", menu: "Tools",
+		// A button in the tile panel. An empty brush is what grabs, so this
+		// is also the way to a rectangle.
+		icon: "close", role: "clear-brush",
 		enabled: p => p.map !== null,
 		run: p => {
 			p.editor.clearBrush();
@@ -656,15 +662,16 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "layer.here", label: "Which layer is here?", group: "Layer", menu: "Layer",
-		// Ctrl and the right button, for a finger that has neither.
-		icon: "grab", bar: true, touch: true, safe: true, role: "layer-here",
+		id: "layer.here", label: "Pick layer here", group: "Layer", menu: "Layer",
+		// Ctrl and the right button; the Pick tool is the same thing as a
+		// tool, so this has no button of its own.
+		icon: "pick", safe: true, role: "layer-here",
 		enabled: p => p.map !== null,
 		pressed: p => p.askingLayer,
 		run: p => p.askHere(),
 	},
 	{
-		id: "palette.open", label: "Everything, by its name", group: "Help", safe: true, always: true,
+		id: "palette.open", label: "Command palette", group: "Help", safe: true, always: true,
 		// Its own name for its button: `commandRole` would call it "open",
 		// and so would the menu's, and two buttons cannot share one name.
 		role: "palette",
@@ -674,7 +681,7 @@ export const COMMANDS = [
 		run: p => p.showPalette(p.palette === null || p.palette.hidden),
 	},
 	{
-		id: "menu.open", label: "The menu", group: "Help", safe: true, always: true,
+		id: "menu.open", label: "Menu", group: "Help", safe: true, always: true,
 		role: "menu",
 		icon: "menu", bar: true, palette: false,
 		keys: ["Alt+M"],
@@ -682,7 +689,7 @@ export const COMMANDS = [
 		run: p => p.showMenu(p.menu === null || p.menu.hidden),
 	},
 	{
-		id: "view.scheme", label: "The light scheme", group: "View", safe: true, menu: "Settings",
+		id: "view.scheme", label: "Light theme", group: "View", safe: true, menu: "Settings",
 		keys: ["Ctrl+Alt+L"],
 		pressed: p => p.scheme() === "light",
 		run: p => p.scheme(p.scheme() === "light" ? "dark" : "light"),
@@ -702,11 +709,11 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "settings.entities", label: "Entities picture…", group: "Settings", safe: true, menu: "Settings",
+		id: "settings.entities", label: "Entities image…", group: "Settings", safe: true, menu: "Settings",
 		run: p => p.askEntitiesImage(),
 	},
 	{
-		id: "settings.brushColouring", label: "The tileset in the layer's colour", group: "Settings", safe: true, menu: "Settings",
+		id: "settings.brushColouring", label: "Tint tileset with layer colour", group: "Settings", safe: true, menu: "Settings",
 		pressed: p => p.brushColouring,
 		run: p => {
 			p.brushColouring = !p.brushColouring;
@@ -714,7 +721,7 @@ export const COMMANDS = [
 		},
 	},
 	{
-		id: "settings.penHoldsPaper", label: "With a pen, a finger only pans", group: "Settings", safe: true, menu: "Settings",
+		id: "settings.penHoldsPaper", label: "Pen mode: a finger pans", group: "Settings", safe: true, menu: "Settings",
 		pressed: p => p.penHoldsPaper,
 		run: p => {
 			p.penHoldsPaper = !p.penHoldsPaper;
@@ -736,29 +743,29 @@ export const COMMANDS = [
 		// Not configurable - the keys are the table's, and the table is one
 		// place. What this is, is the sheet one looks at to find out what the
 		// keys are, which is what one actually wants from a shortcut dialogue.
-		id: "help.keys", label: "What the keys do", group: "Help", safe: true, menu: "Settings",
+		id: "help.keys", label: "Keyboard shortcuts", group: "Help", safe: true, menu: "Settings",
 		keys: ["Ctrl+/"],
 		run: p => p.showKeys(),
 	},
 	{
-		id: "help.wiki", label: "How mapping works (the wiki)", group: "Help", safe: true, menu: "Help",
+		id: "help.wiki", label: "Mapping wiki", group: "Help", safe: true, menu: "Help",
 		keys: ["F1"],
 		run: () => window.open("https://wiki.ddnet.org/wiki/Mapping", "_blank", "noopener"),
 	},
 	{
 		// The browser's own convention for walking from one part of a page
 		// to the next.
-		id: "focus.next", label: "The next area", group: "View", safe: true,
+		id: "focus.next", label: "Next area", group: "View", safe: true,
 		keys: ["F6"],
 		run: p => p.focusArea(1),
 	},
 	{
-		id: "focus.previous", label: "The area before", group: "View", safe: true,
+		id: "focus.previous", label: "Previous area", group: "View", safe: true,
 		keys: ["Shift+F6"],
 		run: p => p.focusArea(-1),
 	},
 	{
-		id: "edit.escape", label: "Back to the map", group: "Edit", safe: true,
+		id: "edit.escape", label: "Focus the map", group: "Edit", safe: true,
 		keys: ["Escape"],
 		run: p => p.escape(),
 	},

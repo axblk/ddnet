@@ -83,7 +83,7 @@ CScreenRect IGraphics::MapScreenToWorld(float CenterX, float CenterY, float Para
 void IGraphics::MapScreenToInterface(float CenterX, float CenterY, float Zoom)
 {
 	CScreenRect ScreenRect = MapScreenToWorld(CenterX, CenterY, 100.0f, 100.0f, 100.0f,
-		0, 0, ScreenAspect(), Zoom);
+		0, 0, ViewportAspect(), Zoom);
 	MapScreen(ScreenRect);
 }
 

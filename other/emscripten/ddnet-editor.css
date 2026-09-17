@@ -40,6 +40,13 @@ ddnet-editor,
 	--handle-active: var(--ddnet-handle-active, #ff9d24);
 	--handle-outline: var(--ddnet-handle-outline, #16161a);
 
+	/* The browser's own controls and scrollbars follow the scheme, and the
+	   scrollbars take the editor's colours: `scrollbar-color` is inherited,
+	   so saying it here once reaches every list, tileset and panel. */
+	color-scheme: dark;
+	scrollbar-color: var(--line-strong) var(--bg-1);
+	scrollbar-width: thin;
+
 	/* Type. No font file: a package that brings a font is a package with a
 	   content-security-policy problem on somebody else's page. */
 	--font-ui: var(--ddnet-font-ui, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
@@ -191,6 +198,7 @@ ddnet-editor[data-theme="light"],
 	--overlay: var(--ddnet-overlay, rgba(20, 20, 40, 0.35));
 	--handle-active: var(--ddnet-handle-active, #b85400);
 	--shadow: 0 8px 24px rgba(20, 20, 40, 0.18);
+	color-scheme: light;
 }
 
 /* ---------------------------------------------------------------------- */

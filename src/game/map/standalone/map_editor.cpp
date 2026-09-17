@@ -957,7 +957,10 @@ void CMapEditor::SetBrushTile(map_document::CBrush &Brush, int x, int y, int Ind
 	// there is a tool's business, not a tile's.
 	if(map_document::DrawsOwnTiles(Brush.m_Kind))
 	{
-		CTile Tile;
+		// Every field, not only the index: a tile left uninitialized here
+		// carried whatever the stack held as its flags, and a tile picked out
+		// of the tileset went down turned or mirrored.
+		CTile Tile = {};
 		Tile.m_Index = Value;
 		Brush.m_Tiles.Set(x, y, Tile);
 		return;
@@ -983,7 +986,12 @@ bool CMapEditor::PickTiles(int Id, size_t Group, size_t Layer, int x, int y, int
 	Width = std::clamp(Width, 1, TILESET_SIDE - x);
 	Height = std::clamp(Height, 1, TILESET_SIDE - y);
 
-	map_document::CBrush Brush(pMap->m_Document.Map().TileLayer(Group, Layer)->m_Kind, Width, Height);
+	const map_document::CTileLayer &Tiles = *pMap->m_Document.Map().TileLayer(Group, Layer);
+	map_document::CBrush Brush(Tiles.m_Kind, Width, Height);
+	// What the brush is drawn with, the same as a brush grabbed off the layer
+	// carries: a picture of it outside the map needs to know.
+	Brush.m_Image = Tiles.m_Image;
+	Brush.m_Color = Tiles.m_Color;
 	for(int ty = 0; ty < Height; ++ty)
 	{
 		for(int tx = 0; tx < Width; ++tx)

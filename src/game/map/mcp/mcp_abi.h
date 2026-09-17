@@ -16,8 +16,6 @@
  * and so is the graphics backend the renderer draws with.
  */
 
-#include <stddef.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif

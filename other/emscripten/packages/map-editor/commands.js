@@ -84,8 +84,9 @@ function looking(id, label, icon, keys, read, write) {
 		group: "View",
 		menu: "View",
 		icon: icon,
-		bar: true,
-		// A switch of the view: what `controls="compact"` leaves out.
+		// In the bar's view menu, behind one button, rather than six buttons
+		// in the bar: the bar is for what is used all the time.
+		view: true,
 		toggle: true,
 		safe: true,
 		keys: keys,
@@ -302,6 +303,14 @@ export const COMMANDS = [
 		run: p => p.stepHistory(() => p.editor.redo()),
 	},
 	{
+		// The one button in the bar for everything about looking: the six
+		// switches and the zooms stand behind it.
+		id: "view.menu", label: "View", group: "View", safe: true, always: true, toggle: true,
+		role: "view-menu", icon: "eye", bar: true, palette: false,
+		pressed: p => p.context !== null && p.context.dataset.menu === "view",
+		run: p => p.showViewMenu(p.part("view-menu")),
+	},
+	{
 		id: "file.open", label: "Open map…", group: "File", icon: "folder", menu: "File",
 		keys: ["Ctrl+O"],
 		run: p => p.openMap(),
@@ -349,7 +358,7 @@ export const COMMANDS = [
 		run: p => p.part("append-file").click(),
 	},
 	{
-		id: "view.fit", label: "Zoom to fit", group: "View", safe: true, menu: "View", icon: "fit", bar: true,
+		id: "view.fit", label: "Zoom to fit", group: "View", safe: true, menu: "View", icon: "fit", view: true,
 		keys: ["Home"],
 		run: p => p.editor.fit(),
 	},
@@ -364,7 +373,7 @@ export const COMMANDS = [
 		run: p => p.editor.zoom(p.editor.zoom() * ZOOM_STEP),
 	},
 	{
-		id: "view.zoomReset", label: "Zoom to 100 %", group: "View", safe: true, menu: "View",
+		id: "view.zoomReset", label: "Zoom to 100 %", group: "View", safe: true, menu: "View", view: true,
 		keys: ["NumpadMultiply"],
 		run: p => p.editor.zoom(1),
 	},
@@ -377,7 +386,7 @@ export const COMMANDS = [
 	Object.assign(looking("view.grid", "Show grid", "grid", ["G", "Ctrl+G"],
 		p => p.editor.grid() > 0, (p, on) => p.editor.grid(on ? GRID_SPACING : 0)), { always: true }),
 	{
-		id: "view.proof", label: "Proof mode", group: "View", safe: true, menu: "View", icon: "proof", bar: true, toggle: true,
+		id: "view.proof", label: "Proof mode", group: "View", safe: true, menu: "View", icon: "proof", view: true, toggle: true,
 		keys: ["P"],
 		pressed: p => p.proof !== "off",
 		run: p => {
@@ -388,7 +397,7 @@ export const COMMANDS = [
 	},
 	{
 		id: "view.tileInfo", label: "Tile info", group: "View", safe: true, menu: "View",
-		icon: "info", bar: true, toggle: true,
+		icon: "info", view: true, toggle: true,
 		keys: ["Ctrl+I"],
 		pressed: p => p.tileInfo !== "off",
 		run: p => {
@@ -531,30 +540,20 @@ export const COMMANDS = [
 		enabled: p => p.part("next-free") !== null && !p.part("next-free").disabled,
 		run: p => p.part("next-free").click(),
 	},
-	{
-		id: "dock.envelopes", label: "Envelopes", group: "Panels", safe: true, menu: "View/Dock",
-		keys: ["Ctrl+E"],
-		pressed: p => p.dockOpen && p.tab.dock === "envelopes",
-		run: p => p.showTab("dock", "envelopes"),
-	},
-	{
-		id: "dock.history", label: "History", group: "Panels", safe: true, menu: "View/Dock",
-		keys: ["Ctrl+Shift+H"],
-		pressed: p => p.dockOpen && p.tab.dock === "history",
-		run: p => p.showTab("dock", "history"),
-	},
-	{
-		id: "dock.settings", label: "Server settings", group: "Panels", safe: true, menu: "View/Dock",
-		keys: ["Ctrl+Shift+E"],
-		pressed: p => p.dockOpen && p.tab.dock === "settings",
-		run: p => p.showTab("dock", "settings"),
-	},
-	{
-		id: "dock.rules", label: "Rules", group: "Panels", safe: true, menu: "View/Dock",
-		keys: ["Ctrl+Shift+R"],
-		pressed: p => p.dockOpen && p.tab.dock === "rules",
-		run: p => p.showTab("dock", "rules"),
-	},
+	// The four panels that are looked at now and then, wherever each of them
+	// stands: the key and the switch in the status line open it there and
+	// shut it again.
+	...[
+		["envelopes", "Envelopes", "Ctrl+E", "envelopes-panel"],
+		["history", "History", "Ctrl+Shift+H", "history-panel"],
+		["settings", "Server settings", "Ctrl+Shift+E", "settings-panel"],
+		["rules", "Rules", "Ctrl+Shift+R", "rules-panel"],
+	].map(([tab, label, key, role]) => ({
+		id: `panel.${tab}`, label: label, group: "Panels", safe: true, menu: "View/Panels",
+		keys: [key],
+		pressed: p => p.panelInFront(role),
+		run: p => p.togglePanel(role),
+	})),
 	{
 		id: "area.left", label: "Inspector", group: "Panels", safe: true, menu: "View", icon: "properties",
 		keys: ["["],

@@ -400,7 +400,21 @@ ddnet-editor :focus-visible,
 	background: var(--line-strong);
 }
 
-/* The four strips below the map, as switches in the status line. */
+/* The history in the inspector: as tall as the column, scrolling by itself
+   rather than in a 160-pixel box. */
+.editor-left [data-role="history-panel"] {
+	flex: 1;
+}
+
+.editor-left .editor-history {
+	flex: 1;
+	min-height: 0;
+	max-height: none;
+	overflow: auto;
+}
+
+/* The panels looked at now and then, as switches in the status line - each
+   opens its panel wherever that stands. */
 .editor-dock-tabs {
 	display: flex;
 	gap: 2px;
@@ -2388,6 +2402,23 @@ ddnet-editor[data-stack="yes"] .editor-dock .editor-panel {
 
 ddnet-editor[data-stack="yes"] .editor-dock .editor-panel-always {
 	border-right: 1px solid var(--line);
+}
+
+/* And the history under whatever the inspector shows, sharing the height. */
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel-always {
+	flex: 1 1 200px;
+	min-height: 160px;
+	border-top: 1px solid var(--line);
+	padding-top: var(--space-2);
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-area-body {
+	overflow: hidden;
+}
+
+ddnet-editor[data-stack="yes"] .editor-left .editor-panel:not(.editor-panel-always) {
+	flex: 0 1 auto;
+	overflow: auto;
 }
 
 /* The handle between a column and the map. Seven pixels wide to catch, one

@@ -1111,15 +1111,17 @@ const PANEL_PLACES = [
 	{ role: "images-panel", area: "left", tab: "images", name: "Images" },
 	{ role: "audio-panel", area: "left", tab: "sounds", name: "Sounds" },
 	{ role: "info-panel", area: "left", tab: "map", name: "Map" },
+	// A list of steps is a column of text, and a column of text belongs in a
+	// column: the history stands in the inspector, not in the strip below.
+	{ role: "history-panel", area: "left", tab: "history", name: "History", status: 2 },
 	{ role: "tree-panel", area: "right" },
 	{ role: "group-panel", area: "right" },
 	{ role: "tiles-panel", area: "right" },
 	{ role: "quads-panel", area: "right" },
 	{ role: "sounds-panel", area: "right" },
-	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes" },
-	{ role: "history-panel", area: "dock", tab: "history", name: "History" },
-	{ role: "settings-panel", area: "dock", tab: "settings", name: "Server settings" },
-	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules" },
+	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes", status: 1 },
+	{ role: "settings-panel", area: "dock", tab: "settings", name: "Server settings", status: 3 },
+	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules", status: 4 },
 ];
 
 /** The two areas that show one panel at a time, and what they are called. */
@@ -1802,6 +1804,9 @@ class CEditorPanels {
 		this.pictures = new Map();
 		// Whether the panels listen for keys on the whole page themselves.
 		this.keys = settings.keys;
+		// Where each panel stands, this editor's own copy of the table: a
+		// layout somebody drags together is theirs and not every editor's.
+		this.places = PANEL_PLACES.map(place => Object.assign({}, place));
 		// The areas the panels were spread into, or null while they all stand
 		// in one column.
 		this.areas = null;
@@ -2344,7 +2349,7 @@ class CEditorPanels {
 			return null;
 		}
 		const panel = found.closest("[data-role$=\"-panel\"]");
-		const place = panel === null ? undefined : PANEL_PLACES.find(which => which.role === panel.dataset.role);
+		const place = panel === null ? undefined : this.placeOf(panel.dataset.role);
 		if (place !== undefined) {
 			// The dock opens by being told which tab it shows; the two
 			// columns are shown or not shown.
@@ -2980,8 +2985,14 @@ class CEditorPanels {
 		return true;
 	}
 
-	/** One command as a row of a menu. */
-	menuRow(command) {
+	/**
+	 * One command as a row of a menu.
+	 *
+	 * @param command The command.
+	 * @param stays Whether the menu stays open after the row is pressed: a
+	 * menu of switches is one where somebody throws three in a row.
+	 */
+	menuRow(command, stays) {
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = "editor-menu-row";
@@ -2994,6 +3005,13 @@ class CEditorPanels {
 		key.textContent = this.keyText(command);
 		row.append(what, key);
 		row.addEventListener("click", () => {
+			if (stays === true) {
+				this.run(command.id);
+				if (this.context !== null) {
+					this.refreshRows(this.context);
+				}
+				return;
+			}
 			this.showMenu(false);
 			this.closeContext();
 			this.run(command.id);
@@ -3034,7 +3052,12 @@ class CEditorPanels {
 		if (this.menu === null) {
 			return;
 		}
-		for (const row of this.menu.querySelectorAll("[data-command]")) {
+		this.refreshRows(this.menu);
+	}
+
+	/** The same, for the rows of any menu: the main one, a context menu, the view menu. */
+	refreshRows(container) {
+		for (const row of container.querySelectorAll("[data-command]")) {
 			const command = this.commands.find(which => which.id === row.dataset.command);
 			if (command === undefined) {
 				continue;
@@ -3187,6 +3210,53 @@ class CEditorPanels {
 		}
 	}
 
+	/**
+	 * The switches of how the map is looked at - grid, entities, high detail,
+	 * animation, proof, tile info - and the zooms, behind one button of the
+	 * bar rather than six: the bar is for what is used all the time.
+	 */
+	showViewMenu(anchor) {
+		const home = this.overlayHome();
+		if (home === null) {
+			return;
+		}
+		if (this.context !== null && this.context.dataset.menu === "view") {
+			this.closeContext();
+			this.refreshBar();
+			return;
+		}
+		this.closeContext();
+		this.showMenu(false);
+		this.showPalette(false);
+		this.context = document.createElement("div");
+		this.context.className = "editor-menu editor-context";
+		this.context.dataset.role = "context";
+		this.context.dataset.menu = "view";
+		this.context.setAttribute("role", "menu");
+		this.context.setAttribute("aria-label", "View");
+		for (const command of this.commands) {
+			if (command.view === true) {
+				this.context.append(this.menuRow(command, command.pressed !== undefined));
+			}
+		}
+		this.refreshRows(this.context);
+		this.context.addEventListener("keydown", event => {
+			if (event.key === "Escape") {
+				event.stopPropagation();
+				event.preventDefault();
+				this.closeContext();
+				this.refreshBar();
+			}
+		}, { signal: this.stopping.signal });
+		home.append(this.context);
+		this.placeAt(this.context, anchor);
+		this.refreshBar();
+		const first = this.context.querySelector("button:not(:disabled)");
+		if (first !== null) {
+			first.focus();
+		}
+	}
+
 	/** The thirteen physics tiles, behind one row. */
 	gameTilesFold() {
 		const holder = document.createElement("div");
@@ -3266,8 +3336,12 @@ class CEditorPanels {
 		if (this.context === null) {
 			return;
 		}
+		const wasView = this.context.dataset.menu === "view";
 		this.context.remove();
 		this.context = null;
+		if (wasView) {
+			this.refreshBar();
+		}
 	}
 
 	/**
@@ -3287,7 +3361,7 @@ class CEditorPanels {
 			const inside = what => what !== null && what !== undefined && path.includes(what);
 			const onButtonFor = id => path.some(node => node instanceof Element
 				&& node.dataset !== undefined && node.dataset.command === id);
-			if (this.context !== null && !inside(this.context)) {
+			if (this.context !== null && !inside(this.context) && !(this.context.dataset.menu === "view" && onButtonFor("view.menu"))) {
 				this.closeContext();
 			}
 			if (this.menu !== null && !this.menu.hidden && !inside(this.menu) && !onButtonFor("menu.open")) {
@@ -4026,7 +4100,7 @@ class CEditorPanels {
 		const rail = this.part("rail");
 		const status = this.part("status");
 		const hover = this.part("hover");
-		const panels = new Map(PANEL_PLACES.map(place => [place.role, this.part(place.role)]));
+		const panels = new Map(this.places.map(place => [place.role, this.part(place.role)]));
 		this.areas = areas;
 		// What now holds every panel, for whoever asks the panels where they
 		// are: with the panels spread over six areas there is no one node that
@@ -4054,25 +4128,20 @@ class CEditorPanels {
 		docks.dataset.role = "dock-tabs";
 		docks.setAttribute("role", "tablist");
 		docks.setAttribute("aria-label", "Below the map");
-		for (const place of PANEL_PLACES.filter(where => where.area === "dock" && where.tab !== undefined)) {
+		// One switch per panel that is looked at now and then, wherever that
+		// panel stands: it opens the panel where it is and shuts it again. In
+		// the order the number says, not the order the panels happen to have.
+		for (const place of this.places.filter(where => where.status !== undefined).sort((one, other) => one.status - other.status)) {
 			const button = document.createElement("button");
 			button.type = "button";
 			button.className = "editor-dock-tab";
 			button.dataset.role = "dock-tab";
 			button.dataset.tab = place.tab;
-			button.dataset.command = `dock.${place.tab}`;
+			button.dataset.command = `panel.${place.tab}`;
 			button.setAttribute("role", "tab");
 			button.textContent = place.name;
-			button.title = `${place.name} below the map; press again to close`;
-			button.addEventListener("click", () => {
-				// The tab in front shuts the strip; any other puts itself in front.
-				if (this.dockOpen && this.tab.dock === place.tab) {
-					this.dockOpen = false;
-					this.applyTabs();
-				} else {
-					this.showTab("dock", place.tab);
-				}
-			}, { signal: this.stopping.signal });
+			button.title = `${place.name}; press again to close`;
+			button.addEventListener("click", () => this.togglePanel(place.role), { signal: this.stopping.signal });
 			docks.append(button);
 		}
 		const zoom = document.createElement("span");
@@ -4080,7 +4149,7 @@ class CEditorPanels {
 		zoom.className = "editor-status-zoom";
 		areas.status.append(hover, status, line, hint, space, docks, zoom);
 		for (const area of ["left", "right", "dock"]) {
-			const here = PANEL_PLACES.filter(place => place.area === area);
+			const here = this.places.filter(place => place.area === area);
 			if (area === "left") {
 				areas[area].append(this.makeTabs(area, here));
 			}
@@ -4287,16 +4356,17 @@ class CEditorPanels {
 			return;
 		}
 		for (const area of Object.keys(TABBED_AREAS)) {
-			const here = PANEL_PLACES.filter(place => place.area === area && place.tab !== undefined);
+			const here = this.places.filter(place => place.area === area && place.tab !== undefined);
 			const has = place => this.panelShown.get(place.role) !== false;
 			if (!here.some(place => place.tab === this.tab[area] && has(place))) {
 				const first = here.find(has);
 				this.tab[area] = first === undefined ? null : first.tab;
 			}
 			// With room enough the envelopes stand beside whatever else the
-			// strip shows, instead of behind it.
+			// strip shows, and the history under whatever the inspector
+			// shows, instead of behind a tab.
 			const roomy = this.shape !== null && this.shape.stack === true;
-			const always = roomy && area === "dock" ? "envelopes" : null;
+			const always = !roomy ? null : area === "dock" ? "envelopes" : area === "left" ? "history" : null;
 			if (always !== null && this.tab[area] === always) {
 				const next = here.find(place => place.tab !== always && has(place));
 				this.tab[area] = next === undefined ? always : next.tab;
@@ -4315,18 +4385,35 @@ class CEditorPanels {
 					button.disabled = !has(place);
 					const inFront = place.tab === this.tab[area] && (area !== "dock" || this.dockOpen);
 					button.setAttribute("aria-selected", inFront ? "true" : "false");
-					if (area === "dock") {
-						button.setAttribute("aria-pressed", inFront ? "true" : "false");
-					}
 					button.tabIndex = place.tab === this.tab[area] ? 0 : -1;
 				}
 			}
 		}
 		const dock = this.areas.dock;
 		if (dock !== undefined) {
-			dock.classList.toggle("editor-dock-shut", !this.dockOpen);
-			dock.hidden = !this.dockOpen;
+			// A strip with no panel in it is no strip.
+			const anything = this.places.some(place => place.area === "dock" && this.panelShown.get(place.role) !== false);
+			dock.classList.toggle("editor-dock-shut", !this.dockOpen || !anything);
+			dock.hidden = !this.dockOpen || !anything;
 			this.applyDragged();
+		}
+		// The switches in the status line say which panel is being looked at,
+		// wherever it stands - and are one stop for Tab: the one that is on,
+		// or else the first.
+		const switches = this.parts("dock-tab");
+		let stop = null;
+		for (const button of switches) {
+			const place = this.places.find(where => where.tab === button.dataset.tab);
+			const on = place !== undefined && this.panelInFront(place.role);
+			button.setAttribute("aria-pressed", on ? "true" : "false");
+			button.setAttribute("aria-selected", on ? "true" : "false");
+			button.disabled = place === undefined || this.panelShown.get(place.role) === false;
+			if (on && stop === null) {
+				stop = button;
+			}
+		}
+		for (const button of switches) {
+			button.tabIndex = button === (stop === null ? switches[0] : stop) ? 0 : -1;
 		}
 	}
 
@@ -4348,11 +4435,67 @@ class CEditorPanels {
 		if (this.areas === null) {
 			return true;
 		}
-		const place = PANEL_PLACES.find(where => where.role === role);
+		const place = this.placeOf(role);
 		if (place === undefined || place.tab === undefined) {
 			return true;
 		}
 		return this.tab[place.area] === place.tab;
+	}
+
+	/** Where a panel stands, by the panel's name. */
+	placeOf(role) {
+		return this.places.find(where => where.role === role);
+	}
+
+	/**
+	 * Whether a panel is the one being looked at: in front of its tabbed
+	 * area and that area open, or simply shown in a stacked one.
+	 */
+	panelInFront(role) {
+		const place = this.placeOf(role);
+		if (place === undefined || this.areas === null) {
+			return false;
+		}
+		if (place.area === "dock") {
+			return this.dockOpen && this.tab.dock === place.tab;
+		}
+		if (place.tab !== undefined) {
+			return this.areaShown(place.area) && this.tab[place.area] === place.tab;
+		}
+		const panel = this.part(role);
+		return this.areaShown(place.area) && panel !== null && !panel.hidden;
+	}
+
+	/**
+	 * Opens a panel where it stands, or shuts it if it was the one in front:
+	 * what the switches in the status line do, and what the keys for the
+	 * envelopes, the history, the settings and the rules do.
+	 */
+	togglePanel(role) {
+		const place = this.placeOf(role);
+		if (place === undefined || this.areas === null) {
+			return;
+		}
+		if (this.panelInFront(role)) {
+			if (place.area === "dock") {
+				this.dockOpen = false;
+				this.applyTabs();
+			} else {
+				this.showArea(place.area, false);
+			}
+			return;
+		}
+		if (place.area !== "dock") {
+			this.showArea(place.area, true);
+		}
+		if (place.tab !== undefined) {
+			this.showTab(place.area, place.tab);
+		} else {
+			const panel = this.part(role);
+			if (panel !== null) {
+				panel.scrollIntoView({ block: "nearest" });
+			}
+		}
 	}
 
 	destroy() {
@@ -4721,6 +4864,7 @@ class CEditorPanels {
 		}
 		this.areas[area].hidden = !on;
 		this.refreshBar();
+		this.applyTabs();
 	}
 
 
@@ -9054,11 +9198,14 @@ const BOX_STYLE = `
 	display: grid;
 	grid-template-columns: auto auto minmax(0, 1fr) auto;
 	grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+	/* The dock lies under the map and the inspector only: the right column
+	   keeps its whole height, so that opening the strip does not crush the
+	   tileset. */
 	grid-template-areas:
 		"head head head head"
 		"tools tools tools tools"
 		"rail left map right"
-		"rail dock dock dock"
+		"rail dock dock right"
 		"status status status status";
 	width: 100%;
 	height: 100%;

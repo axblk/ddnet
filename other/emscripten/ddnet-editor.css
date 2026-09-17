@@ -1134,6 +1134,17 @@ ddnet-editor button:disabled,
 	text-overflow: ellipsis;
 }
 
+/* The picture a layer draws with, after its name, in small print. */
+.editor-row-sub {
+	flex: none;
+	max-width: 40%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-2);
+	font: var(--type-xs);
+}
+
 .editor-layer-game .editor-row-name {
 	font-weight: 600;
 }

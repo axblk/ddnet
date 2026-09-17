@@ -2765,6 +2765,8 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   document/structure.cpp
   document/structure.h
   document/tile_store.h
+  document/tiles.cpp
+  document/tiles.h
   document/view.h
   document_images.cpp
   document_images.h
@@ -4642,6 +4644,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     tile_chunk_cache_test.cpp
     tile_run_store_test.cpp
     tile_store_test.cpp
+    tiles_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp

@@ -9,6 +9,7 @@
 #include <game/map/document/document.h>
 #include <game/map/document/edit.h>
 #include <game/map/document/structure.h>
+#include <game/map/document/tiles.h>
 
 #include <algorithm>
 #include <iterator>
@@ -585,6 +586,11 @@ namespace map_document
 		// one entry - see `CDocument::Begin`. Nothing merges that does not say
 		// so, so leaving it out is the ordinary case.
 		const char *pMerge = Arguments.Str("merge", nullptr);
+
+		// A rectangle of tiles, and the text it is turned into, is a
+		// subject of its own - see `tiles.h`.
+		if(str_startswith(pOp, "tiles."))
+			return ApplyTilesCommand(Document, pParsed.get(), pOp, pMerge);
 
 		// What a command does to the map is one transaction and therefore one
 		// history entry - unless the interface already has one open, in which

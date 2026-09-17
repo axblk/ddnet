@@ -95,8 +95,34 @@ void CDocumentRenderer::OnInit(IGraphics *pGraphics, IMapImages *pImages)
 void CDocumentRenderer::Clear()
 {
 	m_vpCaches.clear();
+	m_pGhost = nullptr;
 	m_pMap = nullptr;
 	m_InvalidatedChunks = 0;
+}
+
+void CDocumentRenderer::UseGhost(std::shared_ptr<const CLayer> pTiles)
+{
+	if(pTiles == nullptr || !std::holds_alternative<CTileLayer>(*pTiles) || std::get<CTileLayer>(*pTiles).Width() <= 0)
+	{
+		m_pGhost = nullptr;
+		return;
+	}
+	if(m_pGhost != nullptr && m_pGhost->m_pLayer == pTiles)
+		return;
+	if(m_pGhost == nullptr)
+	{
+		dbg_assert(m_pGraphics != nullptr, "the document renderer was not initialized");
+		m_pGhost = std::make_unique<CLayerCache>();
+		m_pGhost->m_pTiles = std::make_unique<CTileChunkCache>();
+		m_pGhost->m_pTiles->OnInit(m_pGraphics);
+	}
+	else
+	{
+		// Another brush is other geometry through and through: a brush is a
+		// few tiles, so there is nothing worth keeping of the old one.
+		m_pGhost->m_pTiles->Invalidate();
+	}
+	UseLayer(*m_pGhost, pTiles);
 }
 
 size_t CDocumentRenderer::Invalidate(CLayerCache &Cache, const CTileLayer &Older, const CTileLayer &Newer)
@@ -344,6 +370,87 @@ void CDocumentRenderer::RenderMarked(const CParams::CMarked &Marked)
 	m_pGraphics->LinesEnd();
 }
 
+void CDocumentRenderer::RenderGhost(const CParams::CGhost &Ghost, const CScreenRect &World)
+{
+	const CTileLayer *pTiles = m_pGhost == nullptr ? nullptr : std::get_if<CTileLayer>(m_pGhost->m_pLayer.get());
+	const bool WithTiles = pTiles != nullptr && (Ghost.m_Kind == CParams::CGhost::STAMP || Ghost.m_Kind == CParams::CGhost::FILL);
+	// A stamp is as large as the brush; everything else is as large as the
+	// rectangle it was given.
+	const int Width = Ghost.m_Kind == CParams::CGhost::STAMP ? (pTiles != nullptr ? pTiles->Width() : 1) : std::max(Ghost.m_Width, 1);
+	const int Height = Ghost.m_Kind == CParams::CGhost::STAMP ? (pTiles != nullptr ? pTiles->Height() : 1) : std::max(Ghost.m_Height, 1);
+	const float Left = Ghost.m_X * 32.0f;
+	const float Top = Ghost.m_Y * 32.0f;
+	const float Right = Left + Width * 32.0f;
+	const float Bottom = Top + Height * 32.0f;
+	// Nothing of it on the screen: the outline alone would cost a draw.
+	if(Right < World.m_TopLeft.x || Left > World.m_BottomRight.x || Bottom < World.m_TopLeft.y || Top > World.m_BottomRight.y)
+		return;
+
+	if(WithTiles)
+	{
+		const bool Physics = pTiles->m_Kind != ETileLayerKind::TILES;
+		IGraphics::CTextureHandle Texture;
+		if(Physics)
+		{
+			Texture = m_pImages->GetEntities(pTiles->m_Kind == ETileLayerKind::SWITCH ?
+								 MAP_IMAGE_ENTITY_LAYER_TYPE_SWITCH :
+								 MAP_IMAGE_ENTITY_LAYER_TYPE_ALL_EXCEPT_SWITCH);
+		}
+		else if(pTiles->m_Image >= 0 && pTiles->m_Image < m_pImages->Num())
+		{
+			Texture = m_pImages->Get(pTiles->m_Image);
+		}
+		// Like a layer whose picture is still on its way: nothing rather than
+		// a rectangle of flat colour. The outline below still says where.
+		if(Texture.IsValid() || !m_pGhost->m_TileSource.m_Textured)
+		{
+			if(Texture.IsValid())
+				m_pGraphics->TextureSet(Texture);
+			else
+				m_pGraphics->TextureClear();
+			// Faint enough that what is under it stays readable, strong
+			// enough that a tile can be told from its neighbour. A physics
+			// brush is drawn at full strength rather than at the overlay's,
+			// because the overlay may be off while somebody paints in it.
+			ColorRGBA Color = Physics ? ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f) : LayerColor(*pTiles, 0);
+			Color.a *= 0.65f;
+			// The brush's tiles start at its own zero, so the world is shifted
+			// under it until that zero lies at the corner of the ghost.
+			CScreenRect Shifted = World;
+			Shifted.m_TopLeft.x -= Left;
+			Shifted.m_TopLeft.y -= Top;
+			Shifted.m_BottomRight.x -= Left;
+			Shifted.m_BottomRight.y -= Top;
+			m_pGraphics->MapScreen(Shifted);
+			m_pGhost->m_pTiles->Render(m_pGhost->m_TileSource, Color, true, true);
+			m_pGraphics->MapScreen(World);
+		}
+	}
+	else if(Ghost.m_Kind == CParams::CGhost::ERASE)
+	{
+		m_pGraphics->TextureClear();
+		m_pGraphics->QuadsBegin();
+		m_pGraphics->SetColor(1.0f, 0.35f, 0.3f, 0.3f);
+		const IGraphics::CQuadItem Item(Left, Top, Right - Left, Bottom - Top);
+		m_pGraphics->QuadsDrawTL(&Item, 1);
+		m_pGraphics->QuadsEnd();
+	}
+
+	const IGraphics::CLineItem aBorder[4] = {
+		IGraphics::CLineItem(Left, Top, Right, Top),
+		IGraphics::CLineItem(Right, Top, Right, Bottom),
+		IGraphics::CLineItem(Right, Bottom, Left, Bottom),
+		IGraphics::CLineItem(Left, Bottom, Left, Top)};
+	m_pGraphics->TextureClear();
+	m_pGraphics->LinesBegin();
+	if(Ghost.m_Kind == CParams::CGhost::ERASE)
+		m_pGraphics->SetColor(1.0f, 0.45f, 0.4f, 0.9f);
+	else
+		m_pGraphics->SetColor(1.0f, 1.0f, 1.0f, 0.7f);
+	m_pGraphics->LinesDraw(aBorder, std::size(aBorder));
+	m_pGraphics->LinesEnd();
+}
+
 void CDocumentRenderer::RenderQuadHandles(const CQuad &Quad)
 {
 	// How large a handle is on the screen rather than in the world, so that
@@ -494,6 +601,14 @@ void CDocumentRenderer::Render(const CParams &Params)
 		CScreenRect World(0.0f, 0.0f, 0.0f, 0.0f);
 		if(UseGroup(*m_pMap->m_vpGroups[Params.m_GridGroup], Params, &World))
 			RenderGrid(World, Params.m_Grid);
+	}
+	// The ghost goes under the mark: while a rectangle is being dragged the
+	// mark is the crisp edge, and the ghost only says what will happen in it.
+	if(Params.m_Ghost.Shown() && Params.m_Ghost.m_Group < m_pMap->NumGroups())
+	{
+		CScreenRect World(0.0f, 0.0f, 0.0f, 0.0f);
+		if(UseGroup(*m_pMap->m_vpGroups[Params.m_Ghost.m_Group], Params, &World))
+			RenderGhost(Params.m_Ghost, World);
 	}
 	if(!Params.m_Marked.Empty() && Params.m_Marked.m_Group < m_pMap->NumGroups())
 	{

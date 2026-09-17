@@ -385,8 +385,12 @@ export interface EditorCommand {
 	/** Whether it is one of the tools in the rail; `hint` is what the status line says a drag does then. */
 	rail?: boolean;
 	hint?: string;
-	/** A switch of the view - what `controls="compact"` leaves out of the bar. */
+	/** A switch, pressed or not. The compact bar leaves switches out, but for the View button that holds the switches of the view. */
 	toggle?: boolean;
+	/** A switch of the view: in the bar behind the View button, not as a button of its own. */
+	view?: boolean;
+	/** Whether the bar keeps it even at its narrowest. */
+	always?: boolean;
 	/** The icon on that button. */
 	icon?: string;
 	/** Where in the menu it hangs - `File`, or `Layer/Add a layer`. */
@@ -497,6 +501,30 @@ export declare class EditorPanels {
 	changedKeys(): Record<string, string[]>;
 	/** Puts back what `changedKeys()` once said. */
 	applyKeys(changed: Record<string, string[]>): void;
+	/** Where every panel stands, in the order it stands there; this editor's own copy of the table. */
+	places: EditorPlace[];
+	/** Where a panel stands, by its name - `tiles-panel` and the like. */
+	placeOf(role: string): EditorPlace | undefined;
+	/** Carries a panel to another area and puts it in front there; false for a name or an area the editor has not got. */
+	movePanel(role: string, area: EditorArea): boolean;
+	/** The dialogue that does what dragging a panel does, for a keyboard or a finger. */
+	askArrange(): void;
+	/** Every panel back where it started, the widths and what is open with it; the settings stay. */
+	resetLayout(): void;
+	/** The layout as it is: what `remember` keeps and Export writes. */
+	layoutState(): EditorLayout;
+	/** The settings as they are: what the Settings menu and the View menu hold, and the changed keys. */
+	settingsState(): EditorSettings;
+	/** Layout and settings together, as the settings file. */
+	profile(): EditorSettingsFile;
+	/** Writes `profile()` as `ddnet-editor-settings.json` through the browser's download. */
+	exportSettings(): void;
+	/** Asks for a settings file and takes it. */
+	askImportSettings(): void;
+	/** Takes a settings file's text: checked whole first, so a bad file changes nothing and says why. */
+	importSettings(text: string): boolean;
+	/** Lets go of what the pointer holds between two drags - the move tool's selection. */
+	letGo(): void;
 	/** Whether the tileset is shown in the colour of the layer it is for. */
 	brushColouring: boolean;
 	/** Whether a finger only pans once a pen has been seen (on, as on a drawing tablet). */
@@ -510,6 +538,57 @@ export declare class EditorPanels {
 	closeDialog(): void;
 	refresh(): void;
 	destroy(): void;
+}
+
+/** The three areas a panel can stand in. */
+export type EditorArea = "left" | "right" | "dock";
+
+/** Where a panel stands. */
+export interface EditorPlace {
+	/** The panel, by its name - `tiles-panel`, `history-panel`, ... */
+	role: string;
+	area: EditorArea;
+	/** Its name as a tab, and what the tab says. */
+	tab: string;
+	name: string;
+	/** Its place among the switches of the status line, when it has one. */
+	status?: number;
+}
+
+/** The layout, the way it is kept and written out. */
+export interface EditorLayout {
+	panels: { role: string; area: EditorArea }[];
+	/** The tab in front of each area that shows one panel at a time. */
+	tab: { left?: string; dock?: string };
+	/** The dragged sizes in pixels, null where the stylesheet decides. */
+	sizes: { left: number | null; right: number | null; dock: number | null };
+	/** Which areas are open, by the shape of the box (`wide/tall` and the like), only where it differs from the shape's own choice. */
+	open: Record<string, { left?: boolean; right?: boolean; dock?: boolean }>;
+}
+
+/** The settings, the way they are kept and written out. */
+export interface EditorSettings {
+	theme: "dark" | "light";
+	targets: "auto" | "big" | "small";
+	brushColouring: boolean;
+	penHoldsPaper: boolean;
+	allowUnused: boolean;
+	entitiesImage: string;
+	grid: number;
+	entities: number;
+	highDetail: boolean;
+	animate: boolean;
+	tileZoom: number | null;
+	/** The commands whose keys differ from the table, id to keys. */
+	keys: Record<string, string[]>;
+}
+
+/** What Export writes and Import reads. Keys not named here are ignored on the way in. */
+export interface EditorSettingsFile {
+	kind: "ddnet-editor-settings";
+	version: 1;
+	layout?: Partial<EditorLayout>;
+	settings?: Partial<EditorSettings>;
 }
 
 export declare function steerEditor(

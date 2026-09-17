@@ -1115,11 +1115,13 @@ const PANEL_PLACES = [
 	// A list of steps is a column of text, and a column of text belongs in a
 	// column: the history stands in the inspector, not in the strip below.
 	{ role: "history-panel", area: "left", tab: "history", name: "History", status: 2 },
-	{ role: "tree-panel", area: "right" },
-	{ role: "group-panel", area: "right" },
-	{ role: "tiles-panel", area: "right" },
-	{ role: "quads-panel", area: "right" },
-	{ role: "sounds-panel", area: "right" },
+	// Every panel has a tab key and a name, because every panel can be
+	// carried into an area that shows one panel at a time.
+	{ role: "tree-panel", area: "right", tab: "layers", name: "Layers" },
+	{ role: "group-panel", area: "right", tab: "group", name: "Group" },
+	{ role: "tiles-panel", area: "right", tab: "tiles", name: "Tiles" },
+	{ role: "quads-panel", area: "right", tab: "quads", name: "Quads" },
+	{ role: "sounds-panel", area: "right", tab: "sources", name: "Sound sources" },
 	{ role: "envelopes-panel", area: "dock", tab: "envelopes", name: "Envelopes", status: 1 },
 	{ role: "settings-panel", area: "dock", tab: "settings", name: "Server settings", status: 3 },
 	{ role: "rules-panel", area: "dock", tab: "rules", name: "Rules", status: 4 },
@@ -1127,6 +1129,22 @@ const PANEL_PLACES = [
 
 /** The two areas that show one panel at a time, and what they are called. */
 const TABBED_AREAS = { left: "structure", dock: "dock" };
+
+/** The name a shape of box is remembered under: its width class and its height class. */
+function shapeName(shape) {
+	return `${shape.size}/${shape.tallness}`;
+}
+
+/** The three areas a panel can be carried to, and what they are called to a person. */
+const PANEL_AREAS = ["left", "right", "dock"];
+const AREA_NAMES = { left: "Left column", right: "Right column", dock: "Below the map" };
+
+/** The pictures physics layers can be drawn with, by the name the program knows. */
+const ENTITIES_SHEETS = { ddnet: "DDNet", ddrace: "DDRace", race: "Race", fng: "FNG", vanilla: "Vanilla", "f-ddrace": "F-DDrace", blockworlds: "Blockworlds" };
+
+/** What a settings file says it is, and which shape of file this editor writes and reads. */
+const SETTINGS_KIND = "ddnet-editor-settings";
+const SETTINGS_VERSION = 1;
 
 // Two editors on a page are two of everything, and a row of a list can only
 // be pointed at by an id that is the page's alone.
@@ -1811,6 +1829,18 @@ class CEditorPanels {
 		// Where each panel stands, this editor's own copy of the table: a
 		// layout somebody drags together is theirs and not every editor's.
 		this.places = PANEL_PLACES.map(place => Object.assign({}, place));
+		// Which areas somebody opened or shut, by the name of the shape the
+		// box had then: what suits a wide window does not suit a narrow one.
+		this.open = {};
+		// While the shape is being applied, what opens and shuts is the
+		// size's doing, not the person's, and is not remembered as theirs.
+		this.applyingShape = false;
+		// The panel being carried to another area, while one is.
+		this.carrying = null;
+		// Whether a click is the tail of a drag that just ended.
+		this.carriedJust = false;
+		this.keepLater = null;
+		this.settingsInput = null;
 		// The areas the panels were spread into, or null while they all stand
 		// in one column.
 		this.areas = null;
@@ -2399,6 +2429,7 @@ class CEditorPanels {
 		const before = this.shape;
 		this.shape = shape;
 		this.readonly = shape.readonly;
+		this.applyingShape = true;
 		const big = this.finger() ? "yes" : "no";
 		this.root.dataset.big = big;
 		if (this.areas !== null) {
@@ -2425,11 +2456,35 @@ class CEditorPanels {
 				this.showArea(side, false);
 			}
 		}
+		// Then what the person had open in a box of this shape, if they
+		// have had one before.
+		this.applyOpen(shape);
+		this.applyingShape = false;
 		this.applyTabs();
 		this.applyTilesTab();
 		this.applyDragged();
 		this.refreshBar();
 		this.refreshTiles();
+	}
+
+	/**
+	 * Opens and shuts the areas the way they were left in a box of this
+	 * shape. Columns only: a drawer is never remembered open.
+	 * @param {object} shape The shape the box has now.
+	 */
+	applyOpen(shape) {
+		const kept = this.open[shapeName(shape)];
+		if (kept === undefined || this.areas === null) {
+			return;
+		}
+		for (const side of ["left", "right"]) {
+			if (shape[side] === "column" && typeof kept[side] === "boolean" && !(side === "left" && shape.readonly)) {
+				this.showArea(side, kept[side]);
+			}
+		}
+		if (typeof kept.dock === "boolean") {
+			this.dockOpen = kept.dock;
+		}
 	}
 
 	/**
@@ -3940,7 +3995,7 @@ class CEditorPanels {
 
 	/** Which entities sheet, chosen from the ones there are. */
 	askEntitiesImage() {
-		const names = { ddnet: "DDNet", ddrace: "DDRace", race: "Race", fng: "FNG", vanilla: "Vanilla", "f-ddrace": "F-DDrace", blockworlds: "Blockworlds" };
+		const names = ENTITIES_SHEETS;
 		this.askFor("Entities picture", [
 			{ name: "what", kind: "note", label: "What physics layers are drawn with - the map is the same whichever it is." },
 			{ name: "sheet", label: "Picture", kind: "pick", value: this.editor.entitiesImage(),
@@ -3949,6 +4004,7 @@ class CEditorPanels {
 			this.editor.entitiesImage(answer.sheet);
 			this.tilesetSource = undefined;
 			this.refresh();
+			this.keepSettings();
 			this.say(`Physics layers drawn with ${names[answer.sheet] || answer.sheet}`);
 		}, { go: "Use it" });
 	}
@@ -4158,6 +4214,10 @@ class CEditorPanels {
 		if (command.group === "View") {
 			this.refreshOverlay();
 		}
+		// A switch of the view or a setting is somebody's own, and kept.
+		if (command.group === "View" || command.group === "Settings") {
+			this.keepSettings();
+		}
 		return true;
 	}
 
@@ -4218,22 +4278,7 @@ class CEditorPanels {
 		docks.dataset.role = "dock-tabs";
 		docks.setAttribute("role", "tablist");
 		docks.setAttribute("aria-label", "Below the map");
-		// One switch per panel that is looked at now and then, wherever that
-		// panel stands: it opens the panel where it is and shuts it again. In
-		// the order the number says, not the order the panels happen to have.
-		for (const place of this.places.filter(where => where.status !== undefined).sort((one, other) => one.status - other.status)) {
-			const button = document.createElement("button");
-			button.type = "button";
-			button.className = "editor-dock-tab";
-			button.dataset.role = "dock-tab";
-			button.dataset.tab = place.tab;
-			button.dataset.command = `panel.${place.tab}`;
-			button.setAttribute("role", "tab");
-			button.textContent = place.name;
-			button.title = `${place.name}; press again to close`;
-			button.addEventListener("click", () => this.togglePanel(place.role), { signal: this.stopping.signal });
-			docks.append(button);
-		}
+		this.makeSwitches(docks);
 		const zoom = document.createElement("span");
 		zoom.dataset.role = "status-zoom";
 		zoom.className = "editor-status-zoom";
@@ -4256,6 +4301,7 @@ class CEditorPanels {
 		for (const area of ["left", "right", "dock"]) {
 			areas[area].append(this.makeGrip(area));
 		}
+		this.wireHandles();
 		DDNetBase.paintIcons(areas.status);
 		DDNetBase.paintIcons(areas.dock);
 		this.applyTabs();
@@ -4290,6 +4336,7 @@ class CEditorPanels {
 			const want = Math.max(limits.least, Math.min(limits.most, Math.round(size)));
 			this.dragged[area] = want;
 			this.applyDragged();
+			this.keepLayoutSoon();
 			grip.setAttribute("aria-valuenow", String(want));
 			grip.setAttribute("aria-valuemin", String(limits.least));
 			grip.setAttribute("aria-valuemax", String(limits.most));
@@ -4327,6 +4374,7 @@ class CEditorPanels {
 					event.stopPropagation();
 					this.dragged[area] = null;
 					this.applyDragged();
+					this.keepLayoutSoon();
 				}
 				return;
 			}
@@ -4338,6 +4386,7 @@ class CEditorPanels {
 		grip.addEventListener("dblclick", () => {
 			this.dragged[area] = null;
 			this.applyDragged();
+			this.keepLayoutSoon();
 		}, { signal: this.stopping.signal });
 		return grip;
 	}
@@ -4395,6 +4444,7 @@ class CEditorPanels {
 			button.setAttribute("role", "tab");
 			button.textContent = place.name;
 			button.addEventListener("click", () => this.showTab(area, place.tab), { signal: this.stopping.signal });
+			this.wireHandle(button, place.role);
 			strip.append(button);
 		}
 		if (area === "left") {
@@ -4432,6 +4482,7 @@ class CEditorPanels {
 			this.dockOpen = true;
 		}
 		this.applyTabs();
+		this.keepLayoutSoon();
 	}
 
 	/**
@@ -4479,6 +4530,17 @@ class CEditorPanels {
 				}
 			}
 		}
+		// A panel in an area without tabs is shown whenever it has something
+		// to show - also one that was just carried there from behind a tab.
+		for (const place of this.places) {
+			if (TABBED_AREAS[place.area] === undefined) {
+				const panel = this.part(place.role);
+				if (panel !== null) {
+					panel.hidden = this.panelShown.get(place.role) === false;
+					panel.classList.remove("editor-panel-always");
+				}
+			}
+		}
 		const dock = this.areas.dock;
 		if (dock !== undefined) {
 			// A strip with no panel in it is no strip.
@@ -4505,6 +4567,61 @@ class CEditorPanels {
 		for (const button of switches) {
 			button.tabIndex = button === (stop === null ? switches[0] : stop) ? 0 : -1;
 		}
+		this.noteOpen();
+	}
+
+	/**
+	 * Writes down which areas are open, under the name of the shape the box
+	 * has - unless it is the shape itself that is opening and shutting them.
+	 * A drawer is not written down: one that opened with the map covered
+	 * would be an editor whose first act is in the way.
+	 */
+	noteOpen() {
+		if (this.shape === null || this.applyingShape || this.areas === null) {
+			return;
+		}
+		const name = shapeName(this.shape);
+		const usual = this.defaultOpen(this.shape);
+		const now = {};
+		for (const side of ["left", "right"]) {
+			if (this.shape[side] === "column") {
+				now[side] = this.areaShown(side);
+			}
+		}
+		now.dock = this.dockOpen;
+		// Only what differs from what the shape would do by itself is
+		// somebody's own; the rest is left to the shape, so that a better
+		// default in a later editor is not overruled by a remembered one.
+		const own = {};
+		for (const [area, open] of Object.entries(now)) {
+			if (open !== usual[area]) {
+				own[area] = open;
+			}
+		}
+		const was = this.open[name];
+		const next = Object.keys(own).length === 0 ? undefined : own;
+		if (JSON.stringify(was) !== JSON.stringify(next)) {
+			if (next === undefined) {
+				delete this.open[name];
+			} else {
+				this.open[name] = next;
+			}
+			this.keepLayoutSoon();
+		}
+	}
+
+	/**
+	 * What a shape opens by itself: the columns where they are columns, the
+	 * inspector only where there is room for it, the strip where there is
+	 * room to stack.
+	 * @param {object} shape The shape of the box.
+	 */
+	defaultOpen(shape) {
+		return {
+			left: shape.left === "column" && shape.inspector === "open" && !shape.readonly,
+			right: shape.right === "column" && !shape.readonly,
+			dock: shape.stack === true,
+		};
 	}
 
 	/**
@@ -4526,7 +4643,7 @@ class CEditorPanels {
 			return true;
 		}
 		const place = this.placeOf(role);
-		if (place === undefined || place.tab === undefined) {
+		if (place === undefined || TABBED_AREAS[place.area] === undefined) {
 			return true;
 		}
 		return this.tab[place.area] === place.tab;
@@ -4535,6 +4652,741 @@ class CEditorPanels {
 	/** Where a panel stands, by the panel's name. */
 	placeOf(role) {
 		return this.places.find(where => where.role === role);
+	}
+
+	/**
+	 * The switches of the status line, one per panel that has a number:
+	 * each opens its panel where it stands and shuts it again, in the order
+	 * the numbers say rather than the order the panels happen to have.
+	 * @param {HTMLElement} docks The strip the switches go into; emptied first.
+	 */
+	makeSwitches(docks) {
+		docks.textContent = "";
+		for (const place of this.places.filter(where => where.status !== undefined).sort((one, other) => one.status - other.status)) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "editor-dock-tab";
+			button.dataset.role = "dock-tab";
+			button.dataset.tab = place.tab;
+			button.dataset.command = `panel.${place.tab}`;
+			button.setAttribute("role", "tab");
+			button.textContent = place.name;
+			button.title = `${place.name}; press again to close`;
+			button.addEventListener("click", () => this.togglePanel(place.role), { signal: this.stopping.signal });
+			docks.append(button);
+		}
+	}
+
+	/**
+	 * Carries a panel to another area, and puts it in front there.
+	 *
+	 * A panel that goes below the map gets a switch in the status line if it
+	 * has none, because the strip has no tabs of its own: the switches are
+	 * its tabs. One that leaves keeps its switch, which goes on opening it
+	 * wherever it stands.
+	 * @param {string} role The panel, by its name - `tiles-panel` and the like.
+	 * @param {string} area Where to: `left`, `right` or `dock`.
+	 * @returns {boolean} Whether there was such a panel and such an area.
+	 */
+	movePanel(role, area) {
+		const place = this.placeOf(role);
+		if (place === undefined || !PANEL_AREAS.includes(area) || this.areas === null) {
+			return false;
+		}
+		if (place.area !== area) {
+			// Last in its new area: what was just put somewhere stands at
+			// the end of what was there.
+			this.places.splice(this.places.indexOf(place), 1);
+			this.places.push(place);
+			place.area = area;
+		}
+		if (area === "dock" && place.status === undefined) {
+			place.status = 1 + Math.max(0, ...this.places.map(where => where.status || 0));
+		}
+		this.placePanels();
+		if (TABBED_AREAS[area] !== undefined) {
+			this.showTab(area, place.tab);
+		}
+		this.showArea(area, true);
+		this.keepLayoutSoon();
+		return true;
+	}
+
+	/**
+	 * Puts every panel where the table says, in the table's order, and
+	 * remakes the tabs and the switches, which are made from the table.
+	 */
+	placePanels() {
+		if (this.areas === null) {
+			return;
+		}
+		for (const area of PANEL_AREAS) {
+			const body = this.areas[area].querySelector(".editor-area-body");
+			for (const place of this.places.filter(where => where.area === area)) {
+				const panel = this.part(place.role);
+				if (panel !== null && body !== null) {
+					body.append(panel);
+				}
+			}
+		}
+		const strip = this.areas.left.querySelector('[data-role="structure-tabs"]');
+		if (strip !== null) {
+			strip.replaceWith(this.makeTabs("left", this.places.filter(where => where.area === "left")));
+		}
+		const docks = this.part("dock-tabs");
+		if (docks !== null) {
+			this.makeSwitches(docks);
+		}
+		this.wireHandles();
+		this.applyTabs();
+		this.refreshBar();
+		this.refreshTiles();
+	}
+
+	/** Makes the head of every panel a handle it can be carried by. */
+	wireHandles() {
+		for (const place of this.places) {
+			const panel = this.part(place.role);
+			const head = panel === null ? null : panel.querySelector(".editor-panel-head");
+			if (head !== null && head.dataset.carry === undefined) {
+				this.wireHandle(head, place.role);
+			}
+		}
+	}
+
+	/**
+	 * Makes a thing a handle: dragged eight pixels, it carries its panel,
+	 * and the three areas offer themselves to drop it in. A shorter drag is
+	 * a click, and does what a click on the thing did.
+	 * @param {HTMLElement} handle The tab or the head of the panel.
+	 * @param {string} role The panel it carries.
+	 */
+	wireHandle(handle, role) {
+		handle.dataset.carry = role;
+		handle.addEventListener("pointerdown", event => this.beginCarry(event, handle, role), { signal: this.stopping.signal });
+		// The click that ends a drag is the drag's, not the tab's.
+		handle.addEventListener("click", event => {
+			if (this.carriedJust) {
+				event.stopImmediatePropagation();
+				event.preventDefault();
+			}
+		}, { capture: true, signal: this.stopping.signal });
+	}
+
+	beginCarry(event, handle, role) {
+		if (event.button !== 0 || !event.isPrimary || this.readonly || this.carrying !== null) {
+			return;
+		}
+		// A button in a head - the plus of the layer list - is a button.
+		const button = event.target.closest("button");
+		if (button !== null && button !== handle) {
+			return;
+		}
+		const start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+		const stop = new AbortController();
+		let carrying = false;
+		// Captured from the start, or the first move beyond the handle would
+		// go to whatever lies there and the handle would never hear of it.
+		try {
+			handle.setPointerCapture(start.id);
+		} catch (error) {
+			// A pointer that is already gone: there is nothing to carry with.
+		}
+		const move = moved => {
+			if (!carrying) {
+				if (Math.hypot(moved.clientX - start.x, moved.clientY - start.y) < 8) {
+					return;
+				}
+				carrying = true;
+				this.showDropZones(role);
+			}
+			this.moveCarry(moved.clientX, moved.clientY);
+		};
+		const end = ended => {
+			stop.abort();
+			try {
+				handle.releasePointerCapture(start.id);
+			} catch (error) {
+				// It had already gone.
+			}
+			if (!carrying) {
+				return;
+			}
+			const zone = ended.type === "pointerup" ? this.zoneAt(ended.clientX, ended.clientY) : null;
+			this.hideDropZones();
+			this.carriedJust = true;
+			setTimeout(() => {
+				this.carriedJust = false;
+			}, 0);
+			if (zone !== null) {
+				this.movePanel(role, zone);
+			}
+		};
+		handle.addEventListener("pointermove", move, { signal: stop.signal });
+		handle.addEventListener("pointerup", end, { signal: stop.signal });
+		handle.addEventListener("pointercancel", end, { signal: stop.signal });
+		this.stopping.signal.addEventListener("abort", () => stop.abort(), { signal: stop.signal });
+	}
+
+	/**
+	 * The three places a carried panel can be dropped, drawn over the
+	 * editor: an area that is open is its own zone; one that is shut is a
+	 * strip along its edge of the map.
+	 * @param {string} role The panel being carried, for the label.
+	 */
+	showDropZones(role) {
+		const home = this.overlayHome();
+		if (home === null || this.areas === null) {
+			return;
+		}
+		const room = home.getBoundingClientRect();
+		const map = this.editor.canvas.getBoundingClientRect();
+		const strip = 64;
+		const zones = [];
+		for (const area of PANEL_AREAS) {
+			const box = this.areas[area];
+			let at;
+			if (box !== undefined && !box.hidden) {
+				const k = box.getBoundingClientRect();
+				at = { left: k.left, top: k.top, width: k.width, height: k.height };
+			} else if (area === "left") {
+				at = { left: map.left, top: map.top, width: strip, height: map.height };
+			} else if (area === "right") {
+				at = { left: map.right - strip, top: map.top, width: strip, height: map.height };
+			} else {
+				at = { left: map.left, top: map.bottom - strip, width: map.width, height: strip };
+			}
+			const zone = document.createElement("div");
+			zone.className = "editor-drop";
+			zone.dataset.role = "drop-zone";
+			zone.dataset.area = area;
+			zone.textContent = AREA_NAMES[area];
+			zone.style.left = `${at.left - room.left}px`;
+			zone.style.top = `${at.top - room.top}px`;
+			zone.style.width = `${at.width}px`;
+			zone.style.height = `${at.height}px`;
+			home.append(zone);
+			zones.push({ area: area, zone: zone, left: at.left, top: at.top, right: at.left + at.width, bottom: at.top + at.height });
+		}
+		const ghost = document.createElement("div");
+		ghost.className = "editor-carry";
+		ghost.dataset.role = "carry";
+		const place = this.placeOf(role);
+		ghost.textContent = place === undefined ? role : place.name;
+		home.append(ghost);
+		this.carrying = { role: role, zones: zones, ghost: ghost, room: room };
+		if (this.box !== null && this.box !== undefined) {
+			this.box.dataset.carrying = "yes";
+		}
+	}
+
+	moveCarry(x, y) {
+		if (this.carrying === null) {
+			return;
+		}
+		const over = this.zoneAt(x, y);
+		for (const zone of this.carrying.zones) {
+			zone.zone.dataset.over = zone.area === over ? "yes" : "no";
+		}
+		this.carrying.ghost.style.left = `${x - this.carrying.room.left + 12}px`;
+		this.carrying.ghost.style.top = `${y - this.carrying.room.top + 12}px`;
+	}
+
+	/** Which area's zone a point of the page lies in, or null. */
+	zoneAt(x, y) {
+		if (this.carrying === null) {
+			return null;
+		}
+		const hit = this.carrying.zones.find(zone => x >= zone.left && x < zone.right && y >= zone.top && y < zone.bottom);
+		return hit === undefined ? null : hit.area;
+	}
+
+	hideDropZones() {
+		if (this.carrying === null) {
+			return;
+		}
+		for (const zone of this.carrying.zones) {
+			zone.zone.remove();
+		}
+		this.carrying.ghost.remove();
+		this.carrying = null;
+		if (this.box !== null && this.box !== undefined) {
+			delete this.box.dataset.carrying;
+		}
+	}
+
+	/**
+	 * The same as carrying, for a keyboard or a finger that cannot drag:
+	 * every panel with a choice of where it stands.
+	 */
+	askArrange() {
+		const choices = PANEL_AREAS.map(area => ({ value: area, label: AREA_NAMES[area] }));
+		this.askFor("Arrange panels", this.places.map(place => ({
+			name: place.role, label: place.name, kind: "pick", value: place.area, choices: choices,
+		})), answer => {
+			for (const place of this.places.slice()) {
+				if (answer[place.role] !== undefined && answer[place.role] !== place.area) {
+					this.movePanel(place.role, answer[place.role]);
+				}
+			}
+		}, { go: "Arrange" });
+	}
+
+	/** The layout as it is, the way it is kept and written out. */
+	layoutState() {
+		return {
+			panels: this.places.map(place => ({ role: place.role, area: place.area })),
+			tab: { left: this.tab.left, dock: this.tab.dock },
+			sizes: Object.assign({}, this.dragged),
+			open: JSON.parse(JSON.stringify(this.open)),
+		};
+	}
+
+	/** The settings as they are: what the Settings menu and the View menu hold, and the keys. */
+	settingsState() {
+		return {
+			theme: this.scheme(),
+			targets: this.targets(),
+			brushColouring: this.brushColouring,
+			penHoldsPaper: this.penHoldsPaper,
+			allowUnused: this.editor.allowUnused(),
+			entitiesImage: this.editor.entitiesImage(),
+			grid: this.editor.grid(),
+			entities: this.editor.entities(),
+			highDetail: this.editor.highDetail(),
+			animate: this.editor.animate(),
+			tileZoom: this.tileZoom,
+			keys: this.changedKeys(),
+		};
+	}
+
+	/** Layout and settings together, as the file Export writes. */
+	profile() {
+		return { kind: SETTINGS_KIND, version: SETTINGS_VERSION, layout: this.layoutState(), settings: this.settingsState() };
+	}
+
+	/**
+	 * Checks a file's worth of layout and settings before any of it is
+	 * taken: a file with one bad value changes nothing. Keys the editor does
+	 * not know are ignored, so a file from a later editor still opens.
+	 * @param {unknown} data What the file held, parsed.
+	 * @returns {{layout: object|null, settings: object|null}} What was checked, or throws with a reason.
+	 */
+	checkProfile(data) {
+		if (data === null || typeof data !== "object" || Array.isArray(data)) {
+			throw new Error("not a settings file");
+		}
+		if (data.version === undefined) {
+			throw new Error("no version");
+		}
+		if (data.version !== SETTINGS_VERSION) {
+			throw new Error(`version ${JSON.stringify(data.version)} is not ${SETTINGS_VERSION}`);
+		}
+		return {
+			layout: data.layout === undefined ? null : this.checkLayout(data.layout),
+			settings: data.settings === undefined ? null : this.checkSettings(data.settings),
+		};
+	}
+
+	checkLayout(layout) {
+		if (layout === null || typeof layout !== "object" || Array.isArray(layout)) {
+			throw new Error("the layout is not an object");
+		}
+		const out = { panels: [], tab: {}, sizes: {}, open: {} };
+		if (layout.panels !== undefined) {
+			if (!Array.isArray(layout.panels)) {
+				throw new Error("the panels are not a list");
+			}
+			const seen = new Set();
+			for (const entry of layout.panels) {
+				if (entry === null || typeof entry !== "object" || typeof entry.role !== "string" || typeof entry.area !== "string") {
+					throw new Error("a panel without a name or an area");
+				}
+				if (!PANEL_PLACES.some(place => place.role === entry.role)) {
+					throw new Error(`no panel is called ${entry.role}`);
+				}
+				if (!PANEL_AREAS.includes(entry.area)) {
+					throw new Error(`no area is called ${entry.area}`);
+				}
+				if (seen.has(entry.role)) {
+					throw new Error(`${entry.role} is listed twice`);
+				}
+				seen.add(entry.role);
+				out.panels.push({ role: entry.role, area: entry.area });
+			}
+		}
+		if (layout.tab !== undefined) {
+			if (layout.tab === null || typeof layout.tab !== "object") {
+				throw new Error("the tabs are not an object");
+			}
+			for (const area of Object.keys(TABBED_AREAS)) {
+				if (layout.tab[area] !== undefined) {
+					if (typeof layout.tab[area] !== "string") {
+						throw new Error(`the ${area} tab is not a name`);
+					}
+					out.tab[area] = layout.tab[area];
+				}
+			}
+		}
+		if (layout.sizes !== undefined) {
+			if (layout.sizes === null || typeof layout.sizes !== "object") {
+				throw new Error("the sizes are not an object");
+			}
+			for (const area of PANEL_AREAS) {
+				const size = layout.sizes[area];
+				if (size === undefined) {
+					continue;
+				}
+				if (size !== null && (typeof size !== "number" || !Number.isFinite(size))) {
+					throw new Error(`the ${area} size is not a number`);
+				}
+				out.sizes[area] = size === null ? null : Math.max(DRAG_LIMITS[area].least, Math.min(DRAG_LIMITS[area].most, Math.round(size)));
+			}
+		}
+		if (layout.open !== undefined) {
+			if (layout.open === null || typeof layout.open !== "object") {
+				throw new Error("what is open is not an object");
+			}
+			for (const [name, kept] of Object.entries(layout.open)) {
+				if (kept === null || typeof kept !== "object") {
+					throw new Error(`what is open at ${name} is not an object`);
+				}
+				const one = {};
+				for (const area of PANEL_AREAS) {
+					if (kept[area] !== undefined) {
+						if (typeof kept[area] !== "boolean") {
+							throw new Error(`whether the ${area} is open at ${name} is not yes or no`);
+						}
+						one[area] = kept[area];
+					}
+				}
+				out.open[name] = one;
+			}
+		}
+		return out;
+	}
+
+	checkSettings(settings) {
+		if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+			throw new Error("the settings are not an object");
+		}
+		const out = {};
+		const oneOf = (name, allowed) => {
+			if (settings[name] !== undefined) {
+				if (!allowed.includes(settings[name])) {
+					throw new Error(`${name} is ${JSON.stringify(settings[name])}, not one of ${allowed.join(", ")}`);
+				}
+				out[name] = settings[name];
+			}
+		};
+		const yesNo = name => {
+			if (settings[name] !== undefined) {
+				if (typeof settings[name] !== "boolean") {
+					throw new Error(`${name} is not yes or no`);
+				}
+				out[name] = settings[name];
+			}
+		};
+		const number = (name, least, most) => {
+			if (settings[name] !== undefined) {
+				const value = settings[name];
+				if (typeof value !== "number" || !Number.isFinite(value) || value < least || value > most) {
+					throw new Error(`${name} is not a number from ${least} to ${most}`);
+				}
+				out[name] = value;
+			}
+		};
+		oneOf("theme", ["dark", "light"]);
+		oneOf("targets", ["auto", "big", "small"]);
+		yesNo("brushColouring");
+		yesNo("penHoldsPaper");
+		yesNo("allowUnused");
+		yesNo("highDetail");
+		yesNo("animate");
+		oneOf("entitiesImage", Object.keys(ENTITIES_SHEETS));
+		number("grid", 0, 1024);
+		number("entities", 0, 100);
+		oneOf("tileZoom", TILE_ZOOMS);
+		if (settings.keys !== undefined) {
+			if (settings.keys === null || typeof settings.keys !== "object" || Array.isArray(settings.keys)) {
+				throw new Error("the keys are not an object");
+			}
+			for (const [id, keys] of Object.entries(settings.keys)) {
+				if (!Array.isArray(keys) || !keys.every(key => typeof key === "string")) {
+					throw new Error(`the keys of ${id} are not a list of names`);
+				}
+			}
+			out.keys = settings.keys;
+		}
+		return out;
+	}
+
+	/**
+	 * Takes a checked layout: every panel to its area in the file's order,
+	 * then the tabs, the sizes and what is open.
+	 * @param {object|null} layout What `checkLayout` returned.
+	 */
+	applyLayout(layout) {
+		if (layout === null) {
+			return;
+		}
+		if (layout.panels.length > 0) {
+			const next = [];
+			for (const entry of layout.panels) {
+				const place = this.placeOf(entry.role);
+				place.area = entry.area;
+				if (entry.area === "dock" && place.status === undefined) {
+					place.status = 1 + Math.max(0, ...this.places.map(where => where.status || 0));
+				}
+				next.push(place);
+			}
+			for (const place of this.places) {
+				if (!next.includes(place)) {
+					next.push(place);
+				}
+			}
+			this.places = next;
+		}
+		Object.assign(this.tab, layout.tab);
+		Object.assign(this.dragged, layout.sizes);
+		Object.assign(this.open, layout.open);
+		// Nothing is written down while the panels are put in place: the
+		// areas still stand as the shape left them, and that is not
+		// anybody's choice.
+		this.applyingShape = true;
+		this.placePanels();
+		if (this.shape !== null) {
+			this.applyOpen(this.shape);
+		}
+		this.applyingShape = false;
+		this.applyTabs();
+		this.applyDragged();
+		this.refreshBar();
+	}
+
+	/**
+	 * Takes checked settings, each through the same door the menu uses.
+	 * @param {object|null} settings What `checkSettings` returned.
+	 */
+	applySettings(settings) {
+		if (settings === null) {
+			return;
+		}
+		if (settings.theme !== undefined) {
+			this.scheme(settings.theme);
+		}
+		if (settings.targets !== undefined) {
+			this.targets(settings.targets);
+		}
+		if (settings.brushColouring !== undefined) {
+			this.brushColouring = settings.brushColouring;
+		}
+		if (settings.penHoldsPaper !== undefined) {
+			this.penHoldsPaper = settings.penHoldsPaper;
+		}
+		if (settings.allowUnused !== undefined) {
+			this.editor.allowUnused(settings.allowUnused);
+		}
+		if (settings.entitiesImage !== undefined && settings.entitiesImage !== this.editor.entitiesImage()) {
+			this.editor.entitiesImage(settings.entitiesImage);
+			this.tilesetSource = undefined;
+		}
+		if (settings.grid !== undefined) {
+			this.editor.grid(settings.grid);
+		}
+		if (settings.entities !== undefined) {
+			this.editor.entities(settings.entities);
+		}
+		if (settings.highDetail !== undefined) {
+			this.editor.highDetail(settings.highDetail);
+		}
+		if (settings.animate !== undefined) {
+			this.editor.animate(settings.animate);
+		}
+		if (settings.tileZoom !== undefined) {
+			this.tileZoom = settings.tileZoom;
+			if (this.remembers()) {
+				try {
+					localStorage.setItem(TILE_ZOOM_STORAGE, String(this.tileZoom));
+				} catch (error) {
+					// A browser that keeps nothing.
+				}
+			}
+		}
+		if (settings.keys !== undefined) {
+			// The file's keys replace what was changed here, not add to it.
+			for (const command of this.commands) {
+				const table = COMMANDS.find(which => which.id === command.id);
+				command.keys = (table.keys || []).slice();
+			}
+			this.applyKeys(settings.keys);
+			this.tellKeys();
+		}
+		this.refresh();
+		this.refreshOverlay();
+	}
+
+	/** Keeps the layout in the browser, if the element was asked to remember. */
+	keepLayout() {
+		if (this.keepLater !== null) {
+			clearTimeout(this.keepLater);
+			this.keepLater = null;
+		}
+		if (!this.remembers()) {
+			return;
+		}
+		try {
+			localStorage.setItem(LAYOUT_STORAGE, JSON.stringify(Object.assign({ version: SETTINGS_VERSION }, this.layoutState())));
+		} catch (error) {
+			// A browser that keeps nothing forgets the layout with the tab.
+		}
+	}
+
+	/** The same, a moment later: the tabs are applied more often than they change. */
+	keepLayoutSoon() {
+		if (this.keepLater === null && this.remembers()) {
+			this.keepLater = setTimeout(() => this.keepLayout(), 200);
+		}
+	}
+
+	keepSettings() {
+		if (!this.remembers()) {
+			return;
+		}
+		try {
+			const settings = this.settingsState();
+			// The keys have a place of their own.
+			delete settings.keys;
+			localStorage.setItem(SETTINGS_STORAGE, JSON.stringify(Object.assign({ version: SETTINGS_VERSION }, settings)));
+		} catch (error) {
+			// A browser that keeps nothing.
+		}
+	}
+
+	/**
+	 * Takes back what was kept in the browser. Something kept that does not
+	 * check - by an older editor, or by hand - is left alone and ignored.
+	 */
+	loadKept() {
+		if (!this.remembers()) {
+			return;
+		}
+		const read = key => {
+			try {
+				const text = localStorage.getItem(key);
+				return text === null ? null : JSON.parse(text);
+			} catch (error) {
+				return null;
+			}
+		};
+		const layout = read(LAYOUT_STORAGE);
+		if (layout !== null) {
+			try {
+				this.applyLayout(this.checkProfile({ version: layout.version, layout: layout }).layout);
+			} catch (error) {
+				console.warn(`The kept layout was not taken: ${error.message}`);
+			}
+		}
+		const settings = read(SETTINGS_STORAGE);
+		if (settings !== null) {
+			try {
+				this.applySettings(this.checkProfile({ version: settings.version, settings: settings }).settings);
+			} catch (error) {
+				console.warn(`The kept settings were not taken: ${error.message}`);
+			}
+		}
+	}
+
+	/** Every panel back where it started, the sizes and what is open with it. */
+	resetLayout() {
+		this.places = PANEL_PLACES.map(place => Object.assign({}, place));
+		this.dragged = { left: null, right: null, dock: null };
+		this.open = {};
+		this.tab.left = "props";
+		this.tab.dock = "envelopes";
+		this.applyingShape = true;
+		this.placePanels();
+		if (this.shape !== null && this.areas !== null) {
+			const shape = this.shape;
+			this.dockOpen = shape.stack === true;
+			for (const side of ["left", "right"]) {
+				const column = shape[side] === "column";
+				const wanted = side === "left" ? (column && shape.inspector === "open") : column;
+				this.showArea(side, wanted && !shape.readonly);
+			}
+		}
+		this.applyingShape = false;
+		this.applyTabs();
+		this.applyDragged();
+		this.refreshBar();
+		if (this.remembers()) {
+			try {
+				localStorage.removeItem(LAYOUT_STORAGE);
+			} catch (error) {
+				// Nothing was kept.
+			}
+		}
+		this.say("Layout reset");
+	}
+
+	/** Writes layout and settings to a file the browser hands out. */
+	exportSettings() {
+		const handout = document.createElement("a");
+		const address = URL.createObjectURL(new Blob([JSON.stringify(this.profile(), null, "\t")], { type: "application/json" }));
+		handout.href = address;
+		handout.download = "ddnet-editor-settings.json";
+		handout.click();
+		setTimeout(() => URL.revokeObjectURL(address), 10000);
+		this.say("Settings written to ddnet-editor-settings.json");
+	}
+
+	/** Asks for a settings file and takes it. */
+	askImportSettings() {
+		if (this.settingsInput === null) {
+			this.settingsInput = document.createElement("input");
+			this.settingsInput.type = "file";
+			this.settingsInput.accept = ".json,application/json";
+			this.settingsInput.hidden = true;
+			this.settingsInput.dataset.role = "settings-file";
+			this.settingsInput.addEventListener("change", () => {
+				const file = this.settingsInput.files[0];
+				this.settingsInput.value = "";
+				if (file !== undefined && file !== null) {
+					file.text().then(text => this.importSettings(text)).catch(error => this.say(`The file could not be read: ${error.message}`, "error"));
+				}
+			}, { signal: this.stopping.signal });
+			this.root.append(this.settingsInput);
+		}
+		this.settingsInput.click();
+	}
+
+	/**
+	 * Takes a settings file: checked whole before anything is applied, so
+	 * a bad file changes nothing and says why.
+	 * @param {string} text What the file held.
+	 * @returns {boolean} Whether it was taken.
+	 */
+	importSettings(text) {
+		let data;
+		try {
+			data = JSON.parse(text);
+		} catch (error) {
+			this.say("That is not a settings file: it is not JSON", "error");
+			return false;
+		}
+		let checked;
+		try {
+			checked = this.checkProfile(data);
+		} catch (error) {
+			this.say(`The settings file was not taken: ${error.message}`, "error");
+			return false;
+		}
+		this.applyLayout(checked.layout);
+		this.applySettings(checked.settings);
+		this.keepLayout();
+		this.keepSettings();
+		this.say("Layout and settings taken from the file");
+		return true;
 	}
 
 	/**
@@ -4578,7 +5430,7 @@ class CEditorPanels {
 		if (place.area !== "dock") {
 			this.showArea(place.area, true);
 		}
-		if (place.tab !== undefined) {
+		if (TABBED_AREAS[place.area] !== undefined) {
 			this.showTab(place.area, place.tab);
 		} else {
 			const panel = this.part(role);
@@ -9242,6 +10094,9 @@ const EDGE_SWIPE_ZONE = 20;
 // Where an element with `remember` keeps the keys somebody set, and whether
 // the line over the map for the first stroke has been seen.
 const KEYS_STORAGE = "ddnet-editor-keys";
+// And where it keeps the layout somebody dragged together, and the settings.
+const LAYOUT_STORAGE = "ddnet-editor-layout";
+const SETTINGS_STORAGE = "ddnet-editor-settings";
 const HINT_STORAGE = "ddnet-editor-hinted";
 // Each element's description of its map needs a name no other element has.
 let mapHelpCount = 0;
@@ -9973,6 +10828,8 @@ class CEditorElement extends ELEMENT_BASE {
 					panels.tileZoom = zoom === "null" ? null : Number(zoom);
 					panels.refreshTiles();
 				}
+				// And the layout dragged together, and the settings.
+				panels.loadKept();
 			} catch (error) {
 				// Nothing kept, or something that is not keys: the table's.
 			}

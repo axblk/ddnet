@@ -45,6 +45,7 @@ namespace map_document
 	 * | `history.undo` | - |
 	 * | `history.redo` | - |
 	 * | `history.jump` | `index` |
+	 * | `tiles.read`, `tiles.write`, `tiles.fill`, `tiles.replace`, `tiles.find`, `tiles.stats` | see `tiles.h` |
 	 *
 	 * Anything may carry a `label`, which is what the history entry is
 	 * called; every command has one it falls back on.

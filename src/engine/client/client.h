@@ -125,7 +125,6 @@ class CClient : public CClientWithConnection
 	std::deque<CVideoExportJob> m_VideoExportQueue;
 	std::optional<CVideoExportJob> m_ActiveVideoExport;
 	bool m_VideoExportQueueRunning = false;
-	bool m_LoadingQueuedVideoExport = false;
 	// When the queue started waiting for the sound assets, so that the wait has
 	// an end even if they never arrive.
 	int64_t m_VideoExportSoundWaitStart = 0;

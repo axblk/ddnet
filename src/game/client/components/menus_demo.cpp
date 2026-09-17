@@ -107,7 +107,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 
 	// When rendering a demo and starting paused, render the pause indicator permanently.
 #if defined(CONF_VIDEORECORDER)
-	const bool VideoRendering = IVideo::Current() != nullptr;
+	const bool VideoRendering = IVideo::Current() != nullptr && Client()->VideoSessionId() == Client()->DemoSessionId();
 	bool InitialVideoPause = VideoRendering && m_LastPauseChange < 0.0f && pInfo->m_Paused;
 #else
 	const bool VideoRendering = false;
@@ -731,7 +731,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 
 	// slice save button
 #if defined(CONF_VIDEORECORDER)
-	const bool SliceEnabled = IVideo::Current() == nullptr;
+	const bool SliceEnabled = IVideo::Current() == nullptr || Client()->VideoSessionId() != Client()->DemoSessionId();
 #else
 	const bool SliceEnabled = true;
 #endif

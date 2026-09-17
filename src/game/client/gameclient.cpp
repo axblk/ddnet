@@ -1500,6 +1500,16 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 		}
 	}
 	InvalidateSnapshot(SessionId);
+	++m_FocusChanges;
+	// The demo and the server trade the input view when they trade places. Each
+	// keeps its camera while it is aside, so that neither jumps, and a demo in
+	// free view is shown where it was being watched.
+	const bool DemoFocused = SessionId == Client()->DemoSessionId();
+	if(DemoFocused != m_InputCameraIsDemo)
+	{
+		std::swap(m_GameViews.Find(m_InputViewId)->Camera(), m_GameViews.Find(m_aPaneViewIds[PANE_DEMO])->Camera());
+		m_InputCameraIsDemo = DemoFocused;
+	}
 	InputView();
 	m_SessionPresentations.SetAudible(SessionId);
 	if(!pSession->MapContext().Map()->IsLoaded())
@@ -1593,6 +1603,7 @@ void CGameClient::OnRender()
 	const CGameTickInfo &GameTickInfo = ActiveEntryIt->m_Time;
 	const CVisibleWorldRect &VisibleWorldRect = ActiveEntryIt->m_VisibleWorldRect;
 	CRenderTrace *pTrace = m_pRenderTrace;
+	const int FocusChangesAtStart = m_FocusChanges;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	const bool MenuBackdropActive = !m_PreparedIsolatedVideoOutput && m_Menus.BeginMenuBackdrop(ClearColor);
 	CScreenRenderOutput ScreenOutput(*Graphics(), ClearColor, MenuBackdropActive, m_PreparedVideoOutput, m_PreparedVideoSettings);
@@ -1897,7 +1908,9 @@ void CGameClient::OnRender()
 			pComponent->OnRenderApplicationOverlay();
 			if(GpuZone != IGraphics::EGpuRenderZone::COUNT)
 				Graphics()->GpuRenderZoneEnd(GpuZone);
-			if(pComponent == &m_Menus && m_PreparedMenuPreview)
+			// A click in the menu may have moved the focus since the frame was
+			// prepared, and the views no longer show what the requests say then.
+			if(pComponent == &m_Menus && m_PreparedMenuPreview && FocusChangesAtStart == m_FocusChanges)
 			{
 				m_RenderScheduler.Run(
 					m_vRenderRequests,

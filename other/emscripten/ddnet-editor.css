@@ -1439,10 +1439,19 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	padding: var(--space-1) 0;
 }
 
+/* A slot shows the brush in it as a picture, with its digit small in the
+   corner; an empty one is its digit alone. */
 .editor-slot {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	flex: 1 0 auto;
 	min-width: var(--button-small);
 	min-height: var(--button-small);
+	width: 36px;
+	height: 36px;
+	padding: 2px;
 	border: 0;
 	border-radius: var(--radius-1);
 	background: var(--bg-2);
@@ -1451,8 +1460,35 @@ ddnet-editor[data-stack="yes"] .editor-here {
 	cursor: pointer;
 }
 
+.editor-slot-picture {
+	width: 28px;
+	height: 28px;
+	image-rendering: pixelated;
+}
+
+.editor-slot-key {
+	position: absolute;
+	right: 2px;
+	bottom: 1px;
+	font: 500 9px/1 var(--font-ui);
+	color: var(--text-3);
+}
+
+.editor-slot-empty .editor-slot-picture {
+	display: none;
+}
+
+.editor-slot-empty .editor-slot-key {
+	position: static;
+	font: var(--type-mono);
+	color: var(--text-2);
+}
+
 .editor-slot[aria-pressed="true"] {
 	background: var(--accent-soft);
+}
+
+.editor-slot[aria-pressed="true"] .editor-slot-key {
 	color: var(--accent);
 }
 

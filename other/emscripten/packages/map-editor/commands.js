@@ -155,6 +155,15 @@ function tools() {
 		safe: mode === "hand",
 		always: ["paint", "grab", "erase", "hand"].includes(mode),
 		keys: [key],
+		// Filling and rubbing out are things done to tiles; on a quad or a
+		// sound layer there are none, and the button says so by going grey.
+		enabled: p => {
+			if (mode !== "fill" && mode !== "erase") {
+				return true;
+			}
+			const layer = p.selectedLayer();
+			return layer !== null && layer.type === "tiles";
+		},
 		pressed: p => p.tool === mode,
 		run: p => {
 			p.tool = mode;

@@ -2060,9 +2060,23 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			this.chooser.append(row);
 		}
-		this.chooser.style.left = `${event.clientX - box.left}px`;
-		this.chooser.style.top = `${event.clientY - box.top}px`;
+		// Beside the spot, and inside the map: measured once it is shown,
+		// because a hidden list has no size.
+		this.chooser.style.left = "0px";
+		this.chooser.style.top = "0px";
 		this.chooser.hidden = false;
+		const size = this.chooser.getBoundingClientRect();
+		const holder = this.chooser.parentElement.getBoundingClientRect();
+		let left = event.clientX - holder.left;
+		let top = event.clientY - holder.top;
+		if (left + size.width > holder.width - 4) {
+			left = event.clientX - holder.left - size.width;
+		}
+		if (top + size.height > holder.height - 4) {
+			top = event.clientY - holder.top - size.height;
+		}
+		this.chooser.style.left = `${Math.max(4, Math.min(left, holder.width - size.width - 4))}px`;
+		this.chooser.style.top = `${Math.max(4, Math.min(top, holder.height - size.height - 4))}px`;
 	}
 
 	/** Opens or shuts the big tile chooser. */
@@ -2443,9 +2457,10 @@ class CEditorPanels {
 			return command.always === true;
 		}
 		// `icons` is the compact bar: what is done to the map, without the
-		// switches of how it is looked at.
+		// switches of how it is looked at - except the one button that
+		// holds those switches, which is what stands in for them here.
 		if (how === "icons") {
-			return command.toggle !== true;
+			return command.toggle !== true || command.always === true;
 		}
 		return true;
 	}
@@ -3114,19 +3129,61 @@ class CEditorPanels {
 			return;
 		}
 		const room = home.getBoundingClientRect();
+		const edge = 4;
+		// The anchor is a button, or the rectangle a button had before the
+		// list it stood in was rebuilt under it - a click that selects the
+		// row remakes the row - or a spot.
+		const at = anchor instanceof Element ? anchor.getBoundingClientRect()
+			: anchor !== null && anchor !== undefined && typeof anchor.bottom === "number" ? anchor : null;
+		const spot = at === null && anchor !== null && anchor !== undefined ? anchor : null;
+		const settle = size => {
+			let left = room.width - size.width - 8;
+			let top = 8;
+			if (at !== null) {
+				// Under the button, hanging from its left edge; from its
+				// right edge where that would run off the side; above it
+				// where there is no room below - a menu that covered its own
+				// button would hide the one thing that says where it came
+				// from.
+				left = at.left - room.left;
+				if (left + size.width > room.width - edge) {
+					left = at.right - room.left - size.width;
+				}
+				top = at.bottom - room.top + edge;
+				if (top + size.height > room.height - edge) {
+					const above = at.top - room.top - edge - size.height;
+					top = above >= edge ? above : Math.max(edge, room.height - size.height - edge);
+				}
+			} else if (spot !== null) {
+				// At the spot, to its lower right; to the other side where
+				// that would run off - the way a context menu opens beside
+				// the pointer.
+				left = spot.x - room.left;
+				top = spot.y - room.top;
+				if (left + size.width > room.width - edge) {
+					left = spot.x - room.left - size.width;
+				}
+				if (top + size.height > room.height - edge) {
+					top = spot.y - room.top - size.height;
+				}
+			}
+			what.style.left = `${Math.max(edge, Math.min(left, room.width - size.width - edge))}px`;
+			what.style.top = `${Math.max(edge, Math.min(top, room.height - size.height - edge))}px`;
+		};
+		// Measured at the corner, not where it was last time: a box that
+		// stood near the right edge wrapped its text to fit and was taller
+		// there than it will be at its new place, and a box placed by the
+		// wrong height hangs sixteen pixels off its button.
+		what.style.left = "0px";
+		what.style.top = "0px";
 		const size = what.getBoundingClientRect();
-		let left = room.width - size.width - 8;
-		let top = 8;
-		if (anchor instanceof Element) {
-			const at = anchor.getBoundingClientRect();
-			left = at.right - room.left - size.width;
-			top = at.bottom - room.top + 4;
-		} else if (anchor !== null && anchor !== undefined) {
-			left = anchor.x - room.left;
-			top = anchor.y - room.top;
+		settle(size);
+		// Near the right edge it may have wrapped again and grown: then once
+		// more, by the size it has there.
+		const now = what.getBoundingClientRect();
+		if (now.width !== size.width || now.height !== size.height) {
+			settle(now);
 		}
-		what.style.left = `${Math.max(4, Math.min(left, room.width - size.width - 4))}px`;
-		what.style.top = `${Math.max(4, Math.min(top, room.height - size.height - 4))}px`;
 	}
 
 	/**
@@ -3328,8 +3385,12 @@ class CEditorPanels {
 				more.setAttribute("aria-label", "Options for this row");
 				more.addEventListener("click", event => {
 					event.stopPropagation();
+					// Selecting the row rebuilds the list, and may scroll it:
+					// the menu hangs from the button of the row that took
+					// this one's place, not from one that is no longer there.
+					const index = Array.prototype.indexOf.call(rows, row);
 					row.click();
-					this.showContext(kind === null ? row.dataset.role : kind, more);
+					this.showContext(kind === null ? row.dataset.role : kind, this.moreButtonAt(role, kind, index, more));
 				}, { signal: this.stopping.signal });
 				row.append(more);
 			}
@@ -3346,6 +3407,31 @@ class CEditorPanels {
 		if (wasView) {
 			this.refreshBar();
 		}
+	}
+
+	/**
+	 * The menu button of the row at an index of a list, as the list is now:
+	 * the given button while it is still in the list, else the one of the
+	 * row that was built in its place.
+	 * @param {string} role Which list.
+	 * @param {string|null} kind What its rows are, null for the layer tree.
+	 * @param {number} index Which row.
+	 * @param {HTMLElement} known The button as it was when it was pressed.
+	 */
+	moreButtonAt(role, kind, index, known) {
+		if (known.isConnected) {
+			return known;
+		}
+		const list = this.part(role);
+		if (list === null || index < 0) {
+			return known;
+		}
+		const rows = kind === null
+			? list.querySelectorAll('[data-role="layer"], [data-role="group"]')
+			: list.querySelectorAll("li");
+		const row = rows[index];
+		const button = row === undefined ? null : row.querySelector('[data-role="more"]');
+		return button === null ? known : button;
 	}
 
 	/**
@@ -4687,7 +4773,9 @@ class CEditorPanels {
 		}
 		// Space and Enter on a button press the button, and a list that is
 		// open to the keyboard walks with the arrows - neither is a shortcut.
-		if (target && !event.ctrlKey && !event.altKey && !event.metaKey) {
+		// (The target may be the document itself when a key is sent by
+		// script rather than struck, and the document has no attributes.)
+		if (target && target.getAttribute && !event.ctrlKey && !event.altKey && !event.metaKey) {
 			const own = target.tagName === "SELECT"
 				? ["ArrowUp", "ArrowDown", "Home", "End", " ", "Enter"]
 				: target.tagName === "BUTTON" || target.getAttribute("role") === "button" ? [" ", "Enter"] : [];
@@ -6821,6 +6909,8 @@ class CEditorPanels {
 			this.editor.showQuad(where.group, where.layer, this.quad);
 		}
 		this.refreshQuadProps(quads[this.quad]);
+		// The rows are new, and a new row has no menu button yet.
+		this.addMoreButtons();
 	}
 
 	/**
@@ -6896,6 +6986,8 @@ class CEditorPanels {
 		});
 		this.refreshSourceProps(sources[this.source]);
 		this.refreshOverlay(sources);
+		// The rows are new, and a new row has no menu button yet.
+		this.addMoreButtons();
 	}
 
 	refreshSourceProps(source) {
@@ -7693,6 +7785,8 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			list.append(row);
 		});
+		// The rows are new, and a new row has no menu button yet.
+		this.addMoreButtons();
 	}
 
 	/**
@@ -7829,6 +7923,8 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			list.append(row);
 		});
+		// The rows are new, and a new row has no menu button yet.
+		this.addMoreButtons();
 	}
 
 	/**
@@ -7966,6 +8062,8 @@ class CEditorPanels {
 			row.append(input);
 			list.append(row);
 		});
+		// The rows are new, and a new row has no menu button yet.
+		this.addMoreButtons();
 	}
 
 	/**

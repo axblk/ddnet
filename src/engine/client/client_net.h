@@ -263,6 +263,7 @@ public:
 	void Disconnect() override;
 	void CloseDemo() override;
 	void SwitchSessionFocus() override;
+	void FocusDemo(bool Focus) override;
 	// Focuses a session and hands its latest snapshot to the game again, which
 	// only builds what depends on focus when a snapshot arrives.
 	void FocusSessionWithSnapshot(CSessionId SessionId);

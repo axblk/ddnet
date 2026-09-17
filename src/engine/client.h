@@ -291,6 +291,9 @@ public:
 	// Moves focus between the server and a demo that plays beside it, when both
 	// are there to be looked at.
 	virtual void SwitchSessionFocus() = 0;
+	// Puts the demo in front, or moves it aside for the server or the menu while
+	// it keeps playing.
+	virtual void FocusDemo(bool Focus) = 0;
 
 	// dummy
 	virtual void DummyDisconnect(const char *pReason) = 0;

@@ -272,6 +272,10 @@ private:
 	bool m_PreparedVideoOutput = false;
 	CVideoExportSettings m_PreparedVideoSettings;
 	bool m_PreparedIsolatedVideoOutput = false;
+	// The picture in picture is where the demo browser shows a demo that plays
+	// out of sight, and is drawn over the menu there.
+	bool m_PreparedMenuPreview = false;
+	CUIRect m_PreparedInset = {0.0f, 0.0f, 0.0f, 0.0f};
 	bool m_PreparedOfflineVideoAudio = false;
 	void UpdateNetworkPlayerInfo();
 	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
@@ -314,6 +318,8 @@ public:
 	class IClient *Client() const { return m_pClient; }
 	int ActiveConnection() const { return PlayedConnection(Client()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext();
+	// Where the picture in picture is on the screen, in interface units, empty when there is none.
+	const CUIRect &InsetRect() const { return m_PreparedInset; }
 	const CGameSessionContext &SessionContext() const;
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) { return m_SessionContexts.Find(SessionId); }
 	const CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return m_SessionContexts.Find(SessionId); }

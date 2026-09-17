@@ -88,6 +88,7 @@ public:
 	void Disconnect() override {}
 	void CloseDemo() override {}
 	void SwitchSessionFocus() override {}
+	void FocusDemo(bool Focus) override {}
 	void DummyConnect() override {}
 	void DummyDisconnect(const char *pReason) override {}
 	void EnterGame(CSessionId SessionId, CStreamId StreamId) override {}

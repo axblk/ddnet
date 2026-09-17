@@ -1963,6 +1963,65 @@ ddnet-editor[data-big="no"] .editor-zoom {
 }
 
 /* ---------------------------------------------------------------------- */
+/* A panel carried to another area                                        */
+
+/* The tabs and the heads of panels are handles: a drag of eight pixels
+   carries the panel, a shorter one is a click. A finger must not scroll
+   the page with it. */
+.editor-tab,
+.editor-panel-head {
+	touch-action: none;
+}
+
+@media (hover: hover) {
+	.editor-tab,
+	.editor-panel-head h2 {
+		cursor: grab;
+	}
+}
+
+ddnet-editor[data-carrying="yes"],
+ddnet-editor[data-carrying="yes"] * {
+	cursor: grabbing !important;
+}
+
+/* The three places it can be dropped, over the editor. */
+.editor-drop {
+	position: absolute;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	color: var(--text-2);
+	font: var(--type-sm);
+	background: var(--accent-soft);
+	border: 2px dashed var(--line-strong);
+	border-radius: var(--radius-2);
+	pointer-events: none;
+}
+
+.editor-drop[data-over="yes"] {
+	color: var(--text-1);
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* The name of the panel, under the pointer. */
+.editor-carry {
+	position: absolute;
+	z-index: 7;
+	padding: var(--space-1) var(--space-2);
+	color: var(--text-1);
+	font: var(--type-sm);
+	background: var(--bg-3);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-1);
+	box-shadow: var(--shadow);
+	pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------- */
 /* What floats over the whole editor                                      */
 
 .editor-over {

@@ -561,6 +561,15 @@ export const COMMANDS = [
 		run: p => p.togglePanel(role),
 	})),
 	{
+		// For a keyboard or a finger that cannot drag a panel by its head.
+		id: "layout.arrange", label: "Arrange panels…", group: "Panels", safe: true, menu: "View/Panels",
+		run: p => p.askArrange(),
+	},
+	{
+		id: "layout.reset", label: "Reset layout", group: "Panels", safe: true, menu: "View/Panels",
+		run: p => p.resetLayout(),
+	},
+	{
 		id: "area.left", label: "Inspector", group: "Panels", safe: true, menu: "View", icon: "properties",
 		keys: ["["],
 		pressed: p => p.areaShown("left"),
@@ -721,6 +730,14 @@ export const COMMANDS = [
 			p.say(next === "auto" ? "Big targets: as the browser says"
 				: next === "big" ? "Big targets: on" : "Big targets: off");
 		},
+	},
+	{
+		id: "settings.export", label: "Export settings…", group: "Settings", safe: true, menu: "Settings",
+		run: p => p.exportSettings(),
+	},
+	{
+		id: "settings.import", label: "Import settings…", group: "Settings", safe: true, menu: "Settings",
+		run: p => p.askImportSettings(),
 	},
 	{
 		id: "settings.entities", label: "Entities image…", group: "Settings", safe: true, menu: "Settings",

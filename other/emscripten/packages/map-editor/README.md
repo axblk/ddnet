@@ -39,12 +39,12 @@ them:
 
 | Area | What stands there |
 |---|---|
-| `toolbar` | The menu, the open maps, undo and redo, the view switches (grid, entities, high detail, animation, proof, tile info), saving, the palette. |
-| `rail` | The six tools - Brush, Select, Fill, Eraser, Pick, Hand - each with its key in the corner, the one in hand filled with the accent; under them the brush as a picture, which opens the big tile chooser; at the foot the switch for the inspector. |
-| `left` | The inspector, one tab at a time: the properties of what is selected, the images (with the image-to-map import under them), the sounds, the map's own fields. Shut on an ordinary monitor, `[` opens it; open from 1800 pixels on. |
+| `toolbar` | The menu, the open maps, undo and redo, the View button (a menu of the switches - grid, entities, high detail, animation, proof, tile info - and the zooms; it stays open while switches are flipped), saving, the palette. |
+| `rail` | The seven tools - Brush, Select, Fill, Eraser, Move, Pick, Hand - each with its key in the corner, the one in hand filled with the accent; under them the brush slots as pictures, which open the big tile chooser; at the foot the switch for the inspector. |
+| `left` | The inspector, one tab at a time: the properties of what is selected, the images (with the image-to-map import under them), the sounds, the map's own fields, the history. Shut on an ordinary monitor, `[` opens it; open from 1800 pixels on. With room to spare the history stands under whatever the tab shows. |
 | `right` | What painting needs, in one column: the layers above, with an icon for the kind, the name and the eye, and under them the tiles of the selected layer - the tileset with the brush's tiles marked, the flips and the turn, the brush slots, the automapper, writing with tiles. A quad layer shows its quads there, a sound layer its sources, a group a line that says to select a layer. |
-| `dock` | The strip along the bottom: envelopes, the history, the server settings, the rules file. The four buttons at the right end of the status line open it, one panel at a time, and the pressed one shuts it again. It starts shut, because what is in it is looked at now and then. |
-| `status` | One line: what is under the pointer, what just happened, the layer and the brush, what a drag does with the tool in hand, the dock's buttons, the zoom. |
+| `dock` | The strip along the bottom, under the map and the inspector: envelopes, the server settings, the rules file, one panel at a time. It starts shut, because what is in it is looked at now and then. The right column keeps its whole height beside it, so that opening the strip does not crush the tileset. |
+| `status` | One line: what is under the pointer, what just happened, the layer and the brush, what a drag does with the tool in hand, one switch per panel that is looked at now and then (envelopes, history, server settings, rules - each opens its panel wherever it stands and shuts it again), the zoom. |
 
 A map that has just been opened is ready to paint: its game layer is selected,
 the brush holds one tile, the Brush tool is on, and a line over the map says
@@ -111,7 +111,7 @@ in `map-editor.js`, because the same numbers also decide what the panels *do*.
 |---|---|---|---|
 | < 560 | one row: the page's header goes, the tools stay | a chip in the corner of the map | over the map's foot |
 | 560–1299 | two rows | a line of its own | a strip beside the map, shut |
-| 1300 and up | two rows | a line of its own | open, the envelopes beside the history |
+| 1300 and up | two rows | a line of its own | open, the envelopes beside whatever else is looked at; the history under the inspector's tab |
 
 A drawer is the same box of panels in the same place in the grid, laid *over*
 the map rather than beside it; it starts shut, and a press on the map shuts an
@@ -121,10 +121,11 @@ for its edge, not for the tile behind it.
 ### With room to spare
 
 Past 2200 pixels wide *or* 1300 tall, nothing needs to hide any more. The
-columns go to 300 and 400, the inspector stands open beside the map, and the
-dock is open with the envelope curve beside the history. At 3840x2160 the
-layers, the tileset, the properties, the curve and the history are all there
-at once, and the map is still 3120 pixels wide.
+columns go to 300 and 400, the inspector stands open beside the map with the
+history under its tab, and the dock is open with the envelope curve beside
+whatever else it shows. At 3840x2160 the layers, the tileset, the properties,
+the curve and the history are all there at once, and the map is still 3120
+pixels wide.
 
 What does **not** grow is anything one reads or hits. Forty inches of 3840
 pixels is a hundred and ten dots per inch - the same as twenty inches of 1920 -
@@ -159,6 +160,48 @@ Between each column and the map there is a handle. Dragging it sets the width
 the arrow keys move it sixteen pixels at a time, and Home or a double press
 gives it back to the stylesheet. A side that is a drawer has no edge to drag
 and does not show one.
+
+### A layout of your own
+
+Every panel can stand in any of the three areas. A tab of the inspector or
+the head of a panel is a handle: dragged eight pixels it carries the panel,
+the three areas offer themselves - an open one as itself, a shut one as a
+strip along its edge of the map - and where it is let go it lands, last in
+that area and in front. A shorter drag is a click. **Arrange panels…** in
+the View menu's Panels submenu does the same with a list and a choice per
+panel, for a keyboard or a finger. A panel carried below the map gets a
+switch in the status line if it had none, because the strip's switches are
+its tabs.
+
+An element with `remember` keeps it all in the browser's storage: where each
+panel stands and in what order, which tab is in front, the widths that were
+dragged, and which areas were opened or shut - the last one by the shape of
+the box (its width class and its height class), because what suits a wide
+window does not suit a narrow one, and only where it differs from what the
+shape does by itself. A drawer is never remembered open. The settings go the
+same way: the theme, the size of the targets, the tileset tint, the pen
+rule, unused tiles, the entities picture, the view switches, the tile size
+of the chooser; the keys keep the place they had.
+
+**Export settings…** writes all of it as one JSON file, and **Import
+settings…** reads one back. The file says what it is:
+
+```json
+{
+	"kind": "ddnet-editor-settings",
+	"version": 1,
+	"layout": { "panels": [{ "role": "tiles-panel", "area": "left" }], "tab": {}, "sizes": {}, "open": {} },
+	"settings": { "theme": "dark", "targets": "auto", "keys": {} }
+}
+```
+
+A file is checked whole before any of it is taken: the version has to be
+`1`, every panel has to be one the editor has, every area one of `left`,
+`right` and `dock`, every value of the kind the setting is. A file that
+fails changes nothing and says why, in the status line and as a note. Keys
+the editor does not know are ignored, so a file written by a later editor
+still opens in this one. **Reset layout** puts every panel back where it
+started, with the widths and the areas, and leaves the settings alone.
 
 ### One editor, several maps
 

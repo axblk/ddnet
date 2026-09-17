@@ -865,9 +865,9 @@ std::shared_ptr<const map_document::CLayer> CMapEditor::GhostTiles(const CDocume
 	// few hundred tiles a side the tiles are smaller than a pixel at any zoom
 	// that shows the whole rectangle, so the preview stops there and the
 	// outline says the rest.
-	constexpr int MAX_FILL_SIDE = 256;
-	const int Width = std::clamp(Ghost.m_Width, 1, MAX_FILL_SIDE);
-	const int Height = std::clamp(Ghost.m_Height, 1, MAX_FILL_SIDE);
+	constexpr int MaxFillSide = 256;
+	const int Width = std::clamp(Ghost.m_Width, 1, MaxFillSide);
+	const int Height = std::clamp(Ghost.m_Height, 1, MaxFillSide);
 	if(m_pShownFill == nullptr || m_ShownFillVersion != m_BrushVersion || m_ShownFillWidth != Width || m_ShownFillHeight != Height)
 	{
 		map_document::CBrush Filled(m_Brush.m_Kind, Width, Height);

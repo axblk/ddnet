@@ -183,7 +183,7 @@ public:
 	 * nothing, another one is built again on the next frame. `nullptr` or
 	 * anything but a tile layer leaves the ghost as an outline.
 	 */
-	void UseGhost(std::shared_ptr<const map_document::CLayer> pTiles);
+	void UseGhost(const std::shared_ptr<const map_document::CLayer> &pTiles);
 
 	/** Draws the version that was last handed over. */
 	void Render(const CParams &Params);

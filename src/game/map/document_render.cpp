@@ -100,7 +100,7 @@ void CDocumentRenderer::Clear()
 	m_InvalidatedChunks = 0;
 }
 
-void CDocumentRenderer::UseGhost(std::shared_ptr<const CLayer> pTiles)
+void CDocumentRenderer::UseGhost(const std::shared_ptr<const CLayer> &pTiles)
 {
 	if(pTiles == nullptr || !std::holds_alternative<CTileLayer>(*pTiles) || std::get<CTileLayer>(*pTiles).Width() <= 0)
 	{

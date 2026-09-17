@@ -2539,3 +2539,10 @@ ddnet-editor[data-right="drawer"] .editor-grip-right,
 .editor-dock-shut .editor-grip-dock {
 	display: none;
 }
+
+/* The line an empty list of server settings shows instead of nothing. */
+.editor-settings-empty {
+	padding: var(--space-2) var(--space-1);
+	font: var(--type-xs);
+	list-style: none;
+}

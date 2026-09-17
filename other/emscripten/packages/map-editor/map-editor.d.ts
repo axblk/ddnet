@@ -423,7 +423,7 @@ export declare class EditorPanels {
 	/** Everything the editor can be told to do - this panel's own copy, keys as they are now. */
 	readonly commands: EditorCommand[];
 	/** Which tool the pointer is, while no modifier says otherwise. */
-	tool: "paint" | "grab" | "fill" | "erase" | "pick" | "hand";
+	tool: "paint" | "grab" | "fill" | "erase" | "move" | "pick" | "hand";
 	/** How much the line under the pointer says about a tile. */
 	tileInfo: "off" | "dec" | "hex";
 	/** Does one of the commands by name, if it can be done at all. */
@@ -513,7 +513,7 @@ export declare class EditorPanels {
 	resetLayout(): void;
 	/** The layout as it is: what `remember` keeps and Export writes. */
 	layoutState(): EditorLayout;
-	/** The settings as they are: what the Settings menu and the View menu hold, and the changed keys. */
+	/** The settings as they are: what the Settings menu and the View menu hold, and the changed keys. While no map is open the view switches are the ones kept for the next map. */
 	settingsState(): EditorSettings;
 	/** Layout and settings together, as the settings file. */
 	profile(): EditorSettingsFile;

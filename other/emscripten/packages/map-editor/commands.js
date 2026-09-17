@@ -142,6 +142,7 @@ function tools() {
 		["brush.grab", "Select", "grab", "S", "Drag a rectangle to take tiles into the brush"],
 		["brush.fill", "Fill", "fill", "F", "Drag a rectangle to fill it with the brush"],
 		["brush.erase", "Eraser", "erase", "E", "Drag a rectangle to clear it"],
+		["tool.move", "Move", "move", "M", "Drag a rectangle to select tiles, then drag the selection to move it"],
 		["tool.pick", "Pick", "pick", "I", "Click a tile to take it, and its layer, into the brush"],
 		["tool.hand", "Hand", "hand", "H", "Drag to pan"],
 	].map(([id, label, mode, key, hint]) => ({
@@ -159,7 +160,7 @@ function tools() {
 		// Filling and rubbing out are things done to tiles; on a quad or a
 		// sound layer there are none, and the button says so by going grey.
 		enabled: p => {
-			if (mode !== "fill" && mode !== "erase") {
+			if (mode !== "fill" && mode !== "erase" && mode !== "move") {
 				return true;
 			}
 			const layer = p.selectedLayer();
@@ -167,6 +168,10 @@ function tools() {
 		},
 		pressed: p => p.tool === mode,
 		run: p => {
+			// A selection of the move tool does not outlive the tool.
+			if (p.tool === "move" && mode !== "move") {
+				p.letGo();
+			}
 			p.tool = mode;
 			p.refreshBar();
 			p.refreshStatus();
@@ -416,7 +421,8 @@ export const COMMANDS = [
 	},
 	{
 		id: "brush.flipY", label: "Flip brush vertically", group: "Brush", menu: "Tools",
-		keys: ["Y", "M"],
+		// M went to the move tool.
+		keys: ["Y"],
 		run: p => {
 			p.editor.flipBrushY();
 			p.refreshTiles();

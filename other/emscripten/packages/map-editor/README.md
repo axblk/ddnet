@@ -20,7 +20,9 @@ still work, they are just unpainted.
 
 A page that wants an editor rather than the pieces of one takes
 `<ddnet-editor>`. It makes the program, the canvas, the shapes over it and the
-panels, and lays them out in six areas around the map:
+panels, and lays them out in seven areas around the map, the way paint
+programs and tile editors do: a rail of tools down the left, the layers and
+the tiles in one column on the right, one bar above, one line below.
 
 ```html
 <link rel="stylesheet" href="ddnet-editor.css">
@@ -31,16 +33,26 @@ panels, and lays them out in six areas around the map:
 </ddnet-editor>
 ```
 
-The areas are `header`, `toolbar`, `left`, `right`, `dock` and `status`; an
-area nobody fills takes no room at all. What the editor puts in them:
+The areas are `header`, `toolbar`, `rail`, `left`, `right`, `dock` and
+`status`; an area nobody fills takes no room at all. What the editor puts in
+them:
 
 | Area | What stands there |
 |---|---|
-| `toolbar` | Undo, redo, what is drawn, the grid, proof mode, saving. |
-| `left` | The map's parts, one tab at a time: the layer tree, the pictures, the sounds, the map's own fields. |
-| `right` | The inspector - what the selected thing is made of, and the tileset to paint with. The tile panel has two tabs of its own: the tileset, and the rules that paint by themselves. |
-| `dock` | The strip along the bottom: envelopes, the history, the server settings, the rules file. It starts shut, because what is in it is looked at now and then and the map should not pay two hundred pixels for it the whole time. |
-| `status` | One line: what is under the pointer, and what just happened. |
+| `toolbar` | The menu, the open maps, undo and redo, the view switches (grid, entities, high detail, animation, proof, tile info), saving, the palette. |
+| `rail` | The six tools - Brush, Select, Fill, Eraser, Pick, Hand - each with its key in the corner, the one in hand filled with the accent; under them the brush as a picture, which opens the big tile chooser; at the foot the switch for the inspector. |
+| `left` | The inspector, one tab at a time: the properties of what is selected, the images (with the image-to-map import under them), the sounds, the map's own fields. Shut on an ordinary monitor, `[` opens it; open from 1800 pixels on. |
+| `right` | What painting needs, in one column: the layers above, with an icon for the kind, the name and the eye, and under them the tiles of the selected layer - the tileset with the brush's tiles marked, the flips and the turn, the brush slots, the automapper, writing with tiles. A quad layer shows its quads there, a sound layer its sources, a group a line that says to select a layer. |
+| `dock` | The strip along the bottom: envelopes, the history, the server settings, the rules file. The four buttons at the right end of the status line open it, one panel at a time, and the pressed one shuts it again. It starts shut, because what is in it is looked at now and then. |
+| `status` | One line: what is under the pointer, what just happened, the layer and the brush, what a drag does with the tool in hand, the dock's buttons, the zoom. |
+
+A map that has just been opened is ready to paint: its game layer is selected,
+the brush holds one tile, the Brush tool is on, and a line over the map says
+what a drag does until the first stroke. Selecting a tile layer while nothing
+is in hand takes tile 1 into the brush; the brush is empty only after *Clear
+brush*, and then a drag grabs a rectangle off the map. A stroke that has
+nothing to paint in - a group is selected, a quad layer has no handle under
+the pointer - pans, and says why.
 
 `box.panels.showTab("dock", "envelopes")` puts one of them in front and opens
 the strip if it was shut. What the element fills in itself - the
@@ -69,8 +81,8 @@ editor on the page, because with two there would be no way to say which was
 meant.
 
 Everything can be reached without a pointer. **F6** and **Shift+F6** walk
-through the areas in reading order - the strip of maps, the tool bar, the
-tree, the map, the inspector, the dock - and land on what is chosen there.
+through the areas in reading order - the top bar, the rail, the inspector,
+the map, the layers and tiles, the dock - and land on what is chosen there.
 The tree is one stop for Tab: the arrows go from row to row and select,
 right opens a group and goes into it, left folds it or goes back up to it,
 Space is the eye and Enter goes to the name. A row of tabs is one stop too,
@@ -87,17 +99,19 @@ decided and the element says the same thing in `data-` attributes, which is
 what the stylesheet reads - the widths are written down once, in `BOX_WIDTHS`
 in `map-editor.js`, because the same numbers also decide what the panels *do*.
 
-| Box width | Left | Right | Tool bar |
+| Box width | Inspector | Right column | Tool bar |
 |---|---|---|---|
-| < 600 | sheet from the floor | sheet | six buttons |
-| 600–899 | drawer | drawer | icons |
-| 900–1199 | drawer | column | icons |
-| 1200 and up | column | column | icons with the modes' names |
+| < 700 | drawer | drawer | the few that always show |
+| 700–999 | drawer | drawer, with a button in the bar | icons |
+| 1000–1799 | column, shut; `[` opens it | column, 352 (320 below 1200) | icons |
+| 1800–2199 | column, open, 280 | column, 360 | icons |
+| 2200 and up | column, open, 300 | column, 400 | icons |
 
 | Box height | Above the map | Status | Dock |
 |---|---|---|---|
-| < 600 | one row: the page's header goes, the tools stay | a chip in the corner of the map | over the map's foot |
-| 600 and up | two rows | a line of its own | a strip beside the map |
+| < 560 | one row: the page's header goes, the tools stay | a chip in the corner of the map | over the map's foot |
+| 560–1299 | two rows | a line of its own | a strip beside the map, shut |
+| 1300 and up | two rows | a line of its own | open, the envelopes beside the history |
 
 A drawer is the same box of panels in the same place in the grid, laid *over*
 the map rather than beside it; it starts shut, and a press on the map shuts an
@@ -106,13 +120,11 @@ for its edge, not for the tile behind it.
 
 ### With room to spare
 
-Past 2560 pixels wide *or* 1400 tall, nothing needs to hide behind a tab any
-more. The columns go to 320 and 400, the layer tree and the pictures stand
-above each other instead of behind each other, the inspector shows the tileset
-*and* the rules it paints by, and the dock is open with the envelope curve
-beside the history. At 3840x2160 the tree, the pictures, the properties, the
-tileset, the automapper, the curve and the history are all there at once, and
-the map is still 3120 pixels wide.
+Past 2200 pixels wide *or* 1300 tall, nothing needs to hide any more. The
+columns go to 300 and 400, the inspector stands open beside the map, and the
+dock is open with the envelope curve beside the history. At 3840x2160 the
+layers, the tileset, the properties, the curve and the history are all there
+at once, and the map is still 3120 pixels wide.
 
 What does **not** grow is anything one reads or hits. Forty inches of 3840
 pixels is a hundred and ten dots per inch - the same as twenty inches of 1920 -
@@ -138,10 +150,9 @@ down its edge, until it is dismissed - a mistake that vanished before it was
 read is a mistake nobody knows about. If the four are full it is the oldest
 plain note that gives way, never the error.
 
-The corner of the map says what the zoom is and is three buttons: further
-away, back into the picture, closer. Only the number shows for a pointer,
-which has a wheel and is quicker with it; a finger gets the minus and the plus
-at forty-four pixels each.
+The zoom stands at the right end of the status line. With a finger the
+corner of the map says it too, as three buttons - further away, back into the
+picture, closer - at forty-four pixels each, because a finger has no wheel.
 
 Between each column and the map there is a handle. Dragging it sets the width
 (240 to 480 on the left, 288 to 560 on the right, 160 to 640 for the dock),
@@ -186,15 +197,14 @@ entry - and the two of them are a pan. After that the stroke is settled and a
 late finger is ignored, because a hand resting on the glass beside a drawing
 one is not a gesture.
 
-Three of the tool bar's buttons exist only for a finger, because on a desk
-they are keys nobody can press without a keyboard: **nothing in hand** (which
-is Escape, and an empty brush is what grabs), **the big tile chooser** (which
-is holding space, and nothing can be held), and **which layer is here** (which
-is Ctrl and the right button, and a finger has neither). Every row that has a
-menu shows a `...` for it; at a desk that button waits for the pointer to come
-near.
+What a desk does with a key a finger does with a button that is there for
+everybody: *Clear brush* under the tileset (Escape does not empty the brush),
+the arrows in the corner of the tile panel for the big chooser (holding Space
+at a desk), and the Pick tool in the rail for the layer under a spot (Ctrl and
+the right button at a desk). Every row that has a menu shows a `...` for it;
+at a desk that button waits for the pointer to come near.
 
-The tileset in the inspector is nineteen pixels a tile - a picture of what is
+The tileset beside the map is twenty-odd pixels a tile - a picture of what is
 in hand, not a thing a finger can hit - so with a finger a touch on it opens
 the big chooser, where a tile is forty-four pixels or more.
 
@@ -224,7 +234,7 @@ layer are built out of it. A new thing the editor can do is an entry in
 
 ```js
 {
-	id: "view.grid", label: "A grid on the tiles", group: "View",
+	id: "view.grid", label: "Show grid", group: "View",
 	icon: "grid", bar: true, keys: ["G", "Ctrl+G"],
 	pressed: p => p.editor.grid() > 0,
 	run: p => { p.editor.grid(p.editor.grid() > 0 ? 0 : 10); p.refreshBar(); },
@@ -239,14 +249,14 @@ Four more fields say where else a command shows up:
 
 | Field | What it does |
 |---|---|
-| `bar` | a button on the tool bar, with `icon` |
+| `bar` | a button on the tool bar, with `icon`; `rail` a tool in the rail, with `hint` for the status line |
 | `menu` | a row in the menu; `Layer/Add a layer` is a row that opens onto more |
 | `for` | the kind of thing whose own menu it belongs in - `"layer"`, `"image"`, … |
 | `palette: false` | kept out of the palette; the ten brush slots are all there is |
 
 `part` names the button in a panel that a command presses, for the commands
-that are a button and nothing else. The tool bar holds only what the plan calls
-often used - the four brush modes, undo and redo, saving, the six view
+that are a button and nothing else. The rail holds the six tools, the bar
+what is done to or seen of the map - undo and redo, saving, the six view
 switches, the palette and the menu - and everything else is reached by name.
 
 Six of the native editor's keys cannot be had in a browser - Chrome keeps them

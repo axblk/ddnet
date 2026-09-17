@@ -1,0 +1,27 @@
+[package]
+name = "ddnet-map-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "MCP server for DDNet maps: stdio and Streamable HTTP over the map document core"
+license = "Zlib"
+publish = false
+
+# Its own workspace: this crate has nothing in common with the game's crates
+# and pulls in a runtime and an HTTP stack the game must not carry.
+[workspace]
+
+[[bin]]
+name = "ddnet-map-mcp"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+serde = "1"
+rmcp = { version = "3.4", features = ["server", "transport-io", "transport-streamable-http-server"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "net", "signal", "time"] }
+tokio-util = "0.7"
+
+[profile.release]
+panic = "abort"

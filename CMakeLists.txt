@@ -2779,6 +2779,16 @@ set_src(GAME_MAP GLOB_RECURSE src/game/map
   envelope_manager.h
   map_renderer.cpp
   map_renderer.h
+  mcp/mcp_abi.cpp
+  mcp/mcp_abi.h
+  mcp/mcp_core.cpp
+  mcp/mcp_core.h
+  mcp/mcp_json.cpp
+  mcp/mcp_json.h
+  mcp/mcp_render.cpp
+  mcp/mcp_render.h
+  mcp/mcp_tools.cpp
+  mcp/mcp_tools.h
   quad_buffer_cache.cpp
   quad_buffer_cache.h
   render_component.cpp
@@ -2818,6 +2828,14 @@ list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "/map_editor")
 set(GAME_MAP_DOCUMENT ${GAME_MAP})
 list(FILTER GAME_MAP_DOCUMENT INCLUDE REGEX "/document/")
 list(FILTER GAME_MAP EXCLUDE REGEX "/document/")
+# The map as a set of tools for a language model, on top of the document:
+# everything but the renderer knows no graphics either, so that the tools can
+# be tested where the document is.
+set(GAME_MAP_MCP ${GAME_MAP})
+list(FILTER GAME_MAP_MCP INCLUDE REGEX "/mcp/")
+list(FILTER GAME_MAP EXCLUDE REGEX "/mcp/")
+set(GAME_MAP_MCP_CORE ${GAME_MAP_MCP})
+list(FILTER GAME_MAP_MCP_CORE EXCLUDE REGEX "/mcp/mcp_(abi|render)")
 
 # Libraries
 # SQLite is not in here: only the client and the server talk to a database.
@@ -2870,6 +2888,7 @@ add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUI
 # and, later, the editor itself build the same objects rather than each their
 # own copy. It knows nothing of the client, so it is built without one too.
 add_library(game-map-document EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_DOCUMENT})
+add_library(game-map-mcp EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_MCP_CORE})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
@@ -2879,7 +2898,7 @@ add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-map-document game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-map-document game-map-mcp game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -4372,6 +4391,81 @@ endif()
 
 if(TOOLS)
   set(TARGETS_TOOLS)
+  # The map tools behind a C interface, as a shared library for the program
+  # that speaks the protocol (src/game/map/mcp/server, in Rust). It draws
+  # through the offscreen graphics, so it needs what the client's headless
+  # graphics need and nothing of the window system.
+  if(CLIENT)
+    add_library(map-mcp-core EXCLUDE_FROM_ALL SHARED
+      ${DEPS}
+      ${GAME_MAP}
+      ${GAME_MAP_STANDALONE}
+      # tidy-alphabetical-start
+      src/engine/client/asset_loader.cpp
+      src/engine/client/asset_loader.h
+      src/game/map/mcp/mcp_abi.cpp
+      src/game/map/mcp/mcp_abi.h
+      src/game/map/mcp/mcp_render.cpp
+      src/game/map/mcp/mcp_render.h
+      # tidy-alphabetical-end
+      # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics-headless>
+      $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-document>
+      $<TARGET_OBJECTS:game-map-mcp>
+      $<TARGET_OBJECTS:game-shared>
+      # tidy-alphabetical-end
+    )
+    add_dependencies(map-mcp-core generate_content_types)
+    if(VULKAN)
+      add_dependencies(map-mcp-core build_vulkan_shaders)
+      target_compile_definitions(map-mcp-core PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE)
+      target_compile_definitions(map-mcp-core PRIVATE CONF_BACKEND_WEBGPU)
+    endif()
+    target_compile_definitions(map-mcp-core PRIVATE CONF_BACKEND_NO_OPENGL)
+    set_property(TARGET map-mcp-core PROPERTY OUTPUT_NAME ddnet_map_mcp)
+    set_property(TARGET map-mcp-core PROPERTY DDNET_NO_CLIENT_INTEGRATIONS TRUE)
+    # A shared library is made of position-independent objects, whatever the
+    # executables are made of.
+    set_property(TARGET engine-client-graphics-headless engine-gfx engine-shared game-map-document game-map-mcp game-shared map-mcp-core PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+    target_link_libraries(map-mcp-core
+      # tidy-alphabetical-start
+      ${CRYPTO_LIBRARIES}
+      ${PNG_LIBRARIES}
+      ${VULKAN_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      # tidy-alphabetical-end
+      ${PLATFORM_HEADLESS_CLIENT_LIBS}
+      ${PLATFORM_LIBS}
+      ${CMAKE_DL_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
+    )
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(map-mcp-core WGPU::Native)
+    endif()
+    target_include_directories(map-mcp-core SYSTEM PRIVATE
+      ${PNG_INCLUDE_DIRS}
+      ${PLATFORM_CLIENT_INCLUDE_DIRS}
+      ${VULKAN_INCLUDE_DIRS}
+    )
+    list(APPEND TARGETS_OWN map-mcp-core)
+    list(APPEND TARGETS_LINK map-mcp-core)
+    # The server itself, built by Cargo against that library and copied next
+    # to the data directory, where it finds the game's data the way every
+    # other program here does.
+    if(RUST_CARGO)
+      add_custom_target(ddnet-map-mcp
+        COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR}/map-mcp-server DDNET_MAP_MCP_LIB_DIR=$<TARGET_FILE_DIR:map-mcp-core> ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/src/game/map/mcp/server/Cargo.toml" $<$<NOT:$<CONFIG:Debug>>:--release>
+        COMMAND ${CMAKE_COMMAND} -E copy "${PROJECT_BINARY_DIR}/map-mcp-server/$<IF:$<CONFIG:Debug>,debug,release>/ddnet-map-mcp${CMAKE_EXECUTABLE_SUFFIX}" "${PROJECT_BINARY_DIR}/"
+        DEPENDS map-mcp-core
+        USES_TERMINAL
+      )
+    endif()
+  endif()
+
   set_src(TOOLS_SRC GLOB src/tools
     # tidy-alphabetical-start
     config_common.h
@@ -4610,6 +4704,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     match_journal_test.cpp
     match_report_test.cpp
     math_test.cpp
+    mcp_test.cpp
     mem_test.cpp
     mutes_test.cpp
     name_ban_test.cpp
@@ -4791,6 +4886,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-map-document>
+    $<TARGET_OBJECTS:game-map-mcp>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>

@@ -50,6 +50,9 @@ addIcons({
 	minus: stroked("M5 12h14"),
 	plus: stroked("M12 5v14M5 12h14"),
 	close: stroked("M6 6l12 12M18 6L6 18"),
+	// A bin: throwing something out of the map, which a cross - closing a
+	// panel - must not be mistaken for.
+	trash: stroked("M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5a1 1 0 0 0 1 .9h7a1 1 0 0 0 1-.9l1-12.5M10 11v5.5M14 11v5.5"),
 	fit: stroked("M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4M9 9h6v6H9z"),
 	expand: stroked("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"),
 	detail: stroked("M12 3l2.2 6.3L21 11l-6.8 1.7L12 19l-2.2-6.3L3 11l6.8-1.7z"),
@@ -1275,7 +1278,7 @@ const PANELS_HTML = `
 			<h2>Quads</h2>
 			<span class="editor-panel-tools">
 				<button type="button" class="editor-icon-button" data-role="add-quad" data-command="quad.add" data-icon="add"></button>
-				<button type="button" class="editor-icon-button" data-role="delete-quad" data-command="quad.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-quad" data-command="quad.delete" data-icon="trash"></button>
 				<button type="button" class="editor-small" data-role="knife" data-command="quad.knife" aria-pressed="false">Knife</button>
 			</span>
 		</header>
@@ -1293,7 +1296,7 @@ const PANELS_HTML = `
 			<h2>Sound sources</h2>
 			<span class="editor-panel-tools">
 				<button type="button" class="editor-icon-button" data-role="add-source" data-command="source.add" data-icon="add"></button>
-				<button type="button" class="editor-icon-button" data-role="delete-source" data-command="source.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-source" data-command="source.delete" data-icon="trash"></button>
 			</span>
 		</header>
 		<ol class="editor-list" data-role="source-list"></ol>
@@ -1314,7 +1317,7 @@ const PANELS_HTML = `
 				<button type="button" class="editor-icon-button" data-role="add-image" data-command="image.add" data-icon="add"></button>
 				<button type="button" class="editor-icon-button" data-role="replace-image" data-command="image.replace" data-icon="rotate"></button>
 				<button type="button" class="editor-small" data-role="unpack-image" data-command="image.unpack">Unpack</button>
-				<button type="button" class="editor-icon-button" data-role="delete-image" data-command="image.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-image" data-command="image.delete" data-icon="trash"></button>
 			</span>
 		</header>
 		<ol class="editor-list editor-images" data-role="image-list"></ol>
@@ -1340,7 +1343,7 @@ const PANELS_HTML = `
 				<button type="button" class="editor-icon-button" data-role="add-sound" data-command="sound.add" data-icon="add"></button>
 				<button type="button" class="editor-icon-button" data-role="replace-sound" data-command="sound.replace" data-icon="rotate"></button>
 				<button type="button" class="editor-small" data-role="unpack-sound" data-command="sound.unpack">Unpack</button>
-				<button type="button" class="editor-icon-button" data-role="delete-sound" data-command="sound.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-sound" data-command="sound.delete" data-icon="trash"></button>
 			</span>
 		</header>
 		<ol class="editor-list" data-role="sound-list"></ol>
@@ -1365,7 +1368,7 @@ const PANELS_HTML = `
 			<span class="editor-panel-tools">
 				<select class="editor-small" data-role="envelope-list" aria-label="Envelope"></select>
 				<button type="button" class="editor-icon-button" data-role="add-envelope" data-command="envelope.add" data-icon="add"></button>
-				<button type="button" class="editor-icon-button" data-role="delete-envelope" data-command="envelope.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-envelope" data-command="envelope.delete" data-icon="trash"></button>
 			</span>
 		</header>
 		<svg class="editor-curve" data-role="curve" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
@@ -1383,7 +1386,7 @@ const PANELS_HTML = `
 			<h2>Server settings</h2>
 			<span class="editor-panel-tools">
 				<button type="button" class="editor-icon-button" data-role="add-setting" data-command="setting.add" data-icon="add"></button>
-				<button type="button" class="editor-icon-button" data-role="delete-setting" data-command="setting.delete" data-icon="close"></button>
+				<button type="button" class="editor-icon-button" data-role="delete-setting" data-command="setting.delete" data-icon="trash"></button>
 			</span>
 		</header>
 		<ol class="editor-settings" data-role="setting-list"></ol>
@@ -1440,13 +1443,13 @@ const LAYER_PROPS = {
 		{ prop: "detail", label: "Detail", kind: "boolean" },
 	],
 	tiles: [
-		{ prop: "image", label: "Image", kind: "number" },
+		{ prop: "image", label: "Image", kind: "ref", list: "images" },
 		{ prop: "color", label: "Colour", kind: "color" },
-		{ prop: "colorEnvelope", label: "Colour envelope", kind: "number" },
+		{ prop: "colorEnvelope", label: "Colour envelope", kind: "ref", list: "envelopes" },
 		{ prop: "colorEnvelopeOffset", label: "Envelope offset", kind: "number" },
 	],
-	quads: [{ prop: "image", label: "Image", kind: "number" }],
-	sounds: [{ prop: "sound", label: "Sound", kind: "number" }],
+	quads: [{ prop: "image", label: "Image", kind: "ref", list: "images" }],
+	sounds: [{ prop: "sound", label: "Sound", kind: "ref", list: "sounds" }],
 };
 
 // The grammar of a `.rules` file, as far as colouring it needs to know: the
@@ -1841,6 +1844,12 @@ class CEditorPanels {
 		this.carriedJust = false;
 		this.keepLater = null;
 		this.settingsInput = null;
+		// The switches of how a map is looked at are the program's, one set
+		// per map, and the entities picture is only there once the program
+		// runs: what somebody wants of them is held here and given to every
+		// map the first time it is in front (see `giveView`).
+		this.viewWanted = {};
+		this.viewGiven = new Set();
 		// The areas the panels were spread into, or null while they all stand
 		// in one column.
 		this.areas = null;
@@ -2353,6 +2362,7 @@ class CEditorPanels {
 			this.showMap(open.find(which => which !== id));
 		}
 		this.mapState.delete(id);
+		this.viewGiven.delete(id);
 		this.editor.close(id);
 		this.refresh();
 		this.refreshMaps();
@@ -4944,20 +4954,48 @@ class CEditorPanels {
 
 	/** The settings as they are: what the Settings menu and the View menu hold, and the keys. */
 	settingsState() {
-		return {
-			theme: this.scheme(),
-			targets: this.targets(),
-			brushColouring: this.brushColouring,
-			penHoldsPaper: this.penHoldsPaper,
-			allowUnused: this.editor.allowUnused(),
+		// Without a map in front the program has no view to ask: what was
+		// wanted stands in for it, and nothing is said where nothing is known.
+		const open = this.editor.map >= 0;
+		const view = open ? {
 			entitiesImage: this.editor.entitiesImage(),
 			grid: this.editor.grid(),
 			entities: this.editor.entities(),
 			highDetail: this.editor.highDetail(),
 			animate: this.editor.animate(),
+		} : this.viewWanted;
+		return Object.assign({
+			theme: this.scheme(),
+			targets: this.targets(),
+			brushColouring: this.brushColouring,
+			penHoldsPaper: this.penHoldsPaper,
+			allowUnused: this.editor.allowUnused(),
+		}, JSON.parse(JSON.stringify(view)), {
 			tileZoom: this.tileZoom,
 			keys: this.changedKeys(),
-		};
+		});
+	}
+
+	/**
+	 * Gives a map the view somebody wants - grid, entities, detail, running
+	 * envelopes, the entities picture - the first time it is in front.
+	 * @param {number} map The map in front, -1 for none.
+	 */
+	giveView(map) {
+		if (map < 0 || this.viewGiven.has(map)) {
+			return;
+		}
+		this.viewGiven.add(map);
+		const wanted = this.viewWanted;
+		if (wanted.entitiesImage !== undefined && wanted.entitiesImage !== this.editor.entitiesImage()) {
+			this.editor.entitiesImage(wanted.entitiesImage);
+			this.tilesetSource = undefined;
+		}
+		for (const name of ["grid", "entities", "highDetail", "animate"]) {
+			if (wanted[name] !== undefined) {
+				this.editor[name](wanted[name], map);
+			}
+		}
 	}
 
 	/** Layout and settings together, as the file Export writes. */
@@ -5187,22 +5225,15 @@ class CEditorPanels {
 		if (settings.allowUnused !== undefined) {
 			this.editor.allowUnused(settings.allowUnused);
 		}
-		if (settings.entitiesImage !== undefined && settings.entitiesImage !== this.editor.entitiesImage()) {
-			this.editor.entitiesImage(settings.entitiesImage);
-			this.tilesetSource = undefined;
+		for (const name of ["entitiesImage", "grid", "entities", "highDetail", "animate"]) {
+			if (settings[name] !== undefined) {
+				this.viewWanted[name] = settings[name];
+			}
 		}
-		if (settings.grid !== undefined) {
-			this.editor.grid(settings.grid);
-		}
-		if (settings.entities !== undefined) {
-			this.editor.entities(settings.entities);
-		}
-		if (settings.highDetail !== undefined) {
-			this.editor.highDetail(settings.highDetail);
-		}
-		if (settings.animate !== undefined) {
-			this.editor.animate(settings.animate);
-		}
+		// The map in front takes it now; one that is not yet in front, when
+		// it comes.
+		this.viewGiven.clear();
+		this.giveView(this.editor.map);
 		if (settings.tileZoom !== undefined) {
 			this.tileZoom = settings.tileZoom;
 			if (this.remembers()) {
@@ -5250,11 +5281,16 @@ class CEditorPanels {
 	}
 
 	keepSettings() {
+		const settings = this.settingsState();
+		for (const name of ["entitiesImage", "grid", "entities", "highDetail", "animate"]) {
+			if (settings[name] !== undefined && settings[name] !== null) {
+				this.viewWanted[name] = settings[name];
+			}
+		}
 		if (!this.remembers()) {
 			return;
 		}
 		try {
-			const settings = this.settingsState();
 			// The keys have a place of their own.
 			delete settings.keys;
 			localStorage.setItem(SETTINGS_STORAGE, JSON.stringify(Object.assign({ version: SETTINGS_VERSION }, settings)));
@@ -6091,6 +6127,7 @@ class CEditorPanels {
 			if (inFront >= 0 && !this.mapState.has(inFront) && this.selection.layer < 0) {
 				this.selection = this.defaultSelection();
 			}
+			this.giveView(inFront);
 		}
 		const map = this.editor.structure();
 		this.map = map;
@@ -6263,8 +6300,24 @@ class CEditorPanels {
 			if (button.dataset.bar !== undefined) {
 				button.hidden = !this.barShows(command);
 			}
-			button.disabled = (command.enabled !== undefined && !command.enabled(this))
-				|| (this.readonly && command.safe !== true);
+			if (command.part === button.dataset.role) {
+				// A panel's own button: whether it can be pressed is the
+				// panel's to say, and the command asks the button. Answering
+				// the button from the command would ask it about itself, and a
+				// button once greyed - before the map was there - would stay
+				// grey for good. Only a look-only editor greys it from here.
+				const refused = this.readonly && command.safe !== true;
+				if (refused) {
+					button.disabled = true;
+					button.dataset.refused = "";
+				} else if (button.dataset.refused !== undefined) {
+					button.disabled = false;
+					delete button.dataset.refused;
+				}
+			} else {
+				button.disabled = (command.enabled !== undefined && !command.enabled(this))
+					|| (this.readonly && command.safe !== true);
+			}
 			// The name is written again rather than once at the start: whether
 			// the shortcut belongs beside it is not known until the first key.
 			if (button.dataset.role !== "brush-swatch") {
@@ -6773,6 +6826,36 @@ class CEditorPanels {
 			}, { signal: this.stopping.signal });
 			input.addEventListener("change", close, { signal: this.stopping.signal });
 			input.addEventListener("blur", close, { signal: this.stopping.signal });
+		} else if (description.kind === "ref") {
+			// One of the map's images, envelopes or sounds, chosen by name:
+			// the file keeps a number, and "-1" or "3" says nothing about
+			// what is drawn or heard.
+			const chooser = document.createElement("select");
+			chooser.dataset.role = input.dataset.role;
+			const things = this.map === null ? [] : (this.map[description.list] || []);
+			const offer = (value, label) => {
+				const option = document.createElement("option");
+				option.value = String(value);
+				option.textContent = label;
+				chooser.append(option);
+			};
+			offer(-1, "None");
+			things.forEach((thing, index) => {
+				const called = thing.name || description.list.replace(/s$/, "");
+				offer(index, description.list === "envelopes" ? `${index}: ${called} (${thing.channels})` : `${index}: ${called}`);
+			});
+			// A number that points past the list is still what the file
+			// says, and shown as that rather than as something else.
+			if (Number.isInteger(current) && (current < -1 || current >= things.length)) {
+				offer(current, `${current}: missing`);
+			}
+			chooser.value = String(current);
+			chooser.addEventListener("change", () => {
+				send(Number.parseInt(chooser.value, 10));
+				this.refresh();
+			}, { signal: this.stopping.signal });
+			row.append(name, chooser);
+			return row;
 		} else if (description.kind === "choice") {
 			// A word out of a short list, which is a `<select>` rather than a
 			// field: the list is what the command will take, so a word that
@@ -8930,6 +9013,14 @@ class CEditorPanels {
 			row.append(input);
 			list.append(row);
 		});
+		// An empty panel says what it is for rather than standing blank.
+		if (settings.length === 0) {
+			const empty = document.createElement("li");
+			empty.className = "editor-empty-text editor-settings-empty";
+			empty.dataset.role = "settings-empty";
+			empty.textContent = "No server settings. + adds a line the server runs when the map is loaded, such as sv_team 1.";
+			list.append(empty);
+		}
 		// The rows are new, and a new row has no menu button yet.
 		this.addMoreButtons();
 	}
@@ -10844,11 +10935,12 @@ class CEditorElement extends ELEMENT_BASE {
 					panels.tileZoom = zoom === "null" ? null : Number(zoom);
 					panels.refreshTiles();
 				}
-				// And the layout dragged together, and the settings.
-				panels.loadKept();
 			} catch (error) {
 				// Nothing kept, or something that is not keys: the table's.
 			}
+			// And the layout dragged together, and the settings - whatever
+			// became of the keys.
+			panels.loadKept();
 			this.addEventListener("editor-keys", event => {
 				try {
 					if (Object.keys(event.detail.keys).length === 0) {

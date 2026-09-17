@@ -181,7 +181,10 @@ window does not suit a narrow one, and only where it differs from what the
 shape does by itself. A drawer is never remembered open. The settings go the
 same way: the theme, the size of the targets, the tileset tint, the pen
 rule, unused tiles, the entities picture, the view switches, the tile size
-of the chooser; the keys keep the place they had.
+of the chooser; the keys keep the place they had. The view switches - the
+grid, the entities over the map, high detail, running envelopes - belong to
+each map in the program, so what was kept is given to every map the first
+time it is in front, and a map opened later looks like the one before it.
 
 **Export settings…** writes all of it as one JSON file, and **Import
 settings…** reads one back. The file says what it is:
@@ -443,7 +446,15 @@ panels put all of these on the bar, the eye beside each layer in the list, and
 The layer list is the map's own order: a layer or a group can be dragged to
 where it belongs, or moved a step at a time with the arrows, and either way it
 is the same command and the same one history entry. The eye beside a layer
-switches it off, the bar carries the switches above, and a map that has been
+switches it off, and a layer that draws with an image names it in small print
+after its own name, so that three layers called "Tiles" are told apart - a
+thumbnail at the height of a row would be a smear of pixels that says less.
+The properties name the image, the colour envelope and the sound a layer
+uses, in a list with "None" first, rather than as the numbers the file keeps.
+The buttons that delete an image, a sound, an envelope, a server setting, a
+quad or a sound source carry a bin, not the cross that closes a panel, and
+an empty list of server settings says what a line there is for. The bar
+carries the switches above, and a map that has been
 changed and not written out says so - the page asks before the tab is closed,
 and every minute what has changed goes into the browser's own storage by
 itself.

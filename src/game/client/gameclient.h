@@ -231,8 +231,9 @@ private:
 	// Whether the input view holds the camera of the demo, which otherwise waits
 	// in the demo pane.
 	bool m_InputCameraIsDemo = false;
-	// Counts focus changes, so that a frame can tell one happened while it was drawn.
-	int m_FocusChanges = 0;
+	// Counts focus changes and closed sessions, so that a frame can tell one
+	// happened while it was drawn.
+	int m_SessionChanges = 0;
 #if defined(CONF_VIDEORECORDER)
 	CGameViewId m_VideoGameViewId;
 #endif

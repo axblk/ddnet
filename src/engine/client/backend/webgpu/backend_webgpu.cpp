@@ -1561,7 +1561,7 @@ uint32_t CCommandProcessorFragment_WebGpu::SampleCount() const
 
 void CCommandProcessorFragment_WebGpu::ReleaseMultisampleTarget(WGPUTexture &Texture, WGPUTextureView &View, size_t &MemorySize)
 {
-	if(MemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(MemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(MemorySize, std::memory_order_relaxed);
 	if(View != nullptr)
 		wgpuTextureViewRelease(View);
@@ -1589,8 +1589,7 @@ bool CCommandProcessorFragment_WebGpu::CreateMultisampleTarget(WGPUTextureFormat
 	if(View != nullptr)
 	{
 		MemorySize = static_cast<size_t>(Width) * Height * 4 * SampleCount;
-		if(m_pTextureMemoryUsage != nullptr)
-			m_pTextureMemoryUsage->fetch_add(MemorySize, std::memory_order_relaxed);
+		m_pTextureMemoryUsage->fetch_add(MemorySize, std::memory_order_relaxed);
 		return true;
 	}
 	ReleaseMultisampleTarget(Texture, View, MemorySize);
@@ -1783,14 +1782,13 @@ bool CCommandProcessorFragment_WebGpu::EnsureScreenTexture()
 		return false;
 	}
 	m_ScreenMemorySize = static_cast<size_t>(m_SurfaceWidth) * m_SurfaceHeight * 4;
-	if(m_pTextureMemoryUsage != nullptr)
-		m_pTextureMemoryUsage->fetch_add(m_ScreenMemorySize, std::memory_order_relaxed);
+	m_pTextureMemoryUsage->fetch_add(m_ScreenMemorySize, std::memory_order_relaxed);
 	return true;
 }
 
 void CCommandProcessorFragment_WebGpu::ReleaseScreenTexture()
 {
-	if(m_ScreenMemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(m_ScreenMemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(m_ScreenMemorySize, std::memory_order_relaxed);
 	m_ScreenMemorySize = 0;
 	if(m_ScreenView != nullptr)
@@ -2074,7 +2072,7 @@ bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 
 void CCommandProcessorFragment_WebGpu::ReleaseBuffer(SBuffer &Buffer)
 {
-	if(Buffer.m_AllocatedSize != 0 && m_pBufferMemoryUsage != nullptr)
+	if(Buffer.m_AllocatedSize != 0)
 		m_pBufferMemoryUsage->fetch_sub(Buffer.m_AllocatedSize, std::memory_order_relaxed);
 	if(Buffer.m_Buffer != nullptr)
 	{
@@ -2222,7 +2220,7 @@ size_t CCommandProcessorFragment_WebGpu::SamplerIndex(EWrapMode WrapMode)
 
 void CCommandProcessorFragment_WebGpu::ReleaseTexture(STexture &Texture)
 {
-	if(Texture.m_MemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(Texture.m_MemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(Texture.m_MemorySize, std::memory_order_relaxed);
 	for(auto &BindGroup : Texture.m_aBindGroups)
 	{
@@ -3569,8 +3567,7 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 		wgpuBufferRelease(m_UniformBuffer);
 	if(m_StreamBuffer != nullptr)
 		wgpuBufferRelease(m_StreamBuffer);
-	if(m_pStreamMemoryUsage != nullptr)
-		m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
+	m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
 	for(auto &Sampler : m_aSamplers)
 	{
 		if(Sampler != nullptr)

@@ -5341,6 +5341,11 @@ void CCommandProcessorFragment_Vulkan::UploadStagingBuffers()
 
 bool CCommandProcessorFragment_Vulkan::PureMemoryFrame()
 {
+	// The submit below is what reads the staging memory, so the host writes
+	// have to be out of the cache before it and not after, as they were when
+	// UploadNonFlushedBuffers got to it further down. Nothing shows on x86,
+	// where the staging heap is coherent anyway; on ARM it is the upload.
+	UploadStagingBuffers();
 	ExecuteMemoryCommandBuffer();
 	// The slot's memory is cleared below, so this frame's upload has to be
 	// through with it - the wait is the frame's, not the whole queue's.

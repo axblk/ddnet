@@ -47,7 +47,19 @@ constexpr auto REQUEST_TIMEOUT = 30s;
 // the render thread for anything like as long.
 constexpr auto FRAME_TIMEOUT = 2s;
 constexpr uint64_t STREAM_BUFFER_SIZE = 4 * 1024 * 1024;
-constexpr uint64_t UNIFORM_BUFFER_SIZE = 1024 * 1024;
+// Every draw burns a whole minUniformBufferOffsetAlignment slot for its
+// transform, so this is what caps the draws a frame may record before the
+// ring runs out and what is drawn so far has to go to the queue mid-frame.
+// As much as the stream ring carries is a frame nobody has to think about.
+constexpr uint64_t UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024;
+constexpr uint64_t QUAD_TRANSFORM_BLOCK_SIZE = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform);
+// A chunk of quad transforms is bound as a window of the largest chunk there
+// can be, whatever the chunk actually holds, so the bytes past the end of a
+// partial one have to exist to be bound. Each slot carries that much more
+// than it hands out, instead of turning a frame away with a whole window of
+// the ring still free.
+constexpr uint64_t UNIFORM_BUFFER_STRIDE = UNIFORM_BUFFER_SIZE + QUAD_TRANSFORM_BLOCK_SIZE;
+static_assert(QUAD_TRANSFORM_BLOCK_SIZE % 256 == 0, "The tail has to leave every slot on the uniform offset alignment");
 constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
 // How many readbacks may be in flight at once. Matches what the video export
 // holds in slots, so an export never has to wait for a picture it already
@@ -1027,7 +1039,7 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	if(m_StreamOffset != 0)
 		wgpuQueueWriteBuffer(m_Queue, m_StreamBuffer, m_UploadBufferSlot * STREAM_BUFFER_SIZE, m_vStreamUpload.data(), m_StreamOffset);
 	if(m_UniformOffset != 0)
-		wgpuQueueWriteBuffer(m_Queue, m_UniformBuffer, m_UploadBufferSlot * UNIFORM_BUFFER_SIZE, m_vUniformUpload.data(), m_UniformOffset);
+		wgpuQueueWriteBuffer(m_Queue, m_UniformBuffer, m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE, m_vUniformUpload.data(), m_UniformOffset);
 	// The mipmaps first: the frame may draw with them, and nothing it holds
 	// touched those levels before they were made.
 	WGPUCommandBuffer MipmapBuffer = FinishMipmaps();
@@ -3481,12 +3493,12 @@ return vec4f((outline.rgb + primary.rgb * primary.a) / alpha, alpha);
 	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex | WGPUBufferUsage_Index;
 	m_StreamBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 	BufferDescriptor.label = StringView("DDNet WebGPU frame uniforms");
-	BufferDescriptor.size = UNIFORM_BUFFER_SIZE * UPLOAD_BUFFER_SLOT_COUNT;
+	BufferDescriptor.size = UNIFORM_BUFFER_STRIDE * UPLOAD_BUFFER_SLOT_COUNT;
 	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
 	m_UniformBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 	if(m_StreamBuffer == nullptr || m_UniformBuffer == nullptr)
 		return false;
-	m_pStreamMemoryUsage->fetch_add((STREAM_BUFFER_SIZE + UNIFORM_BUFFER_SIZE) * UPLOAD_BUFFER_SLOT_COUNT, std::memory_order_relaxed);
+	m_pStreamMemoryUsage->fetch_add((STREAM_BUFFER_SIZE + UNIFORM_BUFFER_STRIDE) * UPLOAD_BUFFER_SLOT_COUNT, std::memory_order_relaxed);
 
 	WGPUBindGroupEntry UniformBindGroupEntry{};
 	UniformBindGroupEntry.binding = 0;
@@ -3789,7 +3801,7 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 		SetError(GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "WebGPU frame uniform buffer is exhausted");
 		return false;
 	}
-	const uint32_t UniformOffset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_SIZE + m_UniformOffset);
+	const uint32_t UniformOffset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE + m_UniformOffset);
 	m_vUniformUpload.resize(m_UniformOffset + sizeof(Transform));
 	std::memcpy(m_vUniformUpload.data() + m_UniformOffset, &Transform, sizeof(Transform));
 	m_UniformOffset += sizeof(Transform);
@@ -3840,15 +3852,16 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 
 bool CCommandProcessorFragment_WebGpu::WriteQuadTransforms(const CCommandBuffer::SDrawDataQuadTransform *pData, uint32_t Count, uint32_t &Offset)
 {
-	constexpr size_t BlockSize = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform);
 	const size_t UploadSize = static_cast<size_t>(Count) * sizeof(*pData);
 	m_UniformOffset = AlignUp(m_UniformOffset, m_UniformAlignment);
-	if(Count == 0 || Count > GRAPHICS_MAX_QUADS_RENDER_COUNT || BlockSize > UNIFORM_BUFFER_SIZE - m_UniformOffset || m_UniformOffset > UINT32_MAX)
+	// Only what the chunk holds has to fit; the window bound past it lands in
+	// the slot's tail. See UNIFORM_BUFFER_STRIDE.
+	if(Count == 0 || Count > GRAPHICS_MAX_QUADS_RENDER_COUNT || UploadSize > UNIFORM_BUFFER_SIZE - m_UniformOffset || m_UniformOffset > UINT32_MAX)
 	{
 		SetError(GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "WebGPU frame uniform buffer is exhausted");
 		return false;
 	}
-	Offset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_SIZE + m_UniformOffset);
+	Offset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE + m_UniformOffset);
 	m_vUniformUpload.resize(m_UniformOffset + UploadSize);
 	std::memcpy(m_vUniformUpload.data() + m_UniformOffset, pData, UploadSize);
 	m_UniformOffset += UploadSize;
@@ -3985,14 +3998,13 @@ bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SComma
 		// once would ask for more than a whole uniform buffer from roughly
 		// thirty thousand quads on, and the draw was then dropped as a single
 		// oversized one rather than split across submissions.
-		const uint64_t ChunkUniformBytes = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform) + sizeof(SPrimitiveTransform) + 2 * m_UniformAlignment;
 		uint32_t QuadsLeft = QuadCount;
 		uint32_t RenderOffset = 0;
 		bool BuffersBound = false;
 		do
 		{
 			const uint32_t DrawCount = std::min<uint32_t>(QuadsLeft, GRAPHICS_MAX_QUADS_RENDER_COUNT);
-			if(!EnsureUploadSpace(0, ChunkUniformBytes))
+			if(!EnsureUploadSpace(0, static_cast<uint64_t>(DrawCount) * sizeof(CCommandBuffer::SDrawDataQuadTransform) + sizeof(SPrimitiveTransform) + 2 * m_UniformAlignment))
 				return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
 			// A submission inside EnsureUploadSpace closes the pass, and the pass
 			// carries the vertex and index buffer, so they are bound again.

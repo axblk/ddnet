@@ -3989,19 +3989,29 @@ bool CCommandProcessorFragment_Vulkan::SelectGpu(char *pRendererName, char *pVen
 	uint32_t QueueNodeIndex = std::numeric_limits<uint32_t>::max();
 	for(uint32_t i = 0; i < FamQueueCount; i++)
 	{
-		if(vQueuePropList[i].queueCount > 0 && (vQueuePropList[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
-		{
-			QueueNodeIndex = i;
-		}
+		if(vQueuePropList[i].queueCount == 0 || !(vQueuePropList[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+			continue;
 		/*if(vQueuePropList[i].queueCount > 0 && (vQueuePropList[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
 		{
 			QueueNodeIndex = i;
 		}*/
+		// The same queue carries the present, so a family that cannot reach the
+		// surface is no candidate. Asking only after the fact turns a queue's
+		// shortcoming into a message blaming the GPU that was picked. Without a
+		// window there is nothing to present to and nothing to ask.
+		VkBool32 CanPresent = VK_TRUE;
+		if(m_VKPresentSurface != VK_NULL_HANDLE)
+			vkGetPhysicalDeviceSurfaceSupportKHR(CurDevice, i, m_VKPresentSurface, &CanPresent);
+		if(CanPresent)
+		{
+			QueueNodeIndex = i;
+			break;
+		}
 	}
 
 	if(QueueNodeIndex == std::numeric_limits<uint32_t>::max())
 	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "No Vulkan queue found that matches the requirements: graphics queue.");
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, m_VKPresentSurface != VK_NULL_HANDLE ? "No Vulkan queue found that can both draw and present to the window." : "No Vulkan queue found that matches the requirements: graphics queue.");
 		return false;
 	}
 
@@ -4122,17 +4132,11 @@ bool CCommandProcessorFragment_Vulkan::CreateLogicalDevice(const std::vector<std
 
 bool CCommandProcessorFragment_Vulkan::CreateSurface()
 {
+	// Whether the queue can present to it is decided when the queue is picked,
+	// which is why this has to run before the device is selected.
 	if(!m_Presentation.m_pSurface->CreateVulkanSurface(&m_VKInstance, &m_VKPresentSurface))
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating a Vulkan surface for the window failed.");
-		return false;
-	}
-
-	VkBool32 IsSupported = false;
-	vkGetPhysicalDeviceSurfaceSupportKHR(m_VKGPU, m_VKGraphicsQueueIndex, m_VKPresentSurface, &IsSupported);
-	if(!IsSupported)
-	{
-		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "The device surface does not support presenting the framebuffer to a screen. Maybe the wrong GPU was selected?");
 		return false;
 	}
 
@@ -4721,6 +4725,9 @@ int CCommandProcessorFragment_Vulkan::InitVulkanDevice(const CCommandProcessorFr
 		}
 	}
 
+	if(m_Presentation.IsPresentable() && !CreateSurface())
+		return -1;
+
 	if(!SelectGpu(pRendererString, pVendorString, pVersionString))
 		return -1;
 
@@ -4738,8 +4745,6 @@ int CCommandProcessorFragment_Vulkan::InitVulkanDevice(const CCommandProcessorFr
 	else
 	{
 		vkGetDeviceQueue(m_VKDevice, m_VKGraphicsQueueIndex, 0, &m_VKPresentQueue);
-		if(!CreateSurface())
-			return -1;
 	}
 
 	return 0;

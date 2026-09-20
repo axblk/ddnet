@@ -4277,7 +4277,10 @@ void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommand
 #else
 	if(!m_SurfaceCanCopyFrom)
 	{
-		log_warn("gfx/webgpu", "the selected WebGPU implementation cannot read its surface texture back");
+		// A screenshot is told it failed further up, but a read pixel is
+		// not: it keeps the white the frontend presets and the caller has
+		// no way to tell that apart from a white pixel.
+		DropCommand("reading the presented frame back on a surface that cannot be copied from");
 		return;
 	}
 	WGPUTexture SourceTexture = m_SurfaceTexture.texture;

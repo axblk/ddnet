@@ -3067,7 +3067,7 @@ bool CCommandProcessorFragment_Vulkan::BeginFrameCommands()
 
 	// clear frame
 	auto &CommandBuffer = GetMainGraphicCommandBuffer();
-	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the frame command buffer failed.");
 		return false;
@@ -3106,7 +3106,7 @@ bool CCommandProcessorFragment_Vulkan::PrepareOffscreenCommands()
 	// now be destroyed or returned to the backend caches.
 	ClearFrameMemoryUsage();
 	auto &CommandBuffer = GetMainGraphicCommandBuffer();
-	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the offscreen command buffer failed.");
 		return false;
@@ -3740,8 +3740,6 @@ std::set<std::string> CCommandProcessorFragment_Vulkan::OurVKLayers()
 	if(g_Config.m_DbgGfx == DEBUG_GFX_MODE_MINIMUM || g_Config.m_DbgGfx == DEBUG_GFX_MODE_ALL)
 	{
 		OurLayers.emplace("VK_LAYER_KHRONOS_validation");
-		// deprecated, but VK_LAYER_KHRONOS_validation was released after vulkan 1.1
-		OurLayers.emplace("VK_LAYER_LUNARG_standard_validation");
 	}
 
 	return OurLayers;
@@ -4103,10 +4101,6 @@ bool CCommandProcessorFragment_Vulkan::SelectGpu(char *pRendererName, char *pVen
 	{
 		if(vQueuePropList[i].queueCount == 0 || !(vQueuePropList[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
 			continue;
-		/*if(vQueuePropList[i].queueCount > 0 && (vQueuePropList[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
-		{
-			QueueNodeIndex = i;
-		}*/
 		// The same queue carries the present, so a family that cannot reach the
 		// surface is no candidate. Asking only after the fact turns a queue's
 		// shortcoming into a message blaming the GPU that was picked. Without a
@@ -5691,7 +5685,7 @@ bool CCommandProcessorFragment_Vulkan::GetMemoryCommandBuffer(VkCommandBuffer *&
 			return false;
 		m_vUsedMemoryCommandBuffer[m_CurImageIndex] = true;
 
-		if(vkResetCommandBuffer(MemCommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+		if(vkResetCommandBuffer(MemCommandBuffer, 0) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the memory command buffer failed.");
 			return false;
@@ -6365,29 +6359,32 @@ bool CCommandProcessorFragment_Vulkan::ImageBarrierIn(VkCommandBuffer &MemComman
 		SourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
+	// A readback image lives in GENERAL, where the host reads it through its
+	// mapping, and visits TRANSFER_DST for the copy that fills it. Naming both
+	// is what the blanket memory access was standing in for.
 	else if(OldLayout == VK_IMAGE_LAYOUT_UNDEFINED && NewLayout == VK_IMAGE_LAYOUT_GENERAL)
 	{
 		Barrier.srcAccessMask = 0;
-		Barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
 		SourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
 	else if(OldLayout == VK_IMAGE_LAYOUT_GENERAL && NewLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
 	{
-		Barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		Barrier.srcAccessMask = VK_ACCESS_HOST_READ_BIT;
 		Barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-		SourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		SourceStage = VK_PIPELINE_STAGE_HOST_BIT;
 		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	}
 	else if(OldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && NewLayout == VK_IMAGE_LAYOUT_GENERAL)
 	{
 		Barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		Barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		Barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
 
 		SourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-		DestinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		DestinationStage = VK_PIPELINE_STAGE_HOST_BIT;
 	}
 	else
 	{
@@ -8247,7 +8244,7 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 
 bool CCommandProcessorFragment_Vulkan::RestartReadbackCommandBuffer(VkCommandBuffer CommandBuffer)
 {
-	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	if(vkResetCommandBuffer(CommandBuffer, 0) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the readback command buffer failed.");
 		return false;

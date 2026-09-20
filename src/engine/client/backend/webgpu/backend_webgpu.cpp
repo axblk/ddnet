@@ -29,6 +29,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -42,12 +43,19 @@ extern "C" void YieldToBrowser(int WaitForFrame);
 using namespace std::chrono_literals; // NOLINT(google-build-using-namespace)
 
 constexpr auto REQUEST_TIMEOUT = 30s;
+// How long a wait inside a frame may take.
+constexpr auto FRAME_TIMEOUT = 2s;
 constexpr uint64_t STREAM_BUFFER_SIZE = 4 * 1024 * 1024;
-constexpr uint64_t UNIFORM_BUFFER_SIZE = 1024 * 1024;
+// Every draw takes one minUniformBufferOffsetAlignment slot, so this caps
+// the draws per submit.
+constexpr uint64_t UNIFORM_BUFFER_SIZE = 4 * 1024 * 1024;
+constexpr uint64_t QUAD_TRANSFORM_BLOCK_SIZE = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform);
+// A chunk of quad transforms is bound as a window of the largest chunk, so
+// each slot carries that much past what it hands out.
+constexpr uint64_t UNIFORM_BUFFER_STRIDE = UNIFORM_BUFFER_SIZE + QUAD_TRANSFORM_BLOCK_SIZE;
+static_assert(QUAD_TRANSFORM_BLOCK_SIZE % 256 == 0, "The tail has to leave every slot on the uniform offset alignment");
 constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
-// How many readbacks may be in flight at once. Matches what the video export
-// holds in slots, so an export never has to wait for a picture it already
-// asked the device for.
+// Readbacks in flight; matches the video export's slots.
 constexpr size_t READBACK_SLOT_COUNT = 3;
 constexpr size_t GPU_TIMESTAMP_SLOT_COUNT = 4;
 constexpr uint64_t GPU_TIMESTAMP_SIZE = 2 * sizeof(uint64_t);
@@ -63,7 +71,7 @@ struct SPrimitiveTransform
 	ColorRGBA m_Color;
 	vec2 m_RotationCenter;
 	float m_Rotation;
-	uint32_t m_AlphaTexture;
+	float m_Padding0;
 	vec2 m_VertexOffset;
 	vec2 m_VertexScale;
 	uint32_t m_QuadBase;
@@ -73,8 +81,7 @@ struct SPrimitiveTransform
 };
 static_assert(sizeof(SPrimitiveTransform) == sizeof(float) * 24);
 
-// What a draw says about itself. The screen mapping and whether the texture
-// carries only alpha are worked out from the state, so they are not here.
+// What a draw says about itself. The screen mapping comes from the state.
 struct SDrawUniforms
 {
 	ColorRGBA m_Color = ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
@@ -87,9 +94,6 @@ struct SDrawUniforms
 	ColorRGBA m_SecondaryColor = ColorRGBA(1.0f, 1.0f, 1.0f, 1.0f);
 };
 
-// The one place that turns an interface format into a WebGPU one. How many
-// bytes a pixel of it costs is IGraphics::PixelSize's answer, not a second
-// table's, so that a format added to one is never missing from the other.
 static WGPUTextureFormat ToWGPUFormat(IGraphics::ETextureFormat Format)
 {
 	switch(Format)
@@ -192,20 +196,24 @@ struct SMapResult
 {
 	bool m_Done = false;
 	WGPUMapAsyncStatus m_Status = WGPUMapAsyncStatus_Error;
+	// A map callback can outlive a wait that timed out. The generation lets a
+	// late one be recognised; never reset.
+	uint32_t m_Generation = 0;
 };
-// A readback whose copy is submitted and whose mapping was asked for, but
-// whose pixels have not arrived yet.
-struct SPendingReadback
+// One readback in flight. The buffer is kept between readbacks.
+struct SReadbackSlot
 {
 	WGPUBuffer m_Buffer = nullptr;
 	uint64_t m_BufferSize = 0;
+	SMapResult m_MapResult;
 	uint32_t m_BytesPerRow = 0;
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 	bool m_BGRA = false;
 	bool m_OpaqueAlpha = false;
 	CCommandBuffer::SImageReadbackResult *m_pResult = nullptr;
-	std::shared_ptr<SMapResult> m_pMapResult;
+
+	uint64_t MappedSize() const { return static_cast<uint64_t>(m_BytesPerRow) * m_Height; }
 };
 struct SQueueResult
 {
@@ -257,25 +265,19 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	struct SGpuTimestampSlot
 	{
 		WGPUBuffer m_ReadbackBuffer = nullptr;
-		std::shared_ptr<SMapResult> m_pMapResult;
+		SMapResult m_MapResult;
 		bool m_InFlight = false;
 		bool m_Publish = false;
 	};
 
 	EWebGpuBackendType m_BackendType;
-	// The native window handle, asked of the surface owner every time it is
-	// needed: Android takes the window away while the app is in the
-	// background and hands out another one on resume, and the surface has to
-	// be built from that one. Without a surface there is no window, and an
-	// empty handle says so.
+	// Asked for every time: Android hands out a new window on resume.
 	const SWebGpuNativeWindow &NativeWindow() const
 	{
 		static const SWebGpuNativeWindow s_NoWindow;
 		return m_Presentation.IsPresentable() ? m_Presentation.m_pSurface->WebGpuNativeWindow() : s_NoWindow;
 	}
-	// The surface a frame is presented to, or none. Everything that only
-	// exists because there is one - the swapchain configuration, vsync, the
-	// pipeline set built for the surface format - hangs off this.
+	// The surface a frame is presented to, or none.
 	CCommandProcessorFragment_Renderer::SPresentationSurface m_Presentation;
 	WGPUInstance m_Instance = nullptr;
 	WGPUSurface m_Surface = nullptr;
@@ -299,21 +301,12 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 #endif
 	bool m_ScreenTouched = false;
 	WGPUCommandEncoder m_CommandEncoder = nullptr;
-	// Where the mipmap passes of every texture made since the last submit are
-	// recorded. They cannot go into the frame encoder, which usually has a
-	// render pass open, and one submit per texture makes the queue wait for
-	// the last one before it takes the next write.
+	// Mipmap passes of textures made since the last submit. They cannot go
+	// into the frame encoder, which usually has a render pass open.
 	WGPUCommandEncoder m_MipmapEncoder = nullptr;
 	WGPURenderPassEncoder m_RenderPass = nullptr;
-	// A run of glyphs, a tile layer, a column of server browser rows: most
-	// consecutive draws keep the pipeline, the texture and the clip
-	// rectangle they already had, and setting each of them again is an
-	// encoder call that changes nothing. A render pass encoder begins with
-	// none of this state, so the cache is cleared whenever one begins.
-	// The bind group layout each slot of a pipeline's layout expects. A
-	// bind group stays set across a pipeline switch, and is valid for the
-	// next pipeline wherever the layouts agree - which they mostly do: the
-	// switches here change the shader far more often than the layout.
+	// Encoder state cache, cleared whenever a render pass begins. The layouts
+	// tell which bind groups stay valid across a pipeline switch.
 	using SBindGroupLayouts = std::array<WGPUBindGroupLayout, 3>;
 	std::unordered_map<WGPURenderPipeline, SBindGroupLayouts> m_PipelineBindGroupLayouts;
 
@@ -334,7 +327,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	WGPUBuffer m_GpuTimestampResolveBuffer = nullptr;
 	std::array<SGpuTimestampSlot, GPU_TIMESTAMP_SLOT_COUNT> m_aGpuTimestampSlots;
 	std::array<SQueueResult, UPLOAD_BUFFER_SLOT_COUNT> m_aUploadBufferResults;
-	std::vector<SPendingReadback> m_vPendingReadbacks;
+	// Taken in order and finished in order, which is the order the queue
+	// completes the copies in anyway.
+	std::array<SReadbackSlot, READBACK_SLOT_COUNT> m_aReadbackSlots;
+	size_t m_ReadbackHead = 0;
+	size_t m_ReadbackCount = 0;
 	WGPUShaderModule m_PrimitiveShader = nullptr;
 	WGPUBindGroupLayout m_UniformBindGroupLayout = nullptr;
 	WGPUBindGroupLayout m_EmptyBindGroupLayout = nullptr;
@@ -347,12 +344,8 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	WGPUPipelineLayout m_QuadTexturedPipelineLayout = nullptr;
 	WGPUPipelineLayout m_QuadUntexturedPipelineLayout = nullptr;
 	std::array<SPipelineSet, 2> m_aPipelineSets{};
-	// Every other backend has the graphics card make its mipmaps - Vulkan
-	// blits, OpenGL calls glGenerateMipmap. WebGPU has nothing of the kind, so
-	// each level is drawn from the one above it instead, which is what those
-	// two do underneath. One pipeline per texture format, made when a format
-	// first needs one, because nothing but the render target differs.
-	WGPUShaderModule m_MipmapShader = nullptr;
+	// WebGPU has no mipmap generation of its own, so a compute shader makes
+	// each level from the one above it.
 	WGPUShaderModule m_MipmapComputeShader = nullptr;
 	WGPUBindGroupLayout m_MipmapComputeBindGroupLayout = nullptr;
 	WGPUPipelineLayout m_MipmapComputePipelineLayout = nullptr;
@@ -360,11 +353,8 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	// wgpu on OpenGL does not show later sampling what a compute shader
 	// stored, so there the mip levels are made on the CPU.
 	bool m_GpuMipmaps = true;
-	WGPUPipelineLayout m_MipmapPipelineLayout = nullptr;
-	std::array<WGPURenderPipeline, 3> m_aMipmapPipelines{};
-	// Wrap modes, matching the Vulkan backend. Array textures hold one tile
-	// per layer, so their layer axis repeats while the tile itself must not
-	// bleed into its neighbour.
+	// Wrap modes, matching the Vulkan backend. Array textures repeat along the
+	// layer axis only.
 	enum class ESamplerKind
 	{
 		REPEAT,
@@ -406,10 +396,8 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	bool m_SupportsMailbox = false;
 	bool m_SurfaceConfigured = false;
 	bool m_SurfaceDirty = true;
-	// wgpu's GL backend never reports CopySrc on the surface - the surface
-	// there is the default framebuffer, and there is nothing to copy out of
-	// a framebuffer. Rendering does not need it; only reading the presented
-	// frame back for a screenshot does, so that is what goes without it.
+	// wgpu's GL backend never reports CopySrc on the surface, which only
+	// screenshots need.
 	bool m_SurfaceCanCopyFrom = false;
 	bool m_Minimized = false;
 	bool m_SkipPresentationFrame = false;
@@ -431,13 +419,30 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	std::atomic<uint64_t> *m_pTextureMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pBufferMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pStreamMemoryUsage = nullptr;
+	// Only the buffers mapped for the host; wgpuQueueWrite* staging is not ours.
+	std::atomic<uint64_t> *m_pStagingMemoryUsage = nullptr;
 	SGpuTimingShared *m_pGpuTiming = nullptr;
 
 	static void AdapterCallback(WGPURequestAdapterStatus Status, WGPUAdapter Adapter, WGPUStringView Message, void *pUserdata1, void *);
 
 	static void DeviceCallback(WGPURequestDeviceStatus Status, WGPUDevice Device, WGPUStringView Message, void *pUserdata1, void *);
 
-	static void MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *);
+	static void MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *pUserdata2);
+
+	// The result lives in the slot that owns the buffer, so a mapping costs
+	// nothing but the call. See SMapResult for what the generation is for.
+	static void MapAsync(WGPUBuffer Buffer, uint64_t Size, SMapResult &Result)
+	{
+		++Result.m_Generation;
+		Result.m_Done = false;
+		Result.m_Status = WGPUMapAsyncStatus_Error;
+		WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+		CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+		CallbackInfo.callback = MapCallback;
+		CallbackInfo.userdata1 = &Result;
+		CallbackInfo.userdata2 = reinterpret_cast<void *>(static_cast<uintptr_t>(Result.m_Generation));
+		wgpuBufferMapAsync(Buffer, WGPUMapMode_Read, 0, Size, CallbackInfo);
+	}
 
 	static void QueueCallback(WGPUQueueWorkDoneStatus Status, WGPUStringView, void *pUserdata1, void *);
 
@@ -448,31 +453,28 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	static void UncapturedErrorCallback(WGPUDevice const *, WGPUErrorType Type, WGPUStringView Message, void *pUserdata1, void *);
 
 	template<typename T>
-	bool ProcessUntilDone(const T &Result, const char *pOperation)
+	bool ProcessUntilDone(const T &Result, const char *pOperation, std::chrono::steady_clock::duration Timeout = REQUEST_TIMEOUT)
 	{
-		const auto Deadline = std::chrono::steady_clock::now() + REQUEST_TIMEOUT;
+		const auto Deadline = std::chrono::steady_clock::now() + Timeout;
 		while(true)
 		{
 			wgpuInstanceProcessEvents(m_Instance);
-			// Pumping events usually completes the work already. Sleeping
-			// before checking would put a millisecond on every wait, and
-			// the upload buffer rotation waits once per submit inside a
-			// frame, which caps the frame rate for no reason.
+			// Pumping events usually completes the work already, so check before
+			// sleeping.
 			if(Result.m_Done)
 				return true;
 			if(std::chrono::steady_clock::now() >= Deadline)
 				break;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-			// The browser has to run before it can resolve anything we are
-			// waiting for, but a timer would hold a frame that is already
-			// half rendered for a millisecond or more per poll.
+			// The browser has to run to resolve anything; a timer would be too slow.
 			YieldFrame();
 #else
-			// Natively there is a wait to be had, and waiting for the queue
-			// to catch up is what every one of these is waiting for anyway.
-			// Sleeping instead would put a millisecond on each of them.
+			// Only the work waited for, not the whole queue.
 			if(m_Device != nullptr)
-				wgpuDevicePoll(m_Device, WGPU_TRUE, nullptr);
+			{
+				wgpuDevicePoll(m_Device, WGPU_FALSE, nullptr);
+				std::this_thread::yield();
+			}
 			else
 				std::this_thread::sleep_for(1ms);
 #endif
@@ -505,34 +507,41 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	void ReleasePipeline(WGPURenderPipeline &Pipeline);
 
 	bool CreateTextureBindGroups(WGPUTextureView View, WGPUBindGroupLayout Layout, uint32_t TextureBinding, std::array<WGPUBindGroup, 2> &aBindGroups, bool TextureArray);
-	WGPURenderPipeline MipmapPipeline(IGraphics::ETextureFormat Format);
-	bool GenerateMipmaps(WGPUTexture Texture, IGraphics::ETextureFormat Format, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount);
 	WGPUComputePipeline MipmapComputePipeline();
-	bool GenerateMipmapsCompute(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount);
+	bool GenerateMipmaps(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount);
 	bool EnsureMipmapEncoder();
 	WGPUCommandBuffer FinishMipmaps();
 	bool SubmitMipmaps();
 
-	// The vertex input a pipeline is built for comes from IGraphics::VertexLayout,
-	// the same table CGraphics_Threaded tags every draw with, so a pipeline and
-	// the buffer it reads cannot drift apart.
+	// Vertex input comes from IGraphics::VertexLayout, the table the frontend
+	// tags every draw with.
 	static WGPUVertexFormat VertexAttributeFormat(const IGraphics::CVertexAttributeDesc &Attribute);
 
-	template<size_t ArraySize>
-	static uint64_t FillVertexInput(IGraphics::EVertexLayout Layout, std::array<WGPUVertexAttribute, ArraySize> &aAttributes, uint32_t &AttributeCount)
+	class CVertexInput
 	{
-		const IGraphics::SVertexLayoutDesc &Desc = IGraphics::VertexLayout(Layout);
-		dbg_assert(Desc.m_AttributeCount <= ArraySize, "Pipeline has room for fewer attributes than the vertex layout has");
-		for(uint32_t Index = 0; Index < Desc.m_AttributeCount; ++Index)
+	public:
+		std::array<WGPUVertexAttribute, 3> m_aAttributes{};
+		WGPUVertexBufferLayout m_Layout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+
+		explicit CVertexInput(IGraphics::EVertexLayout Layout)
 		{
-			const IGraphics::CVertexAttributeDesc &Attribute = Desc.m_aAttributes[Index];
-			aAttributes[Index].format = VertexAttributeFormat(Attribute);
-			aAttributes[Index].offset = Attribute.m_Offset;
-			aAttributes[Index].shaderLocation = Index;
+			const IGraphics::SVertexLayoutDesc &Desc = IGraphics::VertexLayout(Layout);
+			dbg_assert(Desc.m_AttributeCount <= m_aAttributes.size(), "Pipeline has room for fewer attributes than the vertex layout has");
+			for(uint32_t Index = 0; Index < Desc.m_AttributeCount; ++Index)
+			{
+				const IGraphics::CVertexAttributeDesc &Attribute = Desc.m_aAttributes[Index];
+				m_aAttributes[Index].format = VertexAttributeFormat(Attribute);
+				m_aAttributes[Index].offset = Attribute.m_Offset;
+				m_aAttributes[Index].shaderLocation = Index;
+			}
+			m_Layout.arrayStride = Desc.m_Stride;
+			m_Layout.stepMode = WGPUVertexStepMode_Vertex;
+			m_Layout.attributeCount = Desc.m_AttributeCount;
+			m_Layout.attributes = m_aAttributes.data();
 		}
-		AttributeCount = Desc.m_AttributeCount;
-		return Desc.m_Stride;
-	}
+		CVertexInput(const CVertexInput &) = delete;
+		CVertexInput &operator=(const CVertexInput &) = delete;
+	};
 
 	/**
 	 * What the pipelines below actually differ in. Everything else - the winding,
@@ -557,6 +566,10 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		uint32_t m_SampleCount = 1;
 	};
 	WGPURenderPipeline CreatePipeline(const SPipelineRecipe &Recipe);
+	// One pipeline per blend mode for the untextured and the textured recipe,
+	// at (Topology * BLEND_MODE_COUNT + Blend) * 2 + Textured, with a line
+	// list before the triangle list if LineVariants.
+	bool CreatePipelineVariants(std::span<WGPURenderPipeline> Pipelines, bool LineVariants, const std::array<SPipelineRecipe, 2> &aRecipes);
 
 	bool CreateBufferedPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, const char *pVertexEntry, bool Instanced, uint32_t SampleCount);
 
@@ -578,11 +591,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	void DestroyDrawResources();
 
-	bool CreateTexture(const CCommandBuffer::SCommand_Texture_Create *pCommand);
+	bool Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand);
 
-	bool UpdateTexture(const CCommandBuffer::SCommand_Texture_Update *pCommand);
+	bool Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand);
 
-	void DestroyTexture(IGraphics::CTextureHandle Handle);
+	void Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand);
 
 	void ReleaseBuffer(SBuffer &Buffer);
 
@@ -590,9 +603,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool CreateNativeBuffer(SBuffer &Buffer, const IGraphics::CBufferDesc &Desc, const void *pData);
 
-	bool CreateBuffer(const CCommandBuffer::SCommand_CreateBufferObject *pCommand);
+	bool Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand);
 
-	bool RecreateBuffer(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand);
+	bool Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand);
 
 	void DestroyGpuTimestampResources();
 
@@ -606,17 +619,14 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool EnsureCommandEncoder();
 
-	bool DestroyBuffer(IGraphics::CBufferHandle Handle);
+	bool Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand);
 
 	STexture *RenderTarget();
 
 	bool EnsureRenderPass();
 
-	// The upload rings hold one frame's worth of vertices and uniforms. A
-	// frame that needs more than that used to be the end of the renderer;
-	// now what is drawn so far goes to the queue and the rings start over.
-	// This has to happen before a pass is opened, because a submit ends the
-	// pass it is inside and everything bound to it.
+	// When the upload rings run out, what is drawn so far is submitted and the
+	// rings start over. Called before a pass is opened, since a submit ends it.
 	bool EnsureUploadSpace(uint64_t StreamBytes, uint64_t UniformBytes);
 
 	bool WriteStream(const void *pData, size_t Size, uint64_t Alignment, uint64_t &Offset);
@@ -633,9 +643,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool WriteQuadTransforms(const CCommandBuffer::SDrawDataQuadTransform *pData, uint32_t Count, uint32_t &Offset);
 
-	bool Draw(const CCommandBuffer::SCommand_Draw *pCommand);
+	bool Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand);
 
-	bool DrawBuffered(const CCommandBuffer::SCommand_DrawIndexed *pCommand);
+	bool Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand);
 
 	bool CreatePresentationSurface();
 	WGPUSurface CreateSurface() const;
@@ -647,29 +657,21 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	void ReleaseFrame();
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// In the browser the frame is drawn into an image of our own; the
-	// surface texture is acquired at the end of the frame, gets a copy of
-	// the finished image and is handed straight back, with nothing in
-	// between that could wait. That is forced there: a surface texture is
-	// ours only until the browser gets its turn back, and every wait for
-	// the device gives it one. Natively the texture stays ours for the
-	// whole frame and is drawn into directly.
+	// In the browser the frame is drawn into an image of our own and copied to
+	// the surface texture at the end, because a surface texture is only ours
+	// until the browser gets its turn. Natively it is drawn into directly.
 	bool EnsureScreenTexture();
 
 	void ReleaseScreenTexture();
 
-	// Only ever called with the frame's own work already submitted, so the
-	// submit below cannot land in a wait for the upload rings - the one
-	// thing that would let the browser take the surface texture back while
-	// the copy into it is still being recorded.
+	// Only called with the frame's work already submitted, so nothing here
+	// waits for the upload rings.
 	bool CopyScreenToSurface();
 
 	void YieldFrame()
 	{
-		// The frame lives in an image of its own, so the browser may run
-		// here without anything being lost. What is already encoded still
-		// has to reach the queue: the wait that led here is a wait for the
-		// device, and an unsubmitted encoder would never let it end.
+		// The browser may run here. What is encoded still has to be submitted, or
+		// the wait could never end.
 		(void)SubmitCommands();
 		YieldToBrowser(0);
 	}
@@ -682,15 +684,15 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool SubmitCommands(bool EndsFrame = false, bool PublishGpuTimestamp = true);
 
-	// Records the copy that reads a texture back and asks for the mapping,
-	// without waiting for either. The pixels are handed over in
-	// FinishReadback once the map callback has run, which is what lets the
-	// caller keep several readbacks in flight.
+	// Records the copy and asks for the mapping without waiting. The pixels are
+	// handed over in FinishReadback.
 	bool StartTextureReadback(WGPUTexture Texture, WGPUOrigin3D Origin, uint32_t Width, uint32_t Height, bool BGRA, bool OpaqueAlpha, CCommandBuffer::SImageReadbackResult *pResult);
+
+	void ReleaseReadbackBuffer(SReadbackSlot &Slot);
 
 	// Copies the mapped pixels out and releases the caller. The map callback
 	// has run by the time this is called, successfully or not.
-	void FinishReadback(SPendingReadback &Pending);
+	void FinishReadback(SReadbackSlot &Slot);
 
 	bool FinishOldestReadback();
 
@@ -705,9 +707,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	// Releases callers that will never get their picture.
 	void AbandonReadbacks();
 
-	void PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand);
+	void Cmd_PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand);
 
-	void TextureReadback(const CCommandBuffer::SCommand_Texture_Readback *pCommand);
+	void Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand);
 
 	void DiscardFrame();
 
@@ -717,11 +719,25 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool AcquireFrame();
 
-	bool Clear(const CCommandBuffer::SCommand_Clear *pCommand);
+	bool Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand);
 
-	bool Present(bool PaceWithDisplay);
+	bool Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand);
 
-	bool Initialize(const SCommand_Init *pCommand);
+	bool Cmd_Init(const SCommand_Init *pCommand);
+
+	void Cmd_PreInit(const SCommand_PreInit *pCommand);
+
+	bool Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand);
+
+	bool Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand);
+
+	void Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand);
+
+	void Cmd_MultiSampling(const CCommandBuffer::SCommand_MultiSampling *pCommand);
+
+	bool Cmd_WindowCreateNtf();
+
+	bool Cmd_WindowDestroyNtf();
 
 	void Cleanup();
 
@@ -745,18 +761,10 @@ public:
 // ---------------------------------------------------------------------------
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-// Handing control back to the browser. Waiting for an animation frame is what a
-// frame wants: the canvas is composited once per refresh whatever the loop does.
-// A wait inside a frame, and a loop that is meant to run faster than the screen,
-// want the shortest turn instead, and that is not a timer: a timer costs a
-// millisecond, and four once a handful of them nest, which is most of a frame
-// spent waiting for nothing. A message channel posts a plain task with no such
-// floor, so the browser gets its turn and we get it straight back.
-//
-// Neither wait works on a hidden page. It gets no animation frames, and it must
-// not be spun through microtasks either -- a microtask that queues another one
-// never lets the browser run the task that says we are visible again, so the page
-// would stay hidden and busy for good. A slow timer is the only way out.
+// Hands control back to the browser: an animation frame for a whole frame,
+// otherwise a message channel task, which unlike a timer has no millisecond
+// floor. A hidden page gets neither, so it falls back to a slow timer
+// (spinning through microtasks would never let it become visible again).
 // clang-format off
 EM_ASYNC_JS(void, YieldToBrowser, (int WaitForFrame), {
 	if(document.hidden)
@@ -820,10 +828,11 @@ void CCommandProcessorFragment_WebGpu::DeviceCallback(WGPURequestDeviceStatus St
 	pResult->m_Done = true;
 }
 
-void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *)
+void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *pUserdata2)
 {
-	auto pResult = std::move(*static_cast<std::shared_ptr<SMapResult> *>(pUserdata1));
-	delete static_cast<std::shared_ptr<SMapResult> *>(pUserdata1);
+	auto *pResult = static_cast<SMapResult *>(pUserdata1);
+	if(pResult->m_Generation != static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pUserdata2)))
+		return;
 	pResult->m_Status = Status;
 	pResult->m_Done = true;
 }
@@ -867,8 +876,12 @@ void CCommandProcessorFragment_WebGpu::DestroyGpuTimestampResources()
 		{
 			wgpuBufferDestroy(Slot.m_ReadbackBuffer);
 			wgpuBufferRelease(Slot.m_ReadbackBuffer);
+			m_pStagingMemoryUsage->fetch_sub(GPU_TIMESTAMP_SIZE, std::memory_order_relaxed);
 		}
-		Slot = {};
+		Slot.m_ReadbackBuffer = nullptr;
+		Slot.m_MapResult.m_Done = false;
+		Slot.m_InFlight = false;
+		Slot.m_Publish = false;
 	}
 	if(m_GpuTimestampResolveBuffer != nullptr)
 	{
@@ -911,6 +924,7 @@ bool CCommandProcessorFragment_WebGpu::EnsureGpuTimestampResources()
 		Slot.m_ReadbackBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 		if(Slot.m_ReadbackBuffer == nullptr)
 			break;
+		m_pStagingMemoryUsage->fetch_add(GPU_TIMESTAMP_SIZE, std::memory_order_relaxed);
 	}
 	if(m_GpuTimestampQuerySet != nullptr && m_GpuTimestampResolveBuffer != nullptr && std::ranges::all_of(m_aGpuTimestampSlots, [](const SGpuTimestampSlot &Slot) { return Slot.m_ReadbackBuffer != nullptr; }))
 		return true;
@@ -927,9 +941,9 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 {
 	for(auto &Slot : m_aGpuTimestampSlots)
 	{
-		if(!Slot.m_InFlight || Slot.m_pMapResult == nullptr || !Slot.m_pMapResult->m_Done)
+		if(!Slot.m_InFlight || !Slot.m_MapResult.m_Done)
 			continue;
-		if(Slot.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
+		if(Slot.m_MapResult.m_Status == WGPUMapAsyncStatus_Success)
 		{
 			const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE));
 			if(pMappedData != nullptr && Slot.m_Publish)
@@ -938,13 +952,11 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 				uint64_t End;
 				std::memcpy(&Start, pMappedData, sizeof(Start));
 				std::memcpy(&End, pMappedData + sizeof(Start), sizeof(End));
-				const double Duration = End >= Start ? static_cast<double>(End - Start) * m_GpuTimestampPeriod : -1.0;
-				if(Duration >= 0.0 && std::isfinite(Duration) && Duration < static_cast<double>(std::numeric_limits<uint64_t>::max()))
-					m_pGpuTiming->Publish(static_cast<uint64_t>(Duration + 0.5));
+				if(End >= Start)
+					m_pGpuTiming->Publish(TicksToNanoseconds(End - Start, m_GpuTimestampPeriod));
 			}
 			wgpuBufferUnmap(Slot.m_ReadbackBuffer);
 		}
-		Slot.m_pMapResult.reset();
 		Slot.m_InFlight = false;
 		Slot.m_Publish = false;
 	}
@@ -968,14 +980,9 @@ void CCommandProcessorFragment_WebGpu::BeginGpuTimestamp()
 void CCommandProcessorFragment_WebGpu::MapGpuTimestampSlot(int SlotIndex, bool Publish)
 {
 	auto &Slot = m_aGpuTimestampSlots[SlotIndex];
-	Slot.m_pMapResult = std::make_shared<SMapResult>();
 	Slot.m_InFlight = true;
 	Slot.m_Publish = Publish;
-	WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
-	CallbackInfo.callback = MapCallback;
-	CallbackInfo.userdata1 = new std::shared_ptr<SMapResult>(Slot.m_pMapResult);
-	wgpuBufferMapAsync(Slot.m_ReadbackBuffer, WGPUMapMode_Read, 0, GPU_TIMESTAMP_SIZE, CallbackInfo);
+	MapAsync(Slot.m_ReadbackBuffer, GPU_TIMESTAMP_SIZE, Slot.m_MapResult);
 }
 
 bool CCommandProcessorFragment_WebGpu::EnsureCommandEncoder()
@@ -1022,7 +1029,7 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	if(m_StreamOffset != 0)
 		wgpuQueueWriteBuffer(m_Queue, m_StreamBuffer, m_UploadBufferSlot * STREAM_BUFFER_SIZE, m_vStreamUpload.data(), m_StreamOffset);
 	if(m_UniformOffset != 0)
-		wgpuQueueWriteBuffer(m_Queue, m_UniformBuffer, m_UploadBufferSlot * UNIFORM_BUFFER_SIZE, m_vUniformUpload.data(), m_UniformOffset);
+		wgpuQueueWriteBuffer(m_Queue, m_UniformBuffer, m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE, m_vUniformUpload.data(), m_UniformOffset);
 	// The mipmaps first: the frame may draw with them, and nothing it holds
 	// touched those levels before they were made.
 	WGPUCommandBuffer MipmapBuffer = FinishMipmaps();
@@ -1050,25 +1057,35 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Clear(const CCommandBuffer::SCommand_Clear *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand)
 {
 	EndRenderPass();
 	m_RenderPassLoadOp = WGPULoadOp_Clear;
 	m_RenderPassClearColor = {pCommand->m_Color.r, pCommand->m_Color.g, pCommand->m_Color.b, pCommand->m_Color.a};
-	return EnsureRenderPass() || m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
+	// A pass that fails without an error costs one frame; one with an error
+	// ends the renderer.
+	(void)EnsureRenderPass();
+	if(m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
+	{
+		Cleanup();
+		return false;
+	}
+	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 {
 	m_Presentation = pCommand->m_Surface;
 	const SWebGpuNativeWindow &NativeWindow = this->NativeWindow();
 	m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 	m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 	m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
+	m_pStagingMemoryUsage = pCommand->m_pStagingMemoryUsage;
 	m_pGpuTiming = pCommand->m_pGpuTiming;
 	m_pTextureMemoryUsage->store(0, std::memory_order_relaxed);
 	m_pBufferMemoryUsage->store(0, std::memory_order_relaxed);
 	m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
+	m_pStagingMemoryUsage->store(0, std::memory_order_relaxed);
 	if(m_pGpuTiming != nullptr)
 	{
 		m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
@@ -1077,7 +1094,7 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	}
 	m_SurfaceWidth = pCommand->m_Surface.m_Width;
 	m_SurfaceHeight = pCommand->m_Surface.m_Height;
-	m_MultiSamplingCount = pCommand->m_RequestedMultiSamplingCount >= 2 ? 4 : 0;
+	m_MultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
 	m_NextMultiSamplingCount = m_MultiSamplingCount;
 	const char *pBackendName = "auto";
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -1280,7 +1297,7 @@ void CCommandProcessorFragment_WebGpu::Cleanup()
 	for(auto &Result : m_aUploadBufferResults)
 	{
 		if(Result.m_Pending)
-			ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup");
+			ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup", FRAME_TIMEOUT);
 		Result.m_Pending = false;
 	}
 	CollectGpuTimestampResults();
@@ -1308,6 +1325,101 @@ void CCommandProcessorFragment_WebGpu::Cleanup()
 	m_Instance = nullptr;
 }
 
+void CCommandProcessorFragment_WebGpu::Cmd_PreInit(const SCommand_PreInit *pCommand)
+{
+	str_copy(pCommand->m_pVendorString, WEBGPU_IMPLEMENTATION_NAME, 256);
+	str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
+	str_copy(pCommand->m_pRendererString, "pending adapter selection", 256);
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand)
+{
+	m_ViewportX = std::max(pCommand->m_X, 0);
+	m_ViewportY = std::max(pCommand->m_Y, 0);
+	m_ViewportWidth = std::max(pCommand->m_Width, 0);
+	m_ViewportHeight = std::max(pCommand->m_Height, 0);
+	m_PartialViewport = !pCommand->m_ByResize && (pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight);
+	if(!pCommand->m_ByResize)
+		return true;
+	const uint32_t SurfaceWidth = pCommand->m_SurfaceWidth > 0 ? pCommand->m_SurfaceWidth : 0;
+	const uint32_t SurfaceHeight = pCommand->m_SurfaceHeight > 0 ? pCommand->m_SurfaceHeight : 0;
+	const bool Minimized = SurfaceWidth == 0 || SurfaceHeight == 0;
+	if(SurfaceWidth == m_SurfaceWidth && SurfaceHeight == m_SurfaceHeight && Minimized == m_Minimized)
+		return true;
+	if(m_CommandEncoder != nullptr && !SubmitCommands())
+		return false;
+	DiscardFrame();
+	m_SurfaceWidth = SurfaceWidth;
+	m_SurfaceHeight = SurfaceHeight;
+	m_Minimized = Minimized;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand)
+{
+	EndRenderPass();
+	m_RenderTarget.Invalidate();
+	if(pCommand->m_Desc.m_ColorTarget.IsValid())
+	{
+		const auto Target = pCommand->m_Desc.m_ColorTarget;
+		if(!m_TextureHandles.IsActive(Target) || static_cast<size_t>(Target.Id()) >= m_vTextures.size() || (m_vTextures[Target.Id()].m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0)
+			return true;
+		m_RenderTarget = Target;
+	}
+	m_RenderPassLoadOp = WGPULoadOp_Clear;
+	const ColorRGBA ClearColor = pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR ? pCommand->m_Desc.m_ClearColor : ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
+	m_RenderPassClearColor = {ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a};
+	// A presentation pass opens with the first draw. An export frame renders
+	// offscreen and must not hold the canvas across its readback wait.
+	if(m_RenderTarget.IsValid() && !EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to begin a render pass");
+	return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
+}
+
+void CCommandProcessorFragment_WebGpu::Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand)
+{
+	pCommand->m_pResult->m_Ok = false;
+	const WGPUPresentMode Requested = pCommand->m_VSync ? WGPUPresentMode_Fifo : (m_SupportsImmediate ? WGPUPresentMode_Immediate : WGPUPresentMode_Mailbox);
+	if(!SupportsPresentMode(Requested))
+		return;
+	m_PresentMode = Requested;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	pCommand->m_pResult->m_Ok = true;
+}
+
+void CCommandProcessorFragment_WebGpu::Cmd_MultiSampling(const CCommandBuffer::SCommand_MultiSampling *pCommand)
+{
+	m_NextMultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
+	pCommand->m_pResult->m_MultiSamplingCount = m_NextMultiSamplingCount;
+	pCommand->m_pResult->m_Ok = true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_WindowCreateNtf()
+{
+	log_info("gfx/webgpu", "surface resumed");
+	// The window may be a different one now.
+	if(!RecreateSurface())
+		return false;
+	m_Minimized = false;
+	m_SurfaceDirty = true;
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_WindowDestroyNtf()
+{
+	log_info("gfx/webgpu", "surface suspended");
+	if(m_CommandEncoder != nullptr && !SubmitCommands())
+		return false;
+	DiscardFrame();
+	m_Minimized = true;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	return true;
+}
+
 ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CCommandBuffer::SCommand *pBaseCommand)
 {
 	if(m_Instance != nullptr && pBaseCommand->m_Cmd == CCommandBuffer::CMD_SWAP)
@@ -1331,20 +1443,26 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		Cleanup();
 		return RUN_COMMAND_COMMAND_ERROR;
 	}
+
+	auto CommandResult = [](bool Success) {
+		return Success ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+	};
+	// A draw that came back without saying what went wrong failed recording.
+	auto DrawResult = [this](bool Drawn, const char *pMessage) {
+		if(!Drawn && m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, pMessage);
+		return Drawn ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+	};
+
 	switch(pBaseCommand->m_Cmd)
 	{
 	case CMD_PRE_INIT:
-	{
-		auto *pCommand = static_cast<const SCommand_PreInit *>(pBaseCommand);
-		str_copy(pCommand->m_pVendorString, WEBGPU_IMPLEMENTATION_NAME, 256);
-		str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
-		str_copy(pCommand->m_pRendererString, "pending adapter selection", 256);
+		Cmd_PreInit(static_cast<const SCommand_PreInit *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	case CMD_INIT:
 	{
 		const auto *pCommand = static_cast<const SCommand_Init *>(pBaseCommand);
-		if(Initialize(pCommand))
+		if(Cmd_Init(pCommand))
 			return RUN_COMMAND_COMMAND_HANDLED;
 		*pCommand->m_pInitError = -1;
 		if(m_ErrorMessage.empty())
@@ -1355,92 +1473,25 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		m_Warning.m_WarningType = GFX_WARNING_TYPE_INIT_FAILED;
 		return RUN_COMMAND_COMMAND_WARNING;
 	}
-	case CCommandBuffer::CMD_FINISH_READBACKS:
-		if(!FinishReadbacks())
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
 	case CMD_SHUTDOWN:
 		Cleanup();
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CMD_POST_SHUTDOWN:
-		return RUN_COMMAND_COMMAND_HANDLED;
+	case CMD_POST_SHUTDOWN: return RUN_COMMAND_COMMAND_HANDLED;
+	case CCommandBuffer::CMD_FINISH_READBACKS: return CommandResult(FinishReadbacks());
 	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
-	case CCommandBuffer::CMD_DRAW_VIEWPORT:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand);
-		m_ViewportX = std::max(pCommand->m_X, 0);
-		m_ViewportY = std::max(pCommand->m_Y, 0);
-		m_ViewportWidth = std::max(pCommand->m_Width, 0);
-		m_ViewportHeight = std::max(pCommand->m_Height, 0);
-		m_PartialViewport = !pCommand->m_ByResize && (pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight);
-		if(pCommand->m_ByResize)
-		{
-			const uint32_t SurfaceWidth = pCommand->m_SurfaceWidth > 0 ? pCommand->m_SurfaceWidth : 0;
-			const uint32_t SurfaceHeight = pCommand->m_SurfaceHeight > 0 ? pCommand->m_SurfaceHeight : 0;
-			const bool Minimized = SurfaceWidth == 0 || SurfaceHeight == 0;
-			if(SurfaceWidth != m_SurfaceWidth || SurfaceHeight != m_SurfaceHeight || Minimized != m_Minimized)
-			{
-				if(m_CommandEncoder != nullptr && !SubmitCommands())
-					return RUN_COMMAND_COMMAND_ERROR;
-				DiscardFrame();
-				m_SurfaceWidth = SurfaceWidth;
-				m_SurfaceHeight = SurfaceHeight;
-				m_Minimized = Minimized;
-				m_SurfaceDirty = true;
-				ConfigureIfNeeded();
-			}
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	}
-	case CCommandBuffer::CMD_TEXTURE_CREATE:
-		if(!CreateTexture(static_cast<const CCommandBuffer::SCommand_Texture_Create *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_TEXTURE_UPDATE:
-		if(!UpdateTexture(static_cast<const CCommandBuffer::SCommand_Texture_Update *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
+	case CCommandBuffer::CMD_DRAW_VIEWPORT: return CommandResult(Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand)));
+	case CCommandBuffer::CMD_TEXTURE_CREATE: return CommandResult(Cmd_Texture_Create(static_cast<const CCommandBuffer::SCommand_Texture_Create *>(pBaseCommand)));
+	case CCommandBuffer::CMD_TEXTURE_UPDATE: return CommandResult(Cmd_Texture_Update(static_cast<const CCommandBuffer::SCommand_Texture_Update *>(pBaseCommand)));
 	case CCommandBuffer::CMD_TEXTURE_READBACK:
-		TextureReadback(static_cast<const CCommandBuffer::SCommand_Texture_Readback *>(pBaseCommand));
+		Cmd_Texture_Readback(static_cast<const CCommandBuffer::SCommand_Texture_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_TEXTURE_DESTROY:
-		DestroyTexture(static_cast<const CCommandBuffer::SCommand_Texture_Destroy *>(pBaseCommand)->m_Texture);
+		Cmd_Texture_Destroy(static_cast<const CCommandBuffer::SCommand_Texture_Destroy *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_CREATE_BUFFER_OBJECT:
-		if(!CreateBuffer(static_cast<const CCommandBuffer::SCommand_CreateBufferObject *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_RECREATE_BUFFER_OBJECT:
-		if(!RecreateBuffer(static_cast<const CCommandBuffer::SCommand_RecreateBufferObject *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_DELETE_BUFFER_OBJECT:
-		return DestroyBuffer(static_cast<const CCommandBuffer::SCommand_DeleteBufferObject *>(pBaseCommand)->m_Buffer) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	case CCommandBuffer::CMD_BEGIN_RENDER_PASS:
-	{
-		const auto *pCommand = static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand);
-		EndRenderPass();
-		m_RenderTarget.Invalidate();
-		if(pCommand->m_Desc.m_ColorTarget.IsValid())
-		{
-			const auto Target = pCommand->m_Desc.m_ColorTarget;
-			if(!m_TextureHandles.IsActive(Target) || static_cast<size_t>(Target.Id()) >= m_vTextures.size() || (m_vTextures[Target.Id()].m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0)
-				return RUN_COMMAND_COMMAND_HANDLED;
-			m_RenderTarget = Target;
-		}
-		m_RenderPassLoadOp = WGPULoadOp_Clear;
-		const ColorRGBA ClearColor = pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR ? pCommand->m_Desc.m_ClearColor : ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
-		m_RenderPassClearColor = {ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a};
-		// A pass on the presentation target opens with the first thing
-		// drawn on it, the same way the one a swap leaves behind does.
-		// An export frame is handed this pass and then renders offscreen:
-		// acquiring the canvas for it would hold the surface texture
-		// across the readback wait, and what the browser composites when
-		// that wait gives it its turn is the empty frame this pass cleared.
-		if(m_RenderTarget.IsValid() && !EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
-			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to begin a render pass");
-		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	}
+	case CCommandBuffer::CMD_CREATE_BUFFER_OBJECT: return CommandResult(Cmd_CreateBufferObject(static_cast<const CCommandBuffer::SCommand_CreateBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_RECREATE_BUFFER_OBJECT: return CommandResult(Cmd_RecreateBufferObject(static_cast<const CCommandBuffer::SCommand_RecreateBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_DELETE_BUFFER_OBJECT: return CommandResult(Cmd_DeleteBufferObject(static_cast<const CCommandBuffer::SCommand_DeleteBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_BEGIN_RENDER_PASS: return CommandResult(Cmd_BeginRenderPass(static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_END_RENDER_PASS:
 		EndRenderPass();
 		m_RenderTarget.Invalidate();
@@ -1448,82 +1499,25 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CCommandBuffer::CMD_FLUSH_RENDER_PASS:
 		EndRenderPass();
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_CLEAR:
-		if(!Clear(static_cast<const CCommandBuffer::SCommand_Clear *>(pBaseCommand)))
-			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record the clear pass");
-		if(m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
-			Cleanup();
-		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	case CCommandBuffer::CMD_DRAW:
-		if(!Draw(static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand)))
-		{
-			if(m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record an immediate draw");
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_DRAW_INDEXED:
-	{
-		const bool Drawn = DrawBuffered(static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand));
-		if(!Drawn)
-		{
-			if(m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record a transient draw");
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	}
+	case CCommandBuffer::CMD_CLEAR: return CommandResult(Cmd_Clear(static_cast<const CCommandBuffer::SCommand_Clear *>(pBaseCommand)));
+	case CCommandBuffer::CMD_DRAW: return DrawResult(Cmd_Draw(static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand)), "WebGPU failed to record an immediate draw");
+	case CCommandBuffer::CMD_DRAW_INDEXED: return DrawResult(Cmd_DrawIndexed(static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand)), "WebGPU failed to record a transient draw");
 	case CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK:
-		PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
+		Cmd_PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_SWAP:
-		if(!Present(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)->m_PaceWithDisplay))
-		{
-			Cleanup();
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF:
-		log_info("gfx/webgpu", "surface suspended");
-		if(m_CommandEncoder != nullptr && !SubmitCommands())
-			return RUN_COMMAND_COMMAND_ERROR;
-		DiscardFrame();
-		m_Minimized = true;
-		m_SurfaceDirty = true;
-		ConfigureIfNeeded();
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_WINDOW_CREATE_NTF:
-		log_info("gfx/webgpu", "surface resumed");
-		// The window may be a different one now, and a surface built
-		// on the old one is not usable anymore. The SDL backend has
-		// already read the new one by the time this arrives.
-		if(!RecreateSurface())
-			return RUN_COMMAND_COMMAND_ERROR;
-		m_Minimized = false;
-		m_SurfaceDirty = true;
-		return RUN_COMMAND_COMMAND_HANDLED;
+		if(Cmd_Swap(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)))
+			return RUN_COMMAND_COMMAND_HANDLED;
+		Cleanup();
+		return RUN_COMMAND_COMMAND_ERROR;
+	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: return CommandResult(Cmd_WindowDestroyNtf());
+	case CCommandBuffer::CMD_WINDOW_CREATE_NTF: return CommandResult(Cmd_WindowCreateNtf());
 	case CCommandBuffer::CMD_VSYNC:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand);
-		pCommand->m_pResult->m_Ok = false;
-		const WGPUPresentMode Requested = pCommand->m_VSync ? WGPUPresentMode_Fifo : (m_SupportsImmediate ? WGPUPresentMode_Immediate : WGPUPresentMode_Mailbox);
-		if(SupportsPresentMode(Requested))
-		{
-			m_PresentMode = Requested;
-			m_SurfaceDirty = true;
-			ConfigureIfNeeded();
-			pCommand->m_pResult->m_Ok = true;
-		}
+		Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	case CCommandBuffer::CMD_MULTISAMPLING:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand);
-		m_NextMultiSamplingCount = pCommand->m_RequestedMultiSamplingCount >= 2 ? 4 : 0;
-		pCommand->m_pResult->m_MultiSamplingCount = m_NextMultiSamplingCount;
-		pCommand->m_pResult->m_Ok = true;
+		Cmd_MultiSampling(static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	default:
 		return RUN_COMMAND_COMMAND_UNHANDLED;
 	}
@@ -1540,7 +1534,7 @@ uint32_t CCommandProcessorFragment_WebGpu::SampleCount() const
 
 void CCommandProcessorFragment_WebGpu::ReleaseMultisampleTarget(WGPUTexture &Texture, WGPUTextureView &View, size_t &MemorySize)
 {
-	if(MemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(MemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(MemorySize, std::memory_order_relaxed);
 	if(View != nullptr)
 		wgpuTextureViewRelease(View);
@@ -1568,8 +1562,7 @@ bool CCommandProcessorFragment_WebGpu::CreateMultisampleTarget(WGPUTextureFormat
 	if(View != nullptr)
 	{
 		MemorySize = static_cast<size_t>(Width) * Height * 4 * SampleCount;
-		if(m_pTextureMemoryUsage != nullptr)
-			m_pTextureMemoryUsage->fetch_add(MemorySize, std::memory_order_relaxed);
+		m_pTextureMemoryUsage->fetch_add(MemorySize, std::memory_order_relaxed);
 		return true;
 	}
 	ReleaseMultisampleTarget(Texture, View, MemorySize);
@@ -1776,14 +1769,13 @@ bool CCommandProcessorFragment_WebGpu::EnsureScreenTexture()
 		return false;
 	}
 	m_ScreenMemorySize = static_cast<size_t>(m_SurfaceWidth) * m_SurfaceHeight * 4;
-	if(m_pTextureMemoryUsage != nullptr)
-		m_pTextureMemoryUsage->fetch_add(m_ScreenMemorySize, std::memory_order_relaxed);
+	m_pTextureMemoryUsage->fetch_add(m_ScreenMemorySize, std::memory_order_relaxed);
 	return true;
 }
 
 void CCommandProcessorFragment_WebGpu::ReleaseScreenTexture()
 {
-	if(m_ScreenMemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(m_ScreenMemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(m_ScreenMemorySize, std::memory_order_relaxed);
 	m_ScreenMemorySize = 0;
 	if(m_ScreenView != nullptr)
@@ -1805,9 +1797,7 @@ bool CCommandProcessorFragment_WebGpu::CopyScreenToSurface()
 	WGPUTexelCopyTextureInfo Destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
 	Destination.texture = m_SurfaceTexture.texture;
 	Destination.aspect = WGPUTextureAspect_All;
-	// A resize between the two is handled by dropping the image, but a
-	// copy that runs off the end of either one is a validation error and
-	// would take the device with it.
+	// A copy past the end of either image would be a validation error.
 	const WGPUExtent3D Extent{
 		std::min(wgpuTextureGetWidth(m_ScreenTexture), wgpuTextureGetWidth(m_SurfaceTexture.texture)),
 		std::min(wgpuTextureGetHeight(m_ScreenTexture), wgpuTextureGetHeight(m_SurfaceTexture.texture)),
@@ -1841,20 +1831,12 @@ void CCommandProcessorFragment_WebGpu::DiscardFrame()
 	SubmitMipmaps();
 	m_StreamOffset = 0;
 	m_UniformOffset = 0;
-	if(m_GpuTimestampActiveSlot >= 0)
+	// A slot whose start went out is closed and mapped without publishing. If
+	// that fails, nothing is mapped for it and it is free again.
+	if(m_GpuTimestampActiveSlot >= 0 && (!m_GpuTimestampActiveSubmitted || !SubmitCommands(true, false)))
 	{
-		const int GpuTimestampSlot = m_GpuTimestampActiveSlot;
-		if(m_GpuTimestampActiveSubmitted)
-		{
-			if(!SubmitCommands(true, false))
-			{
-				m_aGpuTimestampSlots[GpuTimestampSlot].m_InFlight = true;
-				m_GpuTimestampActiveSlot = -1;
-				m_GpuTimestampActiveSubmitted = false;
-			}
-		}
-		else
-			m_GpuTimestampActiveSlot = -1;
+		m_GpuTimestampActiveSlot = -1;
+		m_GpuTimestampActiveSubmitted = false;
 	}
 	ReleaseFrame();
 	ReleaseMultisampleTarget(m_SurfaceMultisampleTexture, m_SurfaceMultisampleView, m_SurfaceMultisampleMemorySize);
@@ -1883,9 +1865,7 @@ bool CCommandProcessorFragment_WebGpu::RecreateSurface()
 
 bool CCommandProcessorFragment_WebGpu::ConfigureIfNeeded()
 {
-	// A surface-less renderer has nothing to configure - everything it draws
-	// goes into a render target. A viewport update or a screenshot reaches
-	// this from the offscreen mode too.
+	// A surface-less renderer has nothing to configure.
 	if(m_Surface == nullptr)
 		return true;
 	if(m_SurfaceTexture.texture != nullptr)
@@ -1954,10 +1934,8 @@ bool CCommandProcessorFragment_WebGpu::AcquireFrame()
 		m_SkipPresentationFrame = true;
 		return false;
 	}
-	// A lost surface is made again here, but making it throws away the image
-	// this frame was drawn into, so there is nothing left to show. Retrying the
-	// acquire would only get a picture that is not there. The recording costs
-	// one frame and the next one is drawn against the new surface.
+	// A lost surface is made again, which drops this frame's image, so the
+	// frame is skipped.
 	if(m_SurfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_Lost && RecreateSurface() && ConfigureIfNeeded())
 	{
 		m_SkipPresentationFrame = true;
@@ -1967,7 +1945,7 @@ bool CCommandProcessorFragment_WebGpu::AcquireFrame()
 	return false;
 }
 
-bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
+bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand)
 {
 	const bool DrewToScreen = m_ScreenTouched;
 	m_ScreenTouched = false;
@@ -1989,11 +1967,8 @@ bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
 	m_SkipPresentationFrame = false;
 	WGPUStatus Status = WGPUStatus_Success;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// The frame is complete and in the queue and nothing below waits for
-	// the device, so this is the one point where the surface texture is
-	// held. A surface that is not there to be had - a resize, a tab or
-	// a window that went away - costs this one picture and no more. The
-	// browser composites the canvas by itself, so the copy is all it takes.
+	// The only point the surface texture is held; nothing below waits for the
+	// device. A surface that is not there costs this one frame.
 	if(AcquireFrame())
 	{
 		if(!CopyScreenToSurface())
@@ -2009,12 +1984,8 @@ bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
 #endif
 	ReleaseFrame();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// The canvas is composited once per refresh whatever this does, so
-	// waiting for a frame is the right default: it costs nothing. Someone
-	// who asked for a rate of their own, and a caller that paces itself,
-	// get the short yield instead -- for a benchmark, for the shortest path
-	// from an input to the frame that carries it, and for the loading
-	// screen, which would otherwise spend a refresh on every step it takes.
+	// Wait for an animation frame by default. An explicit refresh rate or a
+	// caller that paces itself gets the short yield.
 	YieldToBrowser(pCommand->m_PaceWithDisplay && g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
 #endif
 	if(m_SurfaceSuboptimal)
@@ -2054,7 +2025,7 @@ bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 
 	m_UploadBufferSlot = (m_UploadBufferSlot + 1) % UPLOAD_BUFFER_SLOT_COUNT;
 	auto &NextResult = m_aUploadBufferResults[m_UploadBufferSlot];
-	if(NextResult.m_Pending && (!ProcessUntilDone(NextResult, "wait for WebGPU upload buffers") || NextResult.m_Status != WGPUQueueWorkDoneStatus_Success))
+	if(NextResult.m_Pending && (!ProcessUntilDone(NextResult, "wait for WebGPU upload buffers", FRAME_TIMEOUT) || NextResult.m_Status != WGPUQueueWorkDoneStatus_Success))
 	{
 		// Without this the render thread would carry on against a queue that
 		// never answers and turn a graphics error into a hang or a crash.
@@ -2067,7 +2038,7 @@ bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 
 void CCommandProcessorFragment_WebGpu::ReleaseBuffer(SBuffer &Buffer)
 {
-	if(Buffer.m_AllocatedSize != 0 && m_pBufferMemoryUsage != nullptr)
+	if(Buffer.m_AllocatedSize != 0)
 		m_pBufferMemoryUsage->fetch_sub(Buffer.m_AllocatedSize, std::memory_order_relaxed);
 	if(Buffer.m_Buffer != nullptr)
 	{
@@ -2123,7 +2094,7 @@ bool CCommandProcessorFragment_WebGpu::CreateNativeBuffer(SBuffer &Buffer, const
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::CreateBuffer(const CCommandBuffer::SCommand_CreateBufferObject *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand)
 {
 	if(!m_BufferHandles.Activate(pCommand->m_Buffer))
 		return true;
@@ -2141,7 +2112,7 @@ bool CCommandProcessorFragment_WebGpu::CreateBuffer(const CCommandBuffer::SComma
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::RecreateBuffer(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
 {
 	if(!m_BufferHandles.IsActive(pCommand->m_Buffer) || static_cast<size_t>(pCommand->m_Buffer.Id()) >= m_vBuffers.size())
 		return true;
@@ -2160,8 +2131,9 @@ bool CCommandProcessorFragment_WebGpu::RecreateBuffer(const CCommandBuffer::SCom
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::DestroyBuffer(IGraphics::CBufferHandle Handle)
+bool CCommandProcessorFragment_WebGpu::Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand)
 {
+	const IGraphics::CBufferHandle Handle = pCommand->m_Buffer;
 	if(!m_BufferHandles.IsActive(Handle) || static_cast<size_t>(Handle.Id()) >= m_vBuffers.size())
 		return true;
 	if(!SubmitCommands())
@@ -2214,7 +2186,7 @@ size_t CCommandProcessorFragment_WebGpu::SamplerIndex(EWrapMode WrapMode)
 
 void CCommandProcessorFragment_WebGpu::ReleaseTexture(STexture &Texture)
 {
-	if(Texture.m_MemorySize != 0 && m_pTextureMemoryUsage != nullptr)
+	if(Texture.m_MemorySize != 0)
 		m_pTextureMemoryUsage->fetch_sub(Texture.m_MemorySize, std::memory_order_relaxed);
 	for(auto &BindGroup : Texture.m_aBindGroups)
 	{
@@ -2262,79 +2234,6 @@ bool CCommandProcessorFragment_WebGpu::CreateTextureBindGroups(WGPUTextureView V
 			return false;
 	}
 	return true;
-}
-
-WGPURenderPipeline CCommandProcessorFragment_WebGpu::MipmapPipeline(IGraphics::ETextureFormat Format)
-{
-	WGPURenderPipeline &Pipeline = m_aMipmapPipelines[static_cast<size_t>(Format)];
-	if(Pipeline != nullptr)
-		return Pipeline;
-	if(m_MipmapShader == nullptr)
-	{
-		static const char s_aShader[] = R"(
-@group(0) @binding(0) var source_sampler: sampler;
-@group(0) @binding(1) var source_texture: texture_2d<f32>;
-
-struct MipmapVertexOutput {
-	@builtin(position) position: vec4f,
-	@location(0) uv: vec2f,
-};
-
-@vertex fn vs_mipmap(@builtin(vertex_index) index: u32) -> MipmapVertexOutput {
-	// One triangle large enough to cover the whole level, with the texture
-	// coordinates running from zero to one across the part of it that is on
-	// screen. Three vertices and no vertex buffer at all.
-	var output: MipmapVertexOutput;
-	output.uv = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
-	output.position = vec4f(output.uv * vec2f(2.0, -2.0) + vec2f(-1.0, 1.0), 0.0, 1.0);
-	return output;
-}
-
-@fragment fn fs_mipmap(input: MipmapVertexOutput) -> @location(0) vec4f {
-	// The level being drawn is half the size of the one being read, so every
-	// sample lands exactly between four of its texels and the linear sampler
-	// returns their mean - the same filter the other backends use.
-	return textureSample(source_texture, source_sampler, input.uv);
-}
-)";
-		WGPUShaderSourceWGSL ShaderSource{};
-		ShaderSource.chain.sType = WGPUSType_ShaderSourceWGSL;
-		ShaderSource.code = StringView(s_aShader);
-		WGPUShaderModuleDescriptor ShaderDescriptor = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
-		ShaderDescriptor.nextInChain = &ShaderSource.chain;
-		ShaderDescriptor.label = StringView("DDNet WebGPU mipmap shader");
-		m_MipmapShader = wgpuDeviceCreateShaderModule(m_Device, &ShaderDescriptor);
-		// The source of a level is bound exactly as a sampled texture is bound
-		// to a draw, so it can be the same layout, only as the first group.
-		WGPUPipelineLayoutDescriptor PipelineLayoutDescriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-		PipelineLayoutDescriptor.label = StringView("DDNet WebGPU mipmap layout");
-		PipelineLayoutDescriptor.bindGroupLayoutCount = 1;
-		PipelineLayoutDescriptor.bindGroupLayouts = &m_TextureBindGroupLayout;
-		m_MipmapPipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &PipelineLayoutDescriptor);
-		if(m_MipmapShader == nullptr || m_MipmapPipelineLayout == nullptr)
-			return nullptr;
-	}
-	WGPUColorTargetState ColorTarget = WGPU_COLOR_TARGET_STATE_INIT;
-	ColorTarget.format = ToWGPUFormat(Format);
-	ColorTarget.writeMask = WGPUColorWriteMask_All;
-	WGPUFragmentState Fragment = WGPU_FRAGMENT_STATE_INIT;
-	Fragment.module = m_MipmapShader;
-	Fragment.entryPoint = StringView("fs_mipmap");
-	Fragment.targetCount = 1;
-	Fragment.targets = &ColorTarget;
-	WGPURenderPipelineDescriptor Descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-	Descriptor.label = StringView("DDNet WebGPU mipmap");
-	Descriptor.layout = m_MipmapPipelineLayout;
-	Descriptor.vertex.module = m_MipmapShader;
-	Descriptor.vertex.entryPoint = StringView("vs_mipmap");
-	Descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-	Descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-	Descriptor.primitive.cullMode = WGPUCullMode_None;
-	Descriptor.multisample.count = 1;
-	Descriptor.multisample.mask = UINT32_MAX;
-	Descriptor.fragment = &Fragment;
-	Pipeline = wgpuDeviceCreateRenderPipeline(m_Device, &Descriptor);
-	return Pipeline;
 }
 
 bool CCommandProcessorFragment_WebGpu::EnsureMipmapEncoder()
@@ -2392,11 +2291,8 @@ fn cs_mipmap(@builtin(global_invocation_id) id: vec3u) {
 	if(id.x >= size.x || id.y >= size.y) {
 		return;
 	}
-	// The middle of the texel being written, in the coordinates of the level
-	// being read: half the size, so the sample lands between four texels and
-	// the linear sampler returns their mean. One invocation per texel of one
-	// layer, and every layer in the same dispatch - a tileset cut into sixteen
-	// takes one of these per level instead of sixteen render passes.
+	// Sample between four texels of the level above, so the linear sampler
+	// returns their mean. All layers go in one dispatch.
 	let uv = (vec2f(id.xy) + vec2f(0.5)) / vec2f(size);
 	let color = textureSampleLevel(source_texture, source_sampler, uv, id.z, 0.0);
 	textureStore(target_texture, id.xy, id.z, color);
@@ -2445,7 +2341,7 @@ fn cs_mipmap(@builtin(global_invocation_id) id: vec3u) {
 	return m_MipmapComputePipeline;
 }
 
-bool CCommandProcessorFragment_WebGpu::GenerateMipmapsCompute(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount)
+bool CCommandProcessorFragment_WebGpu::GenerateMipmaps(WGPUTexture Texture, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount)
 {
 	WGPUComputePipeline Pipeline = MipmapComputePipeline();
 	if(Pipeline == nullptr)
@@ -2515,95 +2411,7 @@ bool CCommandProcessorFragment_WebGpu::GenerateMipmapsCompute(WGPUTexture Textur
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::GenerateMipmaps(WGPUTexture Texture, IGraphics::ETextureFormat Format, uint32_t Width, uint32_t Height, uint32_t Layers, uint32_t MipCount)
-{
-	// Every texture that asks for mipmaps is RGBA8 - the images, the tilesets
-	// cut into layers, all of them - and for that one format a level can be
-	// written straight into the texture. The render path stays for the rest,
-	// because core WebGPU does not let a shader write `r8unorm` or `rg8unorm`.
-	if(Format == IGraphics::ETextureFormat::RGBA8_UNORM)
-		return GenerateMipmapsCompute(Texture, Width, Height, Layers, MipCount);
-
-	WGPURenderPipeline Pipeline = MipmapPipeline(Format);
-	if(Pipeline == nullptr)
-	{
-		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU could not create the pipeline that makes mipmaps");
-		return false;
-	}
-	if(!EnsureMipmapEncoder())
-		return false;
-	WGPUCommandEncoder Encoder = m_MipmapEncoder;
-	// A pass writes one level of one layer, because that is as much as a
-	// render target is: an array texture holding a tileset cut into sixteen
-	// needs sixteen of them per level.
-	bool Recorded = true;
-	for(uint32_t Mip = 1; Mip < MipCount && Recorded; ++Mip)
-	{
-		for(uint32_t Layer = 0; Layer < Layers && Recorded; ++Layer)
-		{
-			WGPUTextureViewDescriptor ViewDescriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-			ViewDescriptor.label = StringView("DDNet WebGPU mipmap level");
-			ViewDescriptor.dimension = WGPUTextureViewDimension_2D;
-			ViewDescriptor.baseArrayLayer = Layer;
-			ViewDescriptor.arrayLayerCount = 1;
-			ViewDescriptor.mipLevelCount = 1;
-			ViewDescriptor.baseMipLevel = Mip - 1;
-			WGPUTextureView Source = wgpuTextureCreateView(Texture, &ViewDescriptor);
-			ViewDescriptor.baseMipLevel = Mip;
-			WGPUTextureView Target = wgpuTextureCreateView(Texture, &ViewDescriptor);
-			std::array<WGPUBindGroupEntry, 2> aEntries{};
-			aEntries[0].binding = 0;
-			aEntries[0].sampler = m_aSamplers[static_cast<size_t>(ESamplerKind::CLAMP_TO_EDGE)];
-			aEntries[1].binding = 1;
-			aEntries[1].textureView = Source;
-			WGPUBindGroupDescriptor BindGroupDescriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-			BindGroupDescriptor.label = StringView("DDNet WebGPU mipmap source binding");
-			BindGroupDescriptor.layout = m_TextureBindGroupLayout;
-			BindGroupDescriptor.entryCount = aEntries.size();
-			BindGroupDescriptor.entries = aEntries.data();
-			WGPUBindGroup BindGroup = Source == nullptr ? nullptr : wgpuDeviceCreateBindGroup(m_Device, &BindGroupDescriptor);
-			WGPURenderPassColorAttachment ColorAttachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-			ColorAttachment.view = Target;
-			ColorAttachment.loadOp = WGPULoadOp_Clear;
-			ColorAttachment.storeOp = WGPUStoreOp_Store;
-			ColorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-			WGPURenderPassDescriptor PassDescriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-			PassDescriptor.label = StringView("DDNet WebGPU mipmap pass");
-			PassDescriptor.colorAttachmentCount = 1;
-			PassDescriptor.colorAttachments = &ColorAttachment;
-			WGPURenderPassEncoder Pass = Target == nullptr || BindGroup == nullptr ? nullptr : wgpuCommandEncoderBeginRenderPass(Encoder, &PassDescriptor);
-			if(Pass == nullptr)
-			{
-				Recorded = false;
-			}
-			else
-			{
-				wgpuRenderPassEncoderSetPipeline(Pass, Pipeline);
-				wgpuRenderPassEncoderSetBindGroup(Pass, 0, BindGroup, 0, nullptr);
-				wgpuRenderPassEncoderDraw(Pass, 3, 1, 0, 0);
-				wgpuRenderPassEncoderEnd(Pass);
-				wgpuRenderPassEncoderRelease(Pass);
-			}
-			if(BindGroup != nullptr)
-				wgpuBindGroupRelease(BindGroup);
-			if(Target != nullptr)
-				wgpuTextureViewRelease(Target);
-			if(Source != nullptr)
-				wgpuTextureViewRelease(Source);
-		}
-	}
-	if(!Recorded)
-	{
-		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record making the mipmaps of a texture");
-		return false;
-	}
-	// Left open. It goes out ahead of the frame's own commands at the next
-	// submit, which is after the queue writes that filled the top levels and
-	// before anything that draws with them.
-	return true;
-}
-
-bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SCommand_Texture_Create *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand)
 {
 	const auto &Desc = pCommand->m_Desc;
 	const bool CreateArray = Desc.m_Layering == IGraphics::ETextureLayering::LAYERED;
@@ -2624,14 +2432,10 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 		const uint32_t MipCount = Desc.m_Mipmaps == IGraphics::ETextureMipmaps::GENERATE ? std::bit_width(std::max(Width, Height)) : 1;
 		WGPUTextureDescriptor TextureDescriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
 		TextureDescriptor.label = StringView("DDNet WebGPU sampled texture");
-		// Which of the two ways the levels are made decides what the texture
-		// has to be good for: a shader writing into it, or a pass drawing into
-		// it. Asking for both would cost every texture the compression a plain
-		// sampled texture may have.
-		// Where the card cannot make the levels, they are uploaded.
-		const bool GpuMipmaps = MipCount > 1 && m_GpuMipmaps;
-		const bool ComputeMipmaps = GpuMipmaps && Desc.m_Format == IGraphics::ETextureFormat::RGBA8_UNORM;
-		TextureDescriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst | (ComputeMipmaps ? WGPUTextureUsage_StorageBinding : WGPUTextureUsage_None) | (ColorTarget || (GpuMipmaps && !ComputeMipmaps) ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None) | (Desc.HasUsage(IGraphics::TEXTURE_USAGE_COPY_SOURCE) ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None);
+		// The levels are written by a compute shader, or uploaded where it
+		// cannot.
+		const bool ComputeMipmaps = MipCount > 1 && m_GpuMipmaps;
+		TextureDescriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst | (ComputeMipmaps ? WGPUTextureUsage_StorageBinding : WGPUTextureUsage_None) | (ColorTarget ? WGPUTextureUsage_RenderAttachment : WGPUTextureUsage_None) | (Desc.HasUsage(IGraphics::TEXTURE_USAGE_COPY_SOURCE) ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None);
 		TextureDescriptor.dimension = WGPUTextureDimension_2D;
 		TextureDescriptor.size = {Width, Height, Layers};
 		TextureDescriptor.format = Format;
@@ -2647,18 +2451,15 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 			return false;
 		for(uint32_t Mip = 0, LevelWidth = Width, LevelHeight = Height; Mip < MipCount; ++Mip, LevelWidth = std::max(LevelWidth / 2, 1u), LevelHeight = std::max(LevelHeight / 2, 1u))
 			MemorySize += static_cast<size_t>(LevelWidth) * LevelHeight * Layers * PixelSize;
-		// Only the top level is uploaded when the card makes the others - a
-		// third of the bytes of a full chain, and none of the work of working
-		// out what is in them. A texture created without data is a colour
-		// target: it has nothing to downsample from, and its levels are written
-		// by rendering anyway.
+		// Only the top level is uploaded when the compute shader makes the
+		// others. A texture without data is a colour target.
 		if(pData != nullptr)
 		{
 			std::vector<uint8_t> vLevelData;
 			const uint8_t *pLevelData = pData;
 			uint32_t LevelWidth = Width;
 			uint32_t LevelHeight = Height;
-			for(uint32_t Mip = 0; Mip < (GpuMipmaps ? 1 : MipCount); ++Mip)
+			for(uint32_t Mip = 0; Mip < (ComputeMipmaps ? 1 : MipCount); ++Mip)
 			{
 				if(Mip > 0)
 				{
@@ -2677,7 +2478,7 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 				const WGPUExtent3D Extent{LevelWidth, LevelHeight, Layers};
 				wgpuQueueWriteTexture(m_Queue, &Destination, pLevelData, static_cast<size_t>(LevelWidth) * LevelHeight * Layers * PixelSize, &UploadLayout, &Extent);
 			}
-			if(GpuMipmaps && !GenerateMipmaps(NativeTexture, Desc.m_Format, Width, Height, Layers, MipCount))
+			if(ComputeMipmaps && !GenerateMipmaps(NativeTexture, Width, Height, Layers, MipCount))
 				return false;
 		}
 		return true;
@@ -2707,7 +2508,7 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::UpdateTexture(const CCommandBuffer::SCommand_Texture_Update *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand)
 {
 	if(!m_TextureHandles.IsActive(pCommand->m_Texture) || static_cast<size_t>(pCommand->m_Texture.Id()) >= m_vTextures.size())
 		return true;
@@ -2730,8 +2531,9 @@ bool CCommandProcessorFragment_WebGpu::UpdateTexture(const CCommandBuffer::SComm
 	return true;
 }
 
-void CCommandProcessorFragment_WebGpu::DestroyTexture(IGraphics::CTextureHandle Handle)
+void CCommandProcessorFragment_WebGpu::Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand)
 {
+	const IGraphics::CTextureHandle Handle = pCommand->m_Texture;
 	if(!m_TextureHandles.IsActive(Handle) || static_cast<size_t>(Handle.Id()) >= m_vTextures.size())
 		return;
 	if(m_RenderTarget == Handle)
@@ -2809,9 +2611,7 @@ void CCommandProcessorFragment_WebGpu::ReleasePipeline(WGPURenderPipeline &Pipel
 {
 	if(Pipeline == nullptr)
 		return;
-	// A released pipeline may come back at the same address, so what was
-	// remembered for it goes with it. Only the pipelines given up here are
-	// forgotten: the other set keeps what it registered.
+	// A released pipeline may come back at the same address.
 	m_PipelineBindGroupLayouts.erase(Pipeline);
 	wgpuRenderPipelineRelease(Pipeline);
 	Pipeline = nullptr;
@@ -2872,18 +2672,32 @@ WGPURenderPipeline CCommandProcessorFragment_WebGpu::CreatePipeline(const SPipel
 	return Pipeline;
 }
 
+bool CCommandProcessorFragment_WebGpu::CreatePipelineVariants(std::span<WGPURenderPipeline> Pipelines, bool LineVariants, const std::array<SPipelineRecipe, 2> &aRecipes)
+{
+	const size_t Topologies = LineVariants ? 2 : 1;
+	dbg_assert(Pipelines.size() == Topologies * BLEND_MODE_COUNT * 2, "Pipeline variants do not fit their array");
+	for(size_t Topology = 0; Topology < Topologies; ++Topology)
+	{
+		for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
+		{
+			for(size_t Textured = 0; Textured < 2; ++Textured)
+			{
+				SPipelineRecipe Recipe = aRecipes[Textured];
+				Recipe.m_Blend = Blend;
+				Recipe.m_Topology = LineVariants && Topology == 0 ? WGPUPrimitiveTopology_LineList : WGPUPrimitiveTopology_TriangleList;
+				WGPURenderPipeline &Pipeline = Pipelines[(Topology * BLEND_MODE_COUNT + Blend) * 2 + Textured];
+				Pipeline = CreatePipeline(Recipe);
+				if(Pipeline == nullptr)
+					return false;
+			}
+		}
+	}
+	return true;
+}
+
 bool CCommandProcessorFragment_WebGpu::CreateBufferedPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, const char *pVertexEntry, bool Instanced, uint32_t SampleCount)
 {
-	std::array<WGPUVertexAttribute, 3> aVertexAttributes{};
-	aVertexAttributes[0].format = WGPUVertexFormat_Float32x2;
-	aVertexAttributes[0].offset = offsetof(CCommandBuffer::SVertex, m_Pos);
-	aVertexAttributes[0].shaderLocation = 0;
-	aVertexAttributes[1].format = WGPUVertexFormat_Float32x2;
-	aVertexAttributes[1].offset = offsetof(CCommandBuffer::SVertex, m_Tex);
-	aVertexAttributes[1].shaderLocation = 1;
-	aVertexAttributes[2].format = WGPUVertexFormat_Unorm8x4;
-	aVertexAttributes[2].offset = offsetof(CCommandBuffer::SVertex, m_Color);
-	aVertexAttributes[2].shaderLocation = 2;
+	const CVertexInput Vertex(IGraphics::EVertexLayout::POSITION_TEXCOORD_COLOR);
 	std::array<WGPUVertexAttribute, 2> aInstanceAttributes{};
 	aInstanceAttributes[0].format = WGPUVertexFormat_Float32x2;
 	aInstanceAttributes[0].offset = offsetof(CCommandBuffer::SInstanceDataPositionScaleRotation, m_Position);
@@ -2891,39 +2705,26 @@ bool CCommandProcessorFragment_WebGpu::CreateBufferedPipelines(std::array<WGPURe
 	aInstanceAttributes[1].format = WGPUVertexFormat_Float32x2;
 	aInstanceAttributes[1].offset = offsetof(CCommandBuffer::SInstanceDataPositionScaleRotation, m_Scale);
 	aInstanceAttributes[1].shaderLocation = 4;
-	std::array<WGPUVertexBufferLayout, 2> aVertexBuffers{};
-	aVertexBuffers[0] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-	aVertexBuffers[0].arrayStride = sizeof(CCommandBuffer::SVertex);
-	aVertexBuffers[0].stepMode = WGPUVertexStepMode_Vertex;
-	aVertexBuffers[0].attributeCount = aVertexAttributes.size();
-	aVertexBuffers[0].attributes = aVertexAttributes.data();
-	aVertexBuffers[1] = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+	std::array<WGPUVertexBufferLayout, 2> aVertexBuffers{Vertex.m_Layout, WGPU_VERTEX_BUFFER_LAYOUT_INIT};
 	aVertexBuffers[1].arrayStride = sizeof(CCommandBuffer::SInstanceDataPositionScaleRotation);
 	aVertexBuffers[1].stepMode = WGPUVertexStepMode_Instance;
 	aVertexBuffers[1].attributeCount = aInstanceAttributes.size();
 	aVertexBuffers[1].attributes = aInstanceAttributes.data();
 
-	for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
+	std::array<SPipelineRecipe, 2> aRecipes;
+	for(size_t Textured = 0; Textured < 2; ++Textured)
 	{
-		for(size_t Textured = 0; Textured < 2; ++Textured)
-		{
-			SPipelineRecipe Recipe;
-			Recipe.m_pLabel = "DDNet WebGPU buffered primitive pipeline";
-			Recipe.m_Layout = Textured != 0 ? m_PrimitivePipelineLayout : m_UntexturedPipelineLayout;
-			Recipe.m_pVertexEntry = pVertexEntry;
-			Recipe.m_pFragmentEntry = Textured != 0 ? "fs_textured" : "fs_untextured";
-			Recipe.m_pVertexBuffers = aVertexBuffers.data();
-			Recipe.m_VertexBufferCount = Instanced ? 2 : 1;
-			Recipe.m_Blend = Blend;
-			Recipe.m_Format = Format;
-			Recipe.m_SampleCount = SampleCount;
-			const size_t Index = Blend * 2 + Textured;
-			aPipelines[Index] = CreatePipeline(Recipe);
-			if(aPipelines[Index] == nullptr)
-				return false;
-		}
+		SPipelineRecipe &Recipe = aRecipes[Textured];
+		Recipe.m_pLabel = "DDNet WebGPU buffered primitive pipeline";
+		Recipe.m_Layout = Textured != 0 ? m_PrimitivePipelineLayout : m_UntexturedPipelineLayout;
+		Recipe.m_pVertexEntry = pVertexEntry;
+		Recipe.m_pFragmentEntry = Textured != 0 ? "fs_textured" : "fs_untextured";
+		Recipe.m_pVertexBuffers = aVertexBuffers.data();
+		Recipe.m_VertexBufferCount = Instanced ? 2 : 1;
+		Recipe.m_Format = Format;
+		Recipe.m_SampleCount = SampleCount;
 	}
-	return true;
+	return CreatePipelineVariants(aPipelines, false, aRecipes);
 }
 
 bool CCommandProcessorFragment_WebGpu::CreateLayeredPrimitivePipelines(SPipelineSet &Pipelines, WGPUTextureFormat Format, uint32_t SampleCount)
@@ -2943,116 +2744,69 @@ bool CCommandProcessorFragment_WebGpu::CreateLayeredPrimitivePipelines(SPipeline
 	VertexBuffer.stepMode = WGPUVertexStepMode_Vertex;
 	VertexBuffer.attributeCount = aAttributes.size();
 	VertexBuffer.attributes = aAttributes.data();
-	for(size_t Topology = 0; Topology < 2; ++Topology)
+	std::array<SPipelineRecipe, 2> aRecipes;
+	for(size_t Textured = 0; Textured < 2; ++Textured)
 	{
-		for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
-		{
-			for(size_t Textured = 0; Textured < 2; ++Textured)
-			{
-				SPipelineRecipe Recipe;
-				Recipe.m_pLabel = "DDNet WebGPU layered primitive pipeline";
-				Recipe.m_Layout = Textured != 0 ? m_ArrayTexturePipelineLayout : m_UntexturedPipelineLayout;
-				Recipe.m_pVertexEntry = "vs_layered";
-				Recipe.m_pFragmentEntry = Textured != 0 ? "fs_layered" : "fs_layered_untextured";
-				Recipe.m_pVertexBuffers = &VertexBuffer;
-				Recipe.m_Blend = Blend;
-				Recipe.m_Topology = Topology == 0 ? WGPUPrimitiveTopology_LineList : WGPUPrimitiveTopology_TriangleList;
-				Recipe.m_Format = Format;
-				Recipe.m_SampleCount = SampleCount;
-				const size_t Index = (Topology * BLEND_MODE_COUNT + Blend) * 2 + Textured;
-				Pipelines.m_aLayeredPrimitive[Index] = CreatePipeline(Recipe);
-				if(Pipelines.m_aLayeredPrimitive[Index] == nullptr)
-					return false;
-			}
-		}
+		SPipelineRecipe &Recipe = aRecipes[Textured];
+		Recipe.m_pLabel = "DDNet WebGPU layered primitive pipeline";
+		Recipe.m_Layout = Textured != 0 ? m_ArrayTexturePipelineLayout : m_UntexturedPipelineLayout;
+		Recipe.m_pVertexEntry = "vs_layered";
+		Recipe.m_pFragmentEntry = Textured != 0 ? "fs_layered" : "fs_layered_untextured";
+		Recipe.m_pVertexBuffers = &VertexBuffer;
+		Recipe.m_Format = Format;
+		Recipe.m_SampleCount = SampleCount;
 	}
-	return true;
+	return CreatePipelineVariants(Pipelines.m_aLayeredPrimitive, true, aRecipes);
 }
 
 bool CCommandProcessorFragment_WebGpu::CreateArrayColorPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, bool Transform, uint32_t SampleCount)
 {
-	for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
+	const CVertexInput Untextured(IGraphics::EVertexLayout::TILE);
+	const CVertexInput Textured(IGraphics::EVertexLayout::TILE_TEXTURED);
+	std::array<SPipelineRecipe, 2> aRecipes;
+	aRecipes[0].m_Layout = m_UntexturedPipelineLayout;
+	aRecipes[0].m_pVertexEntry = Transform ? "vs_array_color_transform_untextured" : "vs_array_color_untextured";
+	aRecipes[0].m_pFragmentEntry = "fs_untextured";
+	aRecipes[0].m_pVertexBuffers = &Untextured.m_Layout;
+	aRecipes[1].m_Layout = m_ArrayTexturePipelineLayout;
+	aRecipes[1].m_pVertexEntry = Transform ? "vs_array_color_transform" : "vs_array_color";
+	// A tile quad may cover more than one cell and repeat its tile over it.
+	aRecipes[1].m_pFragmentEntry = "fs_layered_tiles";
+	aRecipes[1].m_pVertexBuffers = &Textured.m_Layout;
+	for(SPipelineRecipe &Recipe : aRecipes)
 	{
-		for(size_t Textured = 0; Textured < 2; ++Textured)
-		{
-			std::array<WGPUVertexAttribute, 2> aAttributes{};
-			uint32_t AttributeCount = 0;
-			const uint64_t Stride = FillVertexInput(Textured != 0 ? IGraphics::EVertexLayout::TILE_TEXTURED : IGraphics::EVertexLayout::TILE, aAttributes, AttributeCount);
-			WGPUVertexBufferLayout VertexBuffer = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-			VertexBuffer.arrayStride = Stride;
-			VertexBuffer.stepMode = WGPUVertexStepMode_Vertex;
-			VertexBuffer.attributeCount = AttributeCount;
-			VertexBuffer.attributes = aAttributes.data();
-			SPipelineRecipe Recipe;
-			Recipe.m_pLabel = "DDNet WebGPU array-color pipeline";
-			Recipe.m_Layout = Textured != 0 ? m_ArrayTexturePipelineLayout : m_UntexturedPipelineLayout;
-			Recipe.m_pVertexEntry = Transform ? (Textured != 0 ? "vs_array_color_transform" : "vs_array_color_transform_untextured") : (Textured != 0 ? "vs_array_color" : "vs_array_color_untextured");
-			// Both ways through here draw tile layers, and a tile quad may
-			// cover more than one cell and repeat its tile over it, so both
-			// wrap their coordinates.
-			Recipe.m_pFragmentEntry = Textured != 0 ? "fs_layered_tiles" : "fs_untextured";
-			Recipe.m_pVertexBuffers = &VertexBuffer;
-			Recipe.m_Blend = Blend;
-			Recipe.m_Format = Format;
-			Recipe.m_SampleCount = SampleCount;
-			const size_t Index = Blend * 2 + Textured;
-			aPipelines[Index] = CreatePipeline(Recipe);
-			if(aPipelines[Index] == nullptr)
-				return false;
-		}
+		Recipe.m_pLabel = "DDNet WebGPU array-color pipeline";
+		Recipe.m_Format = Format;
+		Recipe.m_SampleCount = SampleCount;
 	}
-	return true;
+	return CreatePipelineVariants(aPipelines, false, aRecipes);
 }
 
 bool CCommandProcessorFragment_WebGpu::CreateQuadPipelines(std::array<WGPURenderPipeline, BUFFERED_PIPELINE_COUNT> &aPipelines, WGPUTextureFormat Format, bool Shared, uint32_t SampleCount)
 {
-	for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
+	const CVertexInput Untextured(IGraphics::EVertexLayout::QUAD);
+	const CVertexInput Textured(IGraphics::EVertexLayout::QUAD_TEXTURED);
+	std::array<SPipelineRecipe, 2> aRecipes;
+	aRecipes[0].m_Layout = Shared ? m_UntexturedPipelineLayout : m_QuadUntexturedPipelineLayout;
+	aRecipes[0].m_pVertexEntry = Shared ? "vs_quad_shared" : "vs_quad_per_item";
+	aRecipes[0].m_pFragmentEntry = "fs_untextured";
+	aRecipes[0].m_pVertexBuffers = &Untextured.m_Layout;
+	aRecipes[1].m_Layout = Shared ? m_PrimitivePipelineLayout : m_QuadTexturedPipelineLayout;
+	aRecipes[1].m_pVertexEntry = Shared ? "vs_quad_shared_textured" : "vs_quad_per_item_textured";
+	aRecipes[1].m_pFragmentEntry = "fs_textured";
+	aRecipes[1].m_pVertexBuffers = &Textured.m_Layout;
+	for(SPipelineRecipe &Recipe : aRecipes)
 	{
-		for(size_t Textured = 0; Textured < 2; ++Textured)
-		{
-			std::array<WGPUVertexAttribute, 3> aAttributes{};
-			uint32_t AttributeCount = 0;
-			const uint64_t Stride = FillVertexInput(Textured != 0 ? IGraphics::EVertexLayout::QUAD_TEXTURED : IGraphics::EVertexLayout::QUAD, aAttributes, AttributeCount);
-			WGPUVertexBufferLayout VertexBuffer = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-			VertexBuffer.arrayStride = Stride;
-			VertexBuffer.stepMode = WGPUVertexStepMode_Vertex;
-			VertexBuffer.attributeCount = AttributeCount;
-			VertexBuffer.attributes = aAttributes.data();
-			SPipelineRecipe Recipe;
-			Recipe.m_pLabel = "DDNet WebGPU quad pipeline";
-			Recipe.m_Layout = Shared ? (Textured != 0 ? m_PrimitivePipelineLayout : m_UntexturedPipelineLayout) : (Textured != 0 ? m_QuadTexturedPipelineLayout : m_QuadUntexturedPipelineLayout);
-			Recipe.m_pVertexEntry = Shared ? (Textured != 0 ? "vs_quad_shared_textured" : "vs_quad_shared") : (Textured != 0 ? "vs_quad_per_item_textured" : "vs_quad_per_item");
-			Recipe.m_pFragmentEntry = Textured != 0 ? "fs_textured" : "fs_untextured";
-			Recipe.m_pVertexBuffers = &VertexBuffer;
-			Recipe.m_Blend = Blend;
-			Recipe.m_Format = Format;
-			Recipe.m_SampleCount = SampleCount;
-			const size_t Index = Blend * 2 + Textured;
-			aPipelines[Index] = CreatePipeline(Recipe);
-			if(aPipelines[Index] == nullptr)
-				return false;
-		}
+		Recipe.m_pLabel = "DDNet WebGPU quad pipeline";
+		Recipe.m_Format = Format;
+		Recipe.m_SampleCount = SampleCount;
 	}
-	return true;
+	return CreatePipelineVariants(aPipelines, false, aRecipes);
 }
 
 bool CCommandProcessorFragment_WebGpu::CreateDualAtlasPipelines(SPipelineSet &Pipelines, WGPUTextureFormat Format, uint32_t SampleCount)
 {
-	std::array<WGPUVertexAttribute, 3> aAttributes{};
-	aAttributes[0].format = WGPUVertexFormat_Float32x2;
-	aAttributes[0].offset = offsetof(CCommandBuffer::SVertex, m_Pos);
-	aAttributes[0].shaderLocation = 0;
-	aAttributes[1].format = WGPUVertexFormat_Float32x2;
-	aAttributes[1].offset = offsetof(CCommandBuffer::SVertex, m_Tex);
-	aAttributes[1].shaderLocation = 1;
-	aAttributes[2].format = WGPUVertexFormat_Unorm8x4;
-	aAttributes[2].offset = offsetof(CCommandBuffer::SVertex, m_Color);
-	aAttributes[2].shaderLocation = 2;
-	WGPUVertexBufferLayout VertexBuffer = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-	VertexBuffer.arrayStride = sizeof(CCommandBuffer::SVertex);
-	VertexBuffer.stepMode = WGPUVertexStepMode_Vertex;
-	VertexBuffer.attributeCount = aAttributes.size();
-	VertexBuffer.attributes = aAttributes.data();
+	const CVertexInput Vertex(IGraphics::EVertexLayout::POSITION_TEXCOORD_COLOR);
 	for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
 	{
 		SPipelineRecipe Recipe;
@@ -3060,7 +2814,7 @@ bool CCommandProcessorFragment_WebGpu::CreateDualAtlasPipelines(SPipelineSet &Pi
 		Recipe.m_Layout = m_PrimitivePipelineLayout;
 		Recipe.m_pVertexEntry = "vs_dual_atlas";
 		Recipe.m_pFragmentEntry = "fs_dual_atlas";
-		Recipe.m_pVertexBuffers = &VertexBuffer;
+		Recipe.m_pVertexBuffers = &Vertex.m_Layout;
 		Recipe.m_Blend = Blend;
 		Recipe.m_Format = Format;
 		Recipe.m_SampleCount = SampleCount;
@@ -3084,53 +2838,23 @@ bool CCommandProcessorFragment_WebGpu::CreatePipelineSet(SPipelineSet &Pipelines
 	for(auto &Pipeline : Pipelines.m_aDualAtlas)
 		ReleasePipeline(Pipeline);
 
-	std::array<WGPUVertexAttribute, 3> aAttributes{};
-	aAttributes[0].format = WGPUVertexFormat_Float32x2;
-	aAttributes[0].offset = offsetof(CCommandBuffer::SVertex, m_Pos);
-	aAttributes[0].shaderLocation = 0;
-	aAttributes[1].format = WGPUVertexFormat_Float32x2;
-	aAttributes[1].offset = offsetof(CCommandBuffer::SVertex, m_Tex);
-	aAttributes[1].shaderLocation = 1;
-	aAttributes[2].format = WGPUVertexFormat_Unorm8x4;
-	aAttributes[2].offset = offsetof(CCommandBuffer::SVertex, m_Color);
-	aAttributes[2].shaderLocation = 2;
-	WGPUVertexBufferLayout VertexBufferLayout = WGPU_VERTEX_BUFFER_LAYOUT_INIT;
-	VertexBufferLayout.arrayStride = sizeof(CCommandBuffer::SVertex);
-	VertexBufferLayout.stepMode = WGPUVertexStepMode_Vertex;
-	VertexBufferLayout.attributeCount = aAttributes.size();
-	VertexBufferLayout.attributes = aAttributes.data();
-
-	for(size_t Topology = 0; Topology < 2; ++Topology)
+	const CVertexInput Vertex(IGraphics::EVertexLayout::POSITION_TEXCOORD_COLOR);
+	std::array<SPipelineRecipe, 2> aRecipes;
+	for(size_t Textured = 0; Textured < 2; ++Textured)
 	{
-		for(size_t Blend = 0; Blend < BLEND_MODE_COUNT; ++Blend)
-		{
-			for(size_t Textured = 0; Textured < 2; ++Textured)
-			{
-				SPipelineRecipe Recipe;
-				Recipe.m_pLabel = "DDNet WebGPU primitive pipeline";
-				Recipe.m_Layout = Textured != 0 ? m_PrimitivePipelineLayout : m_UntexturedPipelineLayout;
-				Recipe.m_pVertexEntry = "vs_main";
-				Recipe.m_pFragmentEntry = Textured != 0 ? "fs_textured" : "fs_untextured";
-				Recipe.m_pVertexBuffers = &VertexBufferLayout;
-				Recipe.m_Blend = Blend;
-				Recipe.m_Topology = Topology == 0 ? WGPUPrimitiveTopology_LineList : WGPUPrimitiveTopology_TriangleList;
-				Recipe.m_Format = Format;
-				Recipe.m_SampleCount = SampleCount;
-				const size_t Index = (Topology * BLEND_MODE_COUNT + Blend) * 2 + Textured;
-				Pipelines.m_aPrimitive[Index] = CreatePipeline(Recipe);
-				if(Pipelines.m_aPrimitive[Index] == nullptr)
-					return false;
-			}
-		}
+		SPipelineRecipe &Recipe = aRecipes[Textured];
+		Recipe.m_pLabel = "DDNet WebGPU primitive pipeline";
+		Recipe.m_Layout = Textured != 0 ? m_PrimitivePipelineLayout : m_UntexturedPipelineLayout;
+		Recipe.m_pVertexEntry = "vs_main";
+		Recipe.m_pFragmentEntry = Textured != 0 ? "fs_textured" : "fs_untextured";
+		Recipe.m_pVertexBuffers = &Vertex.m_Layout;
+		Recipe.m_Format = Format;
+		Recipe.m_SampleCount = SampleCount;
 	}
-	// Both draw the whole screen through the same vertex path and neither
-	// blends, so they differ in the fragment entry point alone.
-	SPipelineRecipe ScreenRecipe;
-	ScreenRecipe.m_Layout = m_PrimitivePipelineLayout;
-	ScreenRecipe.m_pVertexEntry = "vs_main";
-	ScreenRecipe.m_pVertexBuffers = &VertexBufferLayout;
-	ScreenRecipe.m_Format = Format;
-	ScreenRecipe.m_SampleCount = SampleCount;
+	if(!CreatePipelineVariants(Pipelines.m_aPrimitive, true, aRecipes))
+		return false;
+	// Both draw the whole screen and neither blends.
+	SPipelineRecipe ScreenRecipe = aRecipes[1];
 	ScreenRecipe.m_pLabel = "DDNet WebGPU blur pipeline";
 	ScreenRecipe.m_pFragmentEntry = "fs_blur";
 	Pipelines.m_Blur = CreatePipeline(ScreenRecipe);
@@ -3167,7 +2891,6 @@ struct PrimitiveTransform {
 	color: vec4f,
 	rotation_center: vec2f,
 	rotation: f32,
-	alpha_texture: u32,
 	vertex_offset: vec2f,
 	vertex_scale: vec2f,
 	quad_base: u32,
@@ -3305,8 +3028,7 @@ final_position = rotate(final_position, position.zw, quad.rotation);
 }
 @fragment fn fs_textured(input: VertexOutput) -> @location(0) vec4f {
 	let sample = textureSample(image_texture, image_sampler, input.uv);
-	let texture_color = select(sample, vec4f(1.0, 1.0, 1.0, sample.r), transform.alpha_texture != 0u);
-	return texture_color * input.color;
+	return sample * input.color;
 }
 @fragment fn fs_blur(input: VertexOutput) -> @location(0) vec4f {
 	let texel_offset = input.color.rg / vec2f(textureDimensions(image_texture));
@@ -3317,10 +3039,8 @@ final_position = rotate(final_position, position.zw, quad.rotation);
 	color += textureSample(image_texture, image_sampler, input.uv - texel_offset * 3.2307692308) * 0.0702702703;
 	return color;
 }
-// Turns a rendered frame into the planar YUV layout an encoder wants. See
-// shader/vulkan/planar_yuv.frag for what the layout is; input.color.r picks
-// between interleaved NV12 and three separate planes, the way the blur above
-// takes its axis from the same place.
+// Planar YUV for the encoder, see shader/vulkan/planar_yuv.frag;
+// input.color.r picks NV12 or three planes.
 fn yuv_luma(color: vec3f) -> f32 {
 	return (16.0 + 219.0 * dot(color, vec3f(0.2126, 0.7152, 0.0722))) / 255.0;
 }
@@ -3365,8 +3085,7 @@ result[component] = select(yuv_chroma_blue(block), yuv_chroma_red(block), second
 }
 @fragment fn fs_layered(input: LayeredVertexOutput) -> @location(0) vec4f {
 	let sample = textureSample(image_array_texture, image_sampler, input.uv.xy, i32(input.uv.z));
-	let texture_color = select(sample, vec4f(1.0, 1.0, 1.0, sample.r), transform.alpha_texture != 0u);
-	return texture_color * input.color;
+	return sample * input.color;
 }
 @fragment fn fs_layered_untextured(input: LayeredVertexOutput) -> @location(0) vec4f {
 	return input.color;
@@ -3383,8 +3102,7 @@ result[component] = select(yuv_chroma_blue(block), yuv_chroma_red(block), second
 	let cell = max(floor(input.uv.xy - margin), vec2f(0.0));
 	let coordinates = clamp(input.uv.xy - cell, vec2f(0.0), vec2f(1.0));
 	let sample = textureSampleGrad(image_array_texture, image_sampler, coordinates, i32(input.uv.z), dx, dy);
-	let texture_color = select(sample, vec4f(1.0, 1.0, 1.0, sample.r), transform.alpha_texture != 0u);
-	return texture_color * input.color;
+	return sample * input.color;
 }
 @vertex fn vs_dual_atlas(@location(0) position: vec2f, @location(1) uv: vec2f, @location(2) color: vec4f) -> VertexOutput {
 	var output: VertexOutput;
@@ -3515,12 +3233,12 @@ return vec4f((outline.rgb + primary.rgb * primary.a) / alpha, alpha);
 	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex | WGPUBufferUsage_Index;
 	m_StreamBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 	BufferDescriptor.label = StringView("DDNet WebGPU frame uniforms");
-	BufferDescriptor.size = UNIFORM_BUFFER_SIZE * UPLOAD_BUFFER_SLOT_COUNT;
+	BufferDescriptor.size = UNIFORM_BUFFER_STRIDE * UPLOAD_BUFFER_SLOT_COUNT;
 	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
 	m_UniformBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 	if(m_StreamBuffer == nullptr || m_UniformBuffer == nullptr)
 		return false;
-	m_pStreamMemoryUsage->fetch_add((STREAM_BUFFER_SIZE + UNIFORM_BUFFER_SIZE) * UPLOAD_BUFFER_SLOT_COUNT, std::memory_order_relaxed);
+	m_pStreamMemoryUsage->fetch_add((STREAM_BUFFER_SIZE + UNIFORM_BUFFER_STRIDE) * UPLOAD_BUFFER_SLOT_COUNT, std::memory_order_relaxed);
 
 	WGPUBindGroupEntry UniformBindGroupEntry{};
 	UniformBindGroupEntry.binding = 0;
@@ -3583,8 +3301,7 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 		wgpuBufferRelease(m_UniformBuffer);
 	if(m_StreamBuffer != nullptr)
 		wgpuBufferRelease(m_StreamBuffer);
-	if(m_pStreamMemoryUsage != nullptr)
-		m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
+	m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
 	for(auto &Sampler : m_aSamplers)
 	{
 		if(Sampler != nullptr)
@@ -3613,16 +3330,6 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 		wgpuBindGroupLayoutRelease(m_UniformBindGroupLayout);
 	if(m_PrimitiveShader != nullptr)
 		wgpuShaderModuleRelease(m_PrimitiveShader);
-	for(auto &Pipeline : m_aMipmapPipelines)
-	{
-		if(Pipeline != nullptr)
-			wgpuRenderPipelineRelease(Pipeline);
-		Pipeline = nullptr;
-	}
-	if(m_MipmapPipelineLayout != nullptr)
-		wgpuPipelineLayoutRelease(m_MipmapPipelineLayout);
-	if(m_MipmapShader != nullptr)
-		wgpuShaderModuleRelease(m_MipmapShader);
 	if(m_MipmapComputePipeline != nullptr)
 		wgpuComputePipelineRelease(m_MipmapComputePipeline);
 	if(m_MipmapComputePipelineLayout != nullptr)
@@ -3650,8 +3357,6 @@ void CCommandProcessorFragment_WebGpu::DestroyDrawResources()
 	m_EmptyBindGroupLayout = nullptr;
 	m_UniformBindGroupLayout = nullptr;
 	m_PrimitiveShader = nullptr;
-	m_MipmapPipelineLayout = nullptr;
-	m_MipmapShader = nullptr;
 	m_StreamOffset = 0;
 	m_UniformOffset = 0;
 	m_UploadBufferSlot = 0;
@@ -3683,10 +3388,7 @@ bool CCommandProcessorFragment_WebGpu::EnsureRenderPass()
 		return false;
 	if(pTarget == nullptr)
 	{
-		// The first screen pass of a frame clears, whatever load
-		// operation the last render target left behind. Natively that
-		// is also all a fresh surface texture could give us; the image
-		// drawn into on the web still holds the frame before.
+		// The first screen pass of a frame clears.
 		const bool FreshFrame = !m_ScreenTouched;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		if(m_Minimized || !EnsureScreenTexture())
@@ -3745,10 +3447,8 @@ void CCommandProcessorFragment_WebGpu::SetPipelineCached(WGPURenderPipeline Pipe
 		return;
 	wgpuRenderPassEncoderSetPipeline(m_RenderPass, Pipeline);
 	m_PassState.m_Pipeline = Pipeline;
-	// A bind group set before the switch is still set, and it is what
-	// the new pipeline wants wherever the layout of its slot is the
-	// same. Only a slot whose layout changed has to be set again; a
-	// pipeline this does not know is treated as changing every slot.
+	// Only slots whose layout changed are set again; an unknown pipeline
+	// changes every slot.
 	const auto Found = m_PipelineBindGroupLayouts.find(Pipeline);
 	const SBindGroupLayouts aLayouts = Found != m_PipelineBindGroupLayouts.end() ? Found->second : SBindGroupLayouts{};
 	for(size_t Slot = 0; Slot < aLayouts.size(); ++Slot)
@@ -3822,7 +3522,7 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 		SetError(GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "WebGPU frame uniform buffer is exhausted");
 		return false;
 	}
-	const uint32_t UniformOffset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_SIZE + m_UniformOffset);
+	const uint32_t UniformOffset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE + m_UniformOffset);
 	m_vUniformUpload.resize(m_UniformOffset + sizeof(Transform));
 	std::memcpy(m_vUniformUpload.data() + m_UniformOffset, &Transform, sizeof(Transform));
 	m_UniformOffset += sizeof(Transform);
@@ -3853,9 +3553,8 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 	uint32_t ScissorH = ViewportHeight;
 	if(State.m_ClipEnable)
 	{
-		// The clip is expressed in whatever ScreenWidth()/ScreenHeight() reported when
-		// it was set: the render target's size while an offscreen frame is open, the
-		// presentation viewport otherwise.
+		// The clip is in the render target's pixels while one is bound, otherwise
+		// in presentation viewport pixels.
 		const uint32_t ClipBaseWidth = pTarget != nullptr ? std::max(TargetWidth, 1u) : std::max(m_ViewportWidth, 1u);
 		const uint32_t ClipBaseHeight = pTarget != nullptr ? std::max(TargetHeight, 1u) : std::max(m_ViewportHeight, 1u);
 		const int64_t Left = std::clamp<int64_t>(static_cast<int64_t>(State.m_ClipX) * ViewportWidth / ClipBaseWidth, 0, ViewportWidth);
@@ -3873,22 +3572,23 @@ bool CCommandProcessorFragment_WebGpu::ApplyState(const CCommandBuffer::SState &
 
 bool CCommandProcessorFragment_WebGpu::WriteQuadTransforms(const CCommandBuffer::SDrawDataQuadTransform *pData, uint32_t Count, uint32_t &Offset)
 {
-	constexpr size_t BlockSize = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform);
 	const size_t UploadSize = static_cast<size_t>(Count) * sizeof(*pData);
 	m_UniformOffset = AlignUp(m_UniformOffset, m_UniformAlignment);
-	if(Count == 0 || Count > GRAPHICS_MAX_QUADS_RENDER_COUNT || BlockSize > UNIFORM_BUFFER_SIZE - m_UniformOffset || m_UniformOffset > UINT32_MAX)
+	// Only what the chunk holds has to fit; the window bound past it lands in
+	// the slot's tail. See UNIFORM_BUFFER_STRIDE.
+	if(Count == 0 || Count > GRAPHICS_MAX_QUADS_RENDER_COUNT || UploadSize > UNIFORM_BUFFER_SIZE - m_UniformOffset || m_UniformOffset > UINT32_MAX)
 	{
 		SetError(GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "WebGPU frame uniform buffer is exhausted");
 		return false;
 	}
-	Offset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_SIZE + m_UniformOffset);
+	Offset = static_cast<uint32_t>(m_UploadBufferSlot * UNIFORM_BUFFER_STRIDE + m_UniformOffset);
 	m_vUniformUpload.resize(m_UniformOffset + UploadSize);
 	std::memcpy(m_vUniformUpload.data() + m_UniformOffset, pData, UploadSize);
 	m_UniformOffset += UploadSize;
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand)
 {
 	EPipelineProgram Program;
 	if(Program = pCommand->m_Program; (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::BLUR && Program != EPipelineProgram::PLANAR_YUV))
@@ -3907,10 +3607,7 @@ bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw 
 	size_t VertexSize = Layered ? sizeof(*pLayeredVertices) : sizeof(*pVertices);
 	uint32_t VertexCount = pCommand->m_VertexCount;
 	EPrimitiveType PrimitiveType = pCommand->m_PrimitiveType;
-	// A quad is four vertices and six indices, and the frontend has an
-	// index buffer that says so once for every quad it will ever draw.
-	// Taking it means the vertices go up as they are, instead of one
-	// and a half times as many rebuilt here every frame.
+	// Draw quads through the frontend's shared quad index buffer.
 	uint32_t QuadIndexCount = 0;
 	const SBuffer *pQuadIndexBuffer = nullptr;
 	if(PrimitiveType == EPrimitiveType::QUADS)
@@ -3965,7 +3662,7 @@ bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw 
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
 {
 	if(pCommand->m_Program >= EPipelineProgram::COUNT || !m_BufferHandles.IsActive(pCommand->m_VertexBuffer) || !m_BufferHandles.IsActive(pCommand->m_IndexBuffer) || static_cast<size_t>(pCommand->m_IndexBuffer.Id()) >= m_vBuffers.size())
 		return true;
@@ -3980,10 +3677,7 @@ bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SComma
 	if(pCommand->m_IndexOffset % IndexSize != 0 || pCommand->m_IndexOffset > IndexBuffer.m_Size || static_cast<uint64_t>(pCommand->m_IndexCount) * IndexSize > IndexBuffer.m_Size - pCommand->m_IndexOffset)
 		return true;
 
-	// CGraphics_Threaded::CheckIndexedDraw has already rejected
-	// everything this would catch; the assert is here so a new producer
-	// notices at once instead of drawing through a pipeline whose
-	// vertex stride does not match the buffer.
+	// CGraphics_Threaded::CheckIndexedDraw has already rejected these.
 	dbg_assert(IsIndexedDrawConsistent(*pCommand), "Backend received an inconsistent indexed draw");
 	const EPipelineProgram Program = pCommand->m_Program;
 	const auto &Pipelines = m_aPipelineSets[m_RenderTarget.IsValid() ? 1 : 0];
@@ -4014,18 +3708,15 @@ bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SComma
 		const size_t BaseQuadOffset = pCommand->m_IndexOffset / QuadIndexBytes;
 		if(pCommand->m_InstanceCount != 1 || pQuadData == nullptr || BaseQuadOffset > UINT32_MAX - (QuadCount - 1))
 			return true;
-		// One chunk of quads is reserved at a time. Reserving the whole draw at
-		// once would ask for more than a whole uniform buffer from roughly
-		// thirty thousand quads on, and the draw was then dropped as a single
-		// oversized one rather than split across submissions.
-		const uint64_t ChunkUniformBytes = GRAPHICS_MAX_QUADS_RENDER_COUNT * sizeof(CCommandBuffer::SDrawDataQuadTransform) + sizeof(SPrimitiveTransform) + 2 * m_UniformAlignment;
+		// One chunk of quads is reserved at a time, so a large draw is split
+		// across submissions instead of dropped.
 		uint32_t QuadsLeft = QuadCount;
 		uint32_t RenderOffset = 0;
 		bool BuffersBound = false;
 		do
 		{
 			const uint32_t DrawCount = std::min<uint32_t>(QuadsLeft, GRAPHICS_MAX_QUADS_RENDER_COUNT);
-			if(!EnsureUploadSpace(0, ChunkUniformBytes))
+			if(!EnsureUploadSpace(0, static_cast<uint64_t>(DrawCount) * sizeof(CCommandBuffer::SDrawDataQuadTransform) + sizeof(SPrimitiveTransform) + 2 * m_UniformAlignment))
 				return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
 			// A submission inside EnsureUploadSpace closes the pass, and the pass
 			// carries the vertex and index buffer, so they are bound again.
@@ -4146,25 +3837,32 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 {
 	// One more in flight than the video export keeps slots would only
 	// buy memory, so the oldest is waited out instead.
-	while(m_vPendingReadbacks.size() >= READBACK_SLOT_COUNT)
+	while(m_ReadbackCount >= READBACK_SLOT_COUNT)
 	{
 		if(!FinishOldestReadback())
 			return false;
 	}
+	SReadbackSlot &Slot = m_aReadbackSlots[(m_ReadbackHead + m_ReadbackCount) % READBACK_SLOT_COUNT];
 
 	const uint32_t BytesPerRow = static_cast<uint32_t>(AlignUp(static_cast<uint64_t>(Width) * 4, 256));
 	const uint64_t BufferSize = static_cast<uint64_t>(BytesPerRow) * Height;
-	WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-	BufferDescriptor.label = StringView("DDNet WebGPU texture readback");
-	BufferDescriptor.size = BufferSize;
-	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-	WGPUBuffer Buffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
-	if(Buffer == nullptr || !EnsureCommandEncoder())
+	// An export asks for the same picture every frame, so the slot's buffer
+	// is made once and only a bigger one than last time costs anything.
+	if(Slot.m_BufferSize < BufferSize)
 	{
-		if(Buffer != nullptr)
-			wgpuBufferRelease(Buffer);
-		return false;
+		ReleaseReadbackBuffer(Slot);
+		WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+		BufferDescriptor.label = StringView("DDNet WebGPU texture readback");
+		BufferDescriptor.size = BufferSize;
+		BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+		Slot.m_Buffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
+		if(Slot.m_Buffer == nullptr)
+			return false;
+		Slot.m_BufferSize = BufferSize;
+		m_pStagingMemoryUsage->fetch_add(BufferSize, std::memory_order_relaxed);
 	}
+	if(!EnsureCommandEncoder())
+		return false;
 
 	EndRenderPass();
 	WGPUTexelCopyTextureInfo Source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -4172,63 +3870,52 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 	Source.origin = Origin;
 	Source.aspect = WGPUTextureAspect_All;
 	WGPUTexelCopyBufferInfo Destination = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-	Destination.buffer = Buffer;
+	Destination.buffer = Slot.m_Buffer;
 	Destination.layout.bytesPerRow = BytesPerRow;
 	Destination.layout.rowsPerImage = Height;
 	const WGPUExtent3D Extent{Width, Height, 1};
 	wgpuCommandEncoderCopyTextureToBuffer(m_CommandEncoder, &Source, &Destination, &Extent);
 	if(!SubmitCommands())
-	{
-		wgpuBufferRelease(Buffer);
 		return false;
-	}
 
-	SPendingReadback Pending;
-	Pending.m_Buffer = Buffer;
-	Pending.m_BufferSize = BufferSize;
-	Pending.m_BytesPerRow = BytesPerRow;
-	Pending.m_Width = Width;
-	Pending.m_Height = Height;
-	Pending.m_BGRA = BGRA;
-	Pending.m_OpaqueAlpha = OpaqueAlpha;
-	Pending.m_pResult = pResult;
-	Pending.m_pMapResult = std::make_shared<SMapResult>();
-
-	WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
-	CallbackInfo.callback = MapCallback;
-	CallbackInfo.userdata1 = new std::shared_ptr<SMapResult>(Pending.m_pMapResult);
-	wgpuBufferMapAsync(Buffer, WGPUMapMode_Read, 0, BufferSize, CallbackInfo);
-	m_vPendingReadbacks.push_back(std::move(Pending));
+	Slot.m_BytesPerRow = BytesPerRow;
+	Slot.m_Width = Width;
+	Slot.m_Height = Height;
+	Slot.m_BGRA = BGRA;
+	Slot.m_OpaqueAlpha = OpaqueAlpha;
+	Slot.m_pResult = pResult;
+	MapAsync(Slot.m_Buffer, Slot.MappedSize(), Slot.m_MapResult);
+	++m_ReadbackCount;
 	return true;
 }
 
-void CCommandProcessorFragment_WebGpu::FinishReadback(SPendingReadback &Pending)
+void CCommandProcessorFragment_WebGpu::ReleaseReadbackBuffer(SReadbackSlot &Slot)
 {
-	CCommandBuffer::SImageReadbackResult *pResult = Pending.m_pResult;
-	if(Pending.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
+	if(Slot.m_Buffer == nullptr)
+		return;
+	wgpuBufferRelease(Slot.m_Buffer);
+	m_pStagingMemoryUsage->fetch_sub(Slot.m_BufferSize, std::memory_order_relaxed);
+	Slot.m_Buffer = nullptr;
+	Slot.m_BufferSize = 0;
+}
+
+void CCommandProcessorFragment_WebGpu::FinishReadback(SReadbackSlot &Slot)
+{
+	CCommandBuffer::SImageReadbackResult *pResult = Slot.m_pResult;
+	if(Slot.m_MapResult.m_Done && Slot.m_MapResult.m_Status == WGPUMapAsyncStatus_Success)
 	{
-		const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Pending.m_Buffer, 0, Pending.m_BufferSize));
-		if(pMappedData != nullptr && pResult->m_Image.TryReuse(Pending.m_Width, Pending.m_Height, CImageInfo::FORMAT_RGBA))
+		const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_Buffer, 0, Slot.MappedSize()));
+		if(pMappedData != nullptr && pResult->m_Image.TryReuse(Slot.m_Width, Slot.m_Height, CImageInfo::FORMAT_RGBA))
 		{
-			for(uint32_t Y = 0; Y < Pending.m_Height; ++Y)
-			{
-				const uint8_t *pSource = pMappedData + static_cast<size_t>(Y) * Pending.m_BytesPerRow;
-				uint8_t *pDestination = pResult->m_Image.m_pData + static_cast<size_t>(Y) * Pending.m_Width * 4;
-				for(uint32_t X = 0; X < Pending.m_Width; ++X)
-				{
-					pDestination[X * 4] = pSource[X * 4 + (Pending.m_BGRA ? 2 : 0)];
-					pDestination[X * 4 + 1] = pSource[X * 4 + 1];
-					pDestination[X * 4 + 2] = pSource[X * 4 + (Pending.m_BGRA ? 0 : 2)];
-					pDestination[X * 4 + 3] = Pending.m_OpaqueAlpha ? 255 : pSource[X * 4 + 3];
-				}
-			}
+			CopyReadbackRows(pMappedData, Slot.m_BytesPerRow, Slot.m_Width, Slot.m_Height, Slot.m_BGRA, Slot.m_OpaqueAlpha, pResult->m_Image.m_pData);
 			pResult->m_Ok = true;
 		}
-		wgpuBufferUnmap(Pending.m_Buffer);
+		wgpuBufferUnmap(Slot.m_Buffer);
 	}
-	wgpuBufferRelease(Pending.m_Buffer);
-	Pending.m_Buffer = nullptr;
+	// A mapping that never arrived is still on its way to this buffer, so
+	// the slot cannot have it back; the next readback makes another one.
+	if(!Slot.m_MapResult.m_Done)
+		ReleaseReadbackBuffer(Slot);
 	if(!pResult->m_Ok)
 		log_warn("gfx/webgpu", "texture readback failed");
 	pResult->Signal();
@@ -4236,38 +3923,36 @@ void CCommandProcessorFragment_WebGpu::FinishReadback(SPendingReadback &Pending)
 
 bool CCommandProcessorFragment_WebGpu::FinishOldestReadback()
 {
-	if(m_vPendingReadbacks.empty())
+	if(m_ReadbackCount == 0)
 		return true;
-	SPendingReadback Pending = std::move(m_vPendingReadbacks.front());
-	m_vPendingReadbacks.erase(m_vPendingReadbacks.begin());
-	const bool Mapped = ProcessUntilDone(*Pending.m_pMapResult, "map texture readback");
-	FinishReadback(Pending);
+	SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+	m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+	--m_ReadbackCount;
+	const bool Mapped = ProcessUntilDone(Slot.m_MapResult, "map texture readback", FRAME_TIMEOUT);
+	FinishReadback(Slot);
 	return Mapped;
 }
 
 void CCommandProcessorFragment_WebGpu::CollectFinishedReadbacks()
 {
-	if(m_vPendingReadbacks.empty())
+	if(m_ReadbackCount == 0)
 		return;
 	wgpuInstanceProcessEvents(m_Instance);
-	auto It = m_vPendingReadbacks.begin();
-	while(It != m_vPendingReadbacks.end())
+	// The queue finishes them in order, so a readback that is not there yet
+	// means none behind it is either.
+	while(m_ReadbackCount != 0 && m_aReadbackSlots[m_ReadbackHead].m_MapResult.m_Done)
 	{
-		if(!It->m_pMapResult->m_Done)
-		{
-			// The queue finishes them in order, so a readback that is
-			// not there yet means none behind it is either.
-			break;
-		}
-		FinishReadback(*It);
-		It = m_vPendingReadbacks.erase(It);
+		SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+		m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+		--m_ReadbackCount;
+		FinishReadback(Slot);
 	}
 }
 
 bool CCommandProcessorFragment_WebGpu::FinishReadbacks()
 {
 	bool Ok = true;
-	while(!m_vPendingReadbacks.empty())
+	while(m_ReadbackCount != 0)
 	{
 		if(!FinishOldestReadback())
 			Ok = false;
@@ -4277,16 +3962,18 @@ bool CCommandProcessorFragment_WebGpu::FinishReadbacks()
 
 void CCommandProcessorFragment_WebGpu::AbandonReadbacks()
 {
-	for(SPendingReadback &Pending : m_vPendingReadbacks)
+	while(m_ReadbackCount != 0)
 	{
-		if(Pending.m_Buffer != nullptr)
-			wgpuBufferRelease(Pending.m_Buffer);
-		Pending.m_pResult->Signal();
+		SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+		m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+		--m_ReadbackCount;
+		Slot.m_pResult->Signal();
 	}
-	m_vPendingReadbacks.clear();
+	for(SReadbackSlot &Slot : m_aReadbackSlots)
+		ReleaseReadbackBuffer(Slot);
 }
 
-void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand)
+void CCommandProcessorFragment_WebGpu::Cmd_PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand)
 {
 	auto &Result = *pCommand->m_pResult;
 	Result.m_Ok = false;
@@ -4303,7 +3990,8 @@ void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommand
 #else
 	if(!m_SurfaceCanCopyFrom)
 	{
-		log_warn("gfx/webgpu", "the selected WebGPU implementation cannot read its surface texture back");
+		// A failed read pixel keeps the frontend's white.
+		DropCommand("reading the presented frame back on a surface that cannot be copied from");
 		return;
 	}
 	WGPUTexture SourceTexture = m_SurfaceTexture.texture;
@@ -4333,7 +4021,7 @@ void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommand
 	pCommand->m_pCompletion = nullptr;
 }
 
-void CCommandProcessorFragment_WebGpu::TextureReadback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
+void CCommandProcessorFragment_WebGpu::Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
 {
 	auto &Result = *pCommand->m_pResult;
 	Result.m_Ok = false;

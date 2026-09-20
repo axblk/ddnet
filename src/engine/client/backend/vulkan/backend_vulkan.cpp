@@ -7463,7 +7463,8 @@ void CCommandProcessorFragment_Vulkan::ExecBufferFillDynamicStates(const CComman
 	// if there is a dynamic viewport make sure the scissor data is scaled down to that.
 	// A zero-sized viewport can be reached while the window is minimized, and dividing
 	// by it would turn the whole scissor into NaN.
-	if(!RenderToTarget && m_HasDynamicViewport && ClipSpace.width > 0 && ClipSpace.height > 0)
+	const bool ScaleToViewport = !RenderToTarget && m_HasDynamicViewport && ClipSpace.width > 0 && ClipSpace.height > 0;
+	if(ScaleToViewport)
 	{
 		Scissor.offset.x = (int32_t)(((float)Scissor.offset.x / (float)ClipSpace.width) * (float)m_DynamicViewportSize.width) + m_DynamicViewportOffset.x;
 		Scissor.offset.y = (int32_t)(((float)Scissor.offset.y / (float)ClipSpace.height) * (float)m_DynamicViewportSize.height) + m_DynamicViewportOffset.y;
@@ -7474,8 +7475,19 @@ void CCommandProcessorFragment_Vulkan::ExecBufferFillDynamicStates(const CComman
 	Viewport.x = std::clamp(Viewport.x, 0.0f, std::numeric_limits<decltype(Viewport.x)>::max());
 	Viewport.y = std::clamp(Viewport.y, 0.0f, std::numeric_limits<decltype(Viewport.y)>::max());
 
-	Scissor.offset.x = std::clamp(Scissor.offset.x, 0, std::numeric_limits<decltype(Scissor.offset.x)>::max());
-	Scissor.offset.y = std::clamp(Scissor.offset.y, 0, std::numeric_limits<decltype(Scissor.offset.y)>::max());
+	// Moving the near edge without shrinking the rectangle moves the far edge
+	// with it, so a clip that starts off-screen ends up drawing what it is
+	// there to cut away. Both edges are cropped against the space the scissor
+	// is expressed in instead, which is also what keeps it inside the
+	// attachment.
+	const VkOffset2D ClipMin = ScaleToViewport ? m_DynamicViewportOffset : VkOffset2D{0, 0};
+	const VkExtent2D ClipBounds = ScaleToViewport ? m_DynamicViewportSize : ClipSpace;
+	const int32_t ClipRight = std::min(Scissor.offset.x + (int32_t)Scissor.extent.width, ClipMin.x + (int32_t)ClipBounds.width);
+	const int32_t ClipBottom = std::min(Scissor.offset.y + (int32_t)Scissor.extent.height, ClipMin.y + (int32_t)ClipBounds.height);
+	Scissor.offset.x = std::max({Scissor.offset.x, ClipMin.x, 0});
+	Scissor.offset.y = std::max({Scissor.offset.y, ClipMin.y, 0});
+	Scissor.extent.width = (uint32_t)std::max(ClipRight - Scissor.offset.x, 0);
+	Scissor.extent.height = (uint32_t)std::max(ClipBottom - Scissor.offset.y, 0);
 
 	ExecBuffer.m_Viewport = Viewport;
 	ExecBuffer.m_Scissor = Scissor;

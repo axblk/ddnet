@@ -162,20 +162,29 @@ struct SMapResult
 {
 	bool m_Done = false;
 	WGPUMapAsyncStatus m_Status = WGPUMapAsyncStatus_Error;
+	// A map callback can outlive what asked for it: a wait that runs out of
+	// time gives up on a mapping that is still on its way, and the slot it
+	// belonged to is handed to the next readback. The callback carries the
+	// generation it was made with, so a late one is recognised and dropped.
+	// Never reset - a generation that came round again would match.
+	uint32_t m_Generation = 0;
 };
-// A readback whose copy is submitted and whose mapping was asked for, but
-// whose pixels have not arrived yet.
-struct SPendingReadback
+// One readback in flight: the copy is submitted and the mapping asked for,
+// but the pixels have not arrived. The buffer belongs to the slot and is
+// kept between readbacks, so nothing here is allocated per picture.
+struct SReadbackSlot
 {
 	WGPUBuffer m_Buffer = nullptr;
 	uint64_t m_BufferSize = 0;
+	SMapResult m_MapResult;
 	uint32_t m_BytesPerRow = 0;
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 	bool m_BGRA = false;
 	bool m_OpaqueAlpha = false;
 	CCommandBuffer::SImageReadbackResult *m_pResult = nullptr;
-	std::shared_ptr<SMapResult> m_pMapResult;
+
+	uint64_t MappedSize() const { return static_cast<uint64_t>(m_BytesPerRow) * m_Height; }
 };
 struct SQueueResult
 {
@@ -227,7 +236,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	struct SGpuTimestampSlot
 	{
 		WGPUBuffer m_ReadbackBuffer = nullptr;
-		std::shared_ptr<SMapResult> m_pMapResult;
+		SMapResult m_MapResult;
 		bool m_InFlight = false;
 		bool m_Publish = false;
 	};
@@ -304,7 +313,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	WGPUBuffer m_GpuTimestampResolveBuffer = nullptr;
 	std::array<SGpuTimestampSlot, GPU_TIMESTAMP_SLOT_COUNT> m_aGpuTimestampSlots;
 	std::array<SQueueResult, UPLOAD_BUFFER_SLOT_COUNT> m_aUploadBufferResults;
-	std::vector<SPendingReadback> m_vPendingReadbacks;
+	// Taken in order and finished in order, which is the order the queue
+	// completes the copies in anyway.
+	std::array<SReadbackSlot, READBACK_SLOT_COUNT> m_aReadbackSlots;
+	size_t m_ReadbackHead = 0;
+	size_t m_ReadbackCount = 0;
 	WGPUShaderModule m_PrimitiveShader = nullptr;
 	WGPUBindGroupLayout m_UniformBindGroupLayout = nullptr;
 	WGPUBindGroupLayout m_EmptyBindGroupLayout = nullptr;
@@ -410,7 +423,22 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	static void DeviceCallback(WGPURequestDeviceStatus Status, WGPUDevice Device, WGPUStringView Message, void *pUserdata1, void *);
 
-	static void MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *);
+	static void MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *pUserdata2);
+
+	// The result lives in the slot that owns the buffer, so a mapping costs
+	// nothing but the call. See SMapResult for what the generation is for.
+	static void MapAsync(WGPUBuffer Buffer, uint64_t Size, SMapResult &Result)
+	{
+		++Result.m_Generation;
+		Result.m_Done = false;
+		Result.m_Status = WGPUMapAsyncStatus_Error;
+		WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+		CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+		CallbackInfo.callback = MapCallback;
+		CallbackInfo.userdata1 = &Result;
+		CallbackInfo.userdata2 = reinterpret_cast<void *>(static_cast<uintptr_t>(Result.m_Generation));
+		wgpuBufferMapAsync(Buffer, WGPUMapMode_Read, 0, Size, CallbackInfo);
+	}
 
 	static void QueueCallback(WGPUQueueWorkDoneStatus Status, WGPUStringView, void *pUserdata1, void *);
 
@@ -663,9 +691,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	// caller keep several readbacks in flight.
 	bool StartTextureReadback(WGPUTexture Texture, WGPUOrigin3D Origin, uint32_t Width, uint32_t Height, bool BGRA, bool OpaqueAlpha, CCommandBuffer::SImageReadbackResult *pResult);
 
+	void ReleaseReadbackBuffer(SReadbackSlot &Slot);
+
 	// Copies the mapped pixels out and releases the caller. The map callback
 	// has run by the time this is called, successfully or not.
-	void FinishReadback(SPendingReadback &Pending);
+	void FinishReadback(SReadbackSlot &Slot);
 
 	bool FinishOldestReadback();
 
@@ -795,10 +825,11 @@ void CCommandProcessorFragment_WebGpu::DeviceCallback(WGPURequestDeviceStatus St
 	pResult->m_Done = true;
 }
 
-void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *)
+void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *pUserdata2)
 {
-	auto pResult = std::move(*static_cast<std::shared_ptr<SMapResult> *>(pUserdata1));
-	delete static_cast<std::shared_ptr<SMapResult> *>(pUserdata1);
+	auto *pResult = static_cast<SMapResult *>(pUserdata1);
+	if(pResult->m_Generation != static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pUserdata2)))
+		return;
 	pResult->m_Status = Status;
 	pResult->m_Done = true;
 }
@@ -844,7 +875,10 @@ void CCommandProcessorFragment_WebGpu::DestroyGpuTimestampResources()
 			wgpuBufferRelease(Slot.m_ReadbackBuffer);
 			m_pStagingMemoryUsage->fetch_sub(GPU_TIMESTAMP_SIZE, std::memory_order_relaxed);
 		}
-		Slot = {};
+		Slot.m_ReadbackBuffer = nullptr;
+		Slot.m_MapResult.m_Done = false;
+		Slot.m_InFlight = false;
+		Slot.m_Publish = false;
 	}
 	if(m_GpuTimestampResolveBuffer != nullptr)
 	{
@@ -904,9 +938,9 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 {
 	for(auto &Slot : m_aGpuTimestampSlots)
 	{
-		if(!Slot.m_InFlight || Slot.m_pMapResult == nullptr || !Slot.m_pMapResult->m_Done)
+		if(!Slot.m_InFlight || !Slot.m_MapResult.m_Done)
 			continue;
-		if(Slot.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
+		if(Slot.m_MapResult.m_Status == WGPUMapAsyncStatus_Success)
 		{
 			const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_ReadbackBuffer, 0, GPU_TIMESTAMP_SIZE));
 			if(pMappedData != nullptr && Slot.m_Publish)
@@ -921,7 +955,6 @@ void CCommandProcessorFragment_WebGpu::CollectGpuTimestampResults()
 			}
 			wgpuBufferUnmap(Slot.m_ReadbackBuffer);
 		}
-		Slot.m_pMapResult.reset();
 		Slot.m_InFlight = false;
 		Slot.m_Publish = false;
 	}
@@ -945,14 +978,9 @@ void CCommandProcessorFragment_WebGpu::BeginGpuTimestamp()
 void CCommandProcessorFragment_WebGpu::MapGpuTimestampSlot(int SlotIndex, bool Publish)
 {
 	auto &Slot = m_aGpuTimestampSlots[SlotIndex];
-	Slot.m_pMapResult = std::make_shared<SMapResult>();
 	Slot.m_InFlight = true;
 	Slot.m_Publish = Publish;
-	WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
-	CallbackInfo.callback = MapCallback;
-	CallbackInfo.userdata1 = new std::shared_ptr<SMapResult>(Slot.m_pMapResult);
-	wgpuBufferMapAsync(Slot.m_ReadbackBuffer, WGPUMapMode_Read, 0, GPU_TIMESTAMP_SIZE, CallbackInfo);
+	MapAsync(Slot.m_ReadbackBuffer, GPU_TIMESTAMP_SIZE, Slot.m_MapResult);
 }
 
 bool CCommandProcessorFragment_WebGpu::EnsureCommandEncoder()
@@ -4085,26 +4113,32 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 {
 	// One more in flight than the video export keeps slots would only
 	// buy memory, so the oldest is waited out instead.
-	while(m_vPendingReadbacks.size() >= READBACK_SLOT_COUNT)
+	while(m_ReadbackCount >= READBACK_SLOT_COUNT)
 	{
 		if(!FinishOldestReadback())
 			return false;
 	}
+	SReadbackSlot &Slot = m_aReadbackSlots[(m_ReadbackHead + m_ReadbackCount) % READBACK_SLOT_COUNT];
 
 	const uint32_t BytesPerRow = static_cast<uint32_t>(AlignUp(static_cast<uint64_t>(Width) * 4, 256));
 	const uint64_t BufferSize = static_cast<uint64_t>(BytesPerRow) * Height;
-	WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-	BufferDescriptor.label = StringView("DDNet WebGPU texture readback");
-	BufferDescriptor.size = BufferSize;
-	BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-	WGPUBuffer Buffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
-	if(Buffer == nullptr || !EnsureCommandEncoder())
+	// An export asks for the same picture every frame, so the slot's buffer
+	// is made once and only a bigger one than last time costs anything.
+	if(Slot.m_BufferSize < BufferSize)
 	{
-		if(Buffer != nullptr)
-			wgpuBufferRelease(Buffer);
-		return false;
+		ReleaseReadbackBuffer(Slot);
+		WGPUBufferDescriptor BufferDescriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+		BufferDescriptor.label = StringView("DDNet WebGPU texture readback");
+		BufferDescriptor.size = BufferSize;
+		BufferDescriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+		Slot.m_Buffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
+		if(Slot.m_Buffer == nullptr)
+			return false;
+		Slot.m_BufferSize = BufferSize;
+		m_pStagingMemoryUsage->fetch_add(BufferSize, std::memory_order_relaxed);
 	}
-	m_pStagingMemoryUsage->fetch_add(BufferSize, std::memory_order_relaxed);
+	if(!EnsureCommandEncoder())
+		return false;
 
 	EndRenderPass();
 	WGPUTexelCopyTextureInfo Source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -4112,65 +4146,63 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 	Source.origin = Origin;
 	Source.aspect = WGPUTextureAspect_All;
 	WGPUTexelCopyBufferInfo Destination = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-	Destination.buffer = Buffer;
+	Destination.buffer = Slot.m_Buffer;
 	Destination.layout.bytesPerRow = BytesPerRow;
 	Destination.layout.rowsPerImage = Height;
 	const WGPUExtent3D Extent{Width, Height, 1};
 	wgpuCommandEncoderCopyTextureToBuffer(m_CommandEncoder, &Source, &Destination, &Extent);
 	if(!SubmitCommands())
-	{
-		wgpuBufferRelease(Buffer);
-		m_pStagingMemoryUsage->fetch_sub(BufferSize, std::memory_order_relaxed);
 		return false;
-	}
 
-	SPendingReadback Pending;
-	Pending.m_Buffer = Buffer;
-	Pending.m_BufferSize = BufferSize;
-	Pending.m_BytesPerRow = BytesPerRow;
-	Pending.m_Width = Width;
-	Pending.m_Height = Height;
-	Pending.m_BGRA = BGRA;
-	Pending.m_OpaqueAlpha = OpaqueAlpha;
-	Pending.m_pResult = pResult;
-	Pending.m_pMapResult = std::make_shared<SMapResult>();
-
-	WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
-	CallbackInfo.callback = MapCallback;
-	CallbackInfo.userdata1 = new std::shared_ptr<SMapResult>(Pending.m_pMapResult);
-	wgpuBufferMapAsync(Buffer, WGPUMapMode_Read, 0, BufferSize, CallbackInfo);
-	m_vPendingReadbacks.push_back(std::move(Pending));
+	Slot.m_BytesPerRow = BytesPerRow;
+	Slot.m_Width = Width;
+	Slot.m_Height = Height;
+	Slot.m_BGRA = BGRA;
+	Slot.m_OpaqueAlpha = OpaqueAlpha;
+	Slot.m_pResult = pResult;
+	MapAsync(Slot.m_Buffer, Slot.MappedSize(), Slot.m_MapResult);
+	++m_ReadbackCount;
 	return true;
 }
 
-void CCommandProcessorFragment_WebGpu::FinishReadback(SPendingReadback &Pending)
+void CCommandProcessorFragment_WebGpu::ReleaseReadbackBuffer(SReadbackSlot &Slot)
 {
-	CCommandBuffer::SImageReadbackResult *pResult = Pending.m_pResult;
-	if(Pending.m_pMapResult->m_Status == WGPUMapAsyncStatus_Success)
+	if(Slot.m_Buffer == nullptr)
+		return;
+	wgpuBufferRelease(Slot.m_Buffer);
+	m_pStagingMemoryUsage->fetch_sub(Slot.m_BufferSize, std::memory_order_relaxed);
+	Slot.m_Buffer = nullptr;
+	Slot.m_BufferSize = 0;
+}
+
+void CCommandProcessorFragment_WebGpu::FinishReadback(SReadbackSlot &Slot)
+{
+	CCommandBuffer::SImageReadbackResult *pResult = Slot.m_pResult;
+	if(Slot.m_MapResult.m_Done && Slot.m_MapResult.m_Status == WGPUMapAsyncStatus_Success)
 	{
-		const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Pending.m_Buffer, 0, Pending.m_BufferSize));
-		if(pMappedData != nullptr && pResult->m_Image.TryReuse(Pending.m_Width, Pending.m_Height, CImageInfo::FORMAT_RGBA))
+		const auto *pMappedData = static_cast<const uint8_t *>(wgpuBufferGetConstMappedRange(Slot.m_Buffer, 0, Slot.MappedSize()));
+		if(pMappedData != nullptr && pResult->m_Image.TryReuse(Slot.m_Width, Slot.m_Height, CImageInfo::FORMAT_RGBA))
 		{
-			for(uint32_t Y = 0; Y < Pending.m_Height; ++Y)
+			for(uint32_t Y = 0; Y < Slot.m_Height; ++Y)
 			{
-				const uint8_t *pSource = pMappedData + static_cast<size_t>(Y) * Pending.m_BytesPerRow;
-				uint8_t *pDestination = pResult->m_Image.m_pData + static_cast<size_t>(Y) * Pending.m_Width * 4;
-				for(uint32_t X = 0; X < Pending.m_Width; ++X)
+				const uint8_t *pSource = pMappedData + static_cast<size_t>(Y) * Slot.m_BytesPerRow;
+				uint8_t *pDestination = pResult->m_Image.m_pData + static_cast<size_t>(Y) * Slot.m_Width * 4;
+				for(uint32_t X = 0; X < Slot.m_Width; ++X)
 				{
-					pDestination[X * 4] = pSource[X * 4 + (Pending.m_BGRA ? 2 : 0)];
+					pDestination[X * 4] = pSource[X * 4 + (Slot.m_BGRA ? 2 : 0)];
 					pDestination[X * 4 + 1] = pSource[X * 4 + 1];
-					pDestination[X * 4 + 2] = pSource[X * 4 + (Pending.m_BGRA ? 0 : 2)];
-					pDestination[X * 4 + 3] = Pending.m_OpaqueAlpha ? 255 : pSource[X * 4 + 3];
+					pDestination[X * 4 + 2] = pSource[X * 4 + (Slot.m_BGRA ? 0 : 2)];
+					pDestination[X * 4 + 3] = Slot.m_OpaqueAlpha ? 255 : pSource[X * 4 + 3];
 				}
 			}
 			pResult->m_Ok = true;
 		}
-		wgpuBufferUnmap(Pending.m_Buffer);
+		wgpuBufferUnmap(Slot.m_Buffer);
 	}
-	wgpuBufferRelease(Pending.m_Buffer);
-	m_pStagingMemoryUsage->fetch_sub(Pending.m_BufferSize, std::memory_order_relaxed);
-	Pending.m_Buffer = nullptr;
+	// A mapping that never arrived is still on its way to this buffer, so
+	// the slot cannot have it back; the next readback makes another one.
+	if(!Slot.m_MapResult.m_Done)
+		ReleaseReadbackBuffer(Slot);
 	if(!pResult->m_Ok)
 		log_warn("gfx/webgpu", "texture readback failed");
 	pResult->Signal();
@@ -4178,38 +4210,36 @@ void CCommandProcessorFragment_WebGpu::FinishReadback(SPendingReadback &Pending)
 
 bool CCommandProcessorFragment_WebGpu::FinishOldestReadback()
 {
-	if(m_vPendingReadbacks.empty())
+	if(m_ReadbackCount == 0)
 		return true;
-	SPendingReadback Pending = std::move(m_vPendingReadbacks.front());
-	m_vPendingReadbacks.erase(m_vPendingReadbacks.begin());
-	const bool Mapped = ProcessUntilDone(*Pending.m_pMapResult, "map texture readback", FRAME_TIMEOUT);
-	FinishReadback(Pending);
+	SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+	m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+	--m_ReadbackCount;
+	const bool Mapped = ProcessUntilDone(Slot.m_MapResult, "map texture readback", FRAME_TIMEOUT);
+	FinishReadback(Slot);
 	return Mapped;
 }
 
 void CCommandProcessorFragment_WebGpu::CollectFinishedReadbacks()
 {
-	if(m_vPendingReadbacks.empty())
+	if(m_ReadbackCount == 0)
 		return;
 	wgpuInstanceProcessEvents(m_Instance);
-	auto It = m_vPendingReadbacks.begin();
-	while(It != m_vPendingReadbacks.end())
+	// The queue finishes them in order, so a readback that is not there yet
+	// means none behind it is either.
+	while(m_ReadbackCount != 0 && m_aReadbackSlots[m_ReadbackHead].m_MapResult.m_Done)
 	{
-		if(!It->m_pMapResult->m_Done)
-		{
-			// The queue finishes them in order, so a readback that is
-			// not there yet means none behind it is either.
-			break;
-		}
-		FinishReadback(*It);
-		It = m_vPendingReadbacks.erase(It);
+		SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+		m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+		--m_ReadbackCount;
+		FinishReadback(Slot);
 	}
 }
 
 bool CCommandProcessorFragment_WebGpu::FinishReadbacks()
 {
 	bool Ok = true;
-	while(!m_vPendingReadbacks.empty())
+	while(m_ReadbackCount != 0)
 	{
 		if(!FinishOldestReadback())
 			Ok = false;
@@ -4219,16 +4249,15 @@ bool CCommandProcessorFragment_WebGpu::FinishReadbacks()
 
 void CCommandProcessorFragment_WebGpu::AbandonReadbacks()
 {
-	for(SPendingReadback &Pending : m_vPendingReadbacks)
+	while(m_ReadbackCount != 0)
 	{
-		if(Pending.m_Buffer != nullptr)
-		{
-			wgpuBufferRelease(Pending.m_Buffer);
-			m_pStagingMemoryUsage->fetch_sub(Pending.m_BufferSize, std::memory_order_relaxed);
-		}
-		Pending.m_pResult->Signal();
+		SReadbackSlot &Slot = m_aReadbackSlots[m_ReadbackHead];
+		m_ReadbackHead = (m_ReadbackHead + 1) % READBACK_SLOT_COUNT;
+		--m_ReadbackCount;
+		Slot.m_pResult->Signal();
 	}
-	m_vPendingReadbacks.clear();
+	for(SReadbackSlot &Slot : m_aReadbackSlots)
+		ReleaseReadbackBuffer(Slot);
 }
 
 void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand)

@@ -594,11 +594,11 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	void DestroyDrawResources();
 
-	bool CreateTexture(const CCommandBuffer::SCommand_Texture_Create *pCommand);
+	bool Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand);
 
-	bool UpdateTexture(const CCommandBuffer::SCommand_Texture_Update *pCommand);
+	bool Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand);
 
-	void DestroyTexture(IGraphics::CTextureHandle Handle);
+	void Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand);
 
 	void ReleaseBuffer(SBuffer &Buffer);
 
@@ -606,9 +606,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool CreateNativeBuffer(SBuffer &Buffer, const IGraphics::CBufferDesc &Desc, const void *pData);
 
-	bool CreateBuffer(const CCommandBuffer::SCommand_CreateBufferObject *pCommand);
+	bool Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand);
 
-	bool RecreateBuffer(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand);
+	bool Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand);
 
 	void DestroyGpuTimestampResources();
 
@@ -622,7 +622,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool EnsureCommandEncoder();
 
-	bool DestroyBuffer(IGraphics::CBufferHandle Handle);
+	bool Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand);
 
 	STexture *RenderTarget();
 
@@ -649,9 +649,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool WriteQuadTransforms(const CCommandBuffer::SDrawDataQuadTransform *pData, uint32_t Count, uint32_t &Offset);
 
-	bool Draw(const CCommandBuffer::SCommand_Draw *pCommand);
+	bool Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand);
 
-	bool DrawBuffered(const CCommandBuffer::SCommand_DrawIndexed *pCommand);
+	bool Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand);
 
 	WGPUSurface CreateSurface() const;
 
@@ -722,9 +722,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	// Releases callers that will never get their picture.
 	void AbandonReadbacks();
 
-	void PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand);
+	void Cmd_PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand);
 
-	void TextureReadback(const CCommandBuffer::SCommand_Texture_Readback *pCommand);
+	void Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand);
 
 	void DiscardFrame();
 
@@ -734,11 +734,25 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 
 	bool AcquireFrame();
 
-	bool Clear(const CCommandBuffer::SCommand_Clear *pCommand);
+	bool Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand);
 
-	bool Present(bool PaceWithDisplay);
+	bool Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand);
 
-	bool Initialize(const SCommand_Init *pCommand);
+	bool Cmd_Init(const SCommand_Init *pCommand);
+
+	void Cmd_PreInit(const SCommand_PreInit *pCommand);
+
+	bool Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand);
+
+	bool Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand);
+
+	void Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand);
+
+	void Cmd_MultiSampling(const CCommandBuffer::SCommand_MultiSampling *pCommand);
+
+	bool Cmd_WindowCreateNtf();
+
+	bool Cmd_WindowDestroyNtf();
 
 	void Cleanup();
 
@@ -1067,15 +1081,24 @@ bool CCommandProcessorFragment_WebGpu::SubmitCommands(bool EndsFrame, bool Publi
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Clear(const CCommandBuffer::SCommand_Clear *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Clear(const CCommandBuffer::SCommand_Clear *pCommand)
 {
 	EndRenderPass();
 	m_RenderPassLoadOp = WGPULoadOp_Clear;
 	m_RenderPassClearColor = {pCommand->m_Color.r, pCommand->m_Color.g, pCommand->m_Color.b, pCommand->m_Color.a};
-	return EnsureRenderPass() || m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
+	// A pass that cannot be opened without saying why is a frame with nothing
+	// drawn on it, which the next one puts right; one that set an error is the
+	// end of the renderer, and nothing after it could be recorded anyway.
+	(void)EnsureRenderPass();
+	if(m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
+	{
+		Cleanup();
+		return false;
+	}
+	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 {
 	m_Presentation = pCommand->m_Surface;
 	const SWebGpuNativeWindow &NativeWindow = this->NativeWindow();
@@ -1323,6 +1346,107 @@ void CCommandProcessorFragment_WebGpu::Cleanup()
 	m_Instance = nullptr;
 }
 
+void CCommandProcessorFragment_WebGpu::Cmd_PreInit(const SCommand_PreInit *pCommand)
+{
+	str_copy(pCommand->m_pVendorString, WEBGPU_IMPLEMENTATION_NAME, 256);
+	str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
+	str_copy(pCommand->m_pRendererString, "pending adapter selection", 256);
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand)
+{
+	m_ViewportX = std::max(pCommand->m_X, 0);
+	m_ViewportY = std::max(pCommand->m_Y, 0);
+	m_ViewportWidth = std::max(pCommand->m_Width, 0);
+	m_ViewportHeight = std::max(pCommand->m_Height, 0);
+	m_PartialViewport = !pCommand->m_ByResize && (pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight);
+	if(!pCommand->m_ByResize)
+		return true;
+	const uint32_t SurfaceWidth = pCommand->m_SurfaceWidth > 0 ? pCommand->m_SurfaceWidth : 0;
+	const uint32_t SurfaceHeight = pCommand->m_SurfaceHeight > 0 ? pCommand->m_SurfaceHeight : 0;
+	const bool Minimized = SurfaceWidth == 0 || SurfaceHeight == 0;
+	if(SurfaceWidth == m_SurfaceWidth && SurfaceHeight == m_SurfaceHeight && Minimized == m_Minimized)
+		return true;
+	if(m_CommandEncoder != nullptr && !SubmitCommands())
+		return false;
+	DiscardFrame();
+	m_SurfaceWidth = SurfaceWidth;
+	m_SurfaceHeight = SurfaceHeight;
+	m_Minimized = Minimized;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_BeginRenderPass(const CCommandBuffer::SCommand_BeginRenderPass *pCommand)
+{
+	EndRenderPass();
+	m_RenderTarget.Invalidate();
+	if(pCommand->m_Desc.m_ColorTarget.IsValid())
+	{
+		const auto Target = pCommand->m_Desc.m_ColorTarget;
+		if(!m_TextureHandles.IsActive(Target) || static_cast<size_t>(Target.Id()) >= m_vTextures.size() || (m_vTextures[Target.Id()].m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0)
+			return true;
+		m_RenderTarget = Target;
+	}
+	m_RenderPassLoadOp = WGPULoadOp_Clear;
+	const ColorRGBA ClearColor = pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR ? pCommand->m_Desc.m_ClearColor : ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
+	m_RenderPassClearColor = {ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a};
+	// A pass on the presentation target opens with the first thing drawn on
+	// it, the same way the one a swap leaves behind does. An export frame is
+	// handed this pass and then renders offscreen: acquiring the canvas for it
+	// would hold the surface texture across the readback wait, and what the
+	// browser composites when that wait gives it its turn is the empty frame
+	// this pass cleared.
+	if(m_RenderTarget.IsValid() && !EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
+		SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to begin a render pass");
+	return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
+}
+
+void CCommandProcessorFragment_WebGpu::Cmd_VSync(const CCommandBuffer::SCommand_VSync *pCommand)
+{
+	pCommand->m_pResult->m_Ok = false;
+	const WGPUPresentMode Requested = pCommand->m_VSync ? WGPUPresentMode_Fifo : (m_SupportsImmediate ? WGPUPresentMode_Immediate : WGPUPresentMode_Mailbox);
+	if(!SupportsPresentMode(Requested))
+		return;
+	m_PresentMode = Requested;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	pCommand->m_pResult->m_Ok = true;
+}
+
+void CCommandProcessorFragment_WebGpu::Cmd_MultiSampling(const CCommandBuffer::SCommand_MultiSampling *pCommand)
+{
+	m_NextMultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
+	pCommand->m_pResult->m_MultiSamplingCount = m_NextMultiSamplingCount;
+	pCommand->m_pResult->m_Ok = true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_WindowCreateNtf()
+{
+	log_info("gfx/webgpu", "surface resumed");
+	// The window may be a different one now, and a surface built on the old
+	// one is not usable anymore. The SDL backend has already read the new one
+	// by the time this arrives.
+	if(!RecreateSurface())
+		return false;
+	m_Minimized = false;
+	m_SurfaceDirty = true;
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::Cmd_WindowDestroyNtf()
+{
+	log_info("gfx/webgpu", "surface suspended");
+	if(m_CommandEncoder != nullptr && !SubmitCommands())
+		return false;
+	DiscardFrame();
+	m_Minimized = true;
+	m_SurfaceDirty = true;
+	ConfigureIfNeeded();
+	return true;
+}
+
 ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CCommandBuffer::SCommand *pBaseCommand)
 {
 	if(m_Instance != nullptr && pBaseCommand->m_Cmd == CCommandBuffer::CMD_SWAP)
@@ -1346,20 +1470,26 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		Cleanup();
 		return RUN_COMMAND_COMMAND_ERROR;
 	}
+
+	auto CommandResult = [](bool Success) {
+		return Success ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+	};
+	// A draw that came back without saying what went wrong failed recording.
+	auto DrawResult = [this](bool Drawn, const char *pMessage) {
+		if(!Drawn && m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, pMessage);
+		return Drawn ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+	};
+
 	switch(pBaseCommand->m_Cmd)
 	{
 	case CMD_PRE_INIT:
-	{
-		auto *pCommand = static_cast<const SCommand_PreInit *>(pBaseCommand);
-		str_copy(pCommand->m_pVendorString, WEBGPU_IMPLEMENTATION_NAME, 256);
-		str_copy(pCommand->m_pVersionString, WEBGPU_IMPLEMENTATION_VERSION, 256);
-		str_copy(pCommand->m_pRendererString, "pending adapter selection", 256);
+		Cmd_PreInit(static_cast<const SCommand_PreInit *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	case CMD_INIT:
 	{
 		const auto *pCommand = static_cast<const SCommand_Init *>(pBaseCommand);
-		if(Initialize(pCommand))
+		if(Cmd_Init(pCommand))
 			return RUN_COMMAND_COMMAND_HANDLED;
 		*pCommand->m_pInitError = -1;
 		if(m_ErrorMessage.empty())
@@ -1370,92 +1500,25 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		m_Warning.m_WarningType = GFX_WARNING_TYPE_INIT_FAILED;
 		return RUN_COMMAND_COMMAND_WARNING;
 	}
-	case CCommandBuffer::CMD_FINISH_READBACKS:
-		if(!FinishReadbacks())
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
 	case CMD_SHUTDOWN:
 		Cleanup();
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CMD_POST_SHUTDOWN:
-		return RUN_COMMAND_COMMAND_HANDLED;
+	case CMD_POST_SHUTDOWN: return RUN_COMMAND_COMMAND_HANDLED;
+	case CCommandBuffer::CMD_FINISH_READBACKS: return CommandResult(FinishReadbacks());
 	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
-	case CCommandBuffer::CMD_DRAW_VIEWPORT:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand);
-		m_ViewportX = std::max(pCommand->m_X, 0);
-		m_ViewportY = std::max(pCommand->m_Y, 0);
-		m_ViewportWidth = std::max(pCommand->m_Width, 0);
-		m_ViewportHeight = std::max(pCommand->m_Height, 0);
-		m_PartialViewport = !pCommand->m_ByResize && (pCommand->m_X != 0 || pCommand->m_Y != 0 || pCommand->m_Width != pCommand->m_SurfaceWidth || pCommand->m_Height != pCommand->m_SurfaceHeight);
-		if(pCommand->m_ByResize)
-		{
-			const uint32_t SurfaceWidth = pCommand->m_SurfaceWidth > 0 ? pCommand->m_SurfaceWidth : 0;
-			const uint32_t SurfaceHeight = pCommand->m_SurfaceHeight > 0 ? pCommand->m_SurfaceHeight : 0;
-			const bool Minimized = SurfaceWidth == 0 || SurfaceHeight == 0;
-			if(SurfaceWidth != m_SurfaceWidth || SurfaceHeight != m_SurfaceHeight || Minimized != m_Minimized)
-			{
-				if(m_CommandEncoder != nullptr && !SubmitCommands())
-					return RUN_COMMAND_COMMAND_ERROR;
-				DiscardFrame();
-				m_SurfaceWidth = SurfaceWidth;
-				m_SurfaceHeight = SurfaceHeight;
-				m_Minimized = Minimized;
-				m_SurfaceDirty = true;
-				ConfigureIfNeeded();
-			}
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	}
-	case CCommandBuffer::CMD_TEXTURE_CREATE:
-		if(!CreateTexture(static_cast<const CCommandBuffer::SCommand_Texture_Create *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_TEXTURE_UPDATE:
-		if(!UpdateTexture(static_cast<const CCommandBuffer::SCommand_Texture_Update *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
+	case CCommandBuffer::CMD_DRAW_VIEWPORT: return CommandResult(Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand)));
+	case CCommandBuffer::CMD_TEXTURE_CREATE: return CommandResult(Cmd_Texture_Create(static_cast<const CCommandBuffer::SCommand_Texture_Create *>(pBaseCommand)));
+	case CCommandBuffer::CMD_TEXTURE_UPDATE: return CommandResult(Cmd_Texture_Update(static_cast<const CCommandBuffer::SCommand_Texture_Update *>(pBaseCommand)));
 	case CCommandBuffer::CMD_TEXTURE_READBACK:
-		TextureReadback(static_cast<const CCommandBuffer::SCommand_Texture_Readback *>(pBaseCommand));
+		Cmd_Texture_Readback(static_cast<const CCommandBuffer::SCommand_Texture_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_TEXTURE_DESTROY:
-		DestroyTexture(static_cast<const CCommandBuffer::SCommand_Texture_Destroy *>(pBaseCommand)->m_Texture);
+		Cmd_Texture_Destroy(static_cast<const CCommandBuffer::SCommand_Texture_Destroy *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_CREATE_BUFFER_OBJECT:
-		if(!CreateBuffer(static_cast<const CCommandBuffer::SCommand_CreateBufferObject *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_RECREATE_BUFFER_OBJECT:
-		if(!RecreateBuffer(static_cast<const CCommandBuffer::SCommand_RecreateBufferObject *>(pBaseCommand)))
-			return RUN_COMMAND_COMMAND_ERROR;
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_DELETE_BUFFER_OBJECT:
-		return DestroyBuffer(static_cast<const CCommandBuffer::SCommand_DeleteBufferObject *>(pBaseCommand)->m_Buffer) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	case CCommandBuffer::CMD_BEGIN_RENDER_PASS:
-	{
-		const auto *pCommand = static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand);
-		EndRenderPass();
-		m_RenderTarget.Invalidate();
-		if(pCommand->m_Desc.m_ColorTarget.IsValid())
-		{
-			const auto Target = pCommand->m_Desc.m_ColorTarget;
-			if(!m_TextureHandles.IsActive(Target) || static_cast<size_t>(Target.Id()) >= m_vTextures.size() || (m_vTextures[Target.Id()].m_Usage & IGraphics::TEXTURE_USAGE_COLOR_TARGET) == 0)
-				return RUN_COMMAND_COMMAND_HANDLED;
-			m_RenderTarget = Target;
-		}
-		m_RenderPassLoadOp = WGPULoadOp_Clear;
-		const ColorRGBA ClearColor = pCommand->m_Desc.m_LoadOp == IGraphics::ERenderPassLoadOp::CLEAR ? pCommand->m_Desc.m_ClearColor : ColorRGBA(0.0f, 0.0f, 0.0f, 0.0f);
-		m_RenderPassClearColor = {ClearColor.r, ClearColor.g, ClearColor.b, ClearColor.a};
-		// A pass on the presentation target opens with the first thing
-		// drawn on it, the same way the one a swap leaves behind does.
-		// An export frame is handed this pass and then renders offscreen:
-		// acquiring the canvas for it would hold the surface texture
-		// across the readback wait, and what the browser composites when
-		// that wait gives it its turn is the empty frame this pass cleared.
-		if(m_RenderTarget.IsValid() && !EnsureRenderPass() && m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
-			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to begin a render pass");
-		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	}
+	case CCommandBuffer::CMD_CREATE_BUFFER_OBJECT: return CommandResult(Cmd_CreateBufferObject(static_cast<const CCommandBuffer::SCommand_CreateBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_RECREATE_BUFFER_OBJECT: return CommandResult(Cmd_RecreateBufferObject(static_cast<const CCommandBuffer::SCommand_RecreateBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_DELETE_BUFFER_OBJECT: return CommandResult(Cmd_DeleteBufferObject(static_cast<const CCommandBuffer::SCommand_DeleteBufferObject *>(pBaseCommand)));
+	case CCommandBuffer::CMD_BEGIN_RENDER_PASS: return CommandResult(Cmd_BeginRenderPass(static_cast<const CCommandBuffer::SCommand_BeginRenderPass *>(pBaseCommand)));
 	case CCommandBuffer::CMD_END_RENDER_PASS:
 		EndRenderPass();
 		m_RenderTarget.Invalidate();
@@ -1463,82 +1526,25 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CCommandBuffer::CMD_FLUSH_RENDER_PASS:
 		EndRenderPass();
 		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_CLEAR:
-		if(!Clear(static_cast<const CCommandBuffer::SCommand_Clear *>(pBaseCommand)))
-			SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record the clear pass");
-		if(m_Error.m_ErrorType != GFX_ERROR_TYPE_NONE)
-			Cleanup();
-		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
-	case CCommandBuffer::CMD_DRAW:
-		if(!Draw(static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand)))
-		{
-			if(m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record an immediate draw");
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_DRAW_INDEXED:
-	{
-		const bool Drawn = DrawBuffered(static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand));
-		if(!Drawn)
-		{
-			if(m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
-				SetError(GFX_ERROR_TYPE_RENDER_RECORDING, "WebGPU failed to record a transient draw");
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	}
+	case CCommandBuffer::CMD_CLEAR: return CommandResult(Cmd_Clear(static_cast<const CCommandBuffer::SCommand_Clear *>(pBaseCommand)));
+	case CCommandBuffer::CMD_DRAW: return DrawResult(Cmd_Draw(static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand)), "WebGPU failed to record an immediate draw");
+	case CCommandBuffer::CMD_DRAW_INDEXED: return DrawResult(Cmd_DrawIndexed(static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand)), "WebGPU failed to record a transient draw");
 	case CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK:
-		PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
+		Cmd_PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_SWAP:
-		if(!Present(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)->m_PaceWithDisplay))
-		{
-			Cleanup();
-			return RUN_COMMAND_COMMAND_ERROR;
-		}
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF:
-		log_info("gfx/webgpu", "surface suspended");
-		if(m_CommandEncoder != nullptr && !SubmitCommands())
-			return RUN_COMMAND_COMMAND_ERROR;
-		DiscardFrame();
-		m_Minimized = true;
-		m_SurfaceDirty = true;
-		ConfigureIfNeeded();
-		return RUN_COMMAND_COMMAND_HANDLED;
-	case CCommandBuffer::CMD_WINDOW_CREATE_NTF:
-		log_info("gfx/webgpu", "surface resumed");
-		// The window may be a different one now, and a surface built
-		// on the old one is not usable anymore. The SDL backend has
-		// already read the new one by the time this arrives.
-		if(!RecreateSurface())
-			return RUN_COMMAND_COMMAND_ERROR;
-		m_Minimized = false;
-		m_SurfaceDirty = true;
-		return RUN_COMMAND_COMMAND_HANDLED;
+		if(Cmd_Swap(static_cast<const CCommandBuffer::SCommand_Swap *>(pBaseCommand)))
+			return RUN_COMMAND_COMMAND_HANDLED;
+		Cleanup();
+		return RUN_COMMAND_COMMAND_ERROR;
+	case CCommandBuffer::CMD_WINDOW_DESTROY_NTF: return CommandResult(Cmd_WindowDestroyNtf());
+	case CCommandBuffer::CMD_WINDOW_CREATE_NTF: return CommandResult(Cmd_WindowCreateNtf());
 	case CCommandBuffer::CMD_VSYNC:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand);
-		pCommand->m_pResult->m_Ok = false;
-		const WGPUPresentMode Requested = pCommand->m_VSync ? WGPUPresentMode_Fifo : (m_SupportsImmediate ? WGPUPresentMode_Immediate : WGPUPresentMode_Mailbox);
-		if(SupportsPresentMode(Requested))
-		{
-			m_PresentMode = Requested;
-			m_SurfaceDirty = true;
-			ConfigureIfNeeded();
-			pCommand->m_pResult->m_Ok = true;
-		}
+		Cmd_VSync(static_cast<const CCommandBuffer::SCommand_VSync *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	case CCommandBuffer::CMD_MULTISAMPLING:
-	{
-		auto *pCommand = static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand);
-		m_NextMultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
-		pCommand->m_pResult->m_MultiSamplingCount = m_NextMultiSamplingCount;
-		pCommand->m_pResult->m_Ok = true;
+		Cmd_MultiSampling(static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
-	}
 	default:
 		return RUN_COMMAND_COMMAND_UNHANDLED;
 	}
@@ -1968,7 +1974,7 @@ bool CCommandProcessorFragment_WebGpu::AcquireFrame()
 	return false;
 }
 
-bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
+bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand)
 {
 	const bool DrewToScreen = m_ScreenTouched;
 	m_ScreenTouched = false;
@@ -2124,7 +2130,7 @@ bool CCommandProcessorFragment_WebGpu::CreateNativeBuffer(SBuffer &Buffer, const
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::CreateBuffer(const CCommandBuffer::SCommand_CreateBufferObject *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_CreateBufferObject(const CCommandBuffer::SCommand_CreateBufferObject *pCommand)
 {
 	if(!m_BufferHandles.Activate(pCommand->m_Buffer))
 		return true;
@@ -2142,7 +2148,7 @@ bool CCommandProcessorFragment_WebGpu::CreateBuffer(const CCommandBuffer::SComma
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::RecreateBuffer(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_RecreateBufferObject(const CCommandBuffer::SCommand_RecreateBufferObject *pCommand)
 {
 	if(!m_BufferHandles.IsActive(pCommand->m_Buffer) || static_cast<size_t>(pCommand->m_Buffer.Id()) >= m_vBuffers.size())
 		return true;
@@ -2161,8 +2167,9 @@ bool CCommandProcessorFragment_WebGpu::RecreateBuffer(const CCommandBuffer::SCom
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::DestroyBuffer(IGraphics::CBufferHandle Handle)
+bool CCommandProcessorFragment_WebGpu::Cmd_DeleteBufferObject(const CCommandBuffer::SCommand_DeleteBufferObject *pCommand)
 {
+	const IGraphics::CBufferHandle Handle = pCommand->m_Buffer;
 	if(!m_BufferHandles.IsActive(Handle) || static_cast<size_t>(Handle.Id()) >= m_vBuffers.size())
 		return true;
 	if(!SubmitCommands())
@@ -2604,7 +2611,7 @@ bool CCommandProcessorFragment_WebGpu::GenerateMipmaps(WGPUTexture Texture, IGra
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SCommand_Texture_Create *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Texture_Create(const CCommandBuffer::SCommand_Texture_Create *pCommand)
 {
 	const auto &Desc = pCommand->m_Desc;
 	const bool CreateArray = Desc.m_Layering == IGraphics::ETextureLayering::LAYERED;
@@ -2690,7 +2697,7 @@ bool CCommandProcessorFragment_WebGpu::CreateTexture(const CCommandBuffer::SComm
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::UpdateTexture(const CCommandBuffer::SCommand_Texture_Update *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Texture_Update(const CCommandBuffer::SCommand_Texture_Update *pCommand)
 {
 	if(!m_TextureHandles.IsActive(pCommand->m_Texture) || static_cast<size_t>(pCommand->m_Texture.Id()) >= m_vTextures.size())
 		return true;
@@ -2713,8 +2720,9 @@ bool CCommandProcessorFragment_WebGpu::UpdateTexture(const CCommandBuffer::SComm
 	return true;
 }
 
-void CCommandProcessorFragment_WebGpu::DestroyTexture(IGraphics::CTextureHandle Handle)
+void CCommandProcessorFragment_WebGpu::Cmd_Texture_Destroy(const CCommandBuffer::SCommand_Texture_Destroy *pCommand)
 {
+	const IGraphics::CTextureHandle Handle = pCommand->m_Texture;
 	if(!m_TextureHandles.IsActive(Handle) || static_cast<size_t>(Handle.Id()) >= m_vTextures.size())
 		return;
 	if(m_RenderTarget == Handle)
@@ -3868,7 +3876,7 @@ bool CCommandProcessorFragment_WebGpu::WriteQuadTransforms(const CCommandBuffer:
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_Draw(const CCommandBuffer::SCommand_Draw *pCommand)
 {
 	EPipelineProgram Program;
 	if(Program = pCommand->m_Program; (Program != EPipelineProgram::PRIMITIVE && Program != EPipelineProgram::PRIMITIVE_TEXTURE_ARRAY && Program != EPipelineProgram::BLUR && Program != EPipelineProgram::PLANAR_YUV))
@@ -3945,7 +3953,7 @@ bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw 
 	return true;
 }
 
-bool CCommandProcessorFragment_WebGpu::DrawBuffered(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
+bool CCommandProcessorFragment_WebGpu::Cmd_DrawIndexed(const CCommandBuffer::SCommand_DrawIndexed *pCommand)
 {
 	if(pCommand->m_Program >= EPipelineProgram::COUNT || !m_BufferHandles.IsActive(pCommand->m_VertexBuffer) || !m_BufferHandles.IsActive(pCommand->m_IndexBuffer) || static_cast<size_t>(pCommand->m_IndexBuffer.Id()) >= m_vBuffers.size())
 		return true;
@@ -4272,7 +4280,7 @@ void CCommandProcessorFragment_WebGpu::AbandonReadbacks()
 		ReleaseReadbackBuffer(Slot);
 }
 
-void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand)
+void CCommandProcessorFragment_WebGpu::Cmd_PresentationTargetReadback(const CCommandBuffer::SCommand_PresentationTarget_Readback *pCommand)
 {
 	auto &Result = *pCommand->m_pResult;
 	Result.m_Ok = false;
@@ -4322,7 +4330,7 @@ void CCommandProcessorFragment_WebGpu::PresentationTargetReadback(const CCommand
 	pCommand->m_pCompletion = nullptr;
 }
 
-void CCommandProcessorFragment_WebGpu::TextureReadback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
+void CCommandProcessorFragment_WebGpu::Cmd_Texture_Readback(const CCommandBuffer::SCommand_Texture_Readback *pCommand)
 {
 	auto &Result = *pCommand->m_pResult;
 	Result.m_Ok = false;

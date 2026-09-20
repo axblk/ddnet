@@ -1084,7 +1084,7 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	}
 	m_SurfaceWidth = pCommand->m_Surface.m_Width;
 	m_SurfaceHeight = pCommand->m_Surface.m_Height;
-	m_MultiSamplingCount = pCommand->m_RequestedMultiSamplingCount >= 2 ? 4 : 0;
+	m_MultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
 	m_NextMultiSamplingCount = m_MultiSamplingCount;
 	const char *pBackendName = "auto";
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -1522,7 +1522,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CCommandBuffer::CMD_MULTISAMPLING:
 	{
 		auto *pCommand = static_cast<const CCommandBuffer::SCommand_MultiSampling *>(pBaseCommand);
-		m_NextMultiSamplingCount = pCommand->m_RequestedMultiSamplingCount >= 2 ? 4 : 0;
+		m_NextMultiSamplingCount = WebGpuMultiSamplingCount(pCommand->m_RequestedMultiSamplingCount);
 		pCommand->m_pResult->m_MultiSamplingCount = m_NextMultiSamplingCount;
 		pCommand->m_pResult->m_Ok = true;
 		return RUN_COMMAND_COMMAND_HANDLED;

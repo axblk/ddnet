@@ -931,6 +931,13 @@ private:
 	std::vector<SSwapChainMultiSampleImage> m_vSwapChainMultiSamplingImages;
 	std::vector<VkFramebuffer> m_vFramebufferList;
 	std::vector<VkCommandBuffer> m_vMainDrawCommandBuffers;
+	// A readback submits the slot's draw buffer mid-frame, but the frame is not
+	// over - the acquired image is still owed a present. The rest of it records
+	// into this second buffer, which is what lets the copy run on its own.
+	std::vector<VkCommandBuffer> m_vReadbackDrawCommandBuffers;
+	std::vector<bool> m_vUsingReadbackDrawCommandBuffer;
+	std::vector<VkFence> m_vReadbackFences;
+	std::vector<bool> m_vReadbackPending;
 
 	std::vector<VkCommandBuffer> m_vMemoryCommandBuffers;
 	std::vector<bool> m_vUsedMemoryCommandBuffer;
@@ -940,7 +947,9 @@ private:
 	// memory is not given back before then either. Nothing waits at the
 	// submit, and nothing waits for the whole queue.
 	std::vector<VkFence> m_vMemoryCommandBufferFences;
-	std::vector<bool> m_vMemoryCommandBufferPending;
+	// The fence a slot's memory command buffer is in flight on, which is not
+	// its own when a readback submit took the buffer along.
+	std::vector<VkFence> m_vMemoryCommandBufferPending;
 
 	std::vector<VkSemaphore> m_vQueueSubmitSemaphores;
 	std::vector<VkSemaphore> m_vBusyAcquireImageSemaphores;
@@ -1131,6 +1140,10 @@ protected:
 	[[nodiscard]] bool WaitForMemoryCommandBuffer(size_t Slot);
 
 	[[nodiscard]] bool WaitForFrameSlot();
+
+	// Waits for a slot's readback to land if one is still in flight, then hands
+	// the pixels over. The synchronous side of the asynchronous collection.
+	[[nodiscard]] bool WaitForReadback(size_t Slot);
 
 	[[nodiscard]] bool PrepareReadbackRecording();
 
@@ -2726,6 +2739,10 @@ void CCommandProcessorFragment_Vulkan::ErroneousCleanup()
 
 bool CCommandProcessorFragment_Vulkan::WaitForFrameSlot()
 {
+	// Whatever a readback left the slot recording into is done with here, so
+	// the next frame starts in the slot's first command buffer again.
+	if(m_CurImageIndex < m_vUsingReadbackDrawCommandBuffer.size())
+		m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] = false;
 	if(m_CurImageIndex >= m_vQueueSubmitFences.size())
 		return true;
 	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex], VK_TRUE, std::numeric_limits<uint64_t>::max());
@@ -2740,7 +2757,23 @@ bool CCommandProcessorFragment_Vulkan::WaitForFrameSlot()
 		return false;
 	// The readback that rode on this slot is finished with it, and the slot
 	// is about to be overwritten, so this is the last moment to read it.
-	return CollectReadbackSlot(m_CurImageIndex);
+	return WaitForReadback(m_CurImageIndex);
+}
+
+bool CCommandProcessorFragment_Vulkan::WaitForReadback(size_t Slot)
+{
+	if(Slot < m_vReadbackPending.size() && m_vReadbackPending[Slot])
+	{
+		m_vReadbackPending[Slot] = false;
+		const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vReadbackFences[Slot], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		if(WaitResult != VK_SUCCESS)
+		{
+			AbandonReadbackSlot(m_vReadbackSlots[Slot]);
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for the image readback failed.", CheckVulkanCriticalError(WaitResult));
+			return false;
+		}
+	}
+	return CollectReadbackSlot(Slot);
 }
 
 bool CCommandProcessorFragment_Vulkan::FlushRenderCommands()
@@ -3215,6 +3248,8 @@ void CCommandProcessorFragment_Vulkan::DestroyCommandPool()
 bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 {
 	m_vMainDrawCommandBuffers.resize(m_SwapChainImageCount);
+	m_vReadbackDrawCommandBuffers.resize(m_SwapChainImageCount);
+	m_vUsingReadbackDrawCommandBuffer.resize(m_SwapChainImageCount, false);
 	m_vMemoryCommandBuffers.resize(m_SwapChainImageCount);
 	m_vUsedMemoryCommandBuffer.resize(m_SwapChainImageCount, false);
 
@@ -3224,7 +3259,8 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 	AllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	AllocInfo.commandBufferCount = (uint32_t)m_vMainDrawCommandBuffers.size();
 
-	if(vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vMainDrawCommandBuffers.data()) != VK_SUCCESS)
+	if(vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vMainDrawCommandBuffers.data()) != VK_SUCCESS ||
+		vkAllocateCommandBuffers(m_VKDevice, &AllocInfo, m_vReadbackDrawCommandBuffers.data()) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Allocating command buffers failed.");
 		return false;
@@ -3239,13 +3275,16 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 	}
 
 	m_vMemoryCommandBufferFences.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
-	m_vMemoryCommandBufferPending.resize(m_SwapChainImageCount, false);
+	m_vMemoryCommandBufferPending.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
+	m_vReadbackFences.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
+	m_vReadbackPending.resize(m_SwapChainImageCount, false);
 	VkFenceCreateInfo FenceInfo{};
 	FenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	FenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-	for(auto &Fence : m_vMemoryCommandBufferFences)
+	for(size_t i = 0; i < m_SwapChainImageCount; ++i)
 	{
-		if(vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &Fence) != VK_SUCCESS)
+		if(vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &m_vMemoryCommandBufferFences[i]) != VK_SUCCESS ||
+			vkCreateFence(m_VKDevice, &FenceInfo, nullptr, &m_vReadbackFences[i]) != VK_SUCCESS)
 		{
 			SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating the memory command buffer fences failed.");
 			return false;
@@ -3258,18 +3297,28 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 void CCommandProcessorFragment_Vulkan::DestroyCommandBuffer()
 {
 	// Nothing is in flight here: the device was waited for before.
-	for(auto &Fence : m_vMemoryCommandBufferFences)
+	for(VkFence Fence : m_vMemoryCommandBufferFences)
+	{
+		if(Fence != VK_NULL_HANDLE)
+			vkDestroyFence(m_VKDevice, Fence, nullptr);
+	}
+	for(VkFence Fence : m_vReadbackFences)
 	{
 		if(Fence != VK_NULL_HANDLE)
 			vkDestroyFence(m_VKDevice, Fence, nullptr);
 	}
 	m_vMemoryCommandBufferFences.clear();
 	m_vMemoryCommandBufferPending.clear();
+	m_vReadbackFences.clear();
+	m_vReadbackPending.clear();
 
 	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vMemoryCommandBuffers.size()), m_vMemoryCommandBuffers.data());
 	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vMainDrawCommandBuffers.size()), m_vMainDrawCommandBuffers.data());
+	vkFreeCommandBuffers(m_VKDevice, m_CommandPool, static_cast<uint32_t>(m_vReadbackDrawCommandBuffers.size()), m_vReadbackDrawCommandBuffers.data());
 
 	m_vMainDrawCommandBuffers.clear();
+	m_vReadbackDrawCommandBuffers.clear();
+	m_vUsingReadbackDrawCommandBuffer.clear();
 	m_vMemoryCommandBuffers.clear();
 	m_vUsedMemoryCommandBuffer.clear();
 }
@@ -3372,7 +3421,9 @@ int CCommandProcessorFragment_Vulkan::InitVulkanOffscreenResources()
 
 VkCommandBuffer &CCommandProcessorFragment_Vulkan::GetMainGraphicCommandBuffer()
 {
-	return m_vMainDrawCommandBuffers[m_CurImageIndex];
+	// After a readback the slot's first buffer is still executing the copy, so
+	// the rest of the frame is recorded into the second one.
+	return m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] ? m_vReadbackDrawCommandBuffers[m_CurImageIndex] : m_vMainDrawCommandBuffers[m_CurImageIndex];
 }
 
 bool CCommandProcessorFragment_Vulkan::IsRenderCommandValid(const CCommandBuffer::SCommand *pCommand) const
@@ -5016,10 +5067,11 @@ EGfxErrorType CCommandProcessorFragment_Vulkan::MemoryErrorType(VkResult Result,
 
 bool CCommandProcessorFragment_Vulkan::WaitForMemoryCommandBuffer(size_t Slot)
 {
-	if(Slot >= m_vMemoryCommandBufferPending.size() || !m_vMemoryCommandBufferPending[Slot])
+	if(Slot >= m_vMemoryCommandBufferPending.size() || m_vMemoryCommandBufferPending[Slot] == VK_NULL_HANDLE)
 		return true;
-	m_vMemoryCommandBufferPending[Slot] = false;
-	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vMemoryCommandBufferFences[Slot], VK_TRUE, std::numeric_limits<uint64_t>::max());
+	VkFence Fence = m_vMemoryCommandBufferPending[Slot];
+	m_vMemoryCommandBufferPending[Slot] = VK_NULL_HANDLE;
+	const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &Fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
 	if(WaitResult != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for a memory upload failed.", CheckVulkanCriticalError(WaitResult));
@@ -5311,7 +5363,7 @@ void CCommandProcessorFragment_Vulkan::ExecuteMemoryCommandBuffer()
 			return;
 		}
 		if(Fence != VK_NULL_HANDLE)
-			m_vMemoryCommandBufferPending[m_CurImageIndex] = true;
+			m_vMemoryCommandBufferPending[m_CurImageIndex] = Fence;
 		else
 			vkQueueWaitIdle(m_VKGraphicsQueue);
 
@@ -8073,6 +8125,7 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 	SubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	SubmitInfo.commandBufferCount = 1;
 	SubmitInfo.pCommandBuffers = &CommandBuffer;
+	bool MemoryCommandBufferSubmitted = false;
 	if(WithFrame && m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
@@ -8084,6 +8137,7 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 		aCommandBuffers = {MemoryCommandBuffer, CommandBuffer};
 		SubmitInfo.commandBufferCount = aCommandBuffers.size();
 		SubmitInfo.pCommandBuffers = aCommandBuffers.data();
+		MemoryCommandBufferSubmitted = true;
 	}
 	m_vUsedMemoryCommandBuffer[m_CurImageIndex] = false;
 
@@ -8100,17 +8154,24 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 	// twice without a wait in between, which is not allowed. Without a surface
 	// nothing waits on it at all.
 
-	if(vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]) != VK_SUCCESS)
+	// A fence of its own, so that the frame fence stays the frame's and the
+	// copy can be waited for - or polled for - without one standing in for the
+	// other.
+	VkFence ReadbackFence = m_vReadbackFences[m_CurImageIndex];
+	if(vkResetFences(m_VKDevice, 1, &ReadbackFence) != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Resetting the image readback fence failed.");
 		return false;
 	}
-	const VkResult SubmitResult = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, m_vQueueSubmitFences[m_CurImageIndex]);
+	const VkResult SubmitResult = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, ReadbackFence);
 	if(SubmitResult != VK_SUCCESS)
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Submitting the image readback failed.", CheckVulkanCriticalError(SubmitResult));
 		return false;
 	}
+	m_vReadbackPending[m_CurImageIndex] = true;
+	if(MemoryCommandBufferSubmitted)
+		m_vMemoryCommandBufferPending[m_CurImageIndex] = ReadbackFence;
 	if(WithFrame)
 	{
 		if(HasGpuTimestamp)
@@ -8130,7 +8191,13 @@ bool CCommandProcessorFragment_Vulkan::SubmitReadbackRecording(bool WithFrame, V
 		// recording off until the next swap dropped every render pass in
 		// between: the pass never opened, the target it draws into never left
 		// its initial layout, and the readback after it found nothing to copy.
-		return WaitForFrameSlot() && RestartReadbackCommandBuffer(GetMainGraphicCommandBuffer());
+		// It comes back in the slot's other command buffer, because the one
+		// just submitted is still executing the copy; waiting for it here
+		// would make every screenshot and every exported frame a full drain of
+		// the device. The one switched to is free because the readback that
+		// last used it was waited for before this one was started.
+		m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex] = !m_vUsingReadbackDrawCommandBuffer[m_CurImageIndex];
+		return RestartReadbackCommandBuffer(GetMainGraphicCommandBuffer());
 	}
 	return true;
 }
@@ -8336,10 +8403,11 @@ bool CCommandProcessorFragment_Vulkan::CollectFinishedReadbacks()
 {
 	for(size_t Index = 0; Index < m_vReadbackSlots.size(); ++Index)
 	{
-		if(m_vReadbackSlots[Index].m_pResult == nullptr || Index >= m_vQueueSubmitFences.size())
+		if(m_vReadbackSlots[Index].m_pResult == nullptr || Index >= m_vReadbackPending.size() || !m_vReadbackPending[Index])
 			continue;
-		if(vkGetFenceStatus(m_VKDevice, m_vQueueSubmitFences[Index]) != VK_SUCCESS)
+		if(vkGetFenceStatus(m_VKDevice, m_vReadbackFences[Index]) != VK_SUCCESS)
 			continue;
+		m_vReadbackPending[Index] = false;
 		if(!CollectReadbackSlot(Index))
 			return false;
 	}
@@ -8352,19 +8420,12 @@ bool CCommandProcessorFragment_Vulkan::FinishReadbacks()
 	{
 		if(m_vReadbackSlots[Index].m_pResult == nullptr)
 			continue;
-		if(Index >= m_vQueueSubmitFences.size())
+		if(Index >= m_vReadbackFences.size())
 		{
 			AbandonReadbackSlot(m_vReadbackSlots[Index]);
 			continue;
 		}
-		const VkResult WaitResult = vkWaitForFences(m_VKDevice, 1, &m_vQueueSubmitFences[Index], VK_TRUE, std::numeric_limits<uint64_t>::max());
-		if(WaitResult != VK_SUCCESS)
-		{
-			AbandonReadbackSlot(m_vReadbackSlots[Index]);
-			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Waiting for the image readback failed.", CheckVulkanCriticalError(WaitResult));
-			return false;
-		}
-		if(!CollectReadbackSlot(Index))
+		if(!WaitForReadback(Index))
 			return false;
 	}
 	return true;
@@ -8408,6 +8469,12 @@ bool CCommandProcessorFragment_Vulkan::StartImageReadback(VkImage SourceImage, V
 		Height = SourceHeight;
 	}
 	SrcOffset.z = 0;
+
+	// One slot holds one readback at a time, so a second one in the same slot
+	// takes the pixels of the first out of the way first. That is also what
+	// frees the command buffer this one will leave the frame recording in.
+	if(m_vReadbackSlots[m_CurImageIndex].m_pResult != nullptr && !WaitForReadback(m_CurImageIndex))
+		return false;
 
 	// The frame that is being read back has just been recorded, and the
 	// copy that reads it can go into the same command buffer. Submitting

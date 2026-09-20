@@ -1069,7 +1069,6 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 		break;
 	case EWebGpuBackendType::AUTO:
 		Extras.backends = WGPUInstanceBackend_All;
-		pBackendName = "auto";
 		break;
 	}
 #if !defined(CONF_PLATFORM_MACOS)
@@ -1304,7 +1303,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	}
 	case CMD_INIT:
 	{
-		auto *pCommand = static_cast<const SCommand_Init *>(pBaseCommand);
+		const auto *pCommand = static_cast<const SCommand_Init *>(pBaseCommand);
 		if(Initialize(pCommand))
 			return RUN_COMMAND_COMMAND_HANDLED;
 		*pCommand->m_pInitError = -1;
@@ -1962,7 +1961,7 @@ bool CCommandProcessorFragment_WebGpu::Present(bool PaceWithDisplay)
 	// get the short yield instead -- for a benchmark, for the shortest path
 	// from an input to the frame that carries it, and for the loading
 	// screen, which would otherwise spend a refresh on every step it takes.
-	YieldToBrowser(PaceWithDisplay && g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
+	YieldToBrowser(pCommand->m_PaceWithDisplay && g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
 #endif
 	if(m_SurfaceSuboptimal)
 	{
@@ -3874,7 +3873,7 @@ bool CCommandProcessorFragment_WebGpu::Draw(const CCommandBuffer::SCommand_Draw 
 		return true;
 	const auto &Pipelines = m_aPipelineSets[m_RenderTarget.IsValid() ? 1 : 0];
 	const auto &aPipelines = Layered ? Pipelines.m_aLayeredPrimitive : Pipelines.m_aPrimitive;
-	const WGPURenderPipeline Pipeline = PlanarYuv ? Pipelines.m_PlanarYuv : (Blur ? Pipelines.m_Blur : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)]);
+	WGPURenderPipeline Pipeline = PlanarYuv ? Pipelines.m_PlanarYuv : (Blur ? Pipelines.m_Blur : aPipelines[PrimitivePipelineIndex(PrimitiveType, pCommand->m_State.m_BlendMode, Textured)]);
 	if(!ApplyState(pCommand->m_State, Pipeline, {}, Layered))
 		return m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE;
 	wgpuRenderPassEncoderSetVertexBuffer(m_RenderPass, 0, m_StreamBuffer, VertexOffset, VertexCount * VertexSize);

@@ -4,6 +4,7 @@
 // definitions follow, in sections by what they concern.
 
 #include <base/dbg.h>
+#include <base/io.h>
 #include <base/log.h>
 #include <base/mem.h>
 #include <base/str.h>
@@ -16,6 +17,7 @@
 #include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/localization.h>
+#include <engine/storage.h>
 
 #include <vulkan/vk_platform.h>
 #include <vulkan/vulkan_core.h>
@@ -853,6 +855,7 @@ class CCommandProcessorFragment_Vulkan : public CCommandProcessorFragment_Render
 	// So that a target that is skipped every frame until the frontend has made
 	// it again says so once instead of once per frame.
 	SGpuTimingShared *m_pGpuTiming = nullptr;
+	IStorage *m_pStorage = nullptr;
 
 	TTwGraphicsGpuList *m_pGpuList;
 
@@ -995,6 +998,17 @@ private:
 	SPipelineContainer m_PrimitiveInstancedPushPipeline;
 	SPipelineContainer m_QuadPerItemPipeline;
 	SPipelineContainer m_QuadSharedPipeline;
+
+	// What the live pipelines were compiled against. Everything else a swapchain
+	// recreation changes is dynamic state, and a render pass only has to be
+	// compatible with the one a pipeline was built with, not the same object -
+	// so a resize or a vsync toggle cannot invalidate them.
+	VkFormat m_PipelinesFormat = VK_FORMAT_UNDEFINED;
+	VkSampleCountFlagBits m_PipelinesSampleCount = VK_SAMPLE_COUNT_1_BIT;
+	// Carries what the driver learned about our pipelines from one run to the
+	// next, so a cold start does not compile all of them from scratch.
+	VkPipelineCache m_PipelineCache = VK_NULL_HANDLE;
+	bool m_PipelineCacheDirty = false;
 
 	VkPipeline m_LastPipeline = VK_NULL_HANDLE;
 	// Consecutive draws bind the same texture far more often than not - a tile
@@ -1866,7 +1880,7 @@ public:
 		{
 			PipelineInfo.renderPass = Pass == PIPELINE_PASS_SCREEN ? m_VKRenderPass : m_VKRenderTargetPass;
 			VkPipeline &Pipeline = GetPipeline(PipeContainer, EPipelinePass(Pass), HasSampler, size_t(BlendMode));
-			if(vkCreateGraphicsPipelines(m_VKDevice, VK_NULL_HANDLE, 1, &PipelineInfo, nullptr, &Pipeline) != VK_SUCCESS)
+			if(vkCreateGraphicsPipelines(m_VKDevice, m_PipelineCache, 1, &PipelineInfo, nullptr, &Pipeline) != VK_SUCCESS)
 			{
 				SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating the graphic pipeline failed.");
 				return false;
@@ -2179,6 +2193,17 @@ public:
 	VkSampleCountFlagBits GetSampleCount() const;
 
 	[[nodiscard]] bool CreateGraphicsPipelines();
+
+	void DestroyGraphicsPipelines();
+
+	// The blob a driver hands back is only meaningful to the device that wrote
+	// it, so it is kept next to the config and thrown away when it does not
+	// belong to this one.
+	static constexpr const char *PIPELINE_CACHE_FILE = "pipeline_cache_vulkan.bin";
+
+	void CreatePipelineCache();
+
+	void DestroyPipelineCache();
 
 	int InitVulkanSwapChain(VkSwapchainKHR &OldSwapChain, const VkSurfaceCapabilitiesKHR *pSurfaceCapabilities = nullptr);
 
@@ -3507,6 +3532,7 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 	pCommand->m_pCapabilities->m_ContextPatch = 0;
 
 	m_GlobalTextureLodBIAS = g_Config.m_GfxGLTextureLODBIAS;
+	m_pStorage = pCommand->m_pStorage;
 	m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 	m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 	m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
@@ -3525,6 +3551,8 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 		*pCommand->m_pInitError = -2;
 		return false;
 	}
+
+	CreatePipelineCache();
 
 	if(InitVulkan<true>() != 0)
 	{
@@ -4494,19 +4522,14 @@ void CCommandProcessorFragment_Vulkan::DestroyFramebuffers()
 
 void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChainDestruct)
 {
-	m_PrimitivePipeline.Destroy(m_VKDevice);
-	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
-	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
-	m_BlurPipeline.Destroy(m_VKDevice);
-	m_PlanarYuvPipeline.Destroy(m_VKDevice);
-	m_DualAtlasPipeline.Destroy(m_VKDevice);
-	m_ArrayColorPipeline.Destroy(m_VKDevice);
-	m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
-	m_PrimitiveUniformColorPipeline.Destroy(m_VKDevice);
-	m_PrimitiveInstancedPipeline.Destroy(m_VKDevice);
-	m_PrimitiveInstancedPushPipeline.Destroy(m_VKDevice);
-	m_QuadPerItemPipeline.Destroy(m_VKDevice);
-	m_QuadSharedPipeline.Destroy(m_VKDevice);
+	// The pipelines survive a recreation; only the teardown that takes the
+	// device with it has to take them too. What is bound in a command buffer
+	// does not survive, so the bind cache has to go either way.
+	if(ForceSwapChainDestruct)
+		DestroyGraphicsPipelines();
+	m_LastPipeline = VK_NULL_HANDLE;
+	m_aLastDescriptorSets = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+	m_HasDynamicState = false;
 
 	DestroyFramebuffers();
 	DestroyAllTextureTargets();
@@ -4528,10 +4551,67 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanSwapChain(bool ForceSwapChai
 	m_SwapchainCreated = false;
 }
 
+void CCommandProcessorFragment_Vulkan::CreatePipelineCache()
+{
+	if(m_PipelineCache != VK_NULL_HANDLE)
+		return;
+
+	VkPipelineCacheCreateInfo CacheInfo{};
+	CacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+	void *pData = nullptr;
+	unsigned DataSize = 0;
+	if(m_pStorage != nullptr && m_pStorage->ReadFile(PIPELINE_CACHE_FILE, IStorage::TYPE_SAVE, &pData, &DataSize) && DataSize > sizeof(VkPipelineCacheHeaderVersionOne))
+	{
+		VkPhysicalDeviceProperties Properties;
+		vkGetPhysicalDeviceProperties(m_VKGPU, &Properties);
+		VkPipelineCacheHeaderVersionOne Header;
+		mem_copy(&Header, pData, sizeof(Header));
+		// A blob written by another driver or another device is not merely
+		// useless to this one, it is what a driver is entitled to choke on.
+		if(Header.headerSize == sizeof(Header) &&
+			Header.headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+			Header.vendorID == Properties.vendorID &&
+			Header.deviceID == Properties.deviceID &&
+			mem_comp(Header.pipelineCacheUUID, Properties.pipelineCacheUUID, VK_UUID_SIZE) == 0)
+		{
+			CacheInfo.initialDataSize = DataSize;
+			CacheInfo.pInitialData = pData;
+		}
+	}
+
+	if(vkCreatePipelineCache(m_VKDevice, &CacheInfo, nullptr, &m_PipelineCache) != VK_SUCCESS)
+		m_PipelineCache = VK_NULL_HANDLE;
+	free(pData);
+}
+
+void CCommandProcessorFragment_Vulkan::DestroyPipelineCache()
+{
+	if(m_PipelineCache == VK_NULL_HANDLE)
+		return;
+
+	size_t DataSize = 0;
+	if(m_PipelineCacheDirty && m_pStorage != nullptr && vkGetPipelineCacheData(m_VKDevice, m_PipelineCache, &DataSize, nullptr) == VK_SUCCESS && DataSize > 0)
+	{
+		std::vector<uint8_t> vData(DataSize);
+		IOHANDLE File = vkGetPipelineCacheData(m_VKDevice, m_PipelineCache, &DataSize, vData.data()) == VK_SUCCESS ? m_pStorage->OpenFile(PIPELINE_CACHE_FILE, IOFLAG_WRITE, IStorage::TYPE_SAVE) : nullptr;
+		if(File != nullptr)
+		{
+			io_write(File, vData.data(), DataSize);
+			io_close(File);
+		}
+	}
+
+	vkDestroyPipelineCache(m_VKDevice, m_PipelineCache, nullptr);
+	m_PipelineCache = VK_NULL_HANDLE;
+	m_PipelineCacheDirty = false;
+}
+
 void CCommandProcessorFragment_Vulkan::CleanupVulkanDevice()
 {
 	if(m_VKInstance != VK_NULL_HANDLE)
 	{
+		DestroyPipelineCache();
 		DestroySurface();
 		vkDestroyDevice(m_VKDevice, nullptr);
 
@@ -7022,8 +7102,38 @@ void CCommandProcessorFragment_Vulkan::FreeDescriptorSetFromPool(SDeviceDescript
 	DescrSet = {};
 }
 
+void CCommandProcessorFragment_Vulkan::DestroyGraphicsPipelines()
+{
+	m_PrimitivePipeline.Destroy(m_VKDevice);
+	m_PrimitiveLinePipeline.Destroy(m_VKDevice);
+	m_PrimitiveTextureArrayPipeline.Destroy(m_VKDevice);
+	m_BlurPipeline.Destroy(m_VKDevice);
+	m_PlanarYuvPipeline.Destroy(m_VKDevice);
+	m_DualAtlasPipeline.Destroy(m_VKDevice);
+	m_ArrayColorPipeline.Destroy(m_VKDevice);
+	m_ArrayColorTransformPipeline.Destroy(m_VKDevice);
+	m_PrimitiveUniformColorPipeline.Destroy(m_VKDevice);
+	m_PrimitiveInstancedPipeline.Destroy(m_VKDevice);
+	m_PrimitiveInstancedPushPipeline.Destroy(m_VKDevice);
+	m_QuadPerItemPipeline.Destroy(m_VKDevice);
+	m_QuadSharedPipeline.Destroy(m_VKDevice);
+
+	m_PipelinesFormat = VK_FORMAT_UNDEFINED;
+}
+
 bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 {
+	// Half of these are built for RENDER_TARGET_FORMAT, which nothing can
+	// change, and the other half only take the surface format and the sample
+	// count from outside. Recompiling them for a window that merely got bigger
+	// costs over a hundred compiles for an identical result.
+	const VkSampleCountFlagBits SampleCount = GetSampleCount();
+	if(m_PipelinesFormat == m_VKSurfFormat.format && m_PipelinesSampleCount == SampleCount)
+		return true;
+	DestroyGraphicsPipelines();
+	m_PipelinesSampleCount = SampleCount;
+	m_PipelineCacheDirty = true;
+
 	if(!CreateStandardGraphicsPipeline("vulkan/prim.vert.spv", "vulkan/prim.frag.spv", false, false))
 		return false;
 
@@ -7084,6 +7194,7 @@ bool CCommandProcessorFragment_Vulkan::CreateGraphicsPipelines()
 	if(!CreateQuadGroupedGraphicsPipeline<true>("vulkan/quad_grouped_textured.vert.spv", "vulkan/quad_grouped_textured.frag.spv"))
 		return false;
 
+	m_PipelinesFormat = m_VKSurfFormat.format;
 	return true;
 }
 

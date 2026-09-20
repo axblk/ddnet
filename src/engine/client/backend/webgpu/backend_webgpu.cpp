@@ -400,6 +400,10 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	std::atomic<uint64_t> *m_pTextureMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pBufferMemoryUsage = nullptr;
 	std::atomic<uint64_t> *m_pStreamMemoryUsage = nullptr;
+	// The buffers the device maps for the host. That is all the staging this
+	// backend owns: what wgpuQueueWrite* stages on its way to the device
+	// belongs to the implementation and is not ours to count.
+	std::atomic<uint64_t> *m_pStagingMemoryUsage = nullptr;
 	SGpuTimingShared *m_pGpuTiming = nullptr;
 
 	static void AdapterCallback(WGPURequestAdapterStatus Status, WGPUAdapter Adapter, WGPUStringView Message, void *pUserdata1, void *);
@@ -838,6 +842,7 @@ void CCommandProcessorFragment_WebGpu::DestroyGpuTimestampResources()
 		{
 			wgpuBufferDestroy(Slot.m_ReadbackBuffer);
 			wgpuBufferRelease(Slot.m_ReadbackBuffer);
+			m_pStagingMemoryUsage->fetch_sub(GPU_TIMESTAMP_SIZE, std::memory_order_relaxed);
 		}
 		Slot = {};
 	}
@@ -882,6 +887,7 @@ bool CCommandProcessorFragment_WebGpu::EnsureGpuTimestampResources()
 		Slot.m_ReadbackBuffer = wgpuDeviceCreateBuffer(m_Device, &BufferDescriptor);
 		if(Slot.m_ReadbackBuffer == nullptr)
 			break;
+		m_pStagingMemoryUsage->fetch_add(GPU_TIMESTAMP_SIZE, std::memory_order_relaxed);
 	}
 	if(m_GpuTimestampQuerySet != nullptr && m_GpuTimestampResolveBuffer != nullptr && std::ranges::all_of(m_aGpuTimestampSlots, [](const SGpuTimestampSlot &Slot) { return Slot.m_ReadbackBuffer != nullptr; }))
 		return true;
@@ -1036,10 +1042,12 @@ bool CCommandProcessorFragment_WebGpu::Initialize(const SCommand_Init *pCommand)
 	m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
 	m_pBufferMemoryUsage = pCommand->m_pBufferMemoryUsage;
 	m_pStreamMemoryUsage = pCommand->m_pStreamMemoryUsage;
+	m_pStagingMemoryUsage = pCommand->m_pStagingMemoryUsage;
 	m_pGpuTiming = pCommand->m_pGpuTiming;
 	m_pTextureMemoryUsage->store(0, std::memory_order_relaxed);
 	m_pBufferMemoryUsage->store(0, std::memory_order_relaxed);
 	m_pStreamMemoryUsage->store(0, std::memory_order_relaxed);
+	m_pStagingMemoryUsage->store(0, std::memory_order_relaxed);
 	if(m_pGpuTiming != nullptr)
 	{
 		m_pGpuTiming->m_Supported.store(false, std::memory_order_relaxed);
@@ -4096,6 +4104,7 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 			wgpuBufferRelease(Buffer);
 		return false;
 	}
+	m_pStagingMemoryUsage->fetch_add(BufferSize, std::memory_order_relaxed);
 
 	EndRenderPass();
 	WGPUTexelCopyTextureInfo Source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
@@ -4111,6 +4120,7 @@ bool CCommandProcessorFragment_WebGpu::StartTextureReadback(WGPUTexture Texture,
 	if(!SubmitCommands())
 	{
 		wgpuBufferRelease(Buffer);
+		m_pStagingMemoryUsage->fetch_sub(BufferSize, std::memory_order_relaxed);
 		return false;
 	}
 
@@ -4159,6 +4169,7 @@ void CCommandProcessorFragment_WebGpu::FinishReadback(SPendingReadback &Pending)
 		wgpuBufferUnmap(Pending.m_Buffer);
 	}
 	wgpuBufferRelease(Pending.m_Buffer);
+	m_pStagingMemoryUsage->fetch_sub(Pending.m_BufferSize, std::memory_order_relaxed);
 	Pending.m_Buffer = nullptr;
 	if(!pResult->m_Ok)
 		log_warn("gfx/webgpu", "texture readback failed");
@@ -4211,7 +4222,10 @@ void CCommandProcessorFragment_WebGpu::AbandonReadbacks()
 	for(SPendingReadback &Pending : m_vPendingReadbacks)
 	{
 		if(Pending.m_Buffer != nullptr)
+		{
 			wgpuBufferRelease(Pending.m_Buffer);
+			m_pStagingMemoryUsage->fetch_sub(Pending.m_BufferSize, std::memory_order_relaxed);
+		}
 		Pending.m_pResult->Signal();
 	}
 	m_vPendingReadbacks.clear();

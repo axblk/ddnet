@@ -961,6 +961,7 @@ private:
 
 	VkInstance m_VKInstance;
 	VkPhysicalDevice m_VKGPU;
+	VkPhysicalDeviceMemoryProperties m_MemoryProperties{};
 	uint32_t m_VKGraphicsQueueIndex = std::numeric_limits<uint32_t>::max();
 	VkDevice m_VKDevice;
 	VkQueue m_VKGraphicsQueue, m_VKPresentQueue;
@@ -1446,7 +1447,11 @@ protected:
 			}
 			if(RangeUpdateCount > 0 && FlushForRendering)
 			{
-				vkFlushMappedMemoryRanges(m_VKDevice, RangeUpdateCount, StreamedBuffer.GetRanges(m_CurImageIndex).data());
+				// Nothing here can act on it, but a draw that reads what the
+				// host never handed over is not a frame worth finishing either.
+				const VkResult FlushResult = vkFlushMappedMemoryRanges(m_VKDevice, RangeUpdateCount, StreamedBuffer.GetRanges(m_CurImageIndex).data());
+				if(FlushResult != VK_SUCCESS)
+					SetError(MemoryErrorType(FlushResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER), "Flushing the streamed buffers failed.");
 			}
 		}
 		StreamedBuffer.ResetFrame(m_CurImageIndex);
@@ -2134,7 +2139,11 @@ public:
 
 		// The fences a pending readback is waiting on are about to go. The device
 		// is idle by now, so the pixels are there and the caller still gets them.
-		vkDeviceWaitIdle(m_VKDevice);
+		// Nothing can be done about a device that will not go idle during a
+		// teardown, but the readbacks below then hand out whatever they find.
+		const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
+		if(IdleResult != VK_SUCCESS)
+			log_error("gfx/vulkan", "Waiting for the device to go idle before cleanup failed: %d", (int)IdleResult);
 		for(size_t Index = 0; Index < m_vReadbackSlots.size(); ++Index)
 			(void)CollectReadbackSlot(Index);
 
@@ -2164,7 +2173,7 @@ public:
 	 * MEMORY MANAGEMENT
 	 ************************/
 
-	uint32_t FindMemoryType(VkPhysicalDevice PhyDevice, uint32_t TypeFilter, VkMemoryPropertyFlags Properties);
+	[[nodiscard]] bool FindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties, uint32_t &MemoryType) const;
 
 	[[nodiscard]] bool CreateBuffer(VkDeviceSize BufferSize, EMemoryBlockUsage MemUsage, VkBufferUsageFlags BufferUsage, VkMemoryPropertyFlags MemoryProperties, VkBuffer &VKBuffer, SDeviceMemoryBlock &VKBufferMemory);
 
@@ -2838,7 +2847,11 @@ bool CCommandProcessorFragment_Vulkan::SubmitFrameCommands()
 	if(m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
-		vkEndCommandBuffer(MemoryCommandBuffer);
+		if(vkEndCommandBuffer(MemoryCommandBuffer) != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "The memory command buffer of this frame cannot be ended anymore.");
+			return false;
+		}
 
 		aCommandBuffers[0] = MemoryCommandBuffer;
 		aCommandBuffers[1] = CommandBuffer;
@@ -2861,7 +2874,13 @@ bool CCommandProcessorFragment_Vulkan::SubmitFrameCommands()
 	SubmitInfo.signalSemaphoreCount = m_RenderingPaused || !m_Presentation.IsPresentable() ? 0 : aSignalSemaphores.size();
 	SubmitInfo.pSignalSemaphores = aSignalSemaphores.data();
 
-	vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]);
+	// A fence left signalled lets the slot be taken again while the device is
+	// still working in it, which is worse than not drawing the frame.
+	if(vkResetFences(m_VKDevice, 1, &m_vQueueSubmitFences[m_CurImageIndex]) != VK_SUCCESS)
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_SUBMIT_FAILED, "Resetting the frame fence failed.");
+		return false;
+	}
 
 	VkResult QueueSubmitRes = vkQueueSubmit(m_VKGraphicsQueue, 1, &SubmitInfo, m_vQueueSubmitFences[m_CurImageIndex]);
 	if(QueueSubmitRes != VK_SUCCESS)
@@ -3008,9 +3027,13 @@ bool CCommandProcessorFragment_Vulkan::BeginFrameCommands()
 	ClearFrameMemoryUsage();
 
 	// clear frame
-	vkResetCommandBuffer(GetMainGraphicCommandBuffer(), VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-
 	auto &CommandBuffer = GetMainGraphicCommandBuffer();
+	if(vkResetCommandBuffer(CommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the frame command buffer failed.");
+		return false;
+	}
+
 	VkCommandBufferBeginInfo BeginInfo{};
 	BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	BeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -3575,7 +3598,11 @@ bool CCommandProcessorFragment_Vulkan::Cmd_Init(const SCommand_Init *pCommand)
 
 bool CCommandProcessorFragment_Vulkan::Cmd_Shutdown(const SCommand_Shutdown *pCommand)
 {
-	vkDeviceWaitIdle(m_VKDevice);
+	// Everything is freed below whether the device answers or not; there is no
+	// shutdown left to refuse.
+	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
+	if(IdleResult != VK_SUCCESS)
+		log_error("gfx/vulkan", "Waiting for the device to go idle before shutdown failed: %d", (int)IdleResult);
 	CleanupVulkan<true>(m_SwapChainImageCount);
 	m_TextureHandles.Clear();
 	m_BufferHandles.Clear();
@@ -4016,6 +4043,9 @@ bool CCommandProcessorFragment_Vulkan::SelectGpu(char *pRendererName, char *pVen
 	}
 
 	m_VKGPU = CurDevice;
+	// The heaps of a device do not change while it exists, and every allocation
+	// used to ask for them again.
+	vkGetPhysicalDeviceMemoryProperties(m_VKGPU, &m_MemoryProperties);
 	m_VKGraphicsQueueIndex = QueueNodeIndex;
 	m_GpuTimestampValidBits = vQueuePropList[QueueNodeIndex].timestampValidBits;
 	return true;
@@ -4630,7 +4660,14 @@ void CCommandProcessorFragment_Vulkan::CleanupVulkanDevice()
 
 int CCommandProcessorFragment_Vulkan::RecreateSwapChain()
 {
-	vkDeviceWaitIdle(m_VKDevice);
+	// The images and framebuffers destroyed below are still referenced by
+	// whatever the device has not finished, so this wait is not optional.
+	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
+	if(IdleResult != VK_SUCCESS)
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_SWAP_FAILED, "Waiting for the device before recreating the swap chain failed.", CheckVulkanCriticalError(IdleResult));
+		return -1;
+	}
 
 	VkSurfaceCapabilitiesKHR SurfaceCapabilities;
 	if(!GetSurfaceProperties(SurfaceCapabilities))
@@ -4922,7 +4959,12 @@ bool CCommandProcessorFragment_Vulkan::Cmd_WindowDestroyNtf(const CCommandBuffer
 	// The surface is gone once this returns, so everything still referencing it
 	// has to have finished. This is not Android specific, the window is
 	// destroyed on every platform that can minimize.
-	vkDeviceWaitIdle(m_VKDevice);
+	const VkResult IdleResult = vkDeviceWaitIdle(m_VKDevice);
+	if(IdleResult != VK_SUCCESS)
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_SWAP_FAILED, "Waiting for the device before the surface is destroyed failed.", CheckVulkanCriticalError(IdleResult));
+		return false;
+	}
 #ifdef CONF_PLATFORM_ANDROID
 	if(m_SwapchainCreated)
 		CleanupVulkanSwapChain(true);
@@ -5048,7 +5090,11 @@ bool CCommandProcessorFragment_Vulkan::GetImageMemoryImpl(VkDeviceSize RequiredS
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = RequiredSize;
-	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, RequiredMemoryTypeBits, BufferProperties);
+	if(!FindMemoryType(RequiredMemoryTypeBits, BufferProperties, MemAllocInfo.memoryTypeIndex))
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "No memory type matches what the image needs.");
+		return false;
+	}
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &BufferMemory.m_Mem);
 	if(AllocateResult != VK_SUCCESS)
@@ -5238,7 +5284,14 @@ void CCommandProcessorFragment_Vulkan::ExecuteMemoryCommandBuffer()
 	if(m_vUsedMemoryCommandBuffer[m_CurImageIndex])
 	{
 		auto &MemoryCommandBuffer = m_vMemoryCommandBuffers[m_CurImageIndex];
-		vkEndCommandBuffer(MemoryCommandBuffer);
+		if(vkEndCommandBuffer(MemoryCommandBuffer) != VK_SUCCESS)
+		{
+			// Submitting a buffer that was never ended is worse than dropping
+			// the upload, and the slot must not be left waiting for it either.
+			m_vUsedMemoryCommandBuffer[m_CurImageIndex] = false;
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Ending the memory command buffer failed.");
+			return;
+		}
 
 		VkSubmitInfo SubmitInfo{};
 		SubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -5276,7 +5329,11 @@ void CCommandProcessorFragment_Vulkan::UploadStagingBuffers()
 {
 	if(!m_vNonFlushedStagingBufferRange.empty())
 	{
-		vkFlushMappedMemoryRanges(m_VKDevice, m_vNonFlushedStagingBufferRange.size(), m_vNonFlushedStagingBufferRange.data());
+		// The copy that reads these is already recorded and there is no undoing
+		// it, so all this can do is keep the frame from being finished.
+		const VkResult FlushResult = vkFlushMappedMemoryRanges(m_VKDevice, m_vNonFlushedStagingBufferRange.size(), m_vNonFlushedStagingBufferRange.data());
+		if(FlushResult != VK_SUCCESS)
+			SetError(MemoryErrorType(FlushResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_STAGING), "Flushing the staging buffers failed.");
 
 		m_vNonFlushedStagingBufferRange.clear();
 	}
@@ -5436,20 +5493,20 @@ void CCommandProcessorFragment_Vulkan::DestroyUniBufferOfFrame(size_t ImageIndex
 		FreeDescriptorSetFromPool(DescrSet);
 }
 
-uint32_t CCommandProcessorFragment_Vulkan::FindMemoryType(VkPhysicalDevice PhyDevice, uint32_t TypeFilter, VkMemoryPropertyFlags Properties)
+bool CCommandProcessorFragment_Vulkan::FindMemoryType(uint32_t TypeFilter, VkMemoryPropertyFlags Properties, uint32_t &MemoryType) const
 {
-	VkPhysicalDeviceMemoryProperties MemProperties;
-	vkGetPhysicalDeviceMemoryProperties(PhyDevice, &MemProperties);
-
-	for(uint32_t i = 0; i < MemProperties.memoryTypeCount; i++)
+	for(uint32_t i = 0; i < m_MemoryProperties.memoryTypeCount; i++)
 	{
-		if((TypeFilter & (1 << i)) && (MemProperties.memoryTypes[i].propertyFlags & Properties) == Properties)
+		if((TypeFilter & (1 << i)) && (m_MemoryProperties.memoryTypes[i].propertyFlags & Properties) == Properties)
 		{
-			return i;
+			MemoryType = i;
+			return true;
 		}
 	}
 
-	return 0;
+	// Type 0 is a memory type like any other, so handing it back as a fallback
+	// allocates something that does not do what the caller asked for.
+	return false;
 }
 
 bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMemoryBlockUsage MemUsage, VkBufferUsageFlags BufferUsage, VkMemoryPropertyFlags MemoryProperties, VkBuffer &VKBuffer, SDeviceMemoryBlock &VKBufferMemory)
@@ -5477,7 +5534,13 @@ bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMe
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = MemRequirements.size;
-	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, MemRequirements.memoryTypeBits, MemoryProperties);
+	if(!FindMemoryType(MemRequirements.memoryTypeBits, MemoryProperties, MemAllocInfo.memoryTypeIndex))
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER, "No memory type matches what the buffer needs.");
+		vkDestroyBuffer(m_VKDevice, VKBuffer, nullptr);
+		VKBuffer = VK_NULL_HANDLE;
+		return false;
+	}
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &VKBufferMemory.m_Mem);
 	if(AllocateResult != VK_SUCCESS)
@@ -5529,7 +5592,11 @@ bool CCommandProcessorFragment_Vulkan::GetMemoryCommandBuffer(VkCommandBuffer *&
 			return false;
 		m_vUsedMemoryCommandBuffer[m_CurImageIndex] = true;
 
-		vkResetCommandBuffer(MemCommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
+		if(vkResetCommandBuffer(MemCommandBuffer, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+		{
+			SetError(EGfxErrorType::GFX_ERROR_TYPE_RENDER_RECORDING, "Resetting the memory command buffer failed.");
+			return false;
+		}
 
 		VkCommandBufferBeginInfo BeginInfo{};
 		BeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -8105,7 +8172,12 @@ bool CCommandProcessorFragment_Vulkan::PrepareReadbackSlotImage(SReadbackSlot &S
 	VkMemoryAllocateInfo MemAllocInfo{};
 	MemAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	MemAllocInfo.allocationSize = MemRequirements.size;
-	MemAllocInfo.memoryTypeIndex = FindMemoryType(m_VKGPU, MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+	if(!FindMemoryType(MemRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, MemAllocInfo.memoryTypeIndex))
+	{
+		SetError(EGfxErrorType::GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE, "No host readable memory type for the image readback.");
+		DeleteReadbackSlotImage(Slot);
+		return false;
+	}
 
 	const VkResult AllocateResult = vkAllocateMemory(m_VKDevice, &MemAllocInfo, nullptr, &Slot.m_Mem.m_Mem);
 	if(AllocateResult != VK_SUCCESS)

@@ -42,6 +42,10 @@ extern "C" void YieldToBrowser(int WaitForFrame);
 using namespace std::chrono_literals; // NOLINT(google-build-using-namespace)
 
 constexpr auto REQUEST_TIMEOUT = 30s;
+// What a wait inside a frame is given. Creating an adapter or a device may
+// genuinely take seconds; a queue that owes this frame an answer may not hold
+// the render thread for anything like as long.
+constexpr auto FRAME_TIMEOUT = 2s;
 constexpr uint64_t STREAM_BUFFER_SIZE = 4 * 1024 * 1024;
 constexpr uint64_t UNIFORM_BUFFER_SIZE = 1024 * 1024;
 constexpr size_t UPLOAD_BUFFER_SLOT_COUNT = 3;
@@ -413,9 +417,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	static void UncapturedErrorCallback(WGPUDevice const *, WGPUErrorType Type, WGPUStringView Message, void *pUserdata1, void *);
 
 	template<typename T>
-	bool ProcessUntilDone(const T &Result, const char *pOperation)
+	bool ProcessUntilDone(const T &Result, const char *pOperation, std::chrono::steady_clock::duration Timeout = REQUEST_TIMEOUT)
 	{
-		const auto Deadline = std::chrono::steady_clock::now() + REQUEST_TIMEOUT;
+		const auto Deadline = std::chrono::steady_clock::now() + Timeout;
 		while(true)
 		{
 			wgpuInstanceProcessEvents(m_Instance);
@@ -433,11 +437,14 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 			// half rendered for a millisecond or more per poll.
 			YieldFrame();
 #else
-			// Natively there is a wait to be had, and waiting for the queue
-			// to catch up is what every one of these is waiting for anyway.
-			// Sleeping instead would put a millisecond on each of them.
+			// Only the work waited for, not the whole queue: waiting for all
+			// of it would keep a single frame in flight. Sleeping instead
+			// would put a millisecond on each of them.
 			if(m_Device != nullptr)
-				wgpuDevicePoll(m_Device, WGPU_TRUE, nullptr);
+			{
+				wgpuDevicePoll(m_Device, WGPU_FALSE, nullptr);
+				std::this_thread::yield();
+			}
 			else
 				std::this_thread::sleep_for(1ms);
 #endif
@@ -1240,7 +1247,7 @@ void CCommandProcessorFragment_WebGpu::Cleanup()
 	for(auto &Result : m_aUploadBufferResults)
 	{
 		if(Result.m_Pending)
-			ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup");
+			ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup", FRAME_TIMEOUT);
 		Result.m_Pending = false;
 	}
 	CollectGpuTimestampResults();
@@ -2000,7 +2007,7 @@ bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 
 	m_UploadBufferSlot = (m_UploadBufferSlot + 1) % UPLOAD_BUFFER_SLOT_COUNT;
 	auto &NextResult = m_aUploadBufferResults[m_UploadBufferSlot];
-	if(NextResult.m_Pending && (!ProcessUntilDone(NextResult, "wait for WebGPU upload buffers") || NextResult.m_Status != WGPUQueueWorkDoneStatus_Success))
+	if(NextResult.m_Pending && (!ProcessUntilDone(NextResult, "wait for WebGPU upload buffers", FRAME_TIMEOUT) || NextResult.m_Status != WGPUQueueWorkDoneStatus_Success))
 	{
 		// Without this the render thread would carry on against a queue that
 		// never answers and turn a graphics error into a hang or a crash.
@@ -4164,7 +4171,7 @@ bool CCommandProcessorFragment_WebGpu::FinishOldestReadback()
 		return true;
 	SPendingReadback Pending = std::move(m_vPendingReadbacks.front());
 	m_vPendingReadbacks.erase(m_vPendingReadbacks.begin());
-	const bool Mapped = ProcessUntilDone(*Pending.m_pMapResult, "map texture readback");
+	const bool Mapped = ProcessUntilDone(*Pending.m_pMapResult, "map texture readback", FRAME_TIMEOUT);
 	FinishReadback(Pending);
 	return Mapped;
 }

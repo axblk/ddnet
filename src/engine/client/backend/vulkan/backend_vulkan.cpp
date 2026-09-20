@@ -978,8 +978,13 @@ private:
 	SSwapImgViewportExtent m_VKSwapImgAndViewportExtent;
 
 #ifdef VK_EXT_debug_utils
-	VkDebugUtilsMessengerEXT m_DebugMessenger;
+	VkDebugUtilsMessengerEXT m_DebugMessenger = VK_NULL_HANDLE;
+	// Null unless the debug extension is really there. A validation message or
+	// a capture shows bare handles without it.
+	PFN_vkSetDebugUtilsObjectNameEXT m_pfnSetDebugUtilsObjectName = nullptr;
 #endif
+
+	void NameObject(VkObjectType Type, uint64_t Handle, const char *pName, int Index = -1);
 
 #ifdef VK_EXT_device_fault
 	// Optional VK_EXT_device_fault support. When the driver exposes the extension
@@ -1903,6 +1908,7 @@ public:
 				SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Creating the graphic pipeline failed.");
 				return false;
 			}
+			NameObject(VK_OBJECT_TYPE_PIPELINE, (uint64_t)Pipeline, pVertName);
 		}
 
 		return true;
@@ -3224,6 +3230,27 @@ void CCommandProcessorFragment_Vulkan::UnregisterDebugCallback()
 #endif
 }
 
+void CCommandProcessorFragment_Vulkan::NameObject(VkObjectType Type, uint64_t Handle, const char *pName, int Index)
+{
+#ifdef VK_EXT_debug_utils
+	if(m_pfnSetDebugUtilsObjectName == nullptr)
+		return;
+
+	char aName[64];
+	if(Index >= 0)
+		str_format(aName, sizeof(aName), "%s %d", pName, Index);
+	else
+		str_copy(aName, pName);
+
+	VkDebugUtilsObjectNameInfoEXT NameInfo{};
+	NameInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT;
+	NameInfo.objectType = Type;
+	NameInfo.objectHandle = Handle;
+	NameInfo.pObjectName = aName;
+	m_pfnSetDebugUtilsObjectName(m_VKDevice, &NameInfo);
+#endif
+}
+
 bool CCommandProcessorFragment_Vulkan::CreateCommandPool()
 {
 	VkCommandPoolCreateInfo CreatePoolInfo{};
@@ -3272,6 +3299,13 @@ bool CCommandProcessorFragment_Vulkan::CreateCommandBuffers()
 	{
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Allocating memory command buffers failed.");
 		return false;
+	}
+
+	for(size_t i = 0; i < m_SwapChainImageCount; ++i)
+	{
+		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vMainDrawCommandBuffers[i], "draw", (int)i);
+		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vReadbackDrawCommandBuffers[i], "draw after readback", (int)i);
+		NameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, (uint64_t)m_vMemoryCommandBuffers[i], "memory", (int)i);
 	}
 
 	m_vMemoryCommandBufferFences.resize(m_SwapChainImageCount, VK_NULL_HANDLE);
@@ -4197,6 +4231,13 @@ bool CCommandProcessorFragment_Vulkan::CreateLogicalDevice(const std::vector<std
 		SetError(EGfxErrorType::GFX_ERROR_TYPE_INIT, "Logical device could not be created.");
 		return false;
 	}
+
+#ifdef VK_EXT_debug_utils
+	// Only asked for along with the messenger, and only then is there anything
+	// listening to a name.
+	if(m_DebugMessenger != VK_NULL_HANDLE)
+		m_pfnSetDebugUtilsObjectName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetDeviceProcAddr(m_VKDevice, "vkSetDebugUtilsObjectNameEXT");
+#endif
 
 #ifdef VK_EXT_device_fault
 	if(DeviceFaultRequested && FaultFeatures.deviceFault)
@@ -5584,6 +5625,7 @@ bool CCommandProcessorFragment_Vulkan::CreateBuffer(VkDeviceSize BufferSize, EMe
 		SetError(MemoryErrorType(CreateResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_BUFFER), "Buffer creation failed.");
 		return false;
 	}
+	NameObject(VK_OBJECT_TYPE_BUFFER, (uint64_t)VKBuffer, MemoryUsageName(MemUsage));
 
 	VkMemoryRequirements MemRequirements;
 	vkGetBufferMemoryRequirements(m_VKDevice, VKBuffer, &MemRequirements);
@@ -6207,6 +6249,7 @@ bool CCommandProcessorFragment_Vulkan::CreateImage(uint32_t Width, uint32_t Heig
 		SetError(MemoryErrorType(CreateResult, GFX_ERROR_TYPE_OUT_OF_MEMORY_IMAGE), "Image creation failed.");
 		return false;
 	}
+	NameObject(VK_OBJECT_TYPE_IMAGE, (uint64_t)Image, "texture");
 
 	VkMemoryRequirements MemRequirements;
 	vkGetImageMemoryRequirements(m_VKDevice, Image, &MemRequirements);

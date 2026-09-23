@@ -261,23 +261,7 @@ bool ConnectAddressFor(const CServerInfo &Server, int PickedProtocol, int Picked
 	if(Chosen < 0)
 		return false;
 	const NETADDR &Address = Server.m_aAddresses[Chosen];
-	char aFragment[sizeof(Server.m_aWebTransportFragment)];
-	CServerInfo::AddressFragment(aFragment, sizeof(aFragment), Server, Address);
-	const bool SignedForName = (Address.type & NETTYPE_WEBSOCKET_TLS) != 0 || ((Address.type & NETTYPE_WEBTRANSPORT) != 0 && str_comp(aFragment, "webpki") == 0);
-	if(SignedForName && Server.m_aHostname[0] != '\0')
-	{
-		net_addr_url_str(&Address, pBuffer, BufferSize, false);
-		const int SchemeLength = str_find(pBuffer, "://") - pBuffer + 3;
-		str_format(pBuffer + SchemeLength, BufferSize - SchemeLength, "%s:%d", Server.m_aHostname, Address.port);
-	}
-	else
-	{
-		net_addr_url_str(&Address, pBuffer, BufferSize, true);
-	}
-	if(aFragment[0] != '\0')
-	{
-		str_append(pBuffer, "#", BufferSize);
-		str_append(pBuffer, aFragment, BufferSize);
-	}
+	const bool ByName = Server.m_Pin.SignedForName(Address) && Server.m_aHostname[0] != '\0';
+	Server.m_Pin.AddressUrl(Address, ByName ? Server.m_aHostname : nullptr, pBuffer, BufferSize);
 	return true;
 }

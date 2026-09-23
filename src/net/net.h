@@ -139,6 +139,14 @@ bool ddnet_net_set_tls_files(struct DdnetNet *net,
                              size_t key_path_len);
 
 /**
+ * The TLS files are from a CA for the name the server registers under:
+ * every client is shown them, raw QUIC and `wss://` included, and the
+ * server has no identity of its own. Needs the TLS files. Before
+ * `ddnet_net_open`.
+ */
+bool ddnet_net_set_web_pki(struct DdnetNet *net, bool web_pki);
+
+/**
  * Reads the TLS files again, from these paths, for the handshakes from
  * now on, QUIC, WebTransport and `wss://` alike; connections that are up
  * keep theirs. On an error the server keeps the certificate it shows.
@@ -158,9 +166,10 @@ bool ddnet_net_reload_tls_files(struct DdnetNet *net,
 bool ddnet_net_certificate_sha256(struct DdnetNet *net, bool next, uint8_t (*sha256)[32]);
 
 /**
- * Writes the server's own public identity, the 32 bytes clients pin it by.
- * Returns `false` and leaves `identity` alone before `ddnet_net_open`, and
- * in a browser, which has none.
+ * Writes what clients pin the server's identity by, the SHA-256 of the
+ * DER SubjectPublicKeyInfo of its key: `spki-sha256=<hex>`. Returns
+ * `false` and leaves `identity` alone before `ddnet_net_open`, and in a
+ * browser, which has none.
  */
 bool ddnet_net_identity(struct DdnetNet *net, uint8_t (*identity)[32]);
 

@@ -1,8 +1,9 @@
 //! The addresses peers are known by: a URL whose scheme names the
-//! protocol and whose fragment pins the server's identity.
+//! protocol and whose fragment pins the server's certificate.
 
 use crate::Context as _;
 use crate::Error;
+use crate::key::hex_to_32_bytes;
 use crate::Identity;
 use crate::Result;
 use arrayvec::ArrayString;
@@ -37,14 +38,14 @@ impl Addr {
             Ws(WsAddr { addr: socket_addr, .. }) => socket_addr,
         }
     }
-    pub fn identity(&self) -> Option<&Identity> {
+    pub fn pin(&self) -> Option<&Pin> {
         use self::Addr::*;
         match self {
-            Quic(QuicAddr { identity, .. }) => identity.as_ref(),
+            Quic(QuicAddr { pin, .. }) => pin.as_ref(),
             Tw06(Tw06Addr(_)) => None,
             Tw07(Tw07Addr(_)) => None,
             Raw(RawAddr(_)) => None,
-            Ws(WsAddr { identity, .. }) => identity.as_ref(),
+            Ws(WsAddr { pin, .. }) => pin.as_ref(),
         }
     }
 }
@@ -90,57 +91,111 @@ pub struct RawAddr(pub SocketAddr);
 /// it; natively the library takes IP addresses only, and the name stays
 /// `None`.
 pub type HostName = ArrayString<[u8; 128]>;
+/// What a client checks the certificate of a server against, as the
+/// fragment of its address says.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Pin {
+    /// `spki-sha256=<hex>`: the key in the certificate, see `Identity`.
+    /// The server's identity over QUIC and to a native `wss://` client.
+    Spki(Identity),
+    /// `cert-sha256=<hex>[,<hex>]`: the certificate itself, by its
+    /// SHA-256, as a browser takes one over WebTransport; the second hash
+    /// is the certificate that takes over next.
+    Certificate([u8; 32], Option<[u8; 32]>),
+}
+
+impl Pin {
+    /// Whether a certificate with the key `spki` and the hash
+    /// `certificate` is the one pinned.
+    pub fn matches(&self, spki: &Identity, certificate: &[u8; 32]) -> bool {
+        match self {
+            Pin::Spki(pinned) => pinned == spki,
+            Pin::Certificate(current, next) => current == certificate || next.as_ref() == Some(certificate),
+        }
+    }
+    /// The certificate hashes a browser is told to take.
+    pub fn certificates(&self) -> Vec<[u8; 32]> {
+        match self {
+            Pin::Spki(_) => Vec::new(),
+            Pin::Certificate(current, next) => [Some(*current), *next].into_iter().flatten().collect(),
+        }
+    }
+    /// The pin in a URL's fragment, if any. `webpki`, a certificate from a
+    /// public CA for the host name, pins nothing: a browser checks it, the
+    /// native client takes what it is shown. Anything else is refused, a
+    /// typo must not quietly turn the pin off.
+    fn from_fragment(url: &Url) -> Result<Option<Pin>> {
+        let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
+            return Ok(None);
+        };
+        if fragment == "webpki" {
+            return Ok(None);
+        }
+        if let Some(hex) = fragment.strip_prefix("spki-sha256=") {
+            return Ok(Some(Pin::Spki(hex.parse().context("addr: spki-sha256")?)));
+        }
+        let Some(hashes) = fragment.strip_prefix("cert-sha256=") else {
+            bail!("addr: fragment {} pins nothing", fragment);
+        };
+        let mut hashes = hashes.split(',');
+        let current = hex_to_32_bytes(hashes.next().unwrap_or("")).context("addr: cert-sha256")?;
+        let next = hashes.next().map(hex_to_32_bytes).transpose().context("addr: cert-sha256")?;
+        if hashes.next().is_some() {
+            bail!("addr: more than two certificates in {}", fragment);
+        }
+        Ok(Some(Pin::Certificate(current, next)))
+    }
+}
+
+impl fmt::Display for Pin {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Pin::Spki(spki) => write!(f, "spki-sha256={}", spki),
+            Pin::Certificate(current, next) => {
+                write!(f, "cert-sha256={}", Identity::from_bytes(*current))?;
+                if let Some(next) = next {
+                    write!(f, ",{}", Identity::from_bytes(*next))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// A QUIC peer, over plain QUIC or over WebTransport on it, speaking the
 /// DDNet 0.6 game protocol or Teeworlds 0.7 inside.
 #[derive(Clone, Copy)]
 pub struct QuicAddr {
     pub addr: SocketAddr,
     pub host: Option<HostName>,
-    pub identity: Option<Identity>,
+    pub pin: Option<Pin>,
     pub webtransport: bool,
     /// `tw-0.7+quic`/`tw-0.7+wt`: the messages inside are 0.7's.
     pub sixup: bool,
 }
-/// A WebSocket peer, `ws://` or `wss://`; the fragment pins the identity
-/// as for QUIC.
+/// A WebSocket peer, `ws://` or `wss://`; the fragment of a `wss://`
+/// address pins the identity as for QUIC, a browser checks the
+/// certificate against the host name instead.
 #[derive(Clone, Copy)]
 pub struct WsAddr {
     pub addr: SocketAddr,
     pub host: Option<HostName>,
     pub tls: bool,
-    pub identity: Option<Identity>,
+    pub pin: Option<Pin>,
 }
 
 impl fmt::Display for WsAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let WsAddr { addr, host, tls, identity } = self;
+        let WsAddr { addr, host, tls, pin } = self;
         let scheme = if *tls { "ddnet+wss" } else { "ddnet+ws" };
         let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
         write!(&mut buf, "{}://", scheme).unwrap();
         write_host(&mut buf, addr, host).unwrap();
-        if let Some(identity) = identity {
-            write!(&mut buf, "#identity-sha256={}", identity).unwrap();
+        if let Some(pin) = pin {
+            write!(&mut buf, "#{}", pin).unwrap();
         }
         f.pad(&buf)
     }
-}
-
-/// The identity pinned in a URL's fragment, if any: `identity-sha256=<hex>`
-/// as the masterserver lists it. A fragment with other keys, like the
-/// certificate hashes a browser takes, or the bare `webpki` of a
-/// WebTransport address, pins nothing here; anything else is refused, a
-/// typo must not quietly turn the pin off.
-fn identity_from_fragment(url: &Url) -> Result<Option<Identity>> {
-    let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
-        return Ok(None);
-    };
-    let hex = match fragment.strip_prefix("identity-sha256=") {
-        Some(hex) => hex,
-        None if fragment == "webpki" || fragment.contains('=') => return Ok(None),
-        None => bail!("addr: fragment {} pins no identity", fragment),
-    };
-    let hex = hex.split(',').next().unwrap_or("");
-    Ok(Some(hex.parse().context("addr: identity")?))
 }
 
 fn socket_addr_from_url(url: &Url) -> Result<SocketAddr> {
@@ -185,27 +240,27 @@ impl FromStr for Addr {
     fn from_str(addr: &str) -> Result<Addr> {
         let addr = Url::parse(addr).context("addr: URL")?;
         Ok(match addr.scheme() {
-            // The fragment pins the server's identity. Without one, whatever
-            // identity the server shows is taken, and reported, so it can
+            // The fragment pins the server's certificate. Without one,
+            // whatever the server shows is taken, and reported, so it can
             // be pinned the next time.
             scheme @ ("ddnet+quic" | "ddnet+wt" | "tw-0.7+quic" | "tw-0.7+wt") => {
                 let (sock_addr, host) = host_from_url(&addr)?;
                 Addr::Quic(QuicAddr {
                     addr: sock_addr,
                     host,
-                    identity: identity_from_fragment(&addr)?,
+                    pin: Pin::from_fragment(&addr)?,
                     webtransport: scheme.ends_with("+wt"),
                     sixup: scheme.starts_with("tw-0.7"),
                 })
             }
             scheme @ ("ddnet+ws" | "ddnet+wss") => {
                 let (sock_addr, host) = host_from_url(&addr)?;
-                Addr::Ws(WsAddr {
-                    addr: sock_addr,
-                    host,
-                    tls: scheme == "ddnet+wss",
-                    identity: identity_from_fragment(&addr)?,
-                })
+                let tls = scheme == "ddnet+wss";
+                let pin = Pin::from_fragment(&addr)?;
+                if !tls && pin.is_some() {
+                    bail!("addr: plain WebSockets have no certificate to pin");
+                }
+                Addr::Ws(WsAddr { addr: sock_addr, host, tls, pin })
             }
             "tw-0.6+udp" => Addr::Tw06(Tw06Addr(socket_addr_from_url(&addr)?)),
             "tw-0.7+udp" => Addr::Tw07(Tw07Addr(socket_addr_from_url(&addr)?)),
@@ -226,7 +281,7 @@ fn write_host(buf: &mut dyn fmt::Write, addr: &SocketAddr, host: &Option<HostNam
 
 impl fmt::Display for QuicAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let QuicAddr { addr, host, identity, webtransport, sixup } = self;
+        let QuicAddr { addr, host, pin, webtransport, sixup } = self;
         let scheme = match (*sixup, *webtransport) {
             (false, false) => "ddnet+quic",
             (false, true) => "ddnet+wt",
@@ -236,8 +291,8 @@ impl fmt::Display for QuicAddr {
         let mut buf: ArrayString<[u8; 256]> = ArrayString::new();
         write!(&mut buf, "{}://", scheme).unwrap();
         write_host(&mut buf, addr, host).unwrap();
-        if let Some(identity) = identity {
-            write!(&mut buf, "#identity-sha256={}", identity).unwrap();
+        if let Some(pin) = pin {
+            write!(&mut buf, "#{}", pin).unwrap();
         }
         buf.fmt(f)
     }
@@ -286,22 +341,39 @@ impl fmt::Display for Addr {
 #[cfg(test)]
 mod test {
     use super::Addr;
+    use super::Pin;
 
     #[test]
-    fn identity_fragment_forms() {
+    fn pin_fragment_forms() {
         let hex = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
-        let identity = |addr: &str| match addr.parse::<Addr>().unwrap() {
-            Addr::Quic(quic) => quic.identity.map(|identity| identity.to_string()),
-            _ => panic!("not quic"),
-        };
-        assert_eq!(identity("ddnet+quic://[::1]:8303"), None);
+        let other = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+        let pin = |addr: &str| addr.parse::<Addr>().unwrap().pin().map(|pin| pin.to_string());
+        assert_eq!(pin("ddnet+quic://[::1]:8303"), None);
         assert!(format!("ddnet+quic://[::1]:8303#{}", hex).parse::<Addr>().is_err());
-        assert_eq!(identity(&format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex)).as_deref(), Some(hex));
-        assert_eq!(identity(&format!("ddnet+wt://[::1]:8303#identity-sha256={},cert-sha256=00", hex)).as_deref(), Some(hex));
-        assert_eq!(identity("ddnet+wt://[::1]:8303#cert-sha256=00,11"), None);
-        assert_eq!(identity("ddnet+wt://[::1]:8303#webpki"), None);
-        assert!("ddnet+quic://[::1]:8303#identity-sha256=zz".parse::<Addr>().is_err());
-        assert!(format!("ddnet+quic://[::1]:8303#identity-sha256={}0", hex).parse::<Addr>().is_err());
+        for addr in [
+            format!("ddnet+quic://[::1]:8303#spki-sha256={}", hex),
+            format!("tw-0.7+quic://[::1]:8303#spki-sha256={}", hex),
+            format!("ddnet+wss://[::1]:8303#spki-sha256={}", hex),
+            format!("ddnet+wt://[::1]:8303#cert-sha256={}", hex),
+            format!("ddnet+wt://[::1]:8303#cert-sha256={},{}", hex, other),
+        ] {
+            assert_eq!(addr.parse::<Addr>().unwrap().to_string(), addr);
+        }
+        assert_eq!(pin("ddnet+wt://[::1]:8303#webpki"), None);
+        // The old form and anything else unknown is no pin to drop quietly.
+        assert!(format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex).parse::<Addr>().is_err());
+        assert!("ddnet+quic://[::1]:8303#spki-sha256=zz".parse::<Addr>().is_err());
+        assert!(format!("ddnet+quic://[::1]:8303#spki-sha256={}0", hex).parse::<Addr>().is_err());
+        assert!(format!("ddnet+wt://[::1]:8303#cert-sha256={},{},{}", hex, other, hex).parse::<Addr>().is_err());
+        // Plain WebSockets have no certificate.
+        assert!(format!("ddnet+ws://[::1]:8303#spki-sha256={}", hex).parse::<Addr>().is_err());
+
+        let spki: crate::Identity = hex.parse().unwrap();
+        let certificate = *other.parse::<crate::Identity>().unwrap().as_bytes();
+        assert!(Pin::Spki(spki).matches(&spki, &[0; 32]));
+        assert!(!Pin::Spki(spki).matches(&other.parse().unwrap(), spki.as_bytes()));
+        assert!(Pin::Certificate([0; 32], Some(certificate)).matches(&spki, &certificate));
+        assert!(!Pin::Certificate([0; 32], None).matches(&spki, &certificate));
     }
 
     #[test]

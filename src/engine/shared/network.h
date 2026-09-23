@@ -309,6 +309,8 @@ class CNetServer
 	// empty for a certificate the library makes itself.
 	char m_aTlsCert[IO_MAX_PATH_LENGTH] = "";
 	char m_aTlsKey[IO_MAX_PATH_LENGTH] = "";
+	// Every client is shown the TLS files and checks them by Web PKI.
+	bool m_WebPki = false;
 
 	// The maps SetMap() gave the library, kept to give them again after
 	// Reopen().
@@ -336,7 +338,9 @@ class CNetServer
 public:
 	~CNetServer();
 	void SetIdentity(const unsigned char (&aSeed)[32]);
-	void SetTlsFiles(const char *pCert, const char *pKey);
+	// `WebPki`: the files are from a CA for the registered name, and native
+	// clients are shown them as well instead of the identity.
+	void SetTlsFiles(const char *pCert, const char *pKey, bool WebPki);
 	// Reads the TLS files again, from these paths, for the handshakes from
 	// now on; connections that are up keep theirs. On an error the
 	// certificate in use stays and the reason is in `pError`. Only for a
@@ -345,8 +349,9 @@ public:
 	// The hash browsers accept the certificate by, the current one or the
 	// next; false without WebTransport.
 	bool CertificateSha256(bool Next, SHA256_DIGEST *pSha256);
-	// The server's own public identity, the 32 bytes clients pin it by;
-	// false before the library is open.
+	// What clients pin the server's identity by, the SHA-256 of the DER
+	// SubjectPublicKeyInfo of its key, or with Web PKI of the key of the TLS
+	// certificate; false before the library is open.
 	bool Identity(unsigned char (&aIdentity)[32]);
 	// Whether the library listens for WebSockets: `sv_websocket`, if they
 	// are compiled in. False before the library is open.
@@ -473,7 +478,8 @@ class CNetClient
 	// for an IP address. A browser connects by the name, since it has to
 	// check the certificate against it.
 	char m_aConnectHost[128] = "";
-	// The identity the QUIC server showed, hex; empty for other transports.
+	// The `spki-sha256` of the identity the QUIC or `wss://` server showed,
+	// hex; empty for other transports.
 	char m_aServerIdentity[65] = "";
 
 	NETADDR m_BindAddr = {0};
@@ -502,8 +508,8 @@ public:
 	// What a following Connect() to a QUIC or WebSocket address carries
 	// besides the address: the host name it came as (empty for an IP
 	// address; a browser connects by the name, since it checks the
-	// certificate against it) and the fragment. `identity-sha256=<hex>`
-	// pins the server's identity, `cert-sha256=<hex>[,<hex>]`
+	// certificate against it) and the fragment. `spki-sha256=<hex>`
+	// pins the server's identity key, `cert-sha256=<hex>[,<hex>]`
 	// names the certificates a browser takes; empty takes whatever the
 	// server shows.
 	void SetConnectTarget(const char *pHost, const char *pFragment);

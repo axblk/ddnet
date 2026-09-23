@@ -4,6 +4,7 @@ extern crate log;
 use self::types::MAX_FRAME_SIZE;
 use self::types::TIMEOUT_REASON;
 use self::types::Protocol;
+#[cfg(not(target_os = "emscripten"))]
 use self::util::secure_random;
 use error::Context;
 
@@ -35,6 +36,7 @@ pub use self::key::Identity;
 #[cfg(not(target_os = "emscripten"))]
 pub use self::native::*;
 pub use self::addr::Addr;
+pub use self::addr::Pin;
 pub use self::types::Event;
 pub use self::types::Map;
 pub use self::types::MapEvent;

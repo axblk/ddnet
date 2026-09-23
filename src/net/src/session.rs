@@ -3,9 +3,6 @@
 //! same over each of them; the transports differ only in how a frame goes
 //! out and in what they are able to offer, which they pass in.
 
-use crate::key::Identity;
-use crate::key::IDENTITY_PROOF_SIZE;
-use crate::secure_random;
 use crate::wire;
 use crate::Error;
 use crate::Result;
@@ -15,17 +12,13 @@ use std::collections::VecDeque;
 /// them, over a resume, are kept to this much.
 const MAX_PENDING_RESUME_BYTES: usize = 64 * 1024;
 
-/// What the two hellos settle: the nonces the identity proof answers,
-/// what the peer can do, and which game protocol the messages are in.
+/// What the two hellos settle: what the peer can do, and which game
+/// protocol the messages are in.
 pub struct Handshake {
     /// The messages inside are 0.7's, not DDNet 0.6's. A server takes
     /// what the client asked for, so this is only settled with the
     /// client's hello.
     pub sixup: bool,
-    /// Ours, which the peer's identity proof signs over.
-    pub local_nonce: [u8; wire::NONCE_SIZE],
-    /// The peer's, which our identity proof signs over.
-    pub peer_nonce: [u8; wire::NONCE_SIZE],
     /// What the peer announced it can do.
     pub peer_capabilities: u64,
     /// The peer's hello is in.
@@ -36,17 +29,14 @@ impl Handshake {
     pub fn new(sixup: bool) -> Handshake {
         Handshake {
             sixup,
-            local_nonce: [0; wire::NONCE_SIZE],
-            peer_nonce: [0; wire::NONCE_SIZE],
             peer_capabilities: 0,
             received: false,
         }
     }
-    /// The payload of our hello, under a fresh nonce; the caller frames it
-    /// as `CLIENT_HELLO` or `SERVER_HELLO` and sends it. 0.7 is a
-    /// capability on top of what the transport offers.
-    pub fn hello(&mut self, capabilities: u64, max_datagram_size: u64, resume_token: &[u8]) -> Vec<u8> {
-        self.local_nonce = secure_random();
+    /// The payload of our hello; the caller frames it as `CLIENT_HELLO` or
+    /// `SERVER_HELLO` and sends it. 0.7 is a capability on top of what the
+    /// transport offers.
+    pub fn hello(&self, capabilities: u64, max_datagram_size: u64, resume_token: &[u8]) -> Vec<u8> {
         let game_protocol = if self.sixup { wire::capability::GAME_PROTOCOL_7 } else { 0 };
         let hello = wire::Hello {
             major: wire::VERSION_MAJOR,
@@ -54,7 +44,6 @@ impl Handshake {
             protocol_version: wire::PROTOCOL_VERSION,
             capabilities: capabilities | game_protocol,
             max_datagram_size,
-            nonce: self.local_nonce,
             resume_token,
         };
         // Only the version numbers can make this fail, and they are ours.
@@ -84,48 +73,9 @@ impl Handshake {
         }
         self.sixup = sixup;
         self.peer_capabilities = hello.capabilities;
-        self.peer_nonce = hello.nonce;
         self.received = true;
         Ok(hello)
     }
-    /// Whether the peer said it can prove an identity of its own.
-    pub fn peer_proves_identity(&self) -> bool {
-        self.peer_capabilities & wire::capability::SERVER_IDENTITY != 0
-    }
-}
-
-/// The identity in a proof, if it is the one that was wanted and signs
-/// over one of the certificates the peer may have shown and over `nonce`.
-/// No certificate at all takes the identity as claimed: that is WebPKI,
-/// where a browser does not say what it saw and the certificate authority
-/// vouches for the host instead.
-pub fn verify_identity_proof(
-    payload: &[u8],
-    wanted: Option<Identity>,
-    certificates: &[[u8; 32]],
-    nonce: &[u8; wire::NONCE_SIZE],
-) -> Result<Identity> {
-    if payload.len() != IDENTITY_PROOF_SIZE {
-        bail!(
-            "identity proof of {} bytes, expected {}",
-            payload.len(),
-            IDENTITY_PROOF_SIZE
-        );
-    }
-    let shown = Identity::from_bytes(payload[..32].try_into().unwrap());
-    if let Some(wanted) = wanted {
-        if shown != wanted {
-            bail!("server identity is {}, expected {}", shown, wanted);
-        }
-    }
-    if !certificates.is_empty()
-        && !certificates
-            .iter()
-            .any(|sha256| shown.verify_proof(&payload[32..], sha256, nonce))
-    {
-        bail!("server identity proof does not check out");
-    }
-    Ok(shown)
 }
 
 /// Reliable messages a connection holds back while it has no way to send
@@ -166,6 +116,17 @@ mod tests {
     use crate::wire;
     use crate::wire::capability;
 
+    /// The hello is byte for byte the one the C++ QUIC transport sends:
+    /// version 1, the three capabilities a peer over QUIC needs, 0.7 as one
+    /// more.
+    #[test]
+    fn hello_as_the_quic_transport_sends_it() {
+        let hello = Handshake::new(false).hello(capability::REQUIRED_QUIC, 1000, &[]);
+        assert_eq!(hello, [0x01, 0x00, 0x01, 0x07, 0x43, 0xe8, 0x00]);
+        let hello = Handshake::new(true).hello(capability::REQUIRED_QUIC, 1000, &[]);
+        assert_eq!(hello, [0x01, 0x00, 0x01, 0x0f, 0x43, 0xe8, 0x00]);
+    }
+
     #[test]
     fn hello_settles_the_game_protocol() {
         let sixup = Handshake::new(true).hello(capability::REQUIRED_QUIC, 1000, &[]);
@@ -193,7 +154,6 @@ mod tests {
             protocol_version: 6,
             capabilities: capability::REQUIRED_QUIC,
             max_datagram_size: 1000,
-            nonce: [0; wire::NONCE_SIZE],
             resume_token: &[],
         })
         .unwrap();

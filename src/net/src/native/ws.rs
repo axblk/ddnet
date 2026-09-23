@@ -1,6 +1,7 @@
 //! WebSockets, for browsers and for networks that let nothing but TCP
 //! through. A TCP listener on the game's port next to the UDP socket,
-//! `wss://` with the browser certificate, and the game's frames one per
+//! `wss://` with the browser certificate, or the identity towards a client
+//! that offers the game's protocol in ALPN, and the game's frames one per
 //! message.
 //!
 //! There is one channel and one only: a WebSocket delivers in order, so a
@@ -23,6 +24,8 @@ use crate::mapstream;
 use crate::session;
 use crate::quic::PeerIdentity;
 use crate::quic::Shared;
+use crate::quic::GAME_ALPN;
+use crate::quic::Shown;
 use crate::webtransport;
 use crate::wire;
 use crate::CallbackData;
@@ -192,11 +195,12 @@ enum Pending {
 
 pub struct Protocol {
     listener: Option<TcpListener>,
-    shared: Arc<Shared>,
     idle_timeout: Duration,
-    /// For `wss://` towards a server: what it shows is checked through the
-    /// identity proof, not through a certificate authority.
+    /// For `wss://` towards a server: it is asked for its identity, which
+    /// is checked against the pin, not through a certificate authority.
     client_context: boring::ssl::SslContext,
+    /// For `wss://` from clients, with a listener.
+    server_context: Option<boring::ssl::SslContext>,
 }
 
 impl Protocol {
@@ -205,14 +209,26 @@ impl Protocol {
             Some(addr) => Some(listen_on(addr).context("TcpListener::bind")?),
             None => None,
         };
+        let server_context = match listener {
+            Some(_) => Some(Shared::wss_context(&shared)?),
+            None => None,
+        };
         let mut client_context = boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
             .context("boring::SslContext::builder")?;
         client_context.set_verify(boring::ssl::SslVerifyMode::NONE);
+        client_context
+            .set_sigalgs_list("ed25519:ecdsa_secp256r1_sha256")
+            .context("boring::SslContext::set_sigalgs_list")?;
+        // The ALPN list on the wire: the name behind its length.
+        let alpn = [&[GAME_ALPN.len() as u8][..], GAME_ALPN].concat();
+        client_context
+            .set_alpn_protos(&alpn)
+            .context("boring::SslContext::set_alpn_protos")?;
         Ok(Protocol {
             listener,
-            shared,
             idle_timeout,
             client_context: client_context.build(),
+            server_context,
         })
     }
     pub fn listener_mut(&mut self) -> Option<&mut TcpListener> {
@@ -236,11 +252,11 @@ impl Protocol {
         Ok(Some((conn, from)))
     }
     pub fn connect(&self, addr: Addr) -> Result<Connection> {
-        let Addr { addr: sock_addr, tls, identity, .. } = addr;
+        let Addr { addr: sock_addr, tls, pin, .. } = addr;
         let stream = TcpStream::connect(sock_addr).context("TcpStream::connect")?;
         let _ = stream.set_nodelay(true);
-        let peer_identity = match identity {
-            Some(identity) => PeerIdentity::Wanted(identity),
+        let peer_identity = match pin {
+            Some(pin) => PeerIdentity::Wanted(pin),
             None => PeerIdentity::AcceptAny,
         };
         Ok(Connection::new(self, stream, true, sock_addr, peer_identity, Some(tls)))
@@ -268,17 +284,15 @@ pub struct Connection {
     /// client's first bytes.
     tls: Option<bool>,
     peer_addr: SocketAddr,
-    shared: Arc<Shared>,
-    client_context: boring::ssl::SslContext,
+    /// The client's or the server's side of `wss://`; a server without a
+    /// listener has none.
+    tls_context: Option<boring::ssl::SslContext>,
     peer_identity: PeerIdentity,
     pinned: bool,
     game: Game,
     /// The masterserver checking that the server is reachable: it sends
     /// one connectionless packet and is done. Set by the handshake.
     master: Arc<AtomicBool>,
-    /// The certificate the server showed, or zeroes without TLS; the
-    /// identity vouches for it either way.
-    shown_certificate: [u8; 32],
     handshake: session::Handshake,
     pending: VecDeque<Pending>,
     incoming_map: Option<mapstream::Incoming>,
@@ -311,13 +325,11 @@ impl Connection {
             client,
             tls,
             peer_addr,
-            shared: proto.shared.clone(),
-            client_context: proto.client_context.clone(),
+            tls_context: if client { Some(proto.client_context.clone()) } else { proto.server_context.clone() },
             pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
             peer_identity,
             game: Game::Hello,
             master: Arc::new(AtomicBool::new(false)),
-            shown_certificate: [0; 32],
             handshake: session::Handshake::new(false),
             pending: VecDeque::new(),
             incoming_map: None,
@@ -344,15 +356,15 @@ impl Connection {
             addr: self.peer_addr,
             host: None,
             tls: self.tls.unwrap_or(false),
-            identity: match self.peer_identity {
-                PeerIdentity::Known(identity) => Some(identity),
+            pin: match self.peer_identity {
+                PeerIdentity::Known(shown) => Some(shown.pin(false)),
                 _ => None,
             },
         }
     }
     fn connect_event(&self) -> Event {
-        if let (true, false, PeerIdentity::Known(identity)) = (self.client, self.pinned, self.peer_identity) {
-            info!("{} has identity {}, not pinned", self.peer_addr, identity);
+        if let (true, false, PeerIdentity::Known(shown)) = (self.client, self.pinned, self.peer_identity) {
+            info!("{} showed {}, not pinned", self.peer_addr, shown.pin(false));
         }
         Event::Connect(self.addr().into())
     }
@@ -374,7 +386,7 @@ impl Connection {
                         Err(error) => return Err(error).context("TcpStream::peer_addr"),
                     }
                     if self.tls == Some(true) {
-                        let ssl = boring::ssl::Ssl::new(&self.client_context).context("boring::Ssl::new")?;
+                        let ssl = boring::ssl::Ssl::new(self.tls_context.as_ref().unwrap()).context("boring::Ssl::new")?;
                         match ssl.connect(stream) {
                             Ok(tls) => self.tls_done(Stream::Tls(tls))?,
                             Err(boring::ssl::HandshakeError::WouldBlock(mid)) => {
@@ -402,12 +414,10 @@ impl Connection {
                     let tls = first[0] == 0x16;
                     self.tls = Some(tls);
                     if tls {
-                        let context = self.shared.wss_context()?;
-                        let Some(context) = context else {
-                            bail!("no certificate for wss");
+                        let Some(context) = &self.tls_context else {
+                            bail!("no TLS for wss");
                         };
-                        self.shown_certificate = self.shared.certificate_sha256(false).unwrap_or([0; 32]);
-                        let ssl = boring::ssl::Ssl::new(&context).context("boring::Ssl::new")?;
+                        let ssl = boring::ssl::Ssl::new(context).context("boring::Ssl::new")?;
                         match ssl.accept(stream) {
                             Ok(tls) => self.tls_done(Stream::Tls(tls))?,
                             Err(boring::ssl::HandshakeError::WouldBlock(mid)) => {
@@ -466,31 +476,21 @@ impl Connection {
             }
         }
     }
-    /// TLS is up; a client remembers what the server showed.
+    /// TLS is up, and proved that the server holds the key of the
+    /// certificate it showed; a client checks it against the pin.
     fn tls_done(&mut self, stream: Stream) -> Result<()> {
         if let (true, Stream::Tls(tls)) = (self.client, &stream) {
-            let Some(cert) = tls.ssl().peer_certificate() else {
+            let Some(shown) = tls.ssl().peer_certificate().as_deref().and_then(Shown::of) else {
                 bail!("server showed no certificate");
             };
-            let digest = cert
-                .digest(boring::hash::MessageDigest::sha256())
-                .context("X509::digest")?;
-            self.shown_certificate = digest.as_ref().try_into().unwrap();
+            if !self.peer_identity.check(shown) {
+                bail!("{}", self.peer_identity.mismatch().unwrap_or_default());
+            }
         }
         self.start_websocket(stream)
     }
     fn start_websocket(&mut self, stream: Stream) -> Result<()> {
         if self.client {
-            // The identity is proven over the control stream, bound to
-            // the certificate the server showed, zeroes without TLS.
-            let wanted = match self.peer_identity {
-                PeerIdentity::Wanted(identity) => Some(identity),
-                _ => None,
-            };
-            self.peer_identity = PeerIdentity::Certificate {
-                wanted,
-                sha256: self.shown_certificate,
-            };
             let scheme = if self.tls == Some(true) { "wss" } else { "ws" };
             let request = tungstenite::client::ClientRequestBuilder::new(
                 format!("{}://{}/", scheme, self.peer_addr)
@@ -538,11 +538,7 @@ impl Connection {
         self.send_message(flag::WIRE | flag::VITAL, &frame)
     }
     fn send_hello(&mut self) -> Result<()> {
-        let mut capabilities = wire::capability::MAP_STREAM;
-        if self.client || self.handshake.peer_proves_identity() {
-            capabilities |= wire::capability::SERVER_IDENTITY;
-        }
-        let payload = self.handshake.hello(capabilities, 0, &[]);
+        let payload = self.handshake.hello(wire::capability::MAP_STREAM, 0, &[]);
         let frame_type = if self.client { wire::frame::CLIENT_HELLO } else { wire::frame::SERVER_HELLO };
         self.send_frame(frame_type, &payload)
     }
@@ -553,37 +549,11 @@ impl Connection {
         }
         Ok(())
     }
-    fn send_identity_proof(&mut self) -> Result<()> {
-        if !self.handshake.peer_proves_identity() {
-            return Ok(());
-        }
-        let proof = self
-            .shared
-            .identity()
-            .prove(&self.shown_certificate, &self.handshake.peer_nonce);
-        self.send_frame(wire::frame::SERVER_IDENTITY, &proof)
-    }
-    fn on_identity_proof(&mut self, payload: &[u8]) -> Result<()> {
-        let PeerIdentity::Certificate { wanted, sha256 } = self.peer_identity else {
-            bail!("identity proof not expected");
-        };
-        let shown = session::verify_identity_proof(payload, wanted, &[sha256], &self.handshake.local_nonce)?;
-        self.peer_identity = PeerIdentity::Known(shown);
-        Ok(())
-    }
+    /// A client is online once it has the server's hello; over `wss://`
+    /// the certificate was checked before.
     fn client_online(&mut self) -> Result<Option<Event>> {
         if !self.handshake.received {
             return Ok(None);
-        }
-        match self.peer_identity {
-            PeerIdentity::Known(_) => {}
-            PeerIdentity::Certificate { .. } => {
-                if !self.handshake.peer_proves_identity() {
-                    bail!("server shows no identity");
-                }
-                return Ok(None);
-            }
-            _ => bail!("server identity unknown after the handshake"),
         }
         self.game = Game::Online;
         Ok(Some(self.connect_event()))
@@ -661,16 +631,11 @@ impl Connection {
             (Game::Hello, wire::frame::CLIENT_HELLO) if !self.client => {
                 self.on_hello(payload)?;
                 self.send_hello()?;
-                self.send_identity_proof()?;
                 self.game = Game::Online;
                 Ok(Some(self.connect_event()))
             }
             (Game::Hello, wire::frame::SERVER_HELLO) if self.client => {
                 self.on_hello(payload)?;
-                self.client_online()
-            }
-            (Game::Hello, wire::frame::SERVER_IDENTITY) if self.client => {
-                self.on_identity_proof(payload)?;
                 self.client_online()
             }
             (Game::Online, wire::frame::MESSAGE) => {

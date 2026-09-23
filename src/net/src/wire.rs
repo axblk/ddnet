@@ -12,7 +12,6 @@ pub const VERSION_MAJOR: u64 = 1;
 /// The version the master server writes after the challenge stream kind.
 pub const MASTER_CHALLENGE_VERSION: u64 = 1;
 pub const VERSION_MINOR: u64 = 0;
-pub const NONCE_SIZE: usize = 32;
 pub const MAX_RESUME_TOKEN_SIZE: usize = 64;
 pub const MAX_HELLO_SIZE: usize = 512;
 pub const MAX_CONTROL_MESSAGE_SIZE: usize = 64 * 1024;
@@ -41,7 +40,6 @@ pub mod frame {
     pub const DISCONNECT: u64 = 3;
     pub const RESUME: u64 = 4;
     pub const MAP_HEADER: u64 = 5;
-    pub const SERVER_IDENTITY: u64 = 64;
 }
 
 /// Datagram types, the second varint of a datagram.
@@ -80,11 +78,10 @@ pub mod capability {
     pub const MAP_STREAM: u64 = 1 << 1;
     /// The peer takes a resume token and comes back with it.
     pub const RESUME: u64 = 1 << 2;
+    /// The messages inside are Teeworlds 0.7's, not DDNet 0.6's.
+    pub const GAME_PROTOCOL_7: u64 = 1 << 3;
     /// What a peer over QUIC or WebTransport has to announce.
     pub const REQUIRED_QUIC: u64 = DATAGRAM | MAP_STREAM | RESUME;
-    pub const SERVER_IDENTITY: u64 = 1 << 3;
-    /// The messages inside are Teeworlds 0.7's, not DDNet 0.6's.
-    pub const GAME_PROTOCOL_7: u64 = 1 << 4;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +225,6 @@ pub struct Hello<'a> {
     pub protocol_version: u64,
     pub capabilities: u64,
     pub max_datagram_size: u64,
-    pub nonce: [u8; NONCE_SIZE],
     pub resume_token: &'a [u8],
 }
 
@@ -249,7 +245,6 @@ pub fn encode_hello(hello: &Hello<'_>) -> Option<Vec<u8>> {
     ] {
         encode_varint(value, &mut out);
     }
-    out.extend_from_slice(&hello.nonce);
     encode_varint(hello.resume_token.len() as u64, &mut out);
     out.extend_from_slice(hello.resume_token);
     (out.len() <= MAX_HELLO_SIZE).then_some(out)
@@ -271,12 +266,6 @@ pub fn decode_hello(payload: &[u8]) -> Result<Hello<'_>, DecodeError> {
     if max_datagram_size > MAX_DATAGRAM_SIZE as u64 {
         return Err(DecodeError::LimitExceeded);
     }
-    let nonce_end = offset
-        .checked_add(NONCE_SIZE)
-        .filter(|end| *end <= payload.len())
-        .ok_or(DecodeError::Malformed)?;
-    let nonce = payload[offset..nonce_end].try_into().unwrap();
-    offset = nonce_end;
     let resume_size = usize::try_from(read_varint(payload, &mut offset)?)
         .map_err(|_| DecodeError::LimitExceeded)?;
     if resume_size > MAX_RESUME_TOKEN_SIZE {
@@ -291,7 +280,6 @@ pub fn decode_hello(payload: &[u8]) -> Result<Hello<'_>, DecodeError> {
         protocol_version,
         capabilities,
         max_datagram_size,
-        nonce,
         resume_token: &payload[offset..],
     })
 }
@@ -645,13 +633,11 @@ mod tests {
             protocol_version: 19000,
             capabilities: 7,
             max_datagram_size: MAX_DATAGRAM_SIZE as u64,
-            nonce: core::array::from_fn(|i| i as u8),
             resume_token: &[9, 8],
         };
         let encoded = encode_hello(&hello).unwrap();
         let decoded = decode_hello(&encoded).unwrap();
         assert_eq!(decoded.protocol_version, 19000);
-        assert_eq!(decoded.nonce, hello.nonce);
         assert_eq!(decoded.resume_token, [9, 8]);
 
         let mut truncated = encoded.clone();

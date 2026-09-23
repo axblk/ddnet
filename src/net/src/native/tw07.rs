@@ -7,7 +7,6 @@ use crate::ConnectionEvent as Event;
 use crate::Context as _;
 use crate::Error;
 use crate::PeerIndex;
-use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::Result;
 use crate::TIMEOUT_REASON;
@@ -118,7 +117,7 @@ fn broadcast_addr(from: &SocketAddr) -> SocketAddr {
 }
 
 impl Protocol {
-    pub fn new(_: &PrivateIdentity) -> Result<Protocol> {
+    pub fn new() -> Result<Protocol> {
         Ok(Protocol {
             tokens: HashMap::new(),
             queued: VecDeque::new(),

@@ -3434,8 +3434,9 @@ static bool LoadOrCreateNetIdentity(IStorage *pStorage, const char *pPath, unsig
 }
 
 // A certificate of the server's own under the name it registers is one a
-// public CA signed; otherwise browsers take the certificate by its hash.
-static bool WebTransportWebPki(const CConfig *pConfig)
+// public CA signed, and every client checks it by Web PKI. Otherwise browsers
+// take the certificate by its hash, and native clients pin the identity.
+static bool WebPki(const CConfig *pConfig)
 {
 	return pConfig->m_SvRegisterHostname[0] != '\0' && pConfig->m_SvTlsCert[0] != '\0';
 }
@@ -3444,7 +3445,13 @@ void CServer::FormatModernTransportFragments(char *pIdentityFragment, int Identi
 {
 	pIdentityFragment[0] = '\0';
 	pWebTransportFragment[0] = '\0';
-	if(m_RegisterTransports.m_Quic || m_RegisterTransports.m_Websocket)
+	// QUIC and `wss://` show native clients the identity, plain WebSockets
+	// show nothing. With Web PKI they show the certificate.
+	if((m_RegisterTransports.m_Quic || m_RegisterTransports.m_WebsocketTls) && WebPki(Config()))
+	{
+		str_copy(pIdentityFragment, "webpki", IdentityFragmentSize);
+	}
+	else if(m_RegisterTransports.m_Quic || m_RegisterTransports.m_WebsocketTls)
 	{
 		unsigned char aIdentity[32];
 		if(m_NetServer.Identity(aIdentity))
@@ -3452,10 +3459,10 @@ void CServer::FormatModernTransportFragments(char *pIdentityFragment, int Identi
 			char aHex[65];
 			for(int i = 0; i < 32; i++)
 				str_format(aHex + i * 2, sizeof(aHex) - i * 2, "%02x", aIdentity[i]);
-			str_format(pIdentityFragment, IdentityFragmentSize, "identity-sha256=%s", aHex);
+			str_format(pIdentityFragment, IdentityFragmentSize, "spki-sha256=%s", aHex);
 		}
 	}
-	if(m_RegisterTransports.m_WebTransport && !WebTransportWebPki(Config()))
+	if(m_RegisterTransports.m_WebTransport && !WebPki(Config()))
 	{
 		SHA256_DIGEST Sha256;
 		if(m_NetServer.CertificateSha256(false, &Sha256))
@@ -3532,7 +3539,8 @@ int CServer::Run()
 	}
 
 	// start server
-	if(Config()->m_SvQuicIdentityKey[0] != '\0')
+	// With Web PKI every client is shown the certificate, there is no identity.
+	if(Config()->m_SvQuicIdentityKey[0] != '\0' && !WebPki(Config()))
 	{
 		unsigned char aIdentity[32];
 		if(!LoadOrCreateNetIdentity(Storage(), Config()->m_SvQuicIdentityKey, aIdentity))
@@ -3546,7 +3554,7 @@ int CServer::Run()
 		log_error("server", "sv_tls_cert and sv_tls_key go together");
 		return -1;
 	}
-	m_NetServer.SetTlsFiles(Config()->m_SvTlsCert, Config()->m_SvTlsKey);
+	m_NetServer.SetTlsFiles(Config()->m_SvTlsCert, Config()->m_SvTlsKey, WebPki(Config()));
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
 	{
@@ -3608,6 +3616,11 @@ int CServer::Run()
 	m_RegisterTransports.m_Websocket = m_NetServer.AcceptsWebsockets();
 	m_RegisterTransports.m_WebsocketTls = m_RegisterTransports.m_Websocket && Config()->m_SvTlsCert[0] != '\0';
 	FormatModernTransportFragments(m_aLastIdentityFragment, sizeof(m_aLastIdentityFragment), m_aLastWebTransportFragment, sizeof(m_aLastWebTransportFragment));
+	// A connect link needs these, so they are logged where they can be read off.
+	if(m_RegisterTransports.m_Quic)
+		log_info("server", "QUIC listening on port %d #%s", this->Port(), m_aLastIdentityFragment);
+	if(m_RegisterTransports.m_WebTransport)
+		log_info("server", "WebTransport listening on port %d path=/ddnet%s%s", this->Port(), m_aLastWebTransportFragment[0] ? " #" : "", m_aLastWebTransportFragment);
 	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_RegisterTransports, Config()->m_SvRegisterHostname, m_aLastIdentityFragment, m_aLastWebTransportFragment);
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
@@ -3815,7 +3828,7 @@ int CServer::Run()
 #endif
 
 				// master server stuff
-				if(m_RegisterTransports.m_WebTransport && !WebTransportWebPki(Config()))
+				if(m_RegisterTransports.m_WebTransport && !WebPki(Config()))
 				{
 					// The WebTransport certificate rotates; tell the register
 					// the new hashes so it re-registers with the fresh fragment.

@@ -69,6 +69,9 @@ class CRegister : public IRegister
 
 	static bool StatusFromString(int *pResult, const char *pString);
 	const char *ProtocolToScheme(int Protocol) const;
+	// Whether the address of the transport carries the identity: QUIC, and
+	// WebSockets over TLS. Plain WebSockets have no certificate to pin.
+	bool PinsIdentity(ETransport Transport) const { return Transport == ETransport::QUIC || (Transport == ETransport::WEBSOCKET && m_Transports.m_WebsocketTls); }
 	static const char *ProtocolToString(int Protocol);
 	static bool ProtocolFromString(int *pResult, const char *pString);
 	static const char *ProtocolToSystem(int Protocol);
@@ -164,7 +167,7 @@ class CRegister : public IRegister
 	CRegisterTransports m_Transports;
 	char m_aConnlessTokenHex[16];
 	char m_aRegisterHostname[256] = {};
-	// `identity-sha256=…`, for every transport a client pins by identity.
+	// `spki-sha256=…`, for every transport a client pins by identity.
 	char m_aIdentityFragment[160] = {};
 	char m_aWebTransportFragment[160] = {};
 
@@ -295,7 +298,7 @@ void CRegister::CProtocol::FormatAddress(char *pBuffer, int BufferSize) const
 	const ETransport Transport = PROTOCOLS[m_Protocol].m_Transport;
 	const char *pHostname = Transport != ETransport::UDP && m_pParent->m_aRegisterHostname[0] ? m_pParent->m_aRegisterHostname : "connecting-address.invalid";
 	const char *pFragment = "";
-	if(Transport == ETransport::QUIC || Transport == ETransport::WEBSOCKET)
+	if(m_pParent->PinsIdentity(Transport))
 		pFragment = m_pParent->m_aIdentityFragment;
 	else if(Transport == ETransport::WEBTRANSPORT)
 		pFragment = m_pParent->m_aWebTransportFragment;
@@ -893,7 +896,7 @@ void CRegister::OnModernTrustChanged(const char *pIdentityFragment, const char *
 	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 	{
 		const ETransport Transport = PROTOCOLS[Protocol].m_Transport;
-		if(m_aProtocolEnabled[Protocol] && ((IdentityChanged && (Transport == ETransport::QUIC || Transport == ETransport::WEBSOCKET)) || (WebTransportChanged && Transport == ETransport::WEBTRANSPORT)))
+		if(m_aProtocolEnabled[Protocol] && ((IdentityChanged && PinsIdentity(Transport)) || (WebTransportChanged && Transport == ETransport::WEBTRANSPORT)))
 			m_aProtocols[Protocol].SendRegister();
 	}
 }

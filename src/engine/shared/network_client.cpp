@@ -293,9 +293,10 @@ int CNetClient::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Six
 			}
 			if(Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET))
 			{
-				// The identity the server showed, to connect the dummy with.
+				// The identity key the server showed, to connect the dummy
+				// with; over WebTransport the fragment names a certificate.
 				const char *pFragment = str_find(pAddr, "#");
-				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "identity-sha256=") : nullptr;
+				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "spki-sha256=") : nullptr;
 				str_copy(m_aServerIdentity, pIdentity != nullptr ? pIdentity : "");
 			}
 			m_ServerAddress = Addr;

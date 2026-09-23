@@ -63,9 +63,8 @@ tungstenite = { version = "0.26", optional = true, default-features = false, fea
 wtransport-proto = "=0.7.0"
 
 # The browser backend: the browser does the transport and the TLS, what
-# is left of the crypto is a hash and a signature check, in plain Rust.
+# is left of the crypto is a hash, in plain Rust.
 [target.'cfg(target_os = "emscripten")'.dependencies]
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 js-sys = "0.3.105"
 sha2 = "0.10"
 # Pinned: the wasm-bindgen CLI that emcc runs at link time must be this

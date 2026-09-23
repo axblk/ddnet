@@ -3,8 +3,6 @@ use crate::secure_random;
 use crate::Error;
 #[cfg(not(target_os = "emscripten"))]
 use foreign_types_shared::ForeignType as _;
-#[cfg(not(target_os = "emscripten"))]
-use foreign_types_shared::ForeignTypeRef as _;
 use std::fmt;
 #[cfg(not(target_os = "emscripten"))]
 use std::fs;
@@ -30,16 +28,12 @@ const BROWSER_CERTIFICATE_BACKDATE: i64 = 60 * 60;
 #[cfg(not(target_os = "emscripten"))]
 pub const BROWSER_CERTIFICATE_ROTATION: i64 = 7 * 24 * 60 * 60;
 /// The certificate the identity itself sits in is only ever checked by
-/// our own verify callback, which reads the key and ignores the dates;
-/// it is still remade long before it runs out, for any other TLS stack
-/// that looks at them.
+/// its key, the dates are ignored; it is still remade long before it runs
+/// out, for any other TLS stack that looks at them.
 #[cfg(not(target_os = "emscripten"))]
 pub const IDENTITY_CERTIFICATE_LIFETIME: i64 = 7 * 24 * 60 * 60;
 #[cfg(not(target_os = "emscripten"))]
 pub const IDENTITY_CERTIFICATE_RENEWAL: i64 = 3 * 24 * 60 * 60;
-/// What an identity signs to vouch for a certificate it does not sit in.
-const IDENTITY_PROOF_CONTEXT: &[u8] = b"ddnet server identity v1\0";
-pub const IDENTITY_PROOF_SIZE: usize = 32 + 64;
 
 #[cfg(not(target_os = "emscripten"))]
 pub fn unix_now() -> i64 {
@@ -48,6 +42,10 @@ pub fn unix_now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// What a client pins a server by: the SHA-256 of the DER
+/// SubjectPublicKeyInfo of the key in the certificate the server shows,
+/// `spki-sha256=<hex>` in its address. TLS 1.3 proves the server holds
+/// the key, so the hash is all a client compares.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Identity([u8; 32]);
 
@@ -90,82 +88,16 @@ impl Identity {
     pub fn from_bytes(bytes: [u8; 32]) -> Identity {
         Identity(bytes)
     }
+    /// The pin of a key, of whatever type.
     #[cfg(not(target_os = "emscripten"))]
-    pub fn try_from_lib<T: boring::pkey::HasPublic>(
-        key: &boring::pkey::PKeyRef<T>,
-    ) -> Option<Identity> {
-        if key.id() != boring::pkey::Id::ED25519 {
-            return None;
-        }
-        unsafe {
-            let mut buf = [0; 32];
-            let mut len = buf.len();
-            // TODO: expose this from the `boring` crate
-            if boring_sys::EVP_PKEY_get_raw_public_key(
-                key.as_ptr(),
-                buf.as_mut_ptr(),
-                &mut len,
-            ) != 1
-            {
-                return None;
-            }
-            if len != buf.len() {
-                return None;
-            }
-            Some(Identity::from_bytes(buf))
-        }
-    }
-    #[cfg(not(target_os = "emscripten"))]
-    pub fn to_lib(&self) -> boring::pkey::PKey<boring::pkey::Public> {
-        unsafe {
-            // TODO: expose this from the `boring` crate
-            let result = boring_sys::EVP_PKEY_new_raw_public_key(
-                boring_sys::EVP_PKEY_ED25519,
-                ptr::null_mut(),
-                self.0.as_ptr(),
-                self.0.len(),
-            );
-            assert!(!result.is_null());
-            boring::pkey::PKey::from_ptr(result)
-        }
+    pub fn of_key<T: boring::pkey::HasPublic>(key: &boring::pkey::PKeyRef<T>) -> Option<Identity> {
+        let spki = key.public_key_to_der().ok()?;
+        let digest = boring::hash::hash(boring::hash::MessageDigest::sha256(), &spki).ok()?;
+        Some(Identity::from_bytes(digest.as_ref().try_into().ok()?))
     }
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-    /// Checks the signature of an identity proof: that this identity
-    /// vouched for the certificate a client saw, in answer to the client's
-    /// nonce.
-    pub fn verify_proof(&self, signature: &[u8], certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> bool {
-        self.verify(&identity_proof_message(certificate_sha256, nonce), signature)
-    }
-    #[cfg(not(target_os = "emscripten"))]
-    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        let key = self.to_lib();
-        let Ok(mut verifier) = boring::sign::Verifier::new_without_digest(&key) else {
-            return false;
-        };
-        verifier.verify_oneshot(signature, message).unwrap_or(false)
-    }
-    /// The browser build has no boringssl; the signature check is the
-    /// one thing it needs of it.
-    #[cfg(target_os = "emscripten")]
-    fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
-        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&self.0) else {
-            return false;
-        };
-        let Ok(signature) = ed25519_dalek::Signature::from_slice(signature) else {
-            return false;
-        };
-        key.verify_strict(message, &signature).is_ok()
-    }
-}
-
-fn identity_proof_message(certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(IDENTITY_PROOF_CONTEXT.len() + 64);
-    message.extend_from_slice(IDENTITY_PROOF_CONTEXT);
-    message.extend_from_slice(certificate_sha256);
-    message.extend_from_slice(nonce);
-    message
 }
 
 /// A certificate for browsers, which take no Ed25519: ECDSA P-256, self-
@@ -274,7 +206,7 @@ impl BrowserCertificate {
     }
 }
 
-fn hex_to_32_bytes(v: &str) -> Result<[u8; 32], Error> {
+pub(crate) fn hex_to_32_bytes(v: &str) -> Result<[u8; 32], Error> {
     if v.len() != 64 || !v.is_ascii() {
         bail!("invalid length {}, must be 64 hex digits", v.chars().count());
     }
@@ -303,8 +235,9 @@ impl PrivateIdentity {
     pub fn random() -> PrivateIdentity {
         PrivateIdentity::from_bytes(secure_random())
     }
+    /// What clients pin this identity by.
     pub fn public(&self) -> Identity {
-        Identity::try_from_lib(&self.lib).unwrap()
+        Identity::of_key(&self.lib).unwrap()
     }
     pub fn from_bytes(bytes: [u8; 32]) -> PrivateIdentity {
         PrivateIdentity {
@@ -323,17 +256,6 @@ impl PrivateIdentity {
     }
     pub fn as_lib(&self) -> &boring::pkey::PKeyRef<boring::pkey::Private> {
         &self.lib
-    }
-    /// Vouches for a certificate this identity does not sit in, towards
-    /// the client that sent the nonce: the identity and its signature.
-    pub fn prove(&self, certificate_sha256: &[u8; 32], nonce: &[u8; 32]) -> [u8; IDENTITY_PROOF_SIZE] {
-        let message = identity_proof_message(certificate_sha256, nonce);
-        let mut signer = boring::sign::Signer::new_without_digest(&self.lib).unwrap();
-        let signature = signer.sign_oneshot_to_vec(&message).unwrap();
-        let mut proof = [0; IDENTITY_PROOF_SIZE];
-        proof[..32].copy_from_slice(self.public().as_bytes());
-        proof[32..].copy_from_slice(&signature);
-        proof
     }
     /// A self-signed certificate holding the identity, valid from an
     /// hour before `now` for `IDENTITY_CERTIFICATE_LIFETIME`.
@@ -396,6 +318,7 @@ impl PrivateIdentity {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod test {
+    use foreign_types_shared::ForeignTypeRef as _;
     use super::BrowserCertificate;
     use super::Identity;
     use super::PrivateIdentity;
@@ -445,19 +368,20 @@ mod test {
     }
 
     #[test]
-    fn identity_proof_round_trip() {
-        let identity = PrivateIdentity::random();
-        let other = PrivateIdentity::random();
-        let sha256 = [7; 32];
-        let nonce = [9; 32];
-        let proof = identity.prove(&sha256, &nonce);
-        assert_eq!(proof[..32], identity.public().as_bytes()[..]);
-        let signature = &proof[32..];
-        assert!(identity.public().verify_proof(signature, &sha256, &nonce));
-        assert!(!identity.public().verify_proof(signature, &[8; 32], &nonce));
-        assert!(!identity.public().verify_proof(signature, &sha256, &[0; 32]));
-        assert!(!other.public().verify_proof(signature, &sha256, &nonce));
-        assert!(!identity.public().verify_proof(&signature[..63], &sha256, &nonce));
+    fn identity_is_the_spki_hash() {
+        let private_identity: PrivateIdentity =
+            "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f"
+                .parse()
+                .unwrap();
+        // An Ed25519 SubjectPublicKeyInfo is a fixed prefix and the raw key.
+        let mut raw = [0; 32];
+        let mut len = raw.len();
+        assert_eq!(unsafe { boring_sys::EVP_PKEY_get_raw_public_key(private_identity.as_lib().as_ptr(), raw.as_mut_ptr(), &mut len) }, 1);
+        let mut spki = vec![0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
+        spki.extend_from_slice(&raw);
+        let expected = boring::hash::hash(boring::hash::MessageDigest::sha256(), &spki).unwrap();
+        assert_eq!(private_identity.public().as_bytes()[..], expected[..]);
+        assert!(private_identity.public() != PrivateIdentity::random().public());
     }
 
     #[test]
@@ -484,5 +408,6 @@ mod test {
         let seconds = i64::from(lifetime.days) * 24 * 60 * 60 + i64::from(lifetime.secs);
         assert_eq!(seconds, IDENTITY_CERTIFICATE_LIFETIME + BROWSER_CERTIFICATE_BACKDATE);
         assert!(cert.public_key().unwrap().public_eq(private_identity.as_lib()));
+        assert!(Identity::of_key(&cert.public_key().unwrap()) == Some(private_identity.public()));
     }
 }

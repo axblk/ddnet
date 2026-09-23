@@ -153,28 +153,30 @@ impl Addr {
 /// Whether the `#fragment` of a registered address is allowed for the
 /// protocol. The fragment carries how a client verifies the server:
 ///
-/// - `identity-sha256=<hash>`: the Ed25519 server identity, proven over the
-///   wire, for `ddnet+quic`, `tw-0.7+quic`, `ddnet+ws` and `ddnet+wss`.
+/// - `spki-sha256=<hash>`: the SHA-256 of the DER SubjectPublicKeyInfo of
+///   the server's identity key, which TLS proves, for `ddnet+quic`,
+///   `tw-0.7+quic` and `ddnet+wss`.
 /// - `cert-sha256=<hash>[,<next>]`: the certificate a browser takes by its
 ///   hash, for `ddnet+wt` and `tw-0.7+wt`; a second hash covers a rotation.
-/// - `webpki`: a certificate from a public CA, for `ddnet+wt` and
-///   `tw-0.7+wt`.
+/// - `webpki`: a certificate from a public CA for the host name, for every
+///   transport with TLS: `ddnet+wt`, `tw-0.7+wt`, `ddnet+quic`,
+///   `tw-0.7+quic` and `ddnet+wss`.
 fn valid_fragment(protocol: Protocol, fragment: &str) -> bool {
     use self::Protocol::*;
     let webtransport = matches!(protocol, WebTransport | WebTransport7);
     if fragment == "webpki" {
-        return webtransport;
+        return matches!(protocol, WebTransport | WebTransport7 | Quic | Quic7 | Wss);
     }
     let hashes = if let Some(hashes) = fragment.strip_prefix("cert-sha256=") {
         if !webtransport {
             return false;
         }
         hashes
-    } else if let Some(hashes) = fragment.strip_prefix("identity-sha256=") {
-        if !matches!(protocol, Quic | Quic7 | Ws | Wss) {
+    } else if let Some(hash) = fragment.strip_prefix("spki-sha256=") {
+        if !matches!(protocol, Quic | Quic7 | Wss) || hash.contains(',') {
             return false;
         }
-        hashes
+        hash
     } else {
         return false;
     };
@@ -486,24 +488,34 @@ mod test {
 
     #[test]
     fn fragments() {
-        const IDENTITY: &str = "#identity-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        const IDENTITY: &str = "#spki-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         const CERT: &str =
             "#cert-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        // Identity pins the Ed25519 key, for the transports that prove it.
-        for scheme in ["ddnet+quic", "tw-0.7+quic", "ddnet+ws", "ddnet+wss"] {
+        // The identity key, for the transports that show it.
+        for scheme in ["ddnet+quic", "tw-0.7+quic", "ddnet+wss"] {
             let address = format!("{scheme}://game.example.org:8303{IDENTITY}");
             assert_eq!(Addr::from_str(&address).unwrap().to_string(), address);
         }
-        // WebTransport has no wire identity, only a certificate.
+        // WebTransport shows browsers a certificate of its own.
         assert!(Addr::from_str(&format!("ddnet+wt://game.example.org:8303{IDENTITY}")).is_err());
+        // One key, and only in its own form.
+        let two = format!("{IDENTITY},fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210");
+        assert!(Addr::from_str(&format!("ddnet+quic://game.example.org:8303{two}")).is_err());
+        let old = IDENTITY.replace("spki-sha256", "identity-sha256");
+        assert!(Addr::from_str(&format!("ddnet+quic://game.example.org:8303{old}")).is_err());
         assert!(Addr::from_str(&format!("ddnet+wt://game.example.org:8303{CERT}")).is_ok());
         assert!(Addr::from_str("ddnet+wt://game.example.org:8303#webpki").is_ok());
         // Plain websockets have no certificate to pin.
+        assert!(Addr::from_str(&format!("ddnet+ws://game.example.org:8303{IDENTITY}")).is_err());
         assert!(Addr::from_str(&format!("ddnet+ws://game.example.org:8303{CERT}")).is_err());
         assert!(Addr::from_str("ddnet+ws://game.example.org:8303#webpki").is_err());
-        // Nor do QUIC and secure websockets, their clients check the identity.
+        // QUIC and secure websockets pin the key, not the certificate.
         assert!(Addr::from_str(&format!("ddnet+quic://game.example.org:8303{CERT}")).is_err());
-        assert!(Addr::from_str("ddnet+wss://game.example.org:8303#webpki").is_err());
+        // Web PKI goes for every transport with TLS.
+        for scheme in ["ddnet+quic", "tw-0.7+quic", "ddnet+wss"] {
+            let address = format!("{scheme}://game.example.org:8303#webpki");
+            assert_eq!(Addr::from_str(&address).unwrap().to_string(), address);
+        }
         // Two hashes cover a certificate rotation, but must differ.
         let two = "#cert-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
         assert!(Addr::from_str(&format!("ddnet+wt://game.example.org:8303{two}")).is_ok());
@@ -551,10 +563,11 @@ mod test {
             Addr::from_str(&addr.to_string()).unwrap().hostname(),
             Some("game.example.org")
         );
-        let address = "ddnet+quic://game.example.org:8303#identity-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let address = "ddnet+quic://game.example.org:8303#spki-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         assert_eq!(RegisterAddr::from_str(address).unwrap().to_string(), address);
-        assert!(RegisterAddr::from_str("ddnet+wt://game.example.org:8303#identity-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").is_err());
+        assert!(RegisterAddr::from_str("ddnet+wt://game.example.org:8303#spki-sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").is_err());
         assert!(RegisterAddr::from_str("ddnet+quic://user@game.example.org:8303#webpki").is_err());
+        assert!(RegisterAddr::from_str("ddnet+quic://game.example.org:8303#webpki").is_ok());
         assert!(Addr::from_str("ddnet+quic://user@game.example.org:8303#webpki").is_err());
         assert!(RegisterAddr::from_str("tw-0.6+udp://connecting-address.invalid:8303#webpki").is_err());
     }

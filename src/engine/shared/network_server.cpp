@@ -93,10 +93,11 @@ void CNetServer::SetIdentity(const unsigned char (&aSeed)[32])
 	m_HasIdentity = true;
 }
 
-void CNetServer::SetTlsFiles(const char *pCert, const char *pKey)
+void CNetServer::SetTlsFiles(const char *pCert, const char *pKey, bool WebPki)
 {
 	str_copy(m_aTlsCert, pCert);
 	str_copy(m_aTlsKey, pKey);
+	m_WebPki = WebPki;
 }
 
 bool CNetServer::ReloadTlsFiles(const char *pCert, const char *pKey, char *pError, int ErrorSize)
@@ -169,6 +170,7 @@ bool CNetServer::OpenLibrary()
 		ddnet_net_set_timeout(m_pNet, g_Config.m_ConnTimeout) ||
 		ddnet_net_set_key_log(m_pNet, g_Config.m_DbgTlsKeyLog != 0) ||
 		(m_aTlsCert[0] != '\0' && ddnet_net_set_tls_files(m_pNet, m_aTlsCert, str_length(m_aTlsCert), m_aTlsKey, str_length(m_aTlsKey))) ||
+		(m_aTlsCert[0] != '\0' && ddnet_net_set_web_pki(m_pNet, m_WebPki)) ||
 		(m_EbpfKey.IsLoaded() && ddnet_net_set_filter_key(m_pNet, m_EbpfKey.Material(), CEbpfKey::MATERIAL_SIZE)) ||
 		ddnet_net_set_accept_connections(m_pNet, true) ||
 		ddnet_net_set_accept_protocol(m_pNet, DDNET_NET_PROTOCOL_TW06, g_Config.m_SvLegacyUdp != 0) ||

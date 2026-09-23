@@ -6,13 +6,16 @@ from time import time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
+import hashlib
 import io
 import json
 import os
 import queue
 import re
 import shutil
+import socket
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -552,6 +555,11 @@ class Server(Runnable):
 		# block.
 		self.fifo = None
 		self.identity = None
+		# How clients check the QUIC and WebTransport certificate, as in a link.
+		self.quic_fragment = None
+		self.webtransport_fragment = None
+		# What raw QUIC is pinned by with Web PKI: the key of the TLS certificate.
+		self.web_pki_spki = None
 		# The epoch of the packet filter's key the server read, if any.
 		self.ebpf_key_epoch = None
 		super().__init__(
@@ -581,9 +589,15 @@ class Server(Runnable):
 				_, self.rcon_password, _ = event.line.split("'")
 			elif event.line.startswith("teehistorian: recording to '"):
 				_, self.teehistorian_filename, _ = event.line.split("'")
-			elif event.line.startswith("net::native::net: identity "):
-				# What clients pin the server by, over QUIC and its kin.
-				self.identity = event.line[len("net::native::net: identity ") :]
+			elif event.line.startswith("net::native::net: identity spki-sha256="):
+				# What clients pin the server by, over QUIC and `wss://`.
+				self.identity = event.line[len("net::native::net: identity spki-sha256=") :]
+			elif event.line.startswith("net::native::net: web pki, ") and " spki-sha256=" in event.line:
+				self.web_pki_spki = event.line.split(" spki-sha256=", 1)[1]
+			elif event.line.startswith("server: QUIC listening on port "):
+				self.quic_fragment = event.line.split(" #", 1)[1]
+			elif event.line.startswith("server: WebTransport listening on port "):
+				self.webtransport_fragment = event.line.split(" #", 1)[1] if " #" in event.line else ""
 			elif event.line.startswith("ebpf: using key epoch "):
 				self.ebpf_key_epoch = int(event.line[len("ebpf: using key epoch ") :].split(" ", 1)[0])
 		return event
@@ -750,16 +764,20 @@ def client_can_connect_quic_pinned(test_env):
 		raise AssertionError("server did not log its identity")
 	# The fragment as the masterserver lists it; quoted, as the console
 	# would otherwise read the `#` as the start of a comment.
-	client.command(f'connect "ddnet+quic://[::1]:{server.port}#identity-sha256={server.identity}"')
+	client_checks_pin(client, server, f"ddnet+quic://[::1]:{server.port}")
+
+
+def client_checks_pin(client, server, address):
+	client.command(f'connect "{address}#spki-sha256={server.identity}"')
 	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
 	client.command("disconnect")
 	server.wait_for_log_prefix("game: leave player=", timeout=10)
 	# A wrong pin is refused; the client does not take whatever answers.
 	wrong = server.identity[:-1] + ("0" if server.identity[-1] != "0" else "1")
-	client.command(f'connect "ddnet+quic://[::1]:{server.port}#identity-sha256={wrong}"')
+	client.command(f'connect "{address}#spki-sha256={wrong}"')
 	refused = client.wait_for_log_prefix("client: offline error=", timeout=10).line
-	if "identity" not in refused:
-		raise AssertionError(f"expected an identity error, got {refused!r}")
+	if "server key does not match the pin (presented spki-sha256=" + server.identity not in refused:
+		raise AssertionError(f"expected a pin error, got {refused!r}")
 	server.exit()
 	client.exit()
 	server.wait_for_exit()
@@ -971,6 +989,17 @@ def client_can_connect_7_webtransport(test_env):
 	client_can_connect_7_over(test_env, "tw-0.7+wt")
 
 
+# Over TLS a native client is shown the identity, as over QUIC.
+@test(requires_websockets=True)
+def client_can_connect_wss_pinned(test_env):
+	client = test_env.client()
+	server = test_env.server()
+	wait_for_startup([client, server])
+	if server.identity is None:
+		raise AssertionError("server did not log its identity")
+	client_checks_pin(client, server, f"ddnet+wss://127.0.0.1:{server.port}")
+
+
 @test(requires_websockets=True)
 def client_can_connect_websockets(test_env):
 	client = test_env.client(["stdout_output_level 1"])
@@ -1030,7 +1059,7 @@ def client_can_connect_with_filter_key(test_env):
 
 # The Emscripten client, as a browser would run it, against the native
 # server over WebSockets: it starts with the connect on its command line
-# once the server's port and identity are known, joins the game, and sees
+# once the server's port is known, joins the game, and sees
 # the server go.
 @test(requires_websockets=True, requires_native_client=False, requires_browser_client=True, timeout=180)
 def browser_client_can_connect(test_env):
@@ -1346,6 +1375,163 @@ ddvc_6DnZq51fypqX9ldrEFCF9aJdpi6wjgh6YA = "ddnet"
 	if len(servers_json["servers"]) != 0:
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
 	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+def tls_certificate(test_env, name):
+	"""A self-signed ECDSA certificate for localhost, its key and the SHA-256
+	of its SubjectPublicKeyInfo, which raw QUIC is pinned by with Web PKI."""
+	certificate = os.path.abspath(os.path.join(test_env.tmp_dir, f"{name}-cert.pem"))
+	key = os.path.abspath(os.path.join(test_env.tmp_dir, f"{name}-key.pem"))
+	subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", key, "-out", certificate, "-days", "2", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], check=True, capture_output=True)
+	public_key = subprocess.run(["openssl", "x509", "-in", certificate, "-pubkey", "-noout"], check=True, capture_output=True).stdout
+	spki = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"], input=public_key, check=True, capture_output=True).stdout
+	return certificate, key, hashlib.sha256(spki).hexdigest()
+
+
+def certificate_sha256(certificate):
+	"""The SHA-256 of a certificate, what browsers take it by."""
+	der = subprocess.run(["openssl", "x509", "-in", certificate, "-outform", "DER"], check=True, capture_output=True).stdout
+	return hashlib.sha256(der).hexdigest()
+
+
+def certificate_shown_over_tls(port):
+	"""The SHA-256 of the certificate a TLS client that does not offer the
+	game's protocol, a browser's `wss://`, is shown on the server's TCP port."""
+	context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+	context.check_hostname = False
+	context.verify_mode = ssl.CERT_NONE
+	with socket.create_connection(("127.0.0.1", port), timeout=5) as sock, context.wrap_socket(sock) as tls:
+		return hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
+
+
+def wait_for_registered_webtransport_fragment(mastersrv, fragment, timeout=15):
+	deadline = time() + timeout
+	servers_json = mastersrv.servers_json()
+	while time() < deadline:
+		servers = servers_json["servers"]
+		if len(servers) == 1 and any(address.startswith("ddnet+wt://") and address.endswith(f"#{fragment}") for address in servers[0]["addresses"]):
+			return
+		servers_json = mastersrv.servers_json()
+	raise AssertionError(f"#{fragment} was not registered within {timeout} seconds\n{servers_json}")
+
+
+# `reload_tls_cert` reads the TLS files again: the handshakes from then on,
+# WebTransport and `wss://`, are shown the new certificate, its hash is
+# registered, and a client that connected before stays. Files that do not
+# load leave the certificate in use.
+@test(requires_mastersrv=True, timeout=120)
+def server_reloads_tls_certificate(test_env):
+	a_certificate, a_key, _ = tls_certificate(test_env, "reload-a")
+	b_certificate, b_key, _ = tls_certificate(test_env, "reload-b")
+	a = certificate_sha256(a_certificate)
+	b = certificate_sha256(b_certificate)
+	certificate = os.path.join(test_env.tmp_dir, "live-cert.pem")
+	key = os.path.join(test_env.tmp_dir, "live-key.pem")
+	shutil.copyfile(a_certificate, certificate)
+	shutil.copyfile(a_key, key)
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+		f"sv_tls_cert {certificate}",
+		f"sv_tls_key {key}",
+	])
+	old = test_env.client()
+	new = test_env.client()
+	wait_for_startup([server, old, new])
+	if server.webtransport_fragment != f"cert-sha256={a}":
+		raise AssertionError(f"expected cert-sha256={a}, got {server.webtransport_fragment!r}")
+	wait_for_registered_webtransport_fragment(mastersrv, f"cert-sha256={a}")
+	old.command(f'connect "ddnet+wt://127.0.0.1:{server.port}#cert-sha256={a}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	shutil.copyfile(b_certificate, certificate)
+	shutil.copyfile(b_key, key)
+	server.command("reload_tls_cert")
+	server.wait_for_log_exact(f"server: read the TLS files again, the certificate has sha256 {b}", timeout=10)
+	if test_env.runner.test_websockets:
+		shown = certificate_shown_over_tls(server.port)
+		if shown != b:
+			raise AssertionError(f"wss showed {shown}, expected {b}")
+	new.command(f'connect "ddnet+wt://127.0.0.1:{server.port}#cert-sha256={a}"')
+	new.wait_for_log_prefix("client: offline error=", timeout=10)
+	new.command(f'connect "ddnet+wt://127.0.0.1:{server.port}#cert-sha256={b}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	wait_for_registered_webtransport_fragment(mastersrv, f"cert-sha256={b}")
+	old.command("say still here")
+	server.wait_for_log_suffix(": still here", timeout=10)
+
+	with open(certificate, "w", encoding="utf-8") as file:
+		file.write("not a certificate\n")
+	server.command("reload_tls_cert")
+	server.wait_for_log_prefix("server: keeping the TLS certificate in use, reading the files again failed: ", timeout=10)
+	if test_env.runner.test_websockets and certificate_shown_over_tls(server.port) != b:
+		raise AssertionError("a broken file replaced the certificate")
+
+	old.exit()
+	new.exit()
+	server.exit()
+	wait_for_no_servers(mastersrv)
+	mastersrv.exit()
+	old.wait_for_exit()
+	new.wait_for_exit()
+	server.wait_for_exit()
+	mastersrv.wait_for_exit()
+
+
+# A certificate of the server's own and a name for it: every client checks it
+# by Web PKI. Raw QUIC is shown the certificate too, there is no identity, and
+# the links say `webpki`. Pinned by the key of the certificate, raw QUIC
+# connects; the old kind of pin is refused.
+@test(requires_mastersrv=True)
+def server_uses_web_pki_for_raw_quic(test_env):
+	certificate, key, spki = tls_certificate(test_env, "web-pki")
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_register ipv6",
+		f"sv_register_url http://[::1]:{mastersrv.port}/ddnet/15/register",
+		f"sv_tls_cert {certificate}",
+		f"sv_tls_key {key}",
+		"sv_register_hostname localhost",
+	])
+	client = test_env.client()
+	wait_for_startup([server, client])
+	if server.identity is not None or server.web_pki_spki != spki:
+		raise AssertionError(f"expected no identity and the key of the certificate, got {server.identity!r} {server.web_pki_spki!r} instead of {spki!r}")
+	if server.quic_fragment != "webpki" or server.webtransport_fragment != "webpki":
+		raise AssertionError(f"unexpected fragments: {server.quic_fragment!r} {server.webtransport_fragment!r}")
+	expected_bases = {f"ddnet+quic://localhost:{server.port}", f"tw-0.7+quic://localhost:{server.port}", f"ddnet+wt://localhost:{server.port}"}
+	servers_json = wait_for_server_address_bases(mastersrv, expected_bases)
+	addresses = servers_json["servers"][0]["addresses"]
+	for base in expected_bases:
+		if f"{base}#webpki" not in addresses:
+			raise AssertionError(f"{base}#webpki not registered\n{servers_json}")
+
+	client.command(f'connect "ddnet+quic://[::1]:{server.port}#spki-sha256={spki}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.command("disconnect")
+	server.wait_for_log_prefix("game: leave player=", timeout=10)
+	wrong = spki[:-1] + ("0" if spki[-1] != "0" else "1")
+	client.command(f'connect "ddnet+quic://[::1]:{server.port}#spki-sha256={wrong}"')
+	refused = client.wait_for_log_prefix("client: offline error=", timeout=10).line
+	if f"server key does not match the pin (presented spki-sha256={spki})" not in refused:
+		raise AssertionError(f"expected a pin error, got {refused!r}")
+	if test_env.runner.test_websockets:
+		# A native `wss://` client is shown the certificate as well.
+		client.command(f'connect "ddnet+wss://127.0.0.1:{server.port}#spki-sha256={spki}"')
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	client.exit()
+	server.exit()
+	wait_for_no_servers(mastersrv)
+	mastersrv.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
 	mastersrv.wait_for_exit()
 
 

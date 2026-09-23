@@ -18,7 +18,6 @@ use crate::session;
 use crate::wire;
 use crate::wire::websocket as flag;
 use crate::Addr;
-use crate::Context as _;
 use crate::Error;
 use crate::Event;
 use crate::Identity;
@@ -36,7 +35,6 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
-use url::Url;
 
 /// The most of the control stream kept unparsed: a frame header and the
 /// longest frame that can follow it.
@@ -116,6 +114,7 @@ impl NetBuilder {
         self.timeout = timeout;
     }
     pub fn tls_files(&mut self, _cert: &str, _key: &str) {}
+    pub fn web_pki(&mut self, _web_pki: bool) {}
     pub fn key_log(&mut self, _key_log: bool) {}
     /// A browser has no packet filter in front of it.
     pub fn filter_key(&mut self, _material: &[u8]) -> Result<()> {
@@ -163,7 +162,6 @@ enum Transport {
         map: Option<(u32, mapstream::Incoming)>,
     },
     WebSocket {
-        tls: bool,
         map: Option<mapstream::Incoming>,
         /// When the last message of ours went out.
         last_send: Instant,
@@ -184,14 +182,6 @@ enum State {
     Closed,
 }
 
-/// The server's identity, as far as it is known.
-#[derive(Clone, Copy)]
-enum PeerIdentity {
-    /// Pinned by the connect, or anything if `None`; not proven yet.
-    Wanted(Option<Identity>),
-    Known(Identity),
-}
-
 struct Peer {
     handle: Handle,
     addr: Addr,
@@ -199,10 +189,9 @@ struct Peer {
     url: String,
     transport: Transport,
     state: State,
-    identity: PeerIdentity,
-    /// The certificates the browser was told to take, by SHA-256; the
-    /// proof is checked against each, the browser does not say which
-    /// one it saw. Empty over WebPKI, where there is no telling.
+    /// The certificates the browser was told to take, by SHA-256; empty
+    /// over WebPKI, where the browser checks the certificate against the
+    /// host name, and over WebSockets, where it always does.
     certificate_hashes: Vec<[u8; 32]>,
     /// The hellos and what they settle.
     handshake: session::Handshake,
@@ -243,30 +232,6 @@ pub struct Net {
     peers: HashMap<PeerIndex, Peer>,
     payload: Vec<u8>,
     reason: String,
-}
-
-/// The certificate hashes a URL's fragment lists, `cert-sha256=<hex>[,<hex>]`.
-fn certificate_hashes_from_fragment(url: &Url) -> Result<Vec<[u8; 32]>> {
-    let Some(fragment) = url.fragment() else {
-        return Ok(Vec::new());
-    };
-    let mut hashes = Vec::new();
-    for part in fragment.split(',') {
-        let Some(hex) = part.strip_prefix("cert-sha256=") else {
-            continue;
-        };
-        hashes.push(*hex.parse::<Identity>().context("addr: cert-sha256")?.as_bytes());
-    }
-    // `cert-sha256=A,B`: the second hash has no key of its own.
-    let mut after_key = false;
-    for part in fragment.split(',') {
-        if part.contains('=') {
-            after_key = part.starts_with("cert-sha256=");
-        } else if after_key {
-            hashes.push(*part.parse::<Identity>().context("addr: cert-sha256")?.as_bytes());
-        }
-    }
-    Ok(hashes)
 }
 
 impl Net {
@@ -347,20 +312,19 @@ impl Net {
         Ok(())
     }
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
-        let url = Url::parse(addr).context("addr: URL")?;
         let parsed: Addr = addr.parse()?;
-        let (webtransport, tls, sock_addr, host, wanted, sixup) = match parsed {
-            Addr::Quic(QuicAddr { addr, host, identity, webtransport: true, sixup }) => (true, true, addr, host, identity, sixup),
-            Addr::Ws(WsAddr { addr, host, tls, identity }) => (false, tls, addr, host, identity, false),
+        let (webtransport, tls, sock_addr, host, sixup) = match parsed {
+            Addr::Quic(QuicAddr { addr, host, webtransport: true, sixup, .. }) => (true, true, addr, host, sixup),
+            Addr::Ws(WsAddr { addr, host, tls, .. }) => (false, tls, addr, host, false),
             _ => bail!("a browser speaks WebTransport or WebSockets only"),
         };
         if !self.bridge.available(webtransport) {
             bail!("this browser has no {}", if webtransport { "WebTransport" } else { "WebSockets" });
         }
-        let certificate_hashes = if webtransport {
-            certificate_hashes_from_fragment(&url)?
-        } else {
-            Vec::new()
+        // The browser checks the certificate; a key it cannot be told.
+        let certificate_hashes = match parsed.pin() {
+            Some(pin) if webtransport => pin.certificates(),
+            _ => Vec::new(),
         };
         // By name where the address came as one: the browser looks it up
         // and checks the certificate against it.
@@ -390,7 +354,6 @@ impl Net {
             }
         } else {
             Transport::WebSocket {
-                tls,
                 map: None,
                 last_send: now,
             }
@@ -402,7 +365,6 @@ impl Net {
             url: browser_url,
             transport,
             state: State::Opening,
-            identity: PeerIdentity::Wanted(wanted),
             certificate_hashes,
             handshake: session::Handshake::new(sixup),
             unreliable: VecDeque::new(),
@@ -634,13 +596,6 @@ impl Peer {
         info!("{}: resuming on a new session", self.addr);
         self.handle = handle;
         self.state = State::Opening;
-        // The identity is pinned from here, whether this is the first
-        // new session or one after a failed attempt.
-        let identity = match self.identity {
-            PeerIdentity::Known(identity) | PeerIdentity::Wanted(Some(identity)) => identity,
-            PeerIdentity::Wanted(None) => unreachable!(),
-        };
-        self.identity = PeerIdentity::Wanted(Some(identity));
         self.handshake.received = false;
         self.handshake.peer_capabilities = 0;
         self.retry_at = None;
@@ -693,11 +648,8 @@ impl Peer {
     }
     fn send_hello(&mut self, bridge: &mut dyn Bridge) -> Result<()> {
         let (capabilities, max_datagram_size) = match &self.transport {
-            Transport::WebTransport { max_datagram, .. } => (
-                wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY,
-                *max_datagram as u64,
-            ),
-            Transport::WebSocket { .. } => (wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 0),
+            Transport::WebTransport { max_datagram, .. } => (wire::capability::REQUIRED_QUIC, *max_datagram as u64),
+            Transport::WebSocket { .. } => (wire::capability::MAP_STREAM, 0),
         };
         let resume_token = if self.resuming {
             self.resume_token.clone().unwrap_or_default()
@@ -733,47 +685,12 @@ impl Peer {
         }
         Ok(())
     }
-    /// The server's identity, signed over the certificate it showed and
-    /// our nonce. The browser tells nothing of the certificate over
-    /// WebPKI; there the identity is taken as claimed, the CA vouches
-    /// for the host instead.
-    fn on_identity_proof(&mut self, payload: &[u8]) -> Result<()> {
-        let PeerIdentity::Wanted(wanted) = self.identity else {
-            bail!("identity proof not expected");
-        };
-        let certificates: Vec<[u8; 32]> = match &self.transport {
-            Transport::WebTransport { .. } => self.certificate_hashes.clone(),
-            // Without TLS the proof is over a certificate of zeroes.
-            Transport::WebSocket { tls: false, .. } => vec![[0; 32]],
-            Transport::WebSocket { tls: true, .. } => Vec::new(),
-        };
-        let shown = session::verify_identity_proof(payload, wanted, &certificates, &self.handshake.local_nonce)?;
-        if certificates.is_empty() {
-            info!("{} claims identity {}, not checked over WebPKI", self.addr, shown);
-        }
-        self.identity = PeerIdentity::Known(shown);
-        Ok(())
-    }
-    /// Online once the hello is in and the identity known. A resume ends
-    /// here as well, with nothing to report: the game kept its peer.
+    /// Online once the hello is in; the browser checked the certificate
+    /// before. A resume ends here as well, with nothing to report: the
+    /// game kept its peer.
     fn client_online(&mut self, bridge: &mut dyn Bridge) -> Result<Option<Event>> {
         if !self.handshake.received {
             return Ok(None);
-        }
-        let identity = match self.identity {
-            PeerIdentity::Known(identity) => identity,
-            PeerIdentity::Wanted(_) => {
-                if !self.handshake.peer_proves_identity() {
-                    bail!("server shows no identity");
-                }
-                return Ok(None);
-            }
-        };
-        match &mut self.addr {
-            Addr::Quic(QuicAddr { identity: slot, .. }) | Addr::Ws(WsAddr { identity: slot, .. }) => {
-                *slot = Some(identity);
-            }
-            _ => unreachable!(),
         }
         self.state = State::Online;
         if self.resuming {
@@ -790,10 +707,6 @@ impl Peer {
         match (self.state, frame_type) {
             (State::Hello, wire::frame::SERVER_HELLO) => {
                 self.on_hello(payload)?;
-                self.client_online(bridge)
-            }
-            (State::Hello, wire::frame::SERVER_IDENTITY) => {
-                self.on_identity_proof(payload)?;
                 self.client_online(bridge)
             }
             (State::Online, wire::frame::MESSAGE) => {
@@ -1150,7 +1063,6 @@ mod test {
     use super::Handle;
     use super::JsEvent;
     use super::Net;
-    use crate::key::IDENTITY_PROOF_SIZE;
     use crate::wire;
     use crate::wire::websocket as flag;
     use crate::Addr;
@@ -1219,14 +1131,8 @@ mod test {
         (builder.open_with(Box::new(Shared(mock.clone()))), mock)
     }
 
-    const IDENTITY: &str = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
-
-    /// A proof nobody signed; only a WebPKI session takes it.
-    fn identity_proof() -> Vec<u8> {
-        let mut proof = vec![0; IDENTITY_PROOF_SIZE];
-        proof[..32].copy_from_slice(&hex(IDENTITY));
-        frame(wire::frame::SERVER_IDENTITY, &proof)
-    }
+    const CERTIFICATE: &str = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f";
+    const NEXT_CERTIFICATE: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
     fn server_hello(capabilities: u64, max_datagram_size: u64) -> Vec<u8> {
         let payload = wire::encode_hello(&wire::Hello {
@@ -1235,7 +1141,6 @@ mod test {
             protocol_version: wire::PROTOCOL_VERSION,
             capabilities,
             max_datagram_size,
-            nonce: [9; 32],
             resume_token: &[],
         })
         .unwrap();
@@ -1267,17 +1172,15 @@ mod test {
     #[test]
     fn webtransport_connects_and_talks() {
         let (mut net, mock) = net();
-        let identity = IDENTITY;
-        let idx = net
-            .connect(&format!("ddnet+wt://127.0.0.1:8303#cert-sha256={},{}", identity, identity))
-            .unwrap();
+        let addr = format!("ddnet+wt://127.0.0.1:8303#cert-sha256={},{}", CERTIFICATE, NEXT_CERTIFICATE);
+        let idx = net.connect(&addr).unwrap();
         assert_eq!(idx, PeerIndex(0));
         {
             let mock = mock.borrow();
             let (url, webtransport, hashes) = &mock.started[0];
             assert_eq!(url, "https://127.0.0.1:8303/ddnet");
             assert!(webtransport);
-            assert_eq!(hashes.len(), 2);
+            assert_eq!(hashes, &[hex(CERTIFICATE), hex(NEXT_CERTIFICATE)]);
         }
         let mut buf = [0; 2048];
         assert!(recv(&mut net, &mut buf).is_none());
@@ -1295,21 +1198,18 @@ mod test {
             assert_eq!(hello.max_datagram_size, 1000);
             assert!(hello.capabilities & wire::capability::DATAGRAM != 0);
         }
-        // The server's hello and its identity, in two pieces of the stream.
-        let mut control = server_hello(wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY, 1000);
-        control.extend_from_slice(&identity_proof());
-        let (first, second) = control.split_at(10);
+        // The server's hello, in two pieces of the stream. The browser
+        // checked the certificate, the connection is up.
+        let control = server_hello(wire::capability::REQUIRED_QUIC, 1000);
+        let (first, second) = control.split_at(3);
         push(&mock, JsEvent::Control, first.to_vec());
         assert!(recv(&mut net, &mut buf).is_none());
         push(&mock, JsEvent::Control, second.to_vec());
-        // The proof is over the certificate; a zero signature fails.
         match recv(&mut net, &mut buf) {
-            Some(Event::Disconnect(PeerIndex(0), len, false)) => {
-                assert_eq!(&buf[..len], b"server identity proof does not check out");
-            }
-            _ => panic!("expected the proof to fail"),
+            Some(Event::Disconnect(_, len, false)) => panic!("{}", String::from_utf8_lossy(&buf[..len])),
+            Some(Event::Connect(PeerIndex(0), connected)) => assert_eq!(connected.to_string(), addr),
+            _ => panic!("expected a connect"),
         }
-        assert!(recv(&mut net, &mut buf).is_none());
         assert!(net.userdata(idx).is_err());
     }
 
@@ -1327,13 +1227,11 @@ mod test {
             assert_eq!(data[0], flag::WIRE | flag::VITAL);
             assert_eq!(wire::decode_frame(&data[1..]).unwrap().frame_type, wire::frame::CLIENT_HELLO);
         }
-        // Over WebPKI the identity the server claims is taken as is.
-        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &server_hello(wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 0)));
-        assert!(recv(&mut net, &mut buf).is_none());
-        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &identity_proof()));
+        // The browser checked the certificate against the host name.
+        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &server_hello(wire::capability::MAP_STREAM, 0)));
         match recv(&mut net, &mut buf) {
             Some(Event::Disconnect(_, len, false)) => panic!("{}", String::from_utf8_lossy(&buf[..len])),
-            Some(Event::Connect(PeerIndex(0), Addr::Ws(addr))) => assert_eq!(addr.identity.unwrap().to_string(), IDENTITY),
+            Some(Event::Connect(PeerIndex(0), Addr::Ws(addr))) => assert!(addr.pin.is_none()),
             _ => panic!("expected a connect"),
         }
         // A message each way, the game's unreliable one without VITAL.
@@ -1384,8 +1282,7 @@ mod test {
     fn webtransport_online(net: &mut Net, mock: &Rc<RefCell<Mock>>, buf: &mut [u8]) -> PeerIndex {
         let idx = net.connect("ddnet+wt://127.0.0.1:8303#webpki").unwrap();
         push(mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
-        let mut control = server_hello(wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY, 800);
-        control.extend_from_slice(&identity_proof());
+        let mut control = server_hello(wire::capability::REQUIRED_QUIC, 800);
         control.extend_from_slice(&frame(wire::frame::RESUME, &resume_token()));
         push(mock, JsEvent::Control, control);
         assert!(matches!(recv(net, buf), Some(Event::Connect(PeerIndex(0), Addr::Quic(_)))));
@@ -1432,8 +1329,7 @@ mod test {
         assert!(net.recv_at(&mut buf, now).unwrap().is_none());
         assert_eq!(last_hello(&mock).1, resume_token());
         // The server takes it: no connect event, the held message goes out.
-        let mut control = server_hello(wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY, 800);
-        control.extend_from_slice(&identity_proof());
+        let control = server_hello(wire::capability::REQUIRED_QUIC, 800);
         push(&mock, JsEvent::Control, control);
         assert!(net.recv_at(&mut buf, now).unwrap().is_none());
         {
@@ -1455,8 +1351,7 @@ mod test {
         let mut buf = [0; 2048];
         net.connect("ddnet+wt://127.0.0.1:8303#webpki").unwrap();
         push(&mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
-        let mut control = server_hello(wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY, 800);
-        control.extend_from_slice(&identity_proof());
+        let control = server_hello(wire::capability::REQUIRED_QUIC, 800);
         push(&mock, JsEvent::Control, control);
         assert!(matches!(recv(&mut net, &mut buf), Some(Event::Connect(..))));
         mock.borrow_mut().events.push_back((JsEvent::Closed, Vec::new(), "gone".to_owned()));
@@ -1522,8 +1417,7 @@ mod test {
         let idx = net.connect("ddnet+wt://127.0.0.1:8303#webpki").unwrap();
         let mut buf = [0; 2048];
         push(&mock, JsEvent::Ready, 1200u32.to_le_bytes().to_vec());
-        let mut control = server_hello(wire::capability::REQUIRED_QUIC | wire::capability::SERVER_IDENTITY, 800);
-        control.extend_from_slice(&identity_proof());
+        let control = server_hello(wire::capability::REQUIRED_QUIC, 800);
         push(&mock, JsEvent::Control, control);
         assert!(matches!(recv(&mut net, &mut buf), Some(Event::Connect(PeerIndex(0), Addr::Quic(_)))));
         // Two unreliable messages fit one datagram; a flush sends it.
@@ -1586,8 +1480,7 @@ mod test {
         net.connect("ddnet+wss://127.0.0.1:8303").unwrap();
         let mut buf = [0; 2048];
         push(&mock, JsEvent::Ready, Vec::new());
-        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &server_hello(wire::capability::MAP_STREAM | wire::capability::SERVER_IDENTITY, 0)));
-        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &identity_proof()));
+        push(&mock, JsEvent::Control, ws_message(flag::WIRE | flag::VITAL, &server_hello(wire::capability::MAP_STREAM, 0)));
         assert!(matches!(recv(&mut net, &mut buf), Some(Event::Connect(..))));
         net.peers.get_mut(&PeerIndex(0)).unwrap().last_recv = Instant::now() - Duration::from_secs(6);
         match recv(&mut net, &mut buf) {

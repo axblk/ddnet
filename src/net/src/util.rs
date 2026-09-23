@@ -41,10 +41,12 @@ pub fn secure_hash(data: &[u8]) -> [u8; 32] {
     result
 }
 
+#[cfg(not(target_os = "emscripten"))]
 pub trait SecureRandom {
     fn secure_random() -> Self;
 }
 
+#[cfg(not(target_os = "emscripten"))]
 impl<const N: usize> SecureRandom for [u8; N] {
     fn secure_random() -> [u8; N] {
         let mut result = [0; N];
@@ -53,6 +55,7 @@ impl<const N: usize> SecureRandom for [u8; N] {
     }
 }
 
+#[cfg(not(target_os = "emscripten"))]
 pub fn secure_random<T: SecureRandom>() -> T {
     T::secure_random()
 }

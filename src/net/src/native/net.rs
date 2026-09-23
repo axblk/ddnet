@@ -268,6 +268,8 @@ pub struct NetBuilder {
     /// Certificate chain and key files for browsers, instead of a
     /// self-made certificate.
     tls_files: Option<(String, String)>,
+    /// The TLS files are shown to every client, see `web_pki`.
+    web_pki: bool,
     /// Whether to write the TLS session keys to `SSLKEYLOGFILE`.
     key_log: bool,
     /// The key a packet filter shares with the server, see `filter_key`.
@@ -420,6 +422,13 @@ impl NetBuilder {
     pub fn tls_files(&mut self, cert: &str, key: &str) {
         self.tls_files = Some((cert.to_owned(), key.to_owned()));
     }
+    /// The TLS files are from a CA for the name the server registers under,
+    /// so a client can check them by Web PKI: raw QUIC and `wss://` show
+    /// them as well, instead of the identity, which the server then does
+    /// not have. Needs `tls_files`.
+    pub fn web_pki(&mut self, web_pki: bool) {
+        self.web_pki = web_pki;
+    }
     /// Writes the TLS session keys to the file `SSLKEYLOGFILE` names, for
     /// reading the traffic in Wireshark. Off unless asked for: the keys
     /// undo the transport's encryption, and the variable is the host's.
@@ -502,7 +511,9 @@ impl NetBuilder {
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0).into(),
             0,
         ));
-        let identity = self.identity.unwrap_or_else(PrivateIdentity::random);
+        // With Web PKI every client is shown the TLS files, so there is no
+        // identity.
+        let identity = (!self.web_pki).then(|| self.identity.unwrap_or_else(PrivateIdentity::random));
 
         let mut socket = match Socket::bind(bindaddr) {
             Ok(socket) => socket,
@@ -524,10 +535,9 @@ impl NetBuilder {
             .register(&mut socket.inner, TOKEN_SOCKET, mio::Interest::READABLE)
             .context("mio::Poll::register")?;
 
-        info!("identity {}", identity.public());
         info!("listening on {}", local_addr);
-        let proto_tw06 = tw06::Protocol::new(&identity)?;
-        let proto_tw07 = tw07::Protocol::new(&identity)?;
+        let proto_tw06 = tw06::Protocol::new()?;
+        let proto_tw07 = tw07::Protocol::new()?;
         let proto_quic = quic::Protocol::new(
             identity,
             self.timeout,
@@ -535,6 +545,11 @@ impl NetBuilder {
             self.tls_files.as_ref().map(|(cert, key)| (cert.as_str(), key.as_str())),
             sslkeylogfile.is_some(),
         )?;
+        match (self.web_pki, proto_quic.identity()) {
+            (false, Some(spki)) => info!("identity spki-sha256={}", spki),
+            (true, Some(spki)) => info!("web pki, every client is shown the TLS certificate, spki-sha256={}", spki),
+            (_, None) => {}
+        }
         #[cfg(feature = "websocket")]
         let proto_ws = {
             let mut proto_ws = ws::Protocol::new(
@@ -612,8 +627,9 @@ impl Net {
     pub fn reload_tls_files(&mut self, cert: &str, key: &str) -> Result<()> {
         self.proto_quic.reload_tls_files(cert, key)
     }
+    /// What clients pin raw QUIC and `wss://` by.
     pub fn identity(&self) -> Option<Identity> {
-        Some(self.proto_quic.identity())
+        self.proto_quic.identity()
     }
     pub fn builder() -> NetBuilder {
         NetBuilder {
@@ -621,6 +637,7 @@ impl Net {
             identity: None,
             accept: AcceptProtocols::NONE,
             tls_files: None,
+            web_pki: false,
             timeout: Duration::from_secs(100),
             key_log: false,
             filter_key: None,

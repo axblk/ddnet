@@ -332,7 +332,7 @@ private:
 	IHttp *m_pHttpClient = nullptr;
 	char m_aNetVersion[128];
 	// The address `GetTutorialServer` returns.
-	char m_aTutorialServerAddress[512];
+	char m_aTutorialServerAddress[CServerPin::NAMED_URL_MAXSTRSIZE];
 
 	bool m_RefreshingHttp = false;
 	IServerBrowserHttp *m_pHttp = nullptr;

@@ -7,7 +7,6 @@ use crate::ConnectionEvent as Event;
 use crate::Context as _;
 use crate::Error;
 use crate::PeerIndex;
-use crate::PrivateIdentity;
 use crate::ProtocolEvent;
 use crate::Result;
 use crate::TIMEOUT_REASON;
@@ -72,7 +71,7 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    pub fn new(_: &PrivateIdentity) -> Result<Protocol> {
+    pub fn new() -> Result<Protocol> {
         Ok(Protocol {
             vanilla_pending: HashMap::new(),
             vanilla_connects: PerSecond::new(),

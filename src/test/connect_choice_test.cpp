@@ -19,12 +19,8 @@ static void AddAddress(CServerInfo &Info, const char *pUrl)
 	str_truncate(aAddress, sizeof(aAddress), pUrl, pFragment != nullptr ? pFragment - pUrl : str_length(pUrl));
 	NETADDR &Addr = Info.m_aAddresses[Info.m_NumAddresses++];
 	ASSERT_EQ(net_addr_from_url(&Addr, aAddress, nullptr, 0), 0);
-	if(pFragment == nullptr)
-		return;
-	if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
-		str_copy(Info.m_aWebTransportFragment, pFragment + 1);
-	else if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
-		str_copy(Info.m_aIdentity, pIdentity);
+	if(pFragment != nullptr)
+		Info.m_Pin.AddFragment(Addr, pFragment + 1);
 }
 
 class ConnectChoice : public ::testing::Test // NOLINT(readability-identifier-naming)
@@ -34,8 +30,9 @@ protected:
 
 	void SetUp() override
 	{
+		m_Info.m_Pin.Reset();
 		char aQuic[256];
-		str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
+		str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#spki-sha256=%s", IDENTITY);
 		AddAddress(m_Info, "tw-0.6+udp://127.0.0.1:8303");
 		AddAddress(m_Info, "tw-0.6+udp://[::1]:8303");
 		AddAddress(m_Info, aQuic);
@@ -110,8 +107,8 @@ static constexpr int IPV6 = (int)EConnectAddressFamily::IPV6;
 TEST_F(ConnectChoice, ConnectAddress)
 {
 	char aQuic[256];
-	str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
-	// Transport, then family; QUIC is the best.
+	str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#spki-sha256=%s", IDENTITY);
+	// Transport, then family; QUIC is the best natively.
 	EXPECT_EQ(Address(m_Info, -1, IPV6), aQuic);
 	EXPECT_EQ(Address(m_Info, QUIC, IPV4), aQuic);
 	EXPECT_EQ(Address(m_Info, LEGACY, IPV6), "[::1]:8303");
@@ -120,6 +117,7 @@ TEST_F(ConnectChoice, ConnectAddress)
 	EXPECT_EQ(Address(m_Info, (int)EConnectProtocol::WEBTRANSPORT, IPV4), aQuic);
 
 	CServerInfo Empty{};
+	Empty.m_Pin.Reset();
 	char aAddress[64];
 	str_copy(aAddress, "unchanged");
 	EXPECT_FALSE(ConnectAddressFor(Empty, LEGACY, IPV4, EConnectPrecedence::PROTOCOL, aAddress, sizeof(aAddress)));
@@ -131,7 +129,7 @@ TEST_F(ConnectChoice, ConnectAddress)
 TEST_F(ConnectChoice, IndependentPicks)
 {
 	char aQuic[256];
-	str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
+	str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#spki-sha256=%s", IDENTITY);
 	// QUIC only over IPv4: picking QUIC keeps QUIC, picking IPv6 keeps IPv6.
 	EXPECT_EQ(Address(m_Info, QUIC, IPV6, EConnectPrecedence::PROTOCOL), aQuic);
 	EXPECT_EQ(Address(m_Info, QUIC, IPV6, EConnectPrecedence::ADDRESS_FAMILY), "[::1]:8303");
@@ -147,6 +145,7 @@ TEST_F(ConnectChoice, IndependentPicks)
 
 	// Where both are there, the combination is taken whatever came last.
 	CServerInfo Full{};
+	Full.m_Pin.Reset();
 	AddAddress(Full, "tw-0.6+udp://127.0.0.1:8303");
 	AddAddress(Full, "tw-0.6+udp://[::1]:8303");
 	AddAddress(Full, "ddnet+quic://127.0.0.1:8303");
@@ -165,9 +164,10 @@ TEST_F(ConnectChoice, IndependentPicks)
 TEST_F(ConnectChoice, DdnetBeforeSixup)
 {
 	char aQuic7[256];
-	str_format(aQuic7, sizeof(aQuic7), "tw-0.7+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
+	str_format(aQuic7, sizeof(aQuic7), "tw-0.7+quic://127.0.0.1:8303#spki-sha256=%s", IDENTITY);
 
 	CServerInfo Mixed{};
+	Mixed.m_Pin.Reset();
 	AddAddress(Mixed, "tw-0.7+udp://[::1]:8303");
 	AddAddress(Mixed, aQuic7);
 	AddAddress(Mixed, "tw-0.6+udp://127.0.0.1:8303");
@@ -184,17 +184,20 @@ TEST_F(ConnectChoice, DdnetBeforeSixup)
 
 	// DDNet over QUIC is DDNet as well.
 	CServerInfo QuicOnly{};
+	QuicOnly.m_Pin.Reset();
 	AddAddress(QuicOnly, "tw-0.7+udp://127.0.0.1:8303");
 	AddAddress(QuicOnly, "ddnet+quic://127.0.0.1:8303");
 	EXPECT_EQ(Address(QuicOnly, LEGACY, IPV4), "ddnet+quic://127.0.0.1:8303");
 
 	// Without DDNet, 0.7 it is.
 	CServerInfo Sixup{};
+	Sixup.m_Pin.Reset();
 	AddAddress(Sixup, "tw-0.7+udp://127.0.0.1:8303");
 	AddAddress(Sixup, aQuic7);
 	EXPECT_EQ(Address(Sixup, -1, IPV6), aQuic7);
 	EXPECT_EQ(Address(Sixup, LEGACY, IPV6), "tw-0.7+udp://127.0.0.1:8303");
 }
+
 TEST_F(ConnectChoice, ServerHasAddress)
 {
 	EXPECT_TRUE(ServerHasAddress(m_Info, "127.0.0.1:8303"));
@@ -209,6 +212,7 @@ TEST_F(ConnectChoice, Reachable)
 {
 	EXPECT_TRUE(ServerReachable(m_Info));
 	CServerInfo Empty{};
+	Empty.m_Pin.Reset();
 	EXPECT_FALSE(ServerReachable(Empty));
 	// A native client has UDP and QUIC, a browser WebTransport and
 	// WebSockets.
@@ -217,6 +221,7 @@ TEST_F(ConnectChoice, Reachable)
 	EXPECT_FALSE(ConnectProtocolAvailable(EConnectProtocol::WEBTRANSPORT));
 	EXPECT_FALSE(ConnectProtocolAvailable(EConnectProtocol::WEBSOCKET));
 	CServerInfo Browser{};
+	Browser.m_Pin.Reset();
 	AddAddress(Browser, "ddnet+wt://127.0.0.1:8303#webpki");
 	AddAddress(Browser, "ddnet+ws://127.0.0.1:8303");
 	EXPECT_FALSE(ServerReachable(Browser));

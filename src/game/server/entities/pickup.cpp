@@ -53,7 +53,17 @@ void CPickup::Tick()
 
 	// Check if a player intersected us
 	CEntity *apEnts[MAX_CLIENTS];
-	int Num = GameWorld()->FindEntities(m_Pos, GetProximityRadius() + ms_CollisionExtraSize, apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
+	int Num;
+	if(GameWorld()->m_Core.m_PhysicsRules.m_DDNetMovement)
+	{
+		Num = GameWorld()->FindEntities(m_Pos, GetProximityRadius() + ms_CollisionExtraSize, apEnts, MAX_CLIENTS, CGameWorld::ENTTYPE_CHARACTER);
+	}
+	else
+	{
+		// vanilla only gives it to the closest tee, and the client predicts that
+		apEnts[0] = GameWorld()->ClosestCharacter(m_Pos, GetProximityRadius() + ms_CollisionExtraSize, nullptr);
+		Num = apEnts[0] ? 1 : 0;
+	}
 	for(int i = 0; i < Num; ++i)
 	{
 		auto *pChr = static_cast<CCharacter *>(apEnts[i]);

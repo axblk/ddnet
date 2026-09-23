@@ -2800,3 +2800,39 @@ TEST_F(GameWorld, ExplosionPolicyIsModeOwned)
 	GameServer()->m_apPlayers[VictimId] = nullptr;
 	SelectGameMode("ddnet");
 }
+
+TEST_F(GameWorld, VanillaTeamsSwapAfterAMatch)
+{
+	SelectGameMode("tdm");
+	CPlayer *pRed = GameServer()->CreatePlayer(0, TEAM_RED, false, -1);
+	CPlayer *pBlue = GameServer()->CreatePlayer(1, TEAM_BLUE, false, -1);
+	ASSERT_NE(pRed, nullptr);
+	ASSERT_NE(pBlue, nullptr);
+
+	GameController()->StartRound();
+	EXPECT_EQ(pRed->GetTeam(), TEAM_RED);
+
+	GameController()->EndRound();
+	GameController()->StartRound();
+	EXPECT_EQ(pRed->GetTeam(), TEAM_BLUE);
+	EXPECT_EQ(pBlue->GetTeam(), TEAM_RED);
+}
+
+TEST_F(GameWorld, VanillaCTFSpectatorsFollowAFlag)
+{
+	auto &Controller = SelectController<CTestVanillaCTF>("ctf");
+	ASSERT_TRUE(Controller.OnEntity({ENTITY_FLAGSTAND_RED, 2, 2, LAYER_GAME, 0, true, 0}));
+	CPlayer *pSpectator = GameServer()->CreatePlayer(0, TEAM_SPECTATORS, false, -1);
+	ASSERT_NE(pSpectator, nullptr);
+
+	pSpectator->SetSpectatorId(SPEC_FLAGRED);
+	pSpectator->PostTick();
+	EXPECT_EQ(pSpectator->SpectatorId(), SPEC_FREEVIEW);
+	EXPECT_EQ(pSpectator->m_ViewPos, Controller.Flag(TEAM_RED)->m_Pos);
+
+	// there is no blue flag to follow, so this stays a free view
+	pSpectator->m_ViewPos = vec2(0.0f, 0.0f);
+	pSpectator->SetSpectatorId(SPEC_FLAGBLUE);
+	pSpectator->PostTick();
+	EXPECT_EQ(pSpectator->m_ViewPos, vec2(0.0f, 0.0f));
+}

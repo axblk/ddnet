@@ -22,6 +22,7 @@ public:
 	int RoundStartTick() const { return m_RoundStartTick; }
 	int WarmupTicks() const { return m_WarmupTicks; }
 	int RoundCount() const { return m_RoundCount; }
+	int GameOverTick() const { return m_GameOverTick; }
 
 	void SetWarmupTicks(int Ticks) { m_WarmupTicks = Ticks; }
 	bool TickWarmup()

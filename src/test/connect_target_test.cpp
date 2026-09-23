@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+
 static constexpr const char *SPKI_SHA256 = "0101010101010101010101010101010101010101010101010101010101010101";
 
 TEST(ConnectTarget, Addresses)
@@ -287,3 +289,167 @@ TEST(ConnectTarget, EndpointsBrowser)
 	Native.m_Quic = Info.m_Quic;
 	EXPECT_EQ(CServerEndpoints(Native, Browser()).m_NumEndpoints, 0);
 }
+
+static std::string ConnectAddress(const CServerInfo &Info, const CConnectPlatform &Platform, int Protocol, EConnectAddressFamily Family, bool FamilyFirst = false)
+{
+	char aAddress[512];
+	if(!FormatConnectAddress(aAddress, sizeof(aAddress), Info, Platform, Protocol, Family, FamilyFirst))
+		return "";
+	return aAddress;
+}
+
+TEST(ConnectTarget, ConnectAddressNative)
+{
+	const CServerInfo Info = FullServer();
+	const std::string QuicFragment = std::string("#spki-sha256=") + SPKI_SHA256;
+	// QUIC by default, DDNet, IPv6 where there is IPv6.
+	EXPECT_EQ(ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV6), "ddnet+quic://[2001:db8::1]:8303" + QuicFragment);
+	EXPECT_EQ(ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV4), "ddnet+quic://1.2.3.4:8303" + QuicFragment);
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV6), "[2001:db8::1]:8303");
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV4), "1.2.3.4:8303");
+	// A transport the server or the platform does not have falls back to the best.
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::WEBTRANSPORT, EConnectAddressFamily::IPV4), "ddnet+quic://1.2.3.4:8303" + QuicFragment);
+	CConnectPlatform NoQuic = Native();
+	NoQuic.m_Modern = false;
+	EXPECT_EQ(ConnectAddress(Info, NoQuic, (int)EConnectProtocol::QUIC, EConnectAddressFamily::IPV6), "[2001:db8::1]:8303");
+
+	// 0.7 is only written where there is nothing else.
+	CServerInfo Sixup = {};
+	AddAddress(&Sixup, "tw-0.7+udp://1.2.3.4:8303");
+	AddModern(&Sixup.m_Quic, "tw-0.7+quic://1.2.3.4:8303");
+	Sixup.m_Quic.m_Pin = Info.m_Quic.m_Pin;
+	EXPECT_EQ(ConnectAddress(Sixup, Native(), -1, EConnectAddressFamily::IPV6), "tw-0.7+quic://1.2.3.4:8303" + QuicFragment);
+	EXPECT_EQ(ConnectAddress(Sixup, Native(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV6), "tw-0.7+udp://1.2.3.4:8303");
+
+	CServerInfo Nothing = {};
+	EXPECT_EQ(ConnectAddress(Nothing, Native(), -1, EConnectAddressFamily::IPV6), "");
+}
+
+TEST(ConnectTarget, ConnectAddressCombinations)
+{
+	// QUIC only over IPv4, UDP over both.
+	CServerInfo Info = {};
+	AddAddress(&Info, "tw-0.6+udp://1.2.3.4:8303");
+	AddAddress(&Info, "tw-0.6+udp://[2001:db8::1]:8303");
+	AddModern(&Info.m_Quic, "ddnet+quic://1.2.3.4:8303");
+	Info.m_Quic.m_Pin.m_Trust = EModernTransportTrust::SPKI_HASH;
+	ASSERT_EQ(sha256_from_str(&Info.m_Quic.m_Pin.m_Fingerprint, SPKI_SHA256), 0);
+	const std::string Quic4 = std::string("ddnet+quic://1.2.3.4:8303#spki-sha256=") + SPKI_SHA256;
+
+	const CConnectChoices Choices = ConnectChoicesFor(&Info, "", Native());
+	ASSERT_EQ(Choices.m_NumProtocols, 2);
+	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::QUIC);
+	EXPECT_EQ(Choices.m_aProtocols[1], EConnectProtocol::LEGACY);
+	ASSERT_EQ(Choices.m_NumFamilies, 2);
+	EXPECT_EQ(Choices.m_aFamilies[0], EConnectAddressFamily::IPV6);
+	EXPECT_EQ(Choices.m_aFamilies[1], EConnectAddressFamily::IPV4);
+
+	// The transport was just picked, or the row: it wins and the family falls back.
+	EXPECT_EQ(ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV6), Quic4);
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::QUIC, EConnectAddressFamily::IPV6), Quic4);
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV6), "[2001:db8::1]:8303");
+	// The family was just picked: it wins and the transport falls back.
+	EXPECT_EQ(ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV6, true), "[2001:db8::1]:8303");
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::QUIC, EConnectAddressFamily::IPV6, true), "[2001:db8::1]:8303");
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::QUIC, EConnectAddressFamily::IPV4, true), Quic4);
+	EXPECT_EQ(ConnectAddress(Info, Native(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV4, true), "1.2.3.4:8303");
+	EXPECT_EQ(ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV4, true), Quic4);
+
+	// What the box shows is what the dropdowns show.
+	EXPECT_EQ(ConnectProtocolOf(Quic4.c_str(), Native()), EConnectProtocol::QUIC);
+	EXPECT_EQ(ConnectProtocolOf("[2001:db8::1]:8303", Native()), EConnectProtocol::LEGACY);
+	NETADDR Address;
+	ASSERT_TRUE(FirstConnectAddress(Quic4.c_str(), &Address));
+	EXPECT_EQ(ConnectAddressFamily(Address), EConnectAddressFamily::IPV4);
+
+	// One choice is no choice.
+	CServerInfo Single = {};
+	AddAddress(&Single, "tw-0.6+udp://1.2.3.4:8303");
+	const CConnectChoices SingleChoices = ConnectChoicesFor(&Single, "1.2.3.4:8303", Native());
+	EXPECT_EQ(SingleChoices.m_NumProtocols, 1);
+	EXPECT_EQ(SingleChoices.m_NumFamilies, 1);
+	EXPECT_EQ(SingleChoices.m_aFamilies[0], EConnectAddressFamily::IPV4);
+}
+
+TEST(ConnectTarget, ConnectAddressBrowser)
+{
+	CServerInfo Info = FullServer();
+	const std::string WebTransportFragment = std::string("#cert-sha256=") + SPKI_SHA256;
+	// WebTransport by default, which here is only on IPv4.
+	EXPECT_EQ(ConnectAddress(Info, Browser(), -1, EConnectAddressFamily::IPV6), "ddnet+wt://1.2.3.4:8303" + WebTransportFragment);
+	EXPECT_EQ(ConnectAddress(Info, Browser(), (int)EConnectProtocol::WEBSOCKET, EConnectAddressFamily::IPV6), "ddnet-20+ws://1.2.3.4:8304");
+	// UDP and QUIC are never written in a browser.
+	EXPECT_EQ(ConnectAddress(Info, Browser(), (int)EConnectProtocol::LEGACY, EConnectAddressFamily::IPV6), "ddnet+wt://1.2.3.4:8303" + WebTransportFragment);
+	EXPECT_EQ(ConnectAddress(Info, Browser(), (int)EConnectProtocol::QUIC, EConnectAddressFamily::IPV6, true), "ddnet+wt://1.2.3.4:8303" + WebTransportFragment);
+	const CConnectChoices Choices = ConnectChoicesFor(&Info, "", Browser());
+	ASSERT_EQ(Choices.m_NumProtocols, 2);
+	EXPECT_EQ(Choices.m_aProtocols[0], EConnectProtocol::WEBTRANSPORT);
+	EXPECT_EQ(Choices.m_aProtocols[1], EConnectProtocol::WEBSOCKET);
+	ASSERT_EQ(Choices.m_NumFamilies, 1);
+	EXPECT_EQ(Choices.m_aFamilies[0], EConnectAddressFamily::IPV4);
+
+	// Web PKI is checked for the name the server registered.
+	Info.m_WebTransport.m_Pin = {EModernTransportTrust::WEBPKI, {}, {}, false};
+	str_copy(Info.m_WebTransport.m_aHostname, "game.example.org");
+	EXPECT_EQ(ConnectAddress(Info, Browser(), -1, EConnectAddressFamily::IPV6), "ddnet+wt://game.example.org:8303");
+	EXPECT_TRUE(ServerHasConnectAddress(Info, "ddnet+wt://game.example.org:8303"));
+	EXPECT_FALSE(ServerHasConnectAddress(Info, "ddnet+wt://other.example.org:8303"));
+	EXPECT_FALSE(ServerHasConnectAddress(Info, "ddnet+wt://game.example.org:8305"));
+}
+
+TEST(ConnectTarget, ConnectAddressOfServer)
+{
+	const CServerInfo Info = FullServer();
+	char aLink[256];
+	str_format(aLink, sizeof(aLink), "ddnet+quic://[2001:db8::1]:8303#spki-sha256=%s", SPKI_SHA256);
+	EXPECT_TRUE(ServerHasConnectAddress(Info, aLink));
+	EXPECT_TRUE(ServerHasConnectAddress(Info, "1.2.3.4:8303"));
+	EXPECT_TRUE(ServerHasConnectAddress(Info, "tw-0.7+udp://1.2.3.4:8303"));
+	EXPECT_TRUE(ServerHasConnectAddress(Info, "ddnet+wt://1.2.3.4:8303"));
+	EXPECT_FALSE(ServerHasConnectAddress(Info, "ddnet+wt://[2001:db8::1]:8303"));
+	EXPECT_FALSE(ServerHasConnectAddress(Info, "1.2.3.5:8303"));
+	EXPECT_FALSE(ServerHasConnectAddress(Info, "example.com:8303"));
+
+	// A link to a known server keeps all its transports on offer, a link to
+	// an unknown one only says what it is.
+	const CConnectChoices Known = ConnectChoicesFor(&Info, aLink, Native());
+	EXPECT_EQ(Known.m_NumProtocols, 2);
+	const CConnectChoices Unknown = ConnectChoicesFor(nullptr, aLink, Native());
+	ASSERT_EQ(Unknown.m_NumProtocols, 1);
+	EXPECT_EQ(Unknown.m_aProtocols[0], EConnectProtocol::QUIC);
+	ASSERT_EQ(Unknown.m_NumFamilies, 1);
+	EXPECT_EQ(Unknown.m_aFamilies[0], EConnectAddressFamily::IPV6);
+	const CConnectChoices Typed = ConnectChoicesFor(nullptr, "1.2.3.4:8303", Browser());
+	ASSERT_EQ(Typed.m_NumProtocols, 1);
+	EXPECT_EQ(Typed.m_aProtocols[0], EConnectProtocol::WEBSOCKET);
+	EXPECT_EQ(Typed.m_aFamilies[0], EConnectAddressFamily::IPV4);
+}
+
+#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+TEST(ConnectTarget, ConnectAddressIsConnected)
+{
+	// The address written for a server is connected to as it is, without
+	// the server list: on any tab and before the list is loaded.
+	const CServerInfo Info = FullServer();
+	const std::string Address = ConnectAddress(Info, Native(), -1, EConnectAddressFamily::IPV4);
+	CConnectTarget Target;
+	ASSERT_TRUE(Target.Parse(Address.c_str(), NETTYPE_ALL, EConnectAddressFamily::IPV4));
+	CConnectTransportOptions Options;
+	CModernTransportStart Start;
+	ASSERT_EQ(ChooseConnectTransport(Target, Options, nullptr, &Start), EConnectTransport::MODERN);
+	EXPECT_EQ(Start.m_Address, Url("ddnet+quic://1.2.3.4:8303"));
+	EXPECT_EQ(Start.m_Pin.m_Trust, EModernTransportTrust::SPKI_HASH);
+	EXPECT_EQ(Start.m_Pin.m_Fingerprint, Info.m_Quic.m_Pin.m_Fingerprint);
+	EXPECT_FALSE(Start.m_Sixup);
+
+	// UDP written for the IPv6 that QUIC does not have stays UDP, even where
+	// the server is listed with QUIC on IPv4.
+	CServerInfo Listed = {};
+	AddAddress(&Listed, "tw-0.6+udp://[::1]:8303");
+	AddModern(&Listed.m_Quic, "ddnet+quic://127.0.0.1:8303");
+	Listed.m_Quic.m_Pin = Info.m_Quic.m_Pin;
+	ASSERT_TRUE(Target.Parse("[::1]:8303", NETTYPE_ALL, EConnectAddressFamily::IPV6));
+	const auto FindListed = [&](const NETADDR &) -> const CServerInfo * { return &Listed; };
+	EXPECT_EQ(ChooseConnectTransport(Target, Options, FindListed, &Start), EConnectTransport::LEGACY);
+}
+#endif

@@ -6,6 +6,7 @@
 #include <base/log.h>
 #include <base/time.h>
 
+#include <engine/client/connect_target.h>
 #include <engine/engine.h>
 #include <engine/favorites.h>
 #include <engine/font_icons.h>
@@ -22,6 +23,7 @@
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
+#include <game/client/ui_scrollregion.h>
 #include <game/localization.h>
 
 static constexpr ColorRGBA HIGHLIGHTED_TEXT_COLOR = ColorRGBA(0.4f, 0.4f, 1.0f, 1.0f);
@@ -303,7 +305,7 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 		}
 		CUIElement *pUiElement = vpServerBrowserUiElements[i];
 
-		const CListboxItem ListItem = s_ListBox.DoNextItem(pItem, str_comp(pItem->m_aAddress, g_Config.m_UiServerAddress) == 0);
+		const CListboxItem ListItem = s_ListBox.DoNextItem(pItem, str_comp(pItem->m_aAddress, g_Config.m_UiServerAddress) == 0 || ServerHasConnectAddress(*pItem, g_Config.m_UiServerAddress));
 		if(ListItem.m_Selected)
 			m_SelectedIndex = i;
 
@@ -470,13 +472,72 @@ void CMenus::RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemAct
 			const CServerInfo *pItem = ServerBrowser()->SortedGet(NewSelected);
 			if(pItem)
 			{
-				str_copy(g_Config.m_UiServerAddress, pItem->m_aAddress);
+				UpdateConnectAddress(pItem);
 				m_ServerBrowserShouldRevealSelection = true;
 			}
 		}
 	}
 
 	WasListboxItemActivated = s_ListBox.WasItemActivated();
+}
+
+// A choice with a single answer is shown where its dropdown would be, dimmed,
+// instead of offering a menu with one entry.
+int CMenus::DoConnectChoice(CUIRect *pRect, int Current, const char **ppLabels, int Num, CUi::SDropDownState &State)
+{
+	if(Num > 1)
+		return std::clamp(Ui()->DoDropDown(pRect, Current, ppLabels, Num, State), 0, Num - 1);
+	pRect->Draw(ColorRGBA(1.0f, 1.0f, 1.0f, 0.25f), IGraphics::CORNER_ALL, 5.0f);
+	SLabelProperties Props;
+	Props.SetColor(ColorRGBA(1.0f, 1.0f, 1.0f, 0.6f));
+	Ui()->DoLabel(pRect, ppLabels[0], (pRect->h - 2.0f) * CUi::ms_FontmodHeight, TEXTALIGN_MC, Props);
+	return Current;
+}
+
+const char *CMenus::ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress)
+{
+	// The row is narrow and the address has to stay readable, so these are the
+	// names as short as they can be without becoming a riddle.
+	switch(Protocol)
+	{
+	case EConnectProtocol::QUIC: return "QUIC";
+	// The two websocket schemes are one protocol to the client but not to the
+	// server it reaches, so the address decides which of the two this is.
+	case EConnectProtocol::WEBSOCKET: return pAddress != nullptr && str_find_nocase(pAddress, "wss://") != nullptr ? "WSS" : "WS";
+	case EConnectProtocol::WEBTRANSPORT: return "WT";
+	default: return "UDP";
+	}
+}
+
+const CServerInfo *CMenus::ServerOfConnectAddress(const char *pAddress)
+{
+	// The browser knows its servers by every address they are listed with,
+	// with and without the 0.7 bit for the modern ones.
+	NETADDR Address;
+	if(FirstConnectAddress(pAddress, &Address))
+	{
+		if(const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(Address))
+			return &pEntry->m_Info;
+		Address.type &= ~NETTYPE_TW7;
+		if(const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(Address))
+			return &pEntry->m_Info;
+	}
+	// A modern transport listed under a name is only found in the row it was
+	// written from.
+	const CServerInfo *pSelected = m_SelectedIndex >= 0 && m_SelectedIndex < ServerBrowser()->NumSortedServers() ? ServerBrowser()->SortedGet(m_SelectedIndex) : nullptr;
+	return pSelected != nullptr && ServerHasConnectAddress(*pSelected, pAddress) ? pSelected : nullptr;
+}
+
+// The box holds the one address that will be connected to, not the list of
+// everything the server announced: a server with four addresses is still one
+// server to read out, and the transport and family next to the box say which
+// of them it is.
+void CMenus::UpdateConnectAddress(const CServerInfo *pServer, bool FamilyFirst)
+{
+	if(pServer == nullptr)
+		return;
+	if(!FormatConnectAddress(g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress), *pServer, CConnectPlatform::ThisClient(), g_Config.m_ClConnectProtocol, (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily, FamilyFirst))
+		str_copy(g_Config.m_UiServerAddress, pServer->m_aAddress);
 }
 
 void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated)
@@ -510,9 +571,12 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 	CUIRect SearchInfoAndAddr, ServersAndConnect, ServersPlayersOnline, SearchAndInfo, ServerAddr, ConnectButtons;
 	StatusBox.VSplitRight(135.0f, &SearchInfoAndAddr, &ServersAndConnect);
-	if(SearchInfoAndAddr.w > 350.0f)
-		SearchInfoAndAddr.VSplitLeft(350.0f, &SearchInfoAndAddr, nullptr);
 	SearchInfoAndAddr.HSplitTop(40.0f, &SearchAndInfo, &ServerAddr);
+	// The search boxes read fine at the width they were given; the address is
+	// the one that has to hold a host name, a port and a certificate hash, and
+	// the space it was capped out of is drawn on by nothing else.
+	if(SearchAndInfo.w > 350.0f)
+		SearchAndInfo.VSplitLeft(350.0f, &SearchAndInfo, nullptr);
 	ServersAndConnect.HSplitTop(35.0f, &ServersPlayersOnline, &ConnectButtons);
 	ConnectButtons.HSplitTop(5.0f, nullptr, &ConnectButtons);
 
@@ -600,14 +664,82 @@ void CMenus::RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItem
 
 	// address info
 	{
-		CUIRect ServerAddrLabel, ServerAddrEditBox;
 		ServerAddr.Margin(2.0f, &ServerAddr);
-		ServerAddr.VSplitLeft(SearchExcludeAddrStrMax + 5.0f + ExcludeSearchIconMax + 5.0f, &ServerAddrLabel, &ServerAddrEditBox);
 
-		Ui()->DoLabel(&ServerAddrLabel, Localize("Server address:"), 14.0f, TEXTALIGN_ML);
+		// What the address is connected with follows the address, not the
+		// highlighted row: the box is what the connect button reads.
+		const CConnectPlatform Platform = CConnectPlatform::ThisClient();
+		const CServerInfo *pServer = ServerOfConnectAddress(g_Config.m_UiServerAddress);
+		const CConnectChoices Choices = ConnectChoicesFor(pServer, g_Config.m_UiServerAddress, Platform);
+
+		// Transport and address family come after the address, and keep their
+		// place when there is nothing to choose so the row does not jump.
+		CUIRect ServerAddrLabel, ServerAddrEditBox, ProtocolDropDown, FamilyDropDown;
+		ServerAddr.VSplitRight(50.0f, &ServerAddr, &FamilyDropDown);
+		ServerAddr.VSplitRight(5.0f, &ServerAddr, nullptr);
+		ServerAddr.VSplitRight(55.0f, &ServerAddr, &ProtocolDropDown);
+		ServerAddr.VSplitRight(5.0f, &ServerAddr, nullptr);
+
+		// The box lines up with the search boxes above it where there is room,
+		// and takes the space of the label where there is not.
+		const char *pLabel = Localize("Server address:");
+		const float MinEditBoxWidth = 130.0f;
+		float LabelWidth = SearchExcludeAddrStrMax + 5.0f + ExcludeSearchIconMax + 5.0f;
+		if(ServerAddr.w - LabelWidth < MinEditBoxWidth)
+			LabelWidth = TextRender()->TextWidth(14.0f, pLabel) + 5.0f;
+		if(ServerAddr.w - LabelWidth < MinEditBoxWidth)
+			LabelWidth = 0.0f;
+		ServerAddr.VSplitLeft(LabelWidth, &ServerAddrLabel, &ServerAddrEditBox);
+		if(LabelWidth > 0.0f)
+			Ui()->DoLabel(&ServerAddrLabel, pLabel, 14.0f, TEXTALIGN_ML);
+
 		static CLineInput s_ServerAddressInput(g_Config.m_UiServerAddress, sizeof(g_Config.m_UiServerAddress));
+		s_ServerAddressInput.SetEmptyText(LabelWidth == 0.0f ? pLabel : nullptr);
 		if(Ui()->DoClearableEditBox(&s_ServerAddressInput, &ServerAddrEditBox, 12.0f))
 			m_ServerBrowserShouldRevealSelection = true;
+
+		// The dropdowns show what the box holds. Only a choice that was made is
+		// remembered: writing what is merely on screen would turn looking at a
+		// server that speaks one transport into picking that transport for every
+		// server after it, and a fallback is not a choice either.
+		const EConnectProtocol ShownProtocol = ConnectProtocolOf(g_Config.m_UiServerAddress, Platform);
+		const char *apProtocols[(int)EConnectProtocol::COUNT];
+		int CurrentProtocol = 0;
+		for(int i = 0; i < Choices.m_NumProtocols; ++i)
+		{
+			apProtocols[i] = ConnectProtocolShortName(Choices.m_aProtocols[i], g_Config.m_UiServerAddress);
+			if(Choices.m_aProtocols[i] == ShownProtocol)
+				CurrentProtocol = i;
+		}
+		static CUi::SDropDownState s_ProtocolDropDownState;
+		static CScrollRegion s_ProtocolDropDownScrollRegion;
+		s_ProtocolDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_ProtocolDropDownScrollRegion;
+		const int PickedProtocol = DoConnectChoice(&ProtocolDropDown, CurrentProtocol, apProtocols, Choices.m_NumProtocols, s_ProtocolDropDownState);
+		if(PickedProtocol != CurrentProtocol)
+		{
+			g_Config.m_ClConnectProtocol = (int)Choices.m_aProtocols[PickedProtocol];
+			UpdateConnectAddress(pServer);
+		}
+
+		NETADDR ShownAddress;
+		const EConnectAddressFamily ShownFamily = FirstConnectAddress(g_Config.m_UiServerAddress, &ShownAddress) ? ConnectAddressFamily(ShownAddress) : (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily;
+		const char *apFamilies[(int)EConnectAddressFamily::COUNT];
+		int CurrentFamily = 0;
+		for(int i = 0; i < Choices.m_NumFamilies; ++i)
+		{
+			apFamilies[i] = Choices.m_aFamilies[i] == EConnectAddressFamily::IPV6 ? Localize("IPv6") : Localize("IPv4");
+			if(Choices.m_aFamilies[i] == ShownFamily)
+				CurrentFamily = i;
+		}
+		static CUi::SDropDownState s_FamilyDropDownState;
+		static CScrollRegion s_FamilyDropDownScrollRegion;
+		s_FamilyDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_FamilyDropDownScrollRegion;
+		const int PickedFamily = DoConnectChoice(&FamilyDropDown, CurrentFamily, apFamilies, Choices.m_NumFamilies, s_FamilyDropDownState);
+		if(PickedFamily != CurrentFamily)
+		{
+			g_Config.m_ClConnectAddressFamily = (int)Choices.m_aFamilies[PickedFamily];
+			UpdateConnectAddress(pServer, true);
+		}
 	}
 
 	// buttons
@@ -1649,7 +1781,7 @@ void CMenus::RenderServerbrowserFriends(CUIRect View)
 				// handle click and double click on item
 				if(ButtonResult && Friend.ServerInfo())
 				{
-					str_copy(g_Config.m_UiServerAddress, Friend.ServerInfo()->m_aAddress);
+					UpdateConnectAddress(Friend.ServerInfo());
 					m_ServerBrowserShouldRevealSelection = true;
 					if(ButtonResult == 1 && Ui()->DoDoubleClickLogic(Friend.ListItemId()))
 					{

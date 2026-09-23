@@ -117,6 +117,68 @@ public:
 EConnectAddressFamily ConnectAddressFamily(const NETADDR &Address);
 
 /**
+ * What can be picked next to the address field, the best first. Anything with a
+ * single entry is not a choice.
+ */
+class CConnectChoices
+{
+public:
+	EConnectProtocol m_aProtocols[(int)EConnectProtocol::COUNT] = {EConnectProtocol::LEGACY};
+	int m_NumProtocols = 0;
+	EConnectAddressFamily m_aFamilies[(int)EConnectAddressFamily::COUNT] = {EConnectAddressFamily::IPV6};
+	int m_NumFamilies = 0;
+};
+
+/**
+ * The transports and address families that can be picked for what is in the
+ * address field: those of the endpoints of the server it belongs to, or only
+ * what the address itself says for an address no listed server has.
+ *
+ * @param pServer The server the address belongs to, null for none.
+ * @param pAddress The address field.
+ * @param Platform What this client connects over.
+ */
+CConnectChoices ConnectChoicesFor(const CServerInfo *pServer, const char *pAddress, const CConnectPlatform &Platform);
+
+/**
+ * @return The transport the address field is connected with.
+ */
+EConnectProtocol ConnectProtocolOf(const char *pAddress, const CConnectPlatform &Platform);
+
+/**
+ * @param pAddress The address field.
+ * @param pResult Set to its first address, with the types of its scheme.
+ *
+ * @return Whether its first address is an IP address.
+ */
+bool FirstConnectAddress(const char *pAddress, NETADDR *pResult);
+
+/**
+ * Writes the one endpoint of a server that is connected to, in the form it is
+ * connected with: with its scheme, and for QUIC and WebTransport with its pin.
+ * The transport is the one picked if the server has it, otherwise the best it
+ * has, and the address family likewise. Where the server has no endpoint for
+ * both, the choice that was just made wins and the other one falls back to what
+ * there is with it.
+ *
+ * @param pBuffer The buffer to write to.
+ * @param BufferSize The size of the buffer.
+ * @param Server The server.
+ * @param Platform What this client connects over.
+ * @param Protocol The transport picked, -1 for the best there is.
+ * @param Family The address family picked.
+ * @param FamilyFirst Whether the address family was just picked, and wins over the transport.
+ *
+ * @return Whether the server has an endpoint this client can use.
+ */
+bool FormatConnectAddress(char *pBuffer, int BufferSize, const CServerInfo &Server, const CConnectPlatform &Platform, int Protocol, EConnectAddressFamily Family, bool FamilyFirst);
+
+/**
+ * @return Whether the first address in the address field is one of the server.
+ */
+bool ServerHasConnectAddress(const CServerInfo &Server, const char *pAddress);
+
+/**
  * The settings the transport for a connect is picked by.
  */
 class CConnectTransportOptions

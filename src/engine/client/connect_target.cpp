@@ -72,17 +72,20 @@ static bool FindModernAddress(const NETADDR *pAddresses, int NumAddresses, const
 {
 	const NETADDR *pFallback = nullptr;
 	NETADDR ReferenceAddress = Reference;
-	ReferenceAddress.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+	ReferenceAddress.type = ConnectAddressFamily(Reference) == EConnectAddressFamily::IPV6 ? NETTYPE_IPV6 : NETTYPE_IPV4;
 	for(int i = 0; i < NumAddresses; i++)
 	{
 		if(((pAddresses[i].type & NETTYPE_TW7) != 0) != Sixup)
 			continue;
-		// Without a match the address family is ours to pick, and IPv6 is
-		// the one to grow into.
-		if(!pFallback || ((pFallback->type & NETTYPE_IPV6) == 0 && (pAddresses[i].type & NETTYPE_IPV6) != 0))
-			pFallback = &pAddresses[i];
 		NETADDR Address = pAddresses[i];
 		Address.type &= NETTYPE_IPV4 | NETTYPE_IPV6;
+		// Without a match, another address in the same family. The family is
+		// the one that was picked, and the address field shows the legacy
+		// address it has where the modern transport has none in it.
+		if(Address.type != ReferenceAddress.type)
+			continue;
+		if(!pFallback)
+			pFallback = &pAddresses[i];
 		if(net_addr_comp_noport(&Address, &ReferenceAddress) == 0)
 		{
 			*pResult = pAddresses[i];
@@ -392,6 +395,156 @@ bool CServerEndpoints::Has(EConnectAddressFamily Family) const
 	for(int i = 0; i < m_NumEndpoints; i++)
 	{
 		if(ConnectAddressFamily(m_aEndpoints[i].m_Address) == Family)
+			return true;
+	}
+	return false;
+}
+
+// The address field may hold several addresses, the first one says what it is.
+static bool FirstConnectAddressHost(const char *pAddress, NETADDR *pResult, char *pHost, int HostSize)
+{
+	char aFirst[512] = "";
+	NextConnectAddress(pAddress, aFirst, sizeof(aFirst));
+	pHost[0] = '\0';
+	if(net_addr_from_url(pResult, aFirst, pHost, HostSize) == 0)
+		return true;
+	if(pHost[0] != '\0')
+		return false;
+	// Not a URL, an address or a host name with a port.
+	str_copy(pHost, aFirst, HostSize);
+	return net_addr_from_str(pResult, aFirst) == 0;
+}
+
+// Best first: QUIC, or WebTransport in a browser, then what the legacy transport
+// runs over here.
+static const EConnectProtocol PROTOCOL_PREFERENCE[] = {EConnectProtocol::QUIC, EConnectProtocol::WEBTRANSPORT, EConnectProtocol::WEBSOCKET, EConnectProtocol::LEGACY};
+static const EConnectAddressFamily FAMILY_PREFERENCE[] = {EConnectAddressFamily::IPV6, EConnectAddressFamily::IPV4};
+
+EConnectProtocol ConnectProtocolOf(const char *pAddress, const CConnectPlatform &Platform)
+{
+	if(str_startswith(pAddress, "ddnet+wt://") || str_startswith(pAddress, "tw-0.7+wt://"))
+		return EConnectProtocol::WEBTRANSPORT;
+	if(IsModernTransportUrl(pAddress))
+		return EConnectProtocol::QUIC;
+	if(str_startswith(pAddress, "ws://") || str_startswith(pAddress, "wss://") || str_startswith(pAddress, "ddnet-20+ws://") || str_startswith(pAddress, "ddnet-20+wss://"))
+		return EConnectProtocol::WEBSOCKET;
+	// The browser has no UDP and opens a websocket to an address without a scheme.
+	return Platform.m_Browser ? EConnectProtocol::WEBSOCKET : EConnectProtocol::LEGACY;
+}
+
+bool FirstConnectAddress(const char *pAddress, NETADDR *pResult)
+{
+	char aHost[128];
+	return FirstConnectAddressHost(pAddress, pResult, aHost, sizeof(aHost));
+}
+
+CConnectChoices ConnectChoicesFor(const CServerInfo *pServer, const char *pAddress, const CConnectPlatform &Platform)
+{
+	CConnectChoices Choices;
+	if(pServer != nullptr)
+	{
+		// What the server has, whatever form the address field is in: a link
+		// to it is one of its endpoints and the others stay on offer.
+		const CServerEndpoints Endpoints(*pServer, Platform);
+		for(EConnectProtocol Protocol : PROTOCOL_PREFERENCE)
+		{
+			if(Endpoints.Has(Protocol))
+				Choices.m_aProtocols[Choices.m_NumProtocols++] = Protocol;
+		}
+		for(EConnectAddressFamily Family : FAMILY_PREFERENCE)
+		{
+			if(Endpoints.Has(Family))
+				Choices.m_aFamilies[Choices.m_NumFamilies++] = Family;
+		}
+		if(Choices.m_NumProtocols > 0)
+			return Choices;
+		Choices = CConnectChoices();
+	}
+
+	// An address no listed server has says itself what it is, so there is
+	// nothing to choose. A host name is left to the resolver, which prefers IPv6
+	// and falls back.
+	Choices.m_aProtocols[Choices.m_NumProtocols++] = ConnectProtocolOf(pAddress, Platform);
+	NETADDR Address;
+	Choices.m_aFamilies[Choices.m_NumFamilies++] = FirstConnectAddress(pAddress, &Address) ? ConnectAddressFamily(Address) : EConnectAddressFamily::IPV6;
+	return Choices;
+}
+
+bool FormatConnectAddress(char *pBuffer, int BufferSize, const CServerInfo &Server, const CConnectPlatform &Platform, int Protocol, EConnectAddressFamily Family, bool FamilyFirst)
+{
+	const CServerEndpoints Endpoints(Server, Platform);
+	if(Endpoints.m_NumEndpoints == 0)
+		return false;
+
+	// The transport and the family that were picked where the server has them,
+	// the best it has where it does not.
+	const bool ProtocolPicked = in_range(Protocol, 0, (int)EConnectProtocol::COUNT - 1) && Endpoints.Has((EConnectProtocol)Protocol);
+	const CServerEndpoint *pChosen = nullptr;
+	if(FamilyFirst && Endpoints.Has(Family))
+	{
+		if(ProtocolPicked)
+			pChosen = Endpoints.Find((EConnectProtocol)Protocol, Family);
+		for(int i = 0; !pChosen && i < (int)std::size(PROTOCOL_PREFERENCE); i++)
+			pChosen = Endpoints.Find(PROTOCOL_PREFERENCE[i], Family);
+	}
+	else
+	{
+		EConnectProtocol Chosen = ProtocolPicked ? (EConnectProtocol)Protocol : EConnectProtocol::COUNT;
+		for(int i = 0; Chosen == EConnectProtocol::COUNT && i < (int)std::size(PROTOCOL_PREFERENCE); i++)
+		{
+			if(Endpoints.Has(PROTOCOL_PREFERENCE[i]))
+				Chosen = PROTOCOL_PREFERENCE[i];
+		}
+		pChosen = Endpoints.Find(Chosen, Family);
+		for(int i = 0; !pChosen && i < (int)std::size(FAMILY_PREFERENCE); i++)
+			pChosen = Endpoints.Find(Chosen, FAMILY_PREFERENCE[i]);
+	}
+	dbg_assert(pChosen != nullptr, "server endpoints without a transport");
+
+	if(pChosen->m_Protocol == Platform.ModernProtocol() && Endpoints.m_pModern != nullptr)
+		return FormatModernTransportUrl(pBuffer, BufferSize, Platform.m_Browser, pChosen->m_Address, Endpoints.m_pModern->m_aHostname, Endpoints.m_pModern->m_Pin);
+	// With the scheme it was announced under: a 0.7 address that loses its
+	// scheme is a 0.6 address, which is neither the server in the list nor the
+	// one that would answer.
+	net_addr_url_str(&pChosen->m_Address, pBuffer, BufferSize, true);
+	return true;
+}
+
+bool ServerHasConnectAddress(const CServerInfo &Server, const char *pAddress)
+{
+	NETADDR Address;
+	char aHost[128];
+	const bool IsAddress = FirstConnectAddressHost(pAddress, &Address, aHost, sizeof(aHost));
+	const CModernTransportInfo *pModern = nullptr;
+	if(IsModernTransportUrl(pAddress))
+		pModern = ConnectProtocolOf(pAddress, CConnectPlatform()) == EConnectProtocol::WEBTRANSPORT ? &Server.m_WebTransport : &Server.m_Quic;
+	if(!IsAddress)
+	{
+		// A modern transport is listed under the name its certificate is for.
+		if(pModern == nullptr || pModern->m_aHostname[0] == '\0')
+			return false;
+		const char *pPort = str_rchr(aHost, ':');
+		if(pPort == nullptr || str_comp_nocase_num(aHost, pModern->m_aHostname, pPort - aHost) != 0 || str_length(pModern->m_aHostname) != pPort - aHost)
+			return false;
+		for(int i = 0; i < pModern->m_NumAddresses; i++)
+		{
+			if(pModern->m_aAddresses[i].port == str_toint(pPort + 1))
+				return true;
+		}
+		return false;
+	}
+	if(pModern != nullptr)
+	{
+		for(int i = 0; i < pModern->m_NumAddresses; i++)
+		{
+			if(net_addr_comp(&pModern->m_aAddresses[i], &Address) == 0)
+				return true;
+		}
+		return false;
+	}
+	for(int i = 0; i < Server.m_NumAddresses; i++)
+	{
+		if(net_addr_comp(&Server.m_aAddresses[i], &Address) == 0)
 			return true;
 	}
 	return false;

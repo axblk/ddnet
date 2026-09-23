@@ -203,6 +203,14 @@ int CNetConnection::QueueChunk(int Flags, int DataSize, const void *pData)
 
 void CNetConnection::SendConnect()
 {
+	// 0.7 carries the token to be answered with in the payload, where the 0.6
+	// magic would be read as a token this side never accepts.
+	if(m_Sixup)
+	{
+		SendControlWithToken7(NET_CTRLMSG_CONNECT, m_SecurityToken);
+		return;
+	}
+
 	// send the connect message
 	m_LastSendTime = time_get();
 	for(int i = 0; i < m_NumConnectAddrs; i++)

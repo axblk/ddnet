@@ -12,6 +12,7 @@
 
 #include <engine/client.h>
 #include <engine/client/checksum.h>
+#include <engine/client/connect_target.h>
 #include <engine/client/friends.h>
 #include <engine/client/ghost.h>
 #include <engine/client/serverbrowser.h>
@@ -23,6 +24,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/network.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/textrender.h>
 #include <engine/warning.h>
 
@@ -30,6 +32,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <vector>
 
 class CDemoEdit;
 class IDemoRecorder;
@@ -74,6 +77,16 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
 	CDemoSessionSource *m_pDemoSessionSource = nullptr;
 	CNetClient m_ContactNetClient;
+	CQuicTransport m_QuicTransport;
+	CQuicSessionId m_QuicSession;
+	NETADDR m_QuicServerAddress = {};
+	bool m_UseQuic = false;
+	bool m_UseWebTransport = false;
+	bool m_QuicConnected = false;
+	// When the last message arrived over QUIC, for the connection warning
+	int64_t m_QuicLastRecvTime = 0;
+	CQuicKnownHosts m_QuicKnownHosts;
+	CQuicIdentityCheck m_QuicIdentityCheck;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
 	CDemoEditor m_DemoEditor;
@@ -360,12 +373,14 @@ public:
 	const char *LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
 	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
 
-	int TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, CNetChunk *pPacket, bool *pIsExMsg);
+	int TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg);
 
 	bool PreprocessConnlessPacket7(CNetChunk *pPacket);
 	void ProcessConnlessPacket(CNetChunk *pPacket);
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
 	void ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy);
+	bool TryStartModernTransport(const CConnectTarget &Target);
+	void StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Sixup);
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
 
@@ -381,7 +396,7 @@ public:
 	CTranslationContext &TranslationContext(CSessionId SessionId) override { return SessionSource(SessionId).m_TranslationContext; }
 	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return SessionSource(SessionId).m_TranslationContext; }
 
-	const NETADDR &ServerAddress() const override { return *NetClient(CONN_MAIN).ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return m_UseQuic ? m_QuicServerAddress : *NetClient(CONN_MAIN).ServerAddress(); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_pNetworkSessionSource->m_ConnectAddress.c_str(); }
 	const char *MapDownloadName() const override { return m_pNetworkSessionSource->m_aMapdownloadName; }
@@ -419,6 +434,10 @@ public:
 	static void Con_Minimize(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Ping(IConsole::IResult *pResult, void *pUserData);
 	static void ConNetReset(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicReconnect(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData);
+	static void QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData);
 	static void Con_Screenshot(IConsole::IResult *pResult, void *pUserData);
 
 #if defined(CONF_VIDEORECORDER)

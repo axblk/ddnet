@@ -11,6 +11,7 @@
 
 #include <engine/map.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/transport_pin.h>
 
 #include <generated/protocol7.h>
 
@@ -22,6 +23,52 @@ static constexpr const char *DDNET_INFO_FILE = "ddnet-info.json";
 static constexpr const char *DDNET_INFO_URL = "https://info.ddnet.org/info";
 
 class CUIElement;
+
+/**
+ * A modern transport of a listed server, as the master server verified it or
+ * as a LAN server announced it.
+ */
+class CModernTransportInfo
+{
+public:
+	int m_NumAddresses;
+	NETADDR m_aAddresses[MAX_SERVER_ADDRESSES];
+	CModernTransportPin m_Pin;
+	// The name the server registered, needed for Web PKI and the WebTransport URL.
+	char m_aHostname[256];
+};
+
+/**
+ * Which transport a connect attempt prefers, as chosen next to the address
+ * field. A transport a listed server does not announce is skipped and the
+ * connect falls back to the legacy one; an address the browser does not list
+ * announces nothing, so there the pick is taken at its word.
+ *
+ * The values are stored in `cl_connect_protocol`, so they must not be
+ * reordered.
+ */
+enum class EConnectProtocol
+{
+	LEGACY = 0,
+	QUIC,
+	WEBSOCKET,
+	WEBTRANSPORT,
+	COUNT,
+};
+
+/**
+ * Which address family a connect attempt resolves to, as chosen next to the
+ * address field. IPv6 leaves the choice to the resolver, IPv4 rules IPv6 out.
+ *
+ * The values are stored in `cl_connect_address_family`, so they must not be
+ * reordered.
+ */
+enum class EConnectAddressFamily
+{
+	IPV4 = 0,
+	IPV6,
+	COUNT,
+};
 
 class CServerInfo
 {
@@ -96,6 +143,8 @@ public:
 
 	int m_NumAddresses;
 	NETADDR m_aAddresses[MAX_SERVER_ADDRESSES];
+	CModernTransportInfo m_Quic;
+	CModernTransportInfo m_WebTransport;
 
 	int m_QuickSearchHit;
 	int m_FriendState;

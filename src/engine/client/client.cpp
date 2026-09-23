@@ -46,6 +46,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
+#include <engine/shared/game_wire.h>
 #include <engine/shared/masterserver.h>
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
@@ -54,6 +55,7 @@
 #include <engine/shared/protocol_ex.h>
 #include <engine/shared/protocolglue.h>
 #include <engine/shared/rust_version.h>
+#include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 #include <engine/sound.h>
@@ -183,7 +185,7 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 
 int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 {
-	CNetChunk Packet;
+	CNetChunk Packet = {};
 
 	if(m_pNetworkSessionSource->State() == ESessionState::OFFLINE)
 		return 0;
@@ -193,11 +195,9 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 	if(!RepackMsg(pMsg, Pack, m_pNetworkSessionSource->m_Sixup))
 		return 0;
 
-	mem_zero(&Packet, sizeof(CNetChunk));
 	Packet.m_ClientId = 0;
 	Packet.m_pData = Pack.Data();
 	Packet.m_DataSize = Pack.Size();
-
 	if(Flags & MSGFLAG_VITAL)
 		Packet.m_Flags |= NETSENDFLAG_VITAL;
 	if(Flags & MSGFLAG_FLUSH)
@@ -209,14 +209,24 @@ int CClient::SendMsg(int Conn, CMsgPacker *pMsg, int Flags)
 		{
 			if(DemoRecorder.IsRecording())
 			{
-				DemoRecorder.RecordMessage(Packet.m_pData, Packet.m_DataSize);
+				DemoRecorder.RecordMessage(Pack.Data(), Pack.Size());
 			}
 		}
 	}
 
 	if(!(Flags & MSGFLAG_NOSEND))
 	{
-		NetClient(Conn).Send(&Packet);
+		if(Conn == CONN_MAIN && m_UseQuic)
+		{
+			const bool Vital = (Flags & MSGFLAG_VITAL) != 0;
+			if(!m_QuicTransport.Send(m_QuicSession, Packet.m_pData, Packet.m_DataSize, Vital) && Vital)
+			{
+				DisconnectWithReason("QUIC reliable queue full");
+				return -1;
+			}
+		}
+		else
+			NetClient(Conn).Send(&Packet);
 	}
 
 	return 0;
@@ -338,7 +348,14 @@ float CClient::GotMaplistPercentage() const
 
 bool CClient::ConnectionProblems(CSessionId SessionId, int Conn) const
 {
-	return SessionId == m_NetworkSessionId && Connection(Conn).m_NetClient.GotProblems(MaxLatencyTicks() * time_freq() / GameTickSpeed());
+	if(SessionId != m_NetworkSessionId)
+		return false;
+	const int64_t MaxLatency = MaxLatencyTicks() * time_freq() / GameTickSpeed();
+	// Over QUIC nothing arrives through the legacy connection, so asking it when
+	// the last packet came in reports trouble for the whole session.
+	if(Conn == CONN_MAIN && m_UseQuic && m_QuicConnected)
+		return time_get() - m_QuicLastRecvTime > MaxLatency;
+	return Connection(Conn).m_NetClient.GotProblems(MaxLatency);
 }
 
 void CClient::SendInput()
@@ -646,6 +663,61 @@ void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
 	}
 }
 
+void CClient::StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Sixup)
+{
+	if(m_QuicTransport.IsRunning())
+	{
+		for(int i = 0; i < NumAddrs; i++)
+			m_QuicTransport.SetLegacyPeer(&pAddrs[i], true);
+	}
+	m_pNetworkSessionSource->m_Sixup = Sixup;
+	if(Sixup)
+		NetClient(CONN_MAIN).Connect7(pAddrs, NumAddrs);
+	else
+		NetClient(CONN_MAIN).Connect(pAddrs, NumAddrs);
+	NetClient(CONN_MAIN).RefreshStun();
+	GenerateTimeoutCodes(pAddrs, NumAddrs);
+}
+
+bool CClient::TryStartModernTransport(const CConnectTarget &Target)
+{
+	CConnectTransportOptions Options;
+	Options.m_Protocol = g_Config.m_ClConnectProtocol;
+	Options.m_Quic = g_Config.m_ClQuic;
+	Options.m_pCertificateSha256 = g_Config.m_ClQuicCert;
+	Options.m_pServerName = g_Config.m_ClQuicServerName;
+	const auto FindListedServer = [this](const NETADDR &Addr) -> const CServerInfo * {
+		const CServerBrowser::CServerEntry *pEntry = m_ServerBrowser.Find(Addr);
+		return pEntry ? &pEntry->m_Info : nullptr;
+	};
+	CModernTransportStart Start;
+	const EConnectTransport Transport = ChooseConnectTransport(Target, Options, FindListedServer, &Start);
+	if(Transport == EConnectTransport::LEGACY)
+		return false;
+	if(Transport == EConnectTransport::FAILED)
+		return true;
+
+	m_QuicIdentityCheck.Prepare(&Start, m_QuicKnownHosts);
+	if(!m_QuicTransport.StartClient(Start.m_Address, Start.m_aServerName, Start.m_Pin, Start.m_Sixup))
+	{
+		log_error("client", "could not start %s: %s", Start.m_WebTransport ? "WebTransport" : "QUIC", m_QuicTransport.ErrorString());
+		// A browser without WebTransport still has websockets.
+		return !Start.m_WebTransport || Target.m_Link;
+	}
+	m_UseQuic = true;
+	m_UseWebTransport = Start.m_WebTransport;
+	NetClient(CONN_MAIN).SetPacketFilter(
+		[](void *pUser, const NETADDR *pRemoteAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pRemoteAddress, pData, DataSize); },
+		&m_QuicTransport);
+	m_QuicConnected = false;
+	m_QuicServerAddress = Start.m_Address;
+	if(FocusedSessionId() == m_NetworkSessionId)
+		SetFocusedState(IClient::STATE_CONNECTING, true);
+	else
+		m_pNetworkSessionSource->SetState(ESessionState::CONNECTING);
+	return true;
+}
+
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -673,62 +745,32 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", Source.m_ConnectAddress.c_str());
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aMsg, CLIENT_NETWORK_PRINT_COLOR);
 
-	int NumConnectAddrs = 0;
-	NETADDR aConnectAddrs[MAX_SERVER_ADDRESSES];
-	mem_zero(aConnectAddrs, sizeof(aConnectAddrs));
-	const char *pNextAddr = pAddress;
-	char aBuffer[128];
-	bool OnlySixup = true;
-	while((pNextAddr = str_next_token(pNextAddr, ",", aBuffer, sizeof(aBuffer))))
+	CConnectTarget Target;
+	const bool Valid = Target.Parse(Source.m_ConnectAddress.c_str(), NetClient(CONN_MAIN).NetType(), (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Emscripten tunnels all traffic through websockets, so their scheme applies globally.
+	if(Valid && Target.m_WebsocketSecure >= 0)
+		net_websocket_set_secure(Target.m_WebsocketSecure != 0);
+	else if(Valid)
+		net_websocket_reset_secure();
+#endif
+	if(!Valid || Target.m_NumAddrs == 0)
 	{
-		NETADDR NextAddr;
-		char aHost[128];
-		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
-		bool Sixup = NextAddr.type & NETTYPE_TW7;
-		if(UrlParseResult > 0)
-			str_copy(aHost, aBuffer);
-
-		if(net_host_lookup(aHost, &NextAddr, NetClient(CONN_MAIN).NetType()) != 0)
-		{
-			log_error("client", "could not find address of %s", aHost);
-			continue;
-		}
-		if(NumConnectAddrs == (int)std::size(aConnectAddrs))
-		{
-			log_warn("client", "too many connect addresses, ignoring %s", aHost);
-			continue;
-		}
-		if(NextAddr.port == 0)
-		{
-			NextAddr.port = 8303;
-		}
-		if(Sixup)
-			NextAddr.type |= NETTYPE_TW7;
-		else
-			OnlySixup = false;
-
-		char aNextAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
-		log_debug("client", "resolved connect address '%s' to %s", aBuffer, aNextAddr);
-
-		if(NextAddr == LastAddr)
-		{
-			Source.m_SendPassword = true;
-		}
-
-		aConnectAddrs[NumConnectAddrs] = NextAddr;
-		NumConnectAddrs += 1;
-	}
-
-	if(NumConnectAddrs == 0)
-	{
-		log_error("client", "could not find any connect address");
+		if(Valid)
+			log_error("client", "could not find any connect address");
+		// A connect that only returns leaves the menu waiting for something that
+		// never happens, so the reason has to reach the screen as well.
 		char aWarning[256];
-		str_format(aWarning, sizeof(aWarning), Localize("Could not resolve connect address '%s'. See local console for details."), Source.m_ConnectAddress.c_str());
+		str_format(aWarning, sizeof(aWarning), Valid ? Localize("Could not resolve connect address '%s'. See local console for details.") : Localize("'%s' is not a valid connect address. See local console for details."), Source.m_ConnectAddress.c_str());
 		SWarning Warning(Localize("Connect address error"), aWarning);
 		Warning.m_AutoHide = false;
 		AddWarning(Warning);
 		return;
+	}
+	for(int i = 0; i < Target.m_NumAddrs; i++)
+	{
+		if(Target.m_aAddrs[i] == LastAddr)
+			Source.m_SendPassword = true;
 	}
 
 	Source.m_ConnectionId = RandomUuid();
@@ -750,27 +792,22 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	}
 
 	Source.m_CanReceiveServerCapabilities = true;
-
-	Source.m_Sixup = OnlySixup;
-	if(Source.m_Sixup)
-	{
-		NetClient(CONN_MAIN).Connect7(aConnectAddrs, NumConnectAddrs);
-	}
-	else
-	{
-		NetClient(CONN_MAIN).Connect(aConnectAddrs, NumConnectAddrs);
-	}
-
-	NetClient(CONN_MAIN).RefreshStun();
-	if(FocusedSessionId() == m_NetworkSessionId)
-		SetFocusedState(IClient::STATE_CONNECTING, true);
-	else
-		Source.SetState(ESessionState::CONNECTING);
+	m_QuicIdentityCheck.Reset();
 
 	Connection(CONN_MAIN).m_InputtimeMarginGraph.Init(-150.0f, 150.0f);
 	Connection(CONN_MAIN).m_GametimeMarginGraph.Init(-150.0f, 150.0f);
 
-	GenerateTimeoutCodes(aConnectAddrs, NumConnectAddrs);
+	Source.m_Sixup = Target.m_OnlySixup;
+	// Once QUIC or WebTransport is started there is no fallback: a connect that
+	// fails is reported, not quietly retried over the legacy transport, because
+	// that is what made connection problems hard to read before.
+	if(TryStartModernTransport(Target))
+		return;
+	StartLegacyConnection(Target.m_aAddrs, Target.m_NumAddrs, Target.m_OnlySixup);
+	if(FocusedSessionId() == m_NetworkSessionId)
+		SetFocusedState(IClient::STATE_CONNECTING, true);
+	else
+		Source.SetState(ESessionState::CONNECTING);
 }
 
 void CClient::StopSession(CSessionId SessionId, const char *pReason)
@@ -832,6 +869,42 @@ void CClient::StopNetworkSession(const char *pReason)
 	mem_zero(m_aRconPassword, sizeof(m_aRconPassword));
 	m_pConsole->DeregisterTempAll();
 	GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
+	if(m_UseQuic && !m_UseWebTransport && m_QuicConnected && m_QuicSession.IsValid() &&
+		m_QuicTransport.Close(m_QuicSession, pReason ? pReason : "application disconnect"))
+	{
+		const CQuicSessionId ClosingSession = m_QuicSession;
+		const auto Deadline = std::chrono::steady_clock::now() + 300ms;
+		bool Closed = false;
+		while(!Closed && std::chrono::steady_clock::now() < Deadline)
+		{
+			NetClient(CONN_MAIN).Update();
+			CNetChunk Packet;
+			SECURITY_TOKEN ResponseToken;
+			while(NetClient(CONN_MAIN).Recv(&Packet, &ResponseToken, m_pNetworkSessionSource->m_Sixup))
+			{
+			}
+			NETADDR Address;
+			unsigned char *pData;
+			int DataSize;
+			while((DataSize = m_QuicTransport.PollUdpSend(&Address, &pData)) > 0)
+				NetClient(CONN_MAIN).SendRaw(&Address, pData, DataSize);
+			CQuicEvent Event;
+			while(m_QuicTransport.Poll(Event))
+			{
+				if(Event.m_Type == EQuicEventType::DISCONNECTED && Event.m_Message.m_Session == ClosingSession)
+					Closed = true;
+			}
+			if(!Closed)
+				std::this_thread::sleep_for(1ms);
+		}
+	}
+	m_QuicTransport.Shutdown();
+	NetClient(CONN_MAIN).SetPacketFilter(nullptr, nullptr);
+	m_QuicSession = CQuicSessionId();
+	m_UseQuic = false;
+	m_UseWebTransport = false;
+	m_QuicConnected = false;
+	m_QuicIdentityCheck.Reset();
 	NetClient(CONN_MAIN).Disconnect(pReason);
 	if(Focused && m_State < IClient::STATE_QUITTING)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
@@ -887,6 +960,11 @@ bool CClient::DummyConnectingDelayed() const
 
 void CClient::DummyConnect()
 {
+	if(m_UseQuic)
+	{
+		log_info("client", "Dummy clients over QUIC are not supported yet.");
+		return;
+	}
 	if(NetClient(CONN_MAIN).State() != NETSTATE_ONLINE)
 	{
 		log_info("client", "Not online.");
@@ -1202,6 +1280,13 @@ void CClient::ResetSocket()
 		char aError[256];
 		if(!InitNetworkClientImpl(BindAddr, Conn, aError, sizeof(aError)))
 			log_error("client", "%s", aError);
+	}
+	if(m_UseQuic && !m_UseWebTransport)
+	{
+		NetClient(CONN_MAIN).SetPacketFilter(
+			[](void *pUser, const NETADDR *pAddress, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddress, pData, DataSize); },
+			&m_QuicTransport);
+		m_QuicTransport.LocalAddressChanged();
 	}
 }
 
@@ -1570,7 +1655,9 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 	bool DuplicatedPacket = false;
 	if(SavedType == SERVERINFO_EXTENDED)
 	{
-		Up.GetString(); // extra info, reserved
+		const char *pExtraInfo = Up.GetString();
+		if(RawType == SERVERINFO_EXTENDED)
+			ParseQuicServerInfoExtra(&Info, pExtraInfo, *pFrom);
 
 		uint64_t Flag = (uint64_t)1 << PacketNo;
 		DuplicatedPacket = Info.m_ReceivedPackets & Flag;
@@ -1634,7 +1721,7 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 		// SERVERINFO_EXTENDED_MORE doesn't carry any server
 		// information, so just skip it.
 		CNetworkSessionSource &Source = *m_pNetworkSessionSource;
-		if(NetClient(CONN_MAIN).State() == NETSTATE_ONLINE &&
+		if((m_QuicConnected || NetClient(CONN_MAIN).State() == NETSTATE_ONLINE) &&
 			ServerAddress() == *pFrom &&
 			RawType != SERVERINFO_EXTENDED_MORE)
 		{
@@ -1721,6 +1808,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	CUnpacker Unpacker;
 	Unpacker.Reset(pPacket->m_pData, pPacket->m_DataSize);
 	CMsgPacker Packer(NETMSG_EX, true);
+	const bool Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0;
 
 	// unpack msgid and system flag
 	int Msg;
@@ -1742,7 +1830,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	if(Source.m_Sixup)
 	{
 		bool IsExMsg = false;
-		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, pPacket, &IsExMsg);
+		int Success = !TranslateSysMsg(&Msg, Sys, &Unpacker, &Packer6, &pPacket->m_Address, &IsExMsg);
 		if(Msg < 0)
 			return;
 		if(Success && !IsExMsg)
@@ -1754,7 +1842,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 	if(Sys)
 	{
 		// system message
-		if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_DETAILS)
+		if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_DETAILS)
 		{
 			const char *pMap = Unpacker.GetString(CUnpacker::SANITIZE_CC | CUnpacker::SKIP_START_WHITESPACES);
 			SHA256_DIGEST *pMapSha256 = (SHA256_DIGEST *)Unpacker.GetRaw(sizeof(*pMapSha256));
@@ -1779,7 +1867,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			MapDetails.m_Sha256 = *pMapSha256;
 			str_copy(MapDetails.m_aUrl, pMapUrl);
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CAPABILITIES)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_CAPABILITIES)
 		{
 			if(!Source.m_CanReceiveServerCapabilities)
 			{
@@ -1795,7 +1883,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			Source.m_CanReceiveServerCapabilities = false;
 			Source.m_ServerSentCapabilities = true;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_CHANGE)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_CHANGE)
 		{
 			if(Source.m_CanReceiveServerCapabilities)
 			{
@@ -1963,7 +2051,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAP_RELOAD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAP_RELOAD)
 		{
 			if(m_DummyConnected)
 			{
@@ -1977,7 +2065,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				m_DummyDeactivateOnReconnect = false;
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_CON_READY)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_CON_READY)
 		{
 			if(!GameClient()->Map(m_NetworkSessionId)->IsLoaded())
 			{
@@ -2010,8 +2098,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 		else if(Msg == NETMSG_PING)
 		{
 			CMsgPacker MsgP(NETMSG_PING_REPLY, true);
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(Conn, &MsgP, MSGFLAG_FLUSH | Vital);
+			SendMsg(Conn, &MsgP, (Vital ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH);
 		}
 		else if(Msg == NETMSG_PINGEX)
 		{
@@ -2022,8 +2109,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 			CMsgPacker MsgP(NETMSG_PONGEX, true);
 			MsgP.AddRaw(pId, sizeof(*pId));
-			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
-			SendMsg(Conn, &MsgP, MSGFLAG_FLUSH | Vital);
+			SendMsg(Conn, &MsgP, (Vital ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH);
 		}
 		else if(Conn == CONN_MAIN && Msg == NETMSG_PONGEX)
 		{
@@ -2106,7 +2192,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				DummyConnect();
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_ADD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_ADD)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			const char *pHelp = Unpacker.GetString(CUnpacker::SANITIZE_CC);
@@ -2118,7 +2204,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 			Source.m_GotRconCommands++;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_REM)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_REM)
 		{
 			const char *pName = Unpacker.GetString(CUnpacker::SANITIZE_CC);
 			if(!Unpacker.Error())
@@ -2127,7 +2213,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			}
 		}
-		else if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_AUTH_STATUS)
+		else if(Vital && Msg == NETMSG_RCON_AUTH_STATUS)
 		{
 			int ResultInt = Unpacker.GetInt();
 			if(!Unpacker.Error())
@@ -2155,7 +2241,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(!Dummy && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_LINE)
+		else if(!Dummy && Vital && Msg == NETMSG_RCON_LINE)
 		{
 			const char *pLine = Unpacker.GetString();
 			if(!Unpacker.Error())
@@ -2455,7 +2541,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				GameClient()->OnRconType(UsernameReq);
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_START)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_GROUP_START)
 		{
 			const int ExpectedRconCommands = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedRconCommands < 0)
@@ -2464,11 +2550,11 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			Source.m_ExpectedRconCommands = ExpectedRconCommands;
 			Source.m_GotRconCommands = 0;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_RCON_CMD_GROUP_END)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_RCON_CMD_GROUP_END)
 		{
 			Source.m_ExpectedRconCommands = -1;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_ADD)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_ADD)
 		{
 			while(true)
 			{
@@ -2484,7 +2570,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 				}
 			}
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_START)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_GROUP_START)
 		{
 			const int ExpectedMaplistEntries = Unpacker.GetInt();
 			if(Unpacker.Error() || ExpectedMaplistEntries < 0)
@@ -2494,13 +2580,13 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			GameClient()->ForceUpdateConsoleRemoteCompletionSuggestions();
 			Source.m_ExpectedMaplistEntries = ExpectedMaplistEntries;
 		}
-		else if(Conn == CONN_MAIN && (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 && Msg == NETMSG_MAPLIST_GROUP_END)
+		else if(Conn == CONN_MAIN && Vital && Msg == NETMSG_MAPLIST_GROUP_END)
 		{
 			Source.m_ExpectedMaplistEntries = -1;
 		}
 	}
 	// the client handles only vital messages https://github.com/ddnet/ddnet/issues/11178
-	else if((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 || Msg == NETMSGTYPE_SV_PREINPUT)
+	else if(Vital || Msg == NETMSGTYPE_SV_PREINPUT)
 	{
 		// game message
 		if(!Dummy)
@@ -2748,6 +2834,8 @@ void CClient::LoadDDNetInfo()
 
 int CClient::ConnectNetTypes() const
 {
+	if(m_UseQuic)
+		return m_QuicServerAddress.type;
 	const NETADDR *pConnectAddrs;
 	int NumConnectAddrs;
 	NetClient(CONN_MAIN).ConnectAddresses(&pConnectAddrs, &NumConnectAddrs);
@@ -2769,12 +2857,128 @@ void CClient::PumpNetwork()
 	{
 		NetClient(Conn).Update();
 	}
+	NETADDR QuicAddress;
+	unsigned char *pQuicData;
+	int QuicDataSize;
+	while((QuicDataSize = m_QuicTransport.PollUdpSend(&QuicAddress, &pQuicData)) > 0)
+		NetClient(CONN_MAIN).SendRaw(&QuicAddress, pQuicData, QuicDataSize);
 
 	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+
+	CQuicEvent QuicEvent;
+	while(m_QuicTransport.Poll(QuicEvent))
+	{
+		if(QuicEvent.m_Type == EQuicEventType::CONNECTED && Source.State() == ESessionState::CONNECTING)
+		{
+			const CQuicIdentityCheck::EResult Identity = m_QuicIdentityCheck.Check(QuicEvent.m_Message.m_pData, QuicEvent.m_Message.m_DataSize, &m_QuicKnownHosts);
+			if(Identity == CQuicIdentityCheck::EResult::MISSING)
+			{
+				DisconnectWithReason("QUIC server identity proof did not return a fingerprint");
+				break;
+			}
+			if(Identity == CQuicIdentityCheck::EResult::CHANGED)
+			{
+				DisconnectWithReason("QUIC server identity changed");
+				break;
+			}
+			if(Identity == CQuicIdentityCheck::EResult::NOT_STORED)
+			{
+				DisconnectWithReason("could not store QUIC server identity");
+				break;
+			}
+			if(Identity == CQuicIdentityCheck::EResult::STORED && !m_pConfigManager->Save())
+				log_warn("client", "could not persist trusted QUIC server identity");
+			m_QuicSession = QuicEvent.m_Message.m_Session;
+			m_QuicServerAddress = QuicEvent.m_Message.m_PeerAddress;
+			m_QuicConnected = true;
+			m_QuicLastRecvTime = time_get();
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MESSAGE && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			m_QuicLastRecvTime = time_get();
+			CNetChunk Packet = {};
+			Packet.m_ClientId = 0;
+			Packet.m_Address = QuicEvent.m_Message.m_PeerAddress;
+			Packet.m_Flags = QuicEvent.m_Message.m_Vital ? NET_CHUNKFLAG_VITAL : 0;
+			Packet.m_pData = QuicEvent.m_Message.m_pData;
+			Packet.m_DataSize = QuicEvent.m_Message.m_DataSize;
+			ProcessServerPacket(&Packet, CONN_MAIN, false);
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_HEADER && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			const unsigned char *pPayload = static_cast<const unsigned char *>(QuicEvent.m_Message.m_pData);
+			const GameWire::MapHeader Header = GameWire::decode_map_header({pPayload, static_cast<size_t>(QuicEvent.m_Message.m_DataSize)});
+			SHA256_DIGEST Sha256;
+			mem_copy(Sha256.data, Header.sha256.data(), sizeof(Sha256.data));
+			const size_t NameLength = str_length(Source.m_aMapdownloadName);
+			if(!Header.valid ||
+				!Source.m_MapdownloadFileTemp ||
+				Header.size != static_cast<uint64_t>(Source.m_MapdownloadTotalsize) ||
+				Header.crc != static_cast<uint32_t>(Source.m_MapdownloadCrc) ||
+				Header.name_size != NameLength ||
+				mem_comp(pPayload + Header.name_offset, Source.m_aMapdownloadName, NameLength) != 0 ||
+				(Source.m_MapdownloadSha256.has_value() && Sha256 != *Source.m_MapdownloadSha256))
+			{
+				DisconnectWithReason("QUIC map header does not match MAP_CHANGE");
+				break;
+			}
+			if(!Source.m_MapdownloadSha256.has_value())
+				Source.m_MapdownloadSha256 = Sha256;
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_DATA && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			const int Size = QuicEvent.m_Message.m_DataSize;
+			if(!Source.m_MapdownloadFileTemp || Size <= 0 || Source.m_MapdownloadAmount < 0 || Source.m_MapdownloadAmount > Source.m_MapdownloadTotalsize || Size > Source.m_MapdownloadTotalsize - Source.m_MapdownloadAmount ||
+				io_write(Source.m_MapdownloadFileTemp, QuicEvent.m_Message.m_pData, Size) != static_cast<unsigned>(Size))
+			{
+				DisconnectWithReason("could not write QUIC map stream");
+				break;
+			}
+			Source.m_MapdownloadAmount += Size;
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_END && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			if(!Source.m_MapdownloadFileTemp || Source.m_MapdownloadAmount != Source.m_MapdownloadTotalsize)
+			{
+				DisconnectWithReason("QUIC map stream ended at the wrong size");
+				break;
+			}
+			io_close(Source.m_MapdownloadFileTemp);
+			Source.m_MapdownloadFileTemp = nullptr;
+			FinishMapDownload();
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::MAP_FAILED && QuicEvent.m_Message.m_Session == m_QuicSession)
+		{
+			char aReason[256];
+			str_format(aReason, sizeof(aReason), "QUIC map stream failed: %s", QuicEvent.m_pReason ? QuicEvent.m_pReason : "unknown error");
+			ResetMapDownload(false);
+			DisconnectWithReason(aReason);
+			break;
+		}
+		else if(QuicEvent.m_Type == EQuicEventType::DISCONNECTED && m_UseQuic)
+		{
+			m_QuicConnected = false;
+			char aReason[256];
+			str_copy(aReason, QuicEvent.m_pReason ? QuicEvent.m_pReason : "QUIC connection closed");
+			if(m_QuicIdentityCheck.Known() && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::IDENTITY)
+			{
+				char aExpected[SHA256_MAXSTRSIZE];
+				sha256_str(m_QuicIdentityCheck.Expected(), aExpected, sizeof(aExpected));
+				char aWarning[768];
+				str_format(aWarning, sizeof(aWarning), "The QUIC identity of %s:%d changed. Expected %s; %s. The connection was blocked. Verify the server before using quic_forget_host.", m_QuicIdentityCheck.Host(), m_QuicIdentityCheck.Port(), aExpected, aReason);
+				SWarning Warning(Localize("Server identity changed"), aWarning);
+				Warning.m_AutoHide = false;
+				AddWarning(Warning);
+			}
+			DisconnectWithReason(aReason);
+			break;
+		}
+	}
+
 	// check for errors of main and dummy
 	if(Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
 	{
-		if(NetClient(CONN_MAIN).State() == NETSTATE_OFFLINE)
+		if(!m_UseQuic && NetClient(CONN_MAIN).State() == NETSTATE_OFFLINE)
 		{
 			// This will also disconnect the dummy, so the branch below is an `else if`
 			DisconnectWithReason(nullptr);
@@ -2798,10 +3002,14 @@ void CClient::PumpNetwork()
 	}
 
 	// check if main was connected
-	if(Source.State() == ESessionState::CONNECTING && NetClient(CONN_MAIN).State() == NETSTATE_ONLINE)
+	const bool MainOnline = m_UseQuic ? m_QuicConnected : NetClient(CONN_MAIN).State() == NETSTATE_ONLINE;
+	if(Source.State() == ESessionState::CONNECTING && MainOnline)
 	{
 		// we switched to online
-		m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+		if(m_UseQuic)
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", m_UseWebTransport ? "WebTransport connected, sending info" : "QUIC connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
+		else
+			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
 		if(FocusedSessionId() == m_NetworkSessionId)
 		{
 			SetFocusedState(IClient::STATE_LOADING, true);
@@ -3247,6 +3455,7 @@ void CClient::InitInterfaces()
 #endif
 
 	m_pConfigManager->RegisterCallback(IFavorites::ConfigSaveCallback, m_pFavorites);
+	m_pConfigManager->RegisterCallback(QuicKnownHostsConfigSaveCallback, this);
 	m_Friends.Init();
 	m_Foes.Init(true);
 
@@ -3381,6 +3590,10 @@ void CClient::Run()
 
 	// process pending commands
 	m_pConsole->StoreCommands(false);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(g_Config.m_ClWebtransport && m_aCmdConnect[0])
+		m_ServerBrowser.Refresh(IServerBrowser::TYPE_INTERNET);
+#endif
 
 	InitChecksum();
 	m_pConsole->InitChecksum(ChecksumData());
@@ -3410,7 +3623,11 @@ void CClient::Run()
 		set_new_tick();
 
 		// handle pending connects
-		if(m_aCmdConnect[0])
+		if(m_aCmdConnect[0]
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			&& (!g_Config.m_ClWebtransport || !m_ServerBrowser.IsGettingServerlist())
+#endif
+		)
 		{
 			str_copy(g_Config.m_UiServerAddress, m_aCmdConnect);
 			Connect(m_aCmdConnect);
@@ -3449,7 +3666,7 @@ void CClient::Run()
 		char aFile[IO_MAX_PATH_LENGTH];
 		if(Input()->GetDropFile(aFile, sizeof(aFile)))
 		{
-			if(str_startswith(aFile, CONNECTLINK_NO_SLASH))
+			if(str_startswith(aFile, CONNECTLINK_NO_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, QUIC_CONNECTLINK7_DOUBLE_SLASH) || str_startswith(aFile, WT_CONNECTLINK_DOUBLE_SLASH) || str_startswith(aFile, WT_CONNECTLINK7_DOUBLE_SLASH))
 				HandleConnectLink(aFile);
 			else if(str_endswith(aFile, ".demo"))
 				HandleDemoPath(aFile);
@@ -3810,6 +4027,53 @@ void CClient::ConNetReset(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
 	pSelf->ResetSocket();
+}
+
+void CClient::Con_QuicReconnect(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = (CClient *)pUserData;
+	if(!pSelf->m_UseQuic || !pSelf->m_QuicConnected || !pSelf->m_QuicTransport.Reconnect(pSelf->m_QuicSession))
+		log_error("client", "cannot reconnect inactive QUIC transport");
+}
+
+void CClient::Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	SHA256_DIGEST IdentityFingerprint;
+	if(sha256_from_str(&IdentityFingerprint, pResult->GetString(2)) != 0 ||
+		!pSelf->m_QuicKnownHosts.Add(pResult->GetString(0), pResult->GetInteger(1), IdentityFingerprint))
+		log_error("client", "invalid or conflicting QUIC known host");
+}
+
+void CClient::Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	char aHost[128];
+	if(!NormalizeQuicTrustHost(pResult->GetString(0), aHost, sizeof(aHost)))
+	{
+		log_error("client", "invalid QUIC known host");
+		return;
+	}
+	const int Port = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : 0;
+	if(!pSelf->m_QuicKnownHosts.Forget(aHost, Port))
+	{
+		log_info("client", "QUIC known host not found");
+		return;
+	}
+	pSelf->m_pConfigManager->Save();
+}
+
+void CClient::QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData)
+{
+	const CClient *pSelf = static_cast<const CClient *>(pUserData);
+	for(const CQuicKnownHosts::CHost &KnownHost : pSelf->m_QuicKnownHosts.Hosts())
+	{
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(KnownHost.m_IdentityFingerprint, aFingerprint, sizeof(aFingerprint));
+		char aLine[256];
+		str_format(aLine, sizeof(aLine), "quic_known_host \"%s\" %d %s", KnownHost.m_aHost, KnownHost.m_Port, aFingerprint);
+		pConfigManager->WriteLine(aLine);
+	}
 }
 
 void CClient::AutoScreenshot_Start()
@@ -4736,6 +5000,9 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("ping", "", CFGFLAG_CLIENT, Con_Ping, this, "Ping the current server");
 	m_pConsole->Register("screenshot", "", CFGFLAG_CLIENT | CFGFLAG_STORE, Con_Screenshot, this, "Take a screenshot");
 	m_pConsole->Register("net_reset", "", CFGFLAG_CLIENT, ConNetReset, this, "Rebinds the client's listening address and port");
+	m_pConsole->Register("quic_reconnect", "", CFGFLAG_CLIENT, Con_QuicReconnect, this, "Reconnect the active QUIC transport using application resume");
+	m_pConsole->Register("quic_known_host", "s[host] i[port] s[sha256]", CFGFLAG_CLIENT, Con_QuicKnownHost, this, "Remember a verified QUIC server identity");
+	m_pConsole->Register("quic_forget_host", "s[host] ?i[port]", CFGFLAG_CLIENT, Con_QuicForgetHost, this, "Forget a trusted QUIC server identity");
 
 #if defined(CONF_VIDEORECORDER)
 	m_pConsole->Register("start_video", "?r[file]", CFGFLAG_CLIENT, Con_StartVideo, this, "Start recording a video");
@@ -4845,7 +5112,7 @@ void CClient::HandleMapPath(const char *pPath)
 static bool UnknownArgumentCallback(const char *pCommand, void *pUser)
 {
 	CClient *pClient = static_cast<CClient *>(pUser);
-	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH))
+	if(str_startswith(pCommand, CONNECTLINK_NO_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, QUIC_CONNECTLINK7_DOUBLE_SLASH) || str_startswith(pCommand, WT_CONNECTLINK_DOUBLE_SLASH) || str_startswith(pCommand, WT_CONNECTLINK7_DOUBLE_SLASH))
 	{
 		pClient->HandleConnectLink(pCommand);
 		return true;
@@ -5649,6 +5916,10 @@ void CClient::ShellRegister()
 	bool Updated = false;
 	if(!windows_shell_register_protocol("ddnet", aFullPath, &Updated))
 		log_error("client", "Failed to register ddnet protocol");
+	if(!windows_shell_register_protocol("ddnet+quic", aFullPath, &Updated))
+		log_error("client", "Failed to register ddnet+quic protocol");
+	if(!windows_shell_register_protocol("tw-0.7+quic", aFullPath, &Updated))
+		log_error("client", "Failed to register tw-0.7+quic protocol");
 	if(!windows_shell_register_extension(".map", "Map File", GAME_NAME, aFullPath, &Updated))
 		log_error("client", "Failed to register .map file extension");
 	if(!windows_shell_register_extension(".demo", "Demo File", GAME_NAME, aFullPath, &Updated))
@@ -5672,6 +5943,10 @@ void CClient::ShellUnregister()
 	bool Updated = false;
 	if(!windows_shell_unregister_class("ddnet", &Updated))
 		log_error("client", "Failed to unregister ddnet protocol");
+	if(!windows_shell_unregister_class("ddnet+quic", &Updated))
+		log_error("client", "Failed to unregister ddnet+quic protocol");
+	if(!windows_shell_unregister_class("tw-0.7+quic", &Updated))
+		log_error("client", "Failed to unregister tw-0.7+quic protocol");
 	if(!windows_shell_unregister_class(GAME_NAME ".map", &Updated))
 		log_error("client", "Failed to unregister .map file extension");
 	if(!windows_shell_unregister_class(GAME_NAME ".demo", &Updated))

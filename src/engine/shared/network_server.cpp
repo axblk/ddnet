@@ -52,6 +52,22 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 	m_Socket = net_udp_create(BindAddr);
 	if(!m_Socket)
 		return false;
+	const int SocketTypes = net_socket_type(m_Socket);
+	int RequiredWebsocketTypes = 0;
+	if((BindAddr.type & NETTYPE_WEBSOCKET_IPV4) != 0 && (SocketTypes & NETTYPE_IPV4) != 0)
+		RequiredWebsocketTypes |= NETTYPE_WEBSOCKET_IPV4;
+	if((BindAddr.type & NETTYPE_WEBSOCKET_IPV6) != 0 && (SocketTypes & NETTYPE_IPV6) != 0)
+		RequiredWebsocketTypes |= NETTYPE_WEBSOCKET_IPV6;
+	bool WebsocketTlsRequested = false;
+#if defined(CONF_WEBSOCKETS)
+	WebsocketTlsRequested = g_Config.m_SvWebsocketCert[0] != '\0' || g_Config.m_SvWebsocketKey[0] != '\0';
+#endif
+	if(WebsocketTlsRequested && (SocketTypes & RequiredWebsocketTypes) != RequiredWebsocketTypes)
+	{
+		net_udp_close(m_Socket);
+		m_Socket = nullptr;
+		return false;
+	}
 
 	m_Address = BindAddr;
 	m_pNetBan = pNetBan;
@@ -101,11 +117,27 @@ void CNetServer::Close()
 void CNetServer::Drop(int ClientId, const char *pReason)
 {
 	// TODO: insert lots of checks here
+	SetLegacyPeer(m_aSlots[ClientId].m_Connection.PeerAddress(), false);
 
 	if(m_pfnDelClient)
 		m_pfnDelClient(ClientId, pReason, m_pUser);
 
 	m_aSlots[ClientId].m_Connection.Disconnect(pReason);
+}
+
+void CNetServer::SetLegacyPeer(const NETADDR *pAddr, bool Known)
+{
+	if(m_pfnPeer)
+		m_pfnPeer(m_pFilterUser, pAddr, Known);
+}
+
+void CNetServer::SetExternalSlot(int ClientId, const NETADDR *pAddress)
+{
+	dbg_assert(ClientId >= 0 && ClientId < MaxClients(), "invalid external slot %d", ClientId);
+	dbg_assert(m_aSlots[ClientId].m_Connection.State() == CNetConnection::EState::OFFLINE, "legacy slot %d is already occupied", ClientId);
+	m_aExternalSlots[ClientId] = pAddress != nullptr;
+	if(pAddress)
+		m_aExternalSlotAddresses[ClientId] = *pAddress;
 }
 
 void CNetServer::Update()
@@ -118,6 +150,7 @@ void CNetServer::Update()
 		m_BudgetStart = Now;
 		m_NumPreConnDecompress = 0;
 		m_NumBanReplies = 0;
+		m_NumVanillaRefusals = 0;
 	}
 
 	for(int i = 0; i < MaxClients(); i++)
@@ -182,6 +215,12 @@ int CNetServer::NumClientsWithAddr(NETADDR Addr)
 	int FoundAddr = 0;
 	for(int i = 0; i < MaxClients(); ++i)
 	{
+		if(m_aExternalSlots[i])
+		{
+			if(!net_addr_comp_noport(&Addr, &m_aExternalSlotAddresses[i]))
+				FoundAddr++;
+			continue;
+		}
 		if(m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE ||
 			(m_aSlots[i].m_Connection.State() == CNetConnection::EState::ERROR &&
 				(!m_aSlots[i].m_Connection.m_TimeoutProtected ||
@@ -270,7 +309,7 @@ int CNetServer::TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, int
 		Slot = -1;
 		for(int i = 0; i < MaxClients(); i++)
 		{
-			if(m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE)
+			if(!m_aExternalSlots[i] && m_aSlots[i].m_Connection.State() == CNetConnection::EState::OFFLINE)
 			{
 				Slot = i;
 				break;
@@ -288,6 +327,7 @@ int CNetServer::TryAcceptClient(NETADDR &Addr, SECURITY_TOKEN SecurityToken, int
 
 	// init connection slot
 	m_aSlots[Slot].m_Connection.DirectInit(Addr, SecurityToken, Token, Sixup);
+	SetLegacyPeer(&Addr, true);
 
 	if(VanillaAuth)
 	{
@@ -350,6 +390,22 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 
 	if(IsCtrl && CtrlMsg == NET_CTRLMSG_CONNECT)
 	{
+		if(!g_Config.m_SvVanillaConnections)
+		{
+			// Refused before the anti-spoof handshake, which would answer an unverified
+			// address with a map. The close is several times the size of the connect
+			// that asks for it, so it spends the same budget the handshake does:
+			// answering every one of them turns the server into an amplifier for a
+			// forged sender address.
+			if(g_Config.m_SvVanConnRepliesPerSecond == 0 || m_NumVanillaRefusals < g_Config.m_SvVanConnRepliesPerSecond)
+			{
+				m_NumVanillaRefusals++;
+				const char aMsg[] = "0.6 connections without security tokens are not accepted at this time";
+				SendControl(Addr, NET_CTRLMSG_CLOSE, aMsg, sizeof(aMsg), NET_SECURITY_TOKEN_UNSUPPORTED);
+			}
+			return;
+		}
+
 		if(g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
 		{
 			const int64_t Now = time_get();
@@ -467,7 +523,7 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 			TryAcceptClient(Addr, NET_SECURITY_TOKEN_UNSUPPORTED, Slot);
 		}
 	}
-	else if(!IsCtrl && g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
+	else if(!IsCtrl && g_Config.m_SvVanillaConnections && g_Config.m_SvVanillaAntiSpoof && g_Config.m_Password[0] == '\0')
 	{
 		// the chunk header is two bytes, three for vital chunks
 		if(Packet.m_DataSize < 2)
@@ -512,6 +568,13 @@ void CNetServer::OnPreConnMsg(NETADDR &Addr, CNetPacketConstruct &Packet, int Sl
 
 void CNetServer::OnTokenCtrlMsg(NETADDR &Addr, int ControlMsg, const CNetPacketConstruct &Packet, int Slot)
 {
+	if(!g_Config.m_SvDdnetConnections && (ControlMsg == NET_CTRLMSG_CONNECT || ControlMsg == NET_CTRLMSG_ACCEPT))
+	{
+		const char aMsg[] = "0.6 connections with security tokens are not accepted at this time";
+		SendControl(Addr, NET_CTRLMSG_CLOSE, aMsg, sizeof(aMsg), GetToken(Addr));
+		return;
+	}
+
 	if(ControlMsg == NET_CTRLMSG_CONNECT)
 	{
 		// response connection request with token
@@ -667,10 +730,19 @@ int CNetServer::Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken)
 			continue;
 		}
 
+		// Taken by the transport that shares the socket, after it has spent
+		// budget like every other datagram.
+		if(m_pfnFilter && m_pfnFilter(m_pFilterUser, &Addr, pData, Bytes))
+			continue;
+
 		// Check size and unpack packet flags early so we can determine the sixup
 		// state correctly for connection-oriented packets before unpacking them.
 		std::optional<int> Flags = CNetBase::UnpackPacketFlags(pData, Bytes);
 		if(!Flags)
+		{
+			continue;
+		}
+		if(!m_LegacyConnections && (Addr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) == 0 && (*Flags & NET_PACKETFLAG_CONNLESS) == 0)
 		{
 			continue;
 		}
@@ -822,6 +894,7 @@ bool CNetServer::HasErrored(int ClientId)
 
 void CNetServer::ResumeOldConnection(int ClientId, int OrigId)
 {
+	SetLegacyPeer(m_aSlots[ClientId].m_Connection.PeerAddress(), false);
 	m_aSlots[ClientId].m_Connection.ResumeConnection(ClientAddr(OrigId), m_aSlots[OrigId].m_Connection.SeqSequence(), m_aSlots[OrigId].m_Connection.AckSequence(), m_aSlots[OrigId].m_Connection.SecurityToken(), m_aSlots[OrigId].m_Connection.ResendBuffer(), m_aSlots[OrigId].m_Connection.m_Sixup);
 	m_aSlots[OrigId].m_Connection.Reset();
 }

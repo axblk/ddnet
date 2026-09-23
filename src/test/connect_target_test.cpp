@@ -26,6 +26,25 @@ TEST(ConnectTarget, Addresses)
 	EXPECT_EQ(Target.m_aAddrs[0].port, 8303);
 }
 
+TEST(ConnectTarget, LegacyAddresses)
+{
+	CConnectTarget Target;
+	NETADDR aAddrs[MAX_SERVER_ADDRESSES];
+	ASSERT_TRUE(Target.Parse("127.0.0.1:8303,tw-0.6+udp://127.0.0.2:8303,ddnet-20+ws://127.0.0.3:8303", NETTYPE_ALL, EConnectAddressFamily::IPV6));
+	ASSERT_EQ(Target.LegacyAddresses(NETTYPE_ALL, aAddrs), 3);
+	EXPECT_EQ(aAddrs[0].type, NETTYPE_IPV4);
+	EXPECT_EQ(aAddrs[1].type, NETTYPE_IPV4);
+	EXPECT_EQ(aAddrs[2].type, NETTYPE_WEBSOCKET_IPV4);
+
+	// Without UDP, as in a browser, an address without a scheme is a
+	// websocket one, and one that names UDP cannot be reached.
+	ASSERT_EQ(Target.LegacyAddresses(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6, aAddrs), 2);
+	EXPECT_EQ(aAddrs[0].type, NETTYPE_WEBSOCKET_IPV4);
+	EXPECT_EQ(aAddrs[0].ip[3], 1);
+	EXPECT_EQ(aAddrs[1].type, NETTYPE_WEBSOCKET_IPV4);
+	EXPECT_EQ(aAddrs[1].ip[3], 3);
+}
+
 TEST(ConnectTarget, Links)
 {
 	char aLink[256];

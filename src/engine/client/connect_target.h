@@ -36,8 +36,10 @@ public:
 	bool m_LinkWebTransport = false;
 	CModernTransportPin m_LinkPin = {};
 	// Whether the websocket addresses are secure, -1 without one. Only used in
-	// the browser, where every connection is a websocket.
+	// the browser, where all websockets share one scheme.
 	int m_WebsocketSecure = -1;
+	// Whether the address was given without a scheme.
+	bool m_aSchemeless[MAX_SERVER_ADDRESSES] = {};
 
 	/**
 	 * Parses a comma separated connect string and resolves its addresses.
@@ -50,6 +52,18 @@ public:
 	 * @return Whether the connect string is valid. It may still resolve to no address.
 	 */
 	bool Parse(const char *pAddress, int NetTypes, EConnectAddressFamily Family);
+
+	/**
+	 * The addresses the legacy transport connects to: those the socket has a
+	 * type for. An address without a scheme is a websocket one where the socket
+	 * has websockets but no UDP, as in a browser.
+	 *
+	 * @param NetTypes The network types of the socket.
+	 * @param pAddrs Receives up to `m_NumAddrs` addresses.
+	 *
+	 * @return The number of addresses.
+	 */
+	int LegacyAddresses(int NetTypes, NETADDR *pAddrs) const;
 };
 
 /**

@@ -176,20 +176,18 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 			continue;
 		}
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-		// Emscripten tunnels all traffic through websockets, so websocket addresses are
-		// used like normal addresses and only their scheme is applied globally.
-		if((NextAddr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0)
+		// The browser opens all its websockets with one scheme, which the
+		// client sets for the whole connect. An address without a scheme is
+		// one of them (see `LegacyAddresses`), with the scheme of the page.
+		if(UrlResult > 0 || (NextAddr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0)
 		{
-			const int NextWebsocketSecure = (NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0;
+			const int NextWebsocketSecure = UrlResult > 0 ? net_websocket_secure_default() : (NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0;
 			if(m_WebsocketSecure >= 0 && m_WebsocketSecure != NextWebsocketSecure)
 			{
 				log_error("client", "cannot mix ws and wss connect addresses");
 				return false;
 			}
 			m_WebsocketSecure = NextWebsocketSecure;
-			const bool Ipv4 = (NextAddr.type & NETTYPE_WEBSOCKET_IPV4) != 0;
-			NextAddr.type &= ~(NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6 | NETTYPE_WEBSOCKET_TLS);
-			NextAddr.type |= Ipv4 ? NETTYPE_IPV4 : NETTYPE_IPV6;
 		}
 #else
 		if((NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0)
@@ -224,10 +222,27 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 		char aNextAddr[NETADDR_URL_MAXSTRSIZE];
 		net_addr_url_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
 		log_debug("client", "resolved connect address '%s' to %s", aBuffer, aNextAddr);
+		m_aSchemeless[m_NumAddrs] = UrlResult > 0;
 		m_aAddrs[m_NumAddrs++] = NextAddr;
 	}
 
 	return true;
+}
+
+int CConnectTarget::LegacyAddresses(int NetTypes, NETADDR *pAddrs) const
+{
+	int NumAddrs = 0;
+	for(int i = 0; i < m_NumAddrs; i++)
+	{
+		NETADDR Addr = m_aAddrs[i];
+		const int Udp = Addr.type & (NETTYPE_IPV4 | NETTYPE_IPV6);
+		const int Websocket = ((Udp & NETTYPE_IPV4) != 0 ? NETTYPE_WEBSOCKET_IPV4 : 0) | ((Udp & NETTYPE_IPV6) != 0 ? NETTYPE_WEBSOCKET_IPV6 : 0);
+		if(m_aSchemeless[i] && (Udp & NetTypes) == 0 && (Websocket & NetTypes) != 0)
+			Addr.type = (Addr.type & ~Udp) | Websocket | (m_WebsocketSecure > 0 ? NETTYPE_WEBSOCKET_TLS : 0);
+		if((Addr.type & NetTypes) != 0)
+			pAddrs[NumAddrs++] = Addr;
+	}
+	return NumAddrs;
 }
 
 EConnectTransport ChooseConnectTransport(const CConnectTarget &Target, const CConnectTransportOptions &Options, const FFindListedServer &FindListedServer, CModernTransportStart *pStart)

@@ -1142,7 +1142,11 @@ void CServerBrowser::RequestImpl(const NETADDR &Addr, CServerEntry *pEntry, int 
 		*pBasicToken = GetBasicToken(Token);
 	}
 
-	if(Addr.type & NETTYPE_TW7)
+	// Server info is asked for outside of any connection, which only reaches
+	// the address types the socket has: a browser has no UDP, so there it
+	// cannot ask a UDP, QUIC or WebTransport address.
+	const bool Reachable = (Addr.type & m_pNetClient->NetType()) != 0;
+	if(Reachable && (Addr.type & NETTYPE_TW7))
 	{
 		CPacker Packer;
 		Packer.Reset();
@@ -1159,7 +1163,7 @@ void CServerBrowser::RequestImpl(const NETADDR &Addr, CServerEntry *pEntry, int 
 
 		m_pNetClient->Send(&Packet);
 	}
-	else
+	else if(Reachable)
 	{
 		unsigned char aBuffer[sizeof(SERVERBROWSE_GETINFO) + 1];
 		mem_copy(aBuffer, SERVERBROWSE_GETINFO, sizeof(SERVERBROWSE_GETINFO));

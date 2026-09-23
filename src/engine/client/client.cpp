@@ -706,7 +706,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	CConnectTarget Target;
 	const bool Valid = Target.Parse(m_aConnectAddressStr, m_aNetClient[CONN_MAIN].NetType(), (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily);
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// Emscripten tunnels all traffic through websockets, so their scheme applies globally.
+	// The browser's websockets share one scheme, so it applies globally.
 	if(Valid && Target.m_WebsocketSecure >= 0)
 		net_websocket_set_secure(Target.m_WebsocketSecure != 0);
 	else if(Valid)
@@ -725,9 +725,18 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		AddWarning(Warning);
 		return;
 	}
+	// The legacy transport reaches the addresses its socket has a type for,
+	// which in a browser are only the websockets.
+	NETADDR aLegacyAddrs[MAX_SERVER_ADDRESSES];
+	const int NumLegacyAddrs = Target.LegacyAddresses(m_aNetClient[CONN_MAIN].NetType(), aLegacyAddrs);
 	for(int i = 0; i < Target.m_NumAddrs; i++)
 	{
 		if(Target.m_aAddrs[i] == LastAddr)
+			m_SendPassword = true;
+	}
+	for(int i = 0; i < NumLegacyAddrs; i++)
+	{
+		if(aLegacyAddrs[i] == LastAddr)
 			m_SendPassword = true;
 	}
 
@@ -760,8 +769,18 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	// that is what made connection problems hard to read before.
 	if(TryStartModernTransport(Target))
 		return;
+	if(NumLegacyAddrs == 0)
+	{
+		log_error("client", "none of the connect addresses can be reached without QUIC or WebTransport (a browser has websockets, but no UDP)");
+		char aWarning[256];
+		str_format(aWarning, sizeof(aWarning), Localize("'%s' cannot be reached from here. See local console for details."), m_aConnectAddressStr);
+		SWarning Warning(Localize("Connect address error"), aWarning);
+		Warning.m_AutoHide = false;
+		AddWarning(Warning);
+		return;
+	}
 	SetState(IClient::STATE_CONNECTING);
-	StartLegacyConnection(Target.m_aAddrs, Target.m_NumAddrs, Target.m_OnlySixup);
+	StartLegacyConnection(aLegacyAddrs, NumLegacyAddrs, Target.m_OnlySixup);
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -2080,8 +2099,9 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			{
 				NETADDR ServerAddr = ServerAddress();
 				ServerAddr.port = RedirectPort;
-				char aAddr[NETADDR_MAXSTRSIZE];
-				net_addr_str(&ServerAddr, aAddr, sizeof(aAddr), true);
+				// As a URL, so that a websocket stays one.
+				char aAddr[NETADDR_URL_MAXSTRSIZE];
+				net_addr_url_str(&ServerAddr, aAddr, sizeof(aAddr), true);
 				Connect(aAddr);
 			}
 			else

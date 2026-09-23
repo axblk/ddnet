@@ -206,9 +206,9 @@ int net_host_lookup(const char *hostname, NETADDR *addr, int types);
  *
  * @param secure Whether to use `wss`.
  *
- * @remark Emscripten tunnels all traffic through websockets, whose scheme is a
- * single global setting instead of a per-socket one, so this affects all
- * connections that are established afterwards.
+ * @remark The browser's websockets take their scheme from a single global
+ * setting instead of a per-socket one, so this affects all connections that
+ * are established afterwards.
  */
 void net_websocket_set_secure(bool secure);
 
@@ -236,6 +236,36 @@ void net_websocket_reset_secure();
  * @remark You must call this function before using any other network functions.
  */
 void net_init();
+
+/**
+ * The websocket transport. It is built on libwebsockets, which lives in the
+ * engine, so that a program which never opens a websocket links neither of
+ * them. While none is installed the websocket address types cannot be used.
+ * A browser brings its own, which `net_init` installs.
+ *
+ * @ingroup Network-General
+ *
+ * @remark The set the last two take is an `fd_set`. It is passed untyped so
+ * that this header does not have to pull in the platform socket headers.
+ */
+struct NETWEBSOCKET
+{
+	int (*create)(const NETADDR *bindaddr);
+	void (*destroy)(int socket);
+	int (*recv)(int socket, unsigned char *data, size_t maxsize, NETADDR *addr);
+	int (*send)(int socket, const unsigned char *data, size_t size, const NETADDR *addr);
+	int (*fd_set)(int socket, void *set);
+	int (*fd_get)(int socket, void *set);
+};
+
+/**
+ * Installs the websocket transport.
+ *
+ * @ingroup Network-General
+ *
+ * @param transport The transport, which has to outlive every socket opened with it.
+ */
+void net_websocket_transport(const NETWEBSOCKET *transport);
 
 /**
  * If a network operation failed, the error code.
@@ -338,6 +368,9 @@ int net_socket_read_wait(NETSOCKET sock, std::chrono::nanoseconds nanoseconds);
  * @param bindaddr Address to bind the socket to.
  *
  * @return On success it returns an handle to the socket. On failure it returns `nullptr`.
+ *
+ * @remark A browser has no UDP: there the socket only has the websocket types, and
+ * `net_socket_type` tells the callers which addresses it reaches.
  */
 NETSOCKET net_udp_create(NETADDR bindaddr);
 

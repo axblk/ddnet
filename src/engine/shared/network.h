@@ -221,6 +221,7 @@ class CStun
 		void Update();
 		bool OnPacket(NETADDR Addr, unsigned char *pData, int DataSize);
 		CONNECTIVITY GetConnectivity(NETADDR *pGlobalAddr);
+		NETSOCKET Socket() const { return m_Socket; }
 	};
 	CProtocol m_aProtocols[2];
 

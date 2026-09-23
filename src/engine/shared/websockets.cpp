@@ -347,11 +347,6 @@ static void websocket_log_callback(int level, const char *line)
 	log_log(websocket_level_to_loglevel(level), "websockets", "%s", line_truncated);
 }
 
-void websocket_init()
-{
-	lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO, websocket_log_callback);
-}
-
 void websocket_reload_certs()
 {
 #if defined(LWS_WITH_TLS)
@@ -380,8 +375,15 @@ void websocket_reload_certs()
 #endif
 }
 
-int websocket_create(const NETADDR *bindaddr)
+static int websocket_create(const NETADDR *bindaddr)
 {
+	static bool logging_set = false;
+	if(!logging_set)
+	{
+		lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO, websocket_log_callback);
+		logging_set = true;
+	}
+
 	// find free context
 	int first_free = -1;
 	for(int i = 0; i < (int)std::size(contexts); i++)
@@ -463,14 +465,14 @@ int websocket_create(const NETADDR *bindaddr)
 	return first_free;
 }
 
-void websocket_destroy(int socket)
+static void websocket_destroy(int socket)
 {
 	lws_context *context = websocket_context(socket);
 	lws_context_destroy(context);
 	contexts[socket].context = nullptr;
 }
 
-int websocket_recv(int socket, unsigned char *data, size_t maxsize, NETADDR *addr)
+static int websocket_recv(int socket, unsigned char *data, size_t maxsize, NETADDR *addr)
 {
 	lws_context *context = websocket_context(socket);
 	const int service_result = lws_service(context, -1);
@@ -503,7 +505,7 @@ int websocket_recv(int socket, unsigned char *data, size_t maxsize, NETADDR *add
 	}
 }
 
-int websocket_send(int socket, const unsigned char *data, size_t size, const NETADDR *addr)
+static int websocket_send(int socket, const unsigned char *data, size_t size, const NETADDR *addr)
 {
 	lws_context *context = websocket_context(socket);
 	context_data *ctx_data = static_cast<context_data *>(lws_context_user(context));
@@ -543,8 +545,9 @@ int websocket_send(int socket, const unsigned char *data, size_t size, const NET
 	return size;
 }
 
-int websocket_fd_set(int socket, fd_set *set)
+static int websocket_fd_set(int socket, void *set_untyped)
 {
+	fd_set *set = static_cast<fd_set *>(set_untyped);
 	lws_context *context = websocket_context(socket);
 	lws_service(context, -1);
 
@@ -585,8 +588,9 @@ int websocket_fd_set(int socket, fd_set *set)
 	return max;
 }
 
-int websocket_fd_get(int socket, fd_set *set)
+static int websocket_fd_get(int socket, void *set_untyped)
 {
+	fd_set *set = static_cast<fd_set *>(set_untyped);
 	lws_context *context = websocket_context(socket);
 	lws_service(context, -1);
 
@@ -628,5 +632,21 @@ int websocket_fd_get(int socket, fd_set *set)
 	return 0;
 }
 // NOLINTEND(readability-identifier-naming)
+
+// The transport installs itself, so that linking it is all it takes to be able
+// to open a websocket and nothing has to remember to ask for it.
+static const NETWEBSOCKET WEBSOCKET_TRANSPORT = {
+	websocket_create,
+	websocket_destroy,
+	websocket_recv,
+	websocket_send,
+	websocket_fd_set,
+	websocket_fd_get,
+};
+
+static const struct CWebsocketTransport
+{
+	CWebsocketTransport() { net_websocket_transport(&WEBSOCKET_TRANSPORT); }
+} WEBSOCKET_TRANSPORT_INSTALLER;
 
 #endif

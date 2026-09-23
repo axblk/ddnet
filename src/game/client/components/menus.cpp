@@ -1413,8 +1413,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			m_Popup = POPUP_NONE;
 		}
 
-		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&Client()->ServerAddress(), aAddr, sizeof(aAddr), true);
+		// As a URL, so that a websocket stays one.
+		char aAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&Client()->ServerAddress(), aAddr, sizeof(aAddr), true);
 
 		static CButtonContainer s_ButtonTryAgain;
 		if(DoButton_Menu(&s_ButtonTryAgain, Localize("Try again"), 0, &TryAgain) ||

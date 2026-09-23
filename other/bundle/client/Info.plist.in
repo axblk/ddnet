@@ -26,6 +26,8 @@
 				<key>CFBundleURLSchemes</key>
 				<array>
 					<string>ddnet</string>
+					<string>ddnet+quic</string>
+					<string>tw-0.7+quic</string>
 				</array>
 			</dict>
 		</array>

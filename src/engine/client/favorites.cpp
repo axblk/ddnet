@@ -36,6 +36,7 @@ private:
 
 void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 {
+	char aBuffer[128];
 	for(const auto &Entry : m_vEntries)
 	{
 		if(Entry.m_NumAddrs > 1)
@@ -44,22 +45,8 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 		}
 		for(int i = 0; i < Entry.m_NumAddrs; i++)
 		{
-			char aAddr[NETADDR_MAXSTRSIZE];
-			char aBuffer[128];
-			net_addr_str(&Entry.m_aAddrs[i], aBuffer, sizeof(aBuffer), true);
-
-			if(Entry.m_aAddrs[i].type & NETTYPE_TW7)
-			{
-				str_format(
-					aAddr,
-					sizeof(aAddr),
-					"tw-0.7+udp://%s",
-					aBuffer);
-			}
-			else
-			{
-				str_copy(aAddr, aBuffer);
-			}
+			char aAddr[NETADDR_URL_MAXSTRSIZE];
+			net_addr_url_str(&Entry.m_aAddrs[i], aAddr, sizeof(aAddr), true);
 
 			if(!Entry.m_AllowPing)
 			{

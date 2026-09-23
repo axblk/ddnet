@@ -148,7 +148,8 @@ CStun::CStun(NETSOCKET Socket) :
 void CStun::FeedStunServer(NETADDR StunServer)
 {
 	int Index = IndexFromNetType(StunServer.type);
-	if(Index < 0)
+	// A socket without UDP, as in a browser, cannot ask.
+	if(Index < 0 || (net_socket_type(m_aProtocols[Index].Socket()) & StunServer.type) == 0)
 	{
 		return;
 	}

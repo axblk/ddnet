@@ -208,6 +208,23 @@ jobs:
         cd release
         ./DDNet-Server shutdown
 
+    # The transport is compiled in by default, so the builds above cover it.
+    # What nothing else covers is the build without it, where the transport
+    # falls back to its stub and the QUIC-only files drop out.
+    - name: Build without QUIC
+      if: contains(matrix.name, 'ubuntu-latest-fancy')
+      run: |
+        mkdir noquic
+        cd noquic
+        cmake ${{ matrix.cmake-args }} -DQUIC=OFF -DCMAKE_BUILD_TYPE=Release -Werror=dev -DDOWNLOAD_GTEST=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=. ..
+        cmake --build . --config Release --target everything
+
+    - name: Test without QUIC
+      if: contains(matrix.name, 'ubuntu-latest-fancy')
+      run: |
+        cd noquic
+        cmake -E env ${{ matrix.gtest-env }} cmake --build . --config Release --target run_tests
+
     - name: Build headless client
       if: ${{ !contains(matrix.os, 'ubuntu') }}
       run: |
@@ -216,6 +233,7 @@ jobs:
         ${{ matrix.cmake-path }}cmake -E env ${{ matrix.cmake-init-env }} ${{ matrix.cmake-path }}cmake ${{ matrix.cmake-args }} -DHEADLESS_CLIENT=ON -DCMAKE_BUILD_TYPE=Debug -Werror=dev -DDOWNLOAD_GTEST=ON -DDEV=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG=. ..
         ${{ matrix.workaround-issue10203-run-after-configure }}
         ${{ matrix.cmake-path }}cmake --build . --config Debug
+        ${{ matrix.cmake-path }}cmake --build . --config Debug --target quic_cli
 
     - name: Build headless client with code coverage
       if: contains(matrix.os, 'ubuntu-latest')
@@ -271,7 +289,7 @@ jobs:
       continue-on-error: true
       run: |
         cp src/mastersrv/target/debug/mastersrv${{ matrix.executable-suffix }} headless
-        python scripts/integration_test.py --show-full-output --test-mastersrv headless
+        python scripts/integration_test.py --show-full-output --test-mastersrv --test-quic headless
 
     - name: Run integration tests with Valgrind's Memcheck and code coverage
       id: integration_test_valgrind

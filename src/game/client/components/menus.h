@@ -526,6 +526,13 @@ protected:
 	bool m_ServerBrowserShouldRevealSelection;
 	std::vector<CUIElement *> m_avpServerBrowserUiElements[IServerBrowser::NUM_TYPES];
 	void RenderServerbrowserServerList(CUIRect View, bool &WasListboxItemActivated);
+	int DoConnectChoice(CUIRect *pRect, int Current, const char **ppLabels, int Num, CUi::SDropDownState &State);
+	static const char *ConnectProtocolShortName(EConnectProtocol Protocol, const char *pAddress);
+	// The listed server the address field belongs to, null for none.
+	const CServerInfo *ServerOfConnectAddress(const char *pAddress);
+	// Writes the endpoint of the server that is connected to into the address
+	// field, see `FormatConnectAddress`.
+	static void UpdateConnectAddress(const CServerInfo *pServer, bool FamilyFirst = false);
 	void RenderServerbrowserStatusBox(CUIRect StatusBox, bool WasListboxItemActivated);
 	void PopupConfirmSwitchServer();
 	void RenderServerbrowserFilters(CUIRect View);

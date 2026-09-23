@@ -18,9 +18,11 @@
 #include <engine/shared/netban.h>
 #include <engine/shared/network.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -32,6 +34,7 @@
 class CConfig;
 class CHostLookup;
 class CLogMessage;
+class CModernTransportPin;
 class CMsgPacker;
 class CPacker;
 class IEngine;
@@ -98,6 +101,7 @@ public:
 	enum
 	{
 		MAX_RCONCMD_SEND = 16,
+		QUIC_RESUME_TOKEN_SIZE = 32,
 	};
 
 	enum class EDnsblState
@@ -178,6 +182,18 @@ public:
 		int m_Flags;
 		bool m_ShowIps;
 		bool m_DebugDummy;
+		bool m_Quic;
+		bool m_WebTransport;
+		CQuicSessionId m_QuicSession;
+		uint64_t m_QuicResumeSessionId;
+		std::array<unsigned char, QUIC_RESUME_TOKEN_SIZE> m_aQuicResumeToken;
+		int64_t m_QuicResumeDeadline;
+		bool m_QuicResumeArmed;
+		bool m_QuicDetached;
+		bool m_QuicDropPending;
+		NETADDR m_QuicAddr;
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrString;
+		std::array<char, NETADDR_MAXSTRSIZE> m_aQuicAddrStringNoPort;
 		bool m_ForceHighBandwidthOnSpectate;
 		NETADDR m_DebugDummyAddr;
 		std::array<char, NETADDR_MAXSTRSIZE> m_aDebugDummyAddrString;
@@ -214,6 +230,9 @@ public:
 		std::shared_ptr<CHostLookup> m_pDnsblLookup;
 
 		bool m_Sixup;
+		// Sent NETMSG_SERVER_INFO_REQUEST, so it gets the server info in the
+		// connection instead of outside of it.
+		bool m_ServerInfoInConnection;
 
 		bool IncludedInServerInfo() const
 		{
@@ -230,6 +249,19 @@ public:
 	CSnapshotBuilder m_SnapshotBuilder;
 	CSnapIdPool m_IdPool;
 	CNetServer m_NetServer;
+	CQuicTransport m_QuicTransport;
+	bool m_QuicStarted = false;
+	bool m_WebTransportStarted = false;
+	bool m_LegacyUdpStarted = true;
+	// Whether clients check the certificate with Web PKI, not by its hash or the identity key.
+	bool m_ModernTransportWebPki = false;
+	// The certificate of `sv_tls_cert`, read at the start and by `reload_tls_cert`,
+	// for QUIC, WebTransport and secure websockets. Empty for a managed one.
+	std::optional<CTlsServerCertificate> m_TlsCertificate;
+	// Whether websockets are served as `wss` with it.
+	bool m_WebsocketTls = false;
+	// The key wss shows DDNet clients where it is the identity key of raw QUIC.
+	std::optional<SHA256_DIGEST> m_WebsocketIdentitySpkiSha256;
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
@@ -310,6 +342,7 @@ public:
 	void SetClientFlags(int ClientId, int Flags) override;
 
 	void Kick(int ClientId, const char *pReason) override;
+	void DropClient(int ClientId, const char *pReason);
 	void Ban(int ClientId, int Seconds, const char *pReason, bool VerbatimReason) override;
 	void ReconnectClient(int ClientId);
 	void RedirectClient(int ClientId, int Port) override;
@@ -332,6 +365,7 @@ public:
 	void SetClientDDNetVersion(int ClientId, int DDNetVersion) override;
 	const NETADDR *ClientAddr(int ClientId) const override;
 	const std::array<char, NETADDR_MAXSTRSIZE> &ClientAddrStringImpl(int ClientId, bool IncludePort) const override;
+	const char *ClientTransportName(int ClientId) const;
 	const char *ClientName(int ClientId) const override;
 	const char *ClientClan(int ClientId) const override;
 	int ClientCountry(int ClientId) const override;
@@ -359,6 +393,12 @@ public:
 	void SendCapabilities(int ClientId);
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
+	bool LoadTlsCertificate();
+	bool StartQuic();
+	// Logs the lines a connect link is made from, for each transport with TLS that runs.
+	void LogTlsTransports() const;
+	bool UpdateQuicMaps();
+	void SendQuic(int ClientId, const void *pData, int DataSize, bool Vital);
 	void SendMapReload(int ClientId);
 	void SendConnectionReady(int ClientId);
 	void SendRconLine(int ClientId, const char *pLine);
@@ -389,6 +429,20 @@ public:
 	bool CheckReservedSlotAuth(int ClientId, const char *pPassword);
 	bool TakePreInputBudget(int ClientId);
 	void ProcessClientPacket(CNetChunk *pPacket);
+	// How a client checks the WebTransport certificate, only while it is served.
+	CModernTransportPin WebTransportPin() const;
+	void FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const;
+	// The modern transports as the extra info of an extended server info answer
+	// tells them, empty without any.
+	void FormatTransportExtraInfo(char *pBuffer, int BufferSize) const;
+	void SetQuicAddress(int ClientId, const NETADDR &Addr);
+	int NumOtherClientsWithAddr(const NETADDR &Addr, int ClientId);
+	void PumpQuicNetwork();
+	std::chrono::microseconds QuicWait(std::chrono::microseconds Wait) const;
+	int FindQuicClient(CQuicSessionId Session) const;
+	int FindQuicResume(const CQuicMessage &Message) const;
+	bool IssueQuicResume(int ClientId);
+	void ExpireQuicResumes();
 	void OnNetMsgClientVer(int ClientId, CUuid *pConnectionId, int DDNetVersion, const char *pDDNetVersionStr);
 	void OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr);
 	void OnNetMsgReady(int ClientId);
@@ -428,7 +482,10 @@ public:
 	void ExpireServerInfoAndQueueResend();
 	void CacheServerInfo(CCache *pCache, int Type, bool SendClients);
 	void CacheServerInfoSixup(CCache *pCache, bool SendClients, int MaxConsideredClients);
+	template<typename F>
+	void ForEachServerInfoPacket(int Token, int Type, bool SendClients, F &&Fn);
 	void SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool SendClients);
+	void SendServerInfoToClient(int ClientId, int Type);
 	void GetServerInfoSixup(CPacker *pPacker, bool SendClients);
 	// Whether a connection-less server info response may be sent, and if so whether it
 	// includes the client list.
@@ -475,6 +532,7 @@ public:
 
 	static void ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData);
 	static void ConReloadMaplist(IConsole::IResult *pResult, void *pUserData);
+	static void ConReloadTlsCert(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainMaxclientsperipUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);

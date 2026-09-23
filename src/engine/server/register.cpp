@@ -35,15 +35,42 @@ class CRegister : public IRegister
 		PROTOCOL_TW6_IPV4,
 		PROTOCOL_TW7_IPV6,
 		PROTOCOL_TW7_IPV4,
+		PROTOCOL_DDNET_QUIC_IPV6,
+		PROTOCOL_DDNET_QUIC_IPV4,
+		PROTOCOL_TW7_QUIC_IPV6,
+		PROTOCOL_TW7_QUIC_IPV4,
+		PROTOCOL_DDNET_WT_IPV6,
+		PROTOCOL_DDNET_WT_IPV4,
+		PROTOCOL_TW7_WT_IPV6,
+		PROTOCOL_TW7_WT_IPV4,
 		NUM_PROTOCOLS,
 	};
 
+	enum class ETransport
+	{
+		LEGACY,
+		QUIC,
+		WEBTRANSPORT,
+	};
+
+	struct CProtocolInfo
+	{
+		const char *m_pScheme;
+		const char *m_pName;
+		const char *m_pSystem;
+		IPRESOLVE m_Ipresolve;
+		ETransport m_Transport;
+		bool m_Sixup;
+	};
+	static const CProtocolInfo ms_aProtocolInfos[NUM_PROTOCOLS];
+
 	static bool StatusFromString(int *pResult, const char *pString);
-	static const char *ProtocolToScheme(int Protocol);
-	static const char *ProtocolToString(int Protocol);
+	static const char *ProtocolToScheme(int Protocol) { return ms_aProtocolInfos[Protocol].m_pScheme; }
+	static const char *ProtocolToString(int Protocol) { return ms_aProtocolInfos[Protocol].m_pName; }
 	static bool ProtocolFromString(int *pResult, const char *pString);
-	static const char *ProtocolToSystem(int Protocol);
-	static IPRESOLVE ProtocolToIpresolve(int Protocol);
+	static const char *ProtocolToSystem(int Protocol) { return ms_aProtocolInfos[Protocol].m_pSystem; }
+	static IPRESOLVE ProtocolToIpresolve(int Protocol) { return ms_aProtocolInfos[Protocol].m_Ipresolve; }
+	static ETransport ProtocolToTransport(int Protocol) { return ms_aProtocolInfos[Protocol].m_Transport; }
 
 	static void ConchainOnConfigChange(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 
@@ -53,6 +80,7 @@ class CRegister : public IRegister
 		CLock m_Lock;
 		int m_InfoSerial GUARDED_BY(m_Lock) = -1;
 		int m_LatestSuccessfulInfoSerial GUARDED_BY(m_Lock) = -1;
+		bool m_ModernUnsupportedLogged GUARDED_BY(m_Lock) = false;
 	};
 
 	class CProtocol
@@ -70,6 +98,7 @@ class CRegister : public IRegister
 			int m_NumTotalRequests GUARDED_BY(m_Lock) = 0;
 			int m_LatestResponseStatus GUARDED_BY(m_Lock) = STATUS_NONE;
 			int m_LatestResponseIndex GUARDED_BY(m_Lock) = -1;
+			bool m_Unsupported GUARDED_BY(m_Lock) = false;
 		};
 
 		class CJob : public IJob
@@ -106,6 +135,7 @@ class CRegister : public IRegister
 		char m_aChallengeToken[128] = {0};
 
 		void CheckChallengeStatus();
+		void FormatAddress(char *pBuffer, int BufferSize) const;
 
 	public:
 		int64_t m_PrevRegister = -1;
@@ -116,6 +146,8 @@ class CRegister : public IRegister
 		void SendRegister();
 		void SendDeleteIfRegistered(bool Shutdown);
 		void Update();
+		bool Unsupported();
+		void ResetUnsupported();
 	};
 
 	CConfig *m_pConfig;
@@ -127,10 +159,17 @@ class CRegister : public IRegister
 	// completely.
 	bool m_GotFirstUpdateCall = false;
 	int m_ServerPort;
+	bool m_LegacyUdpStarted;
+	bool m_QuicStarted;
+	bool m_WebTransportStarted;
 	char m_aConnlessTokenHex[16];
+	char m_aRegisterHostname[256] = {};
+	char m_aQuicFragment[160] = {};
+	char m_aWebTransportFragment[160] = {};
 
 	std::shared_ptr<CGlobal> m_pGlobal = std::make_shared<CGlobal>();
-	bool m_aProtocolEnabled[NUM_PROTOCOLS] = {true, true, true, true};
+	bool m_aProtocolRequested[NUM_PROTOCOLS] = {};
+	bool m_aProtocolEnabled[NUM_PROTOCOLS] = {};
 	CProtocol m_aProtocols[NUM_PROTOCOLS];
 
 	bool m_GotCommunityToken = false;
@@ -146,11 +185,13 @@ class CRegister : public IRegister
 	char m_aServerInfo[100 * 1024];
 
 public:
-	CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken);
+	CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, bool LegacyUdpStarted, bool QuicStarted, bool WebTransportStarted, const char *pRegisterHostname, const char *pQuicFragment, const char *pWebTransportFragment);
+	void UpdateProtocolEnabled();
 	void Update() override;
 	void OnConfigChange() override;
 	bool OnPacket(const CNetChunk *pPacket) override;
 	void OnNewInfo(const char *pInfo) override;
+	void OnModernTrustChanged(const char *pQuicFragment, const char *pWebTransportFragment) override;
 	void OnShutdown() override;
 };
 
@@ -180,78 +221,33 @@ bool CRegister::StatusFromString(int *pResult, const char *pString)
 	return false;
 }
 
-const char *CRegister::ProtocolToScheme(int Protocol)
-{
-	switch(Protocol)
-	{
-	case PROTOCOL_TW6_IPV6: return "tw-0.6+udp://";
-	case PROTOCOL_TW6_IPV4: return "tw-0.6+udp://";
-	case PROTOCOL_TW7_IPV6: return "tw-0.7+udp://";
-	case PROTOCOL_TW7_IPV4: return "tw-0.7+udp://";
-	}
-	dbg_assert_failed("invalid protocol");
-}
-
-const char *CRegister::ProtocolToString(int Protocol)
-{
-	switch(Protocol)
-	{
-	case PROTOCOL_TW6_IPV6: return "tw0.6/ipv6";
-	case PROTOCOL_TW6_IPV4: return "tw0.6/ipv4";
-	case PROTOCOL_TW7_IPV6: return "tw0.7/ipv6";
-	case PROTOCOL_TW7_IPV4: return "tw0.7/ipv4";
-	}
-	dbg_assert_failed("invalid protocol");
-}
+const CRegister::CProtocolInfo CRegister::ms_aProtocolInfos[NUM_PROTOCOLS] = {
+	{"tw-0.6+udp://", "tw0.6/ipv6", "register/6/ipv6", IPRESOLVE::V6, ETransport::LEGACY, false},
+	{"tw-0.6+udp://", "tw0.6/ipv4", "register/6/ipv4", IPRESOLVE::V4, ETransport::LEGACY, false},
+	{"tw-0.7+udp://", "tw0.7/ipv6", "register/7/ipv6", IPRESOLVE::V6, ETransport::LEGACY, true},
+	{"tw-0.7+udp://", "tw0.7/ipv4", "register/7/ipv4", IPRESOLVE::V4, ETransport::LEGACY, true},
+	{"ddnet+quic://", "ddnet+quic/ipv6", "register/quic/6/ipv6", IPRESOLVE::V6, ETransport::QUIC, false},
+	{"ddnet+quic://", "ddnet+quic/ipv4", "register/quic/6/ipv4", IPRESOLVE::V4, ETransport::QUIC, false},
+	{"tw-0.7+quic://", "tw0.7+quic/ipv6", "register/quic/7/ipv6", IPRESOLVE::V6, ETransport::QUIC, true},
+	{"tw-0.7+quic://", "tw0.7+quic/ipv4", "register/quic/7/ipv4", IPRESOLVE::V4, ETransport::QUIC, true},
+	{"ddnet+wt://", "ddnet+wt/ipv6", "register/wt/6/ipv6", IPRESOLVE::V6, ETransport::WEBTRANSPORT, false},
+	{"ddnet+wt://", "ddnet+wt/ipv4", "register/wt/6/ipv4", IPRESOLVE::V4, ETransport::WEBTRANSPORT, false},
+	{"tw-0.7+wt://", "tw0.7+wt/ipv6", "register/wt/7/ipv6", IPRESOLVE::V6, ETransport::WEBTRANSPORT, true},
+	{"tw-0.7+wt://", "tw0.7+wt/ipv4", "register/wt/7/ipv4", IPRESOLVE::V4, ETransport::WEBTRANSPORT, true},
+};
 
 bool CRegister::ProtocolFromString(int *pResult, const char *pString)
 {
-	if(str_comp(pString, "tw0.6/ipv6") == 0)
+	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 	{
-		*pResult = PROTOCOL_TW6_IPV6;
+		if(str_comp(pString, ms_aProtocolInfos[Protocol].m_pName) == 0)
+		{
+			*pResult = Protocol;
+			return false;
+		}
 	}
-	else if(str_comp(pString, "tw0.6/ipv4") == 0)
-	{
-		*pResult = PROTOCOL_TW6_IPV4;
-	}
-	else if(str_comp(pString, "tw0.7/ipv6") == 0)
-	{
-		*pResult = PROTOCOL_TW7_IPV6;
-	}
-	else if(str_comp(pString, "tw0.7/ipv4") == 0)
-	{
-		*pResult = PROTOCOL_TW7_IPV4;
-	}
-	else
-	{
-		*pResult = -1;
-		return true;
-	}
-	return false;
-}
-
-const char *CRegister::ProtocolToSystem(int Protocol)
-{
-	switch(Protocol)
-	{
-	case PROTOCOL_TW6_IPV6: return "register/6/ipv6";
-	case PROTOCOL_TW6_IPV4: return "register/6/ipv4";
-	case PROTOCOL_TW7_IPV6: return "register/7/ipv6";
-	case PROTOCOL_TW7_IPV4: return "register/7/ipv4";
-	}
-	dbg_assert_failed("invalid protocol");
-}
-
-IPRESOLVE CRegister::ProtocolToIpresolve(int Protocol)
-{
-	switch(Protocol)
-	{
-	case PROTOCOL_TW6_IPV6: return IPRESOLVE::V6;
-	case PROTOCOL_TW6_IPV4: return IPRESOLVE::V4;
-	case PROTOCOL_TW7_IPV6: return IPRESOLVE::V6;
-	case PROTOCOL_TW7_IPV4: return IPRESOLVE::V4;
-	}
-	dbg_assert_failed("invalid protocol");
+	*pResult = -1;
+	return true;
 }
 
 void CRegister::ConchainOnConfigChange(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
@@ -263,13 +259,25 @@ void CRegister::ConchainOnConfigChange(IConsole::IResult *pResult, void *pUserDa
 	}
 }
 
+void CRegister::CProtocol::FormatAddress(char *pBuffer, int BufferSize) const
+{
+	// The master fills in the address it sees for the placeholder, while a
+	// QUIC or WebTransport server can be registered under its name, with how
+	// to check its certificate in the fragment.
+	const ETransport Transport = ProtocolToTransport(m_Protocol);
+	const char *pHostname = Transport != ETransport::LEGACY && m_pParent->m_aRegisterHostname[0] ? m_pParent->m_aRegisterHostname : "connecting-address.invalid";
+	const char *pFragment = Transport == ETransport::QUIC ? m_pParent->m_aQuicFragment : Transport == ETransport::WEBTRANSPORT ? m_pParent->m_aWebTransportFragment :
+																     "";
+	str_format(pBuffer, BufferSize, "%s%s:%d%s%s", ProtocolToScheme(m_Protocol), pHostname, m_pParent->m_ServerPort, pFragment[0] ? "#" : "", pFragment);
+}
+
 void CRegister::CProtocol::SendRegister()
 {
 	int64_t Now = time_get();
 	int64_t Freq = time_freq();
 
-	char aAddress[64];
-	str_format(aAddress, sizeof(aAddress), "%sconnecting-address.invalid:%d", ProtocolToScheme(m_Protocol), m_pParent->m_ServerPort);
+	char aAddress[512];
+	FormatAddress(aAddress, sizeof(aAddress));
 
 	char aSecret[UUID_MAXSTRSIZE];
 	FormatUuid(m_pParent->m_Secret, aSecret, sizeof(aSecret));
@@ -341,14 +349,17 @@ void CRegister::CProtocol::SendDeleteIfRegistered(bool Shutdown)
 {
 	{
 		const CLockScope LockScope(m_pShared->m_Lock);
-		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK;
+		// A register without an answer yet may have reached the master, and on
+		// shutdown there is no time to find out.
+		const bool Outstanding = Shutdown && m_pShared->m_NumTotalRequests > m_pShared->m_LatestResponseIndex + 1;
+		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK || Outstanding;
 		m_pShared->m_LatestResponseStatus = STATUS_NONE;
 		if(!ShouldSendDelete)
 			return;
 	}
 
-	char aAddress[64];
-	str_format(aAddress, sizeof(aAddress), "%sconnecting-address.invalid:%d", ProtocolToScheme(m_Protocol), m_pParent->m_ServerPort);
+	char aAddress[512];
+	FormatAddress(aAddress, sizeof(aAddress));
 
 	char aSecret[UUID_MAXSTRSIZE];
 	FormatUuid(m_pParent->m_Secret, aSecret, sizeof(aSecret));
@@ -388,10 +399,11 @@ void CRegister::CProtocol::CheckChallengeStatus()
 		switch(m_pShared->m_LatestResponseStatus)
 		{
 		case STATUS_NEEDCHALLENGE:
-			if(m_NewChallengeToken)
+			if(m_NewChallengeToken || ProtocolToTransport(m_Protocol) != ETransport::LEGACY)
 			{
-				// Immediately resend if we got the token.
-				m_NextRegister = time_get();
+				// Immediately resend if we got the token. The challenge of a QUIC
+				// or WebTransport address arrives over it, so that is retried soon.
+				m_NextRegister = std::min(m_NextRegister, time_get() + (m_NewChallengeToken ? 0 : time_freq()));
 			}
 			break;
 		case STATUS_NEEDINFO:
@@ -422,6 +434,18 @@ void CRegister::CProtocol::OnToken(const char *pToken)
 	{
 		SendRegister();
 	}
+}
+
+bool CRegister::CProtocol::Unsupported()
+{
+	const CLockScope LockScope(m_pShared->m_Lock);
+	return m_pShared->m_Unsupported;
+}
+
+void CRegister::CProtocol::ResetUnsupported()
+{
+	const CLockScope LockScope(m_pShared->m_Lock);
+	m_pShared->m_Unsupported = false;
 }
 
 void CRegister::CProtocol::CJob::Run()
@@ -464,7 +488,26 @@ void CRegister::CProtocol::CJob::Run()
 			log_error(ProtocolToSystem(m_Protocol), "invalid JSON error response from master");
 			return;
 		}
-		log_error(ProtocolToSystem(m_Protocol), "error response from master: %d: %s", m_pRegister->StatusCode(), (const char *)Message);
+		// A master that does not know the transport says so once, not every
+		// time the server registers.
+		const bool UnsupportedResponse = ProtocolToTransport(m_Protocol) != ETransport::LEGACY && (m_pRegister->StatusCode() == 400 || m_pRegister->StatusCode() == 501);
+		bool NewlyUnsupported = false;
+		if(UnsupportedResponse)
+		{
+			{
+				const CLockScope LockScope(m_pShared->m_Lock);
+				m_pShared->m_Unsupported = true;
+			}
+			{
+				const CLockScope LockScope(m_pShared->m_pGlobal->m_Lock);
+				NewlyUnsupported = !m_pShared->m_pGlobal->m_ModernUnsupportedLogged;
+				m_pShared->m_pGlobal->m_ModernUnsupportedLogged = true;
+			}
+		}
+		if(NewlyUnsupported)
+			log_warn(ProtocolToSystem(m_Protocol), "master does not support this transport address: %s; retrying after a registration config change", (const char *)Message);
+		else if(!UnsupportedResponse)
+			log_error(ProtocolToSystem(m_Protocol), "error response from master: %d: %s", m_pRegister->StatusCode(), (const char *)Message);
 		json_value_free(pJson);
 		return;
 	}
@@ -487,7 +530,7 @@ void CRegister::CProtocol::CJob::Run()
 				log_info(ProtocolToSystem(m_Protocol), "successfully registered");
 			}
 		}
-		if(Status == m_pShared->m_LatestResponseStatus && Status == STATUS_NEEDCHALLENGE)
+		if(Status == m_pShared->m_LatestResponseStatus && Status == STATUS_NEEDCHALLENGE && ProtocolToTransport(m_Protocol) == ETransport::LEGACY)
 		{
 			log_error(ProtocolToSystem(m_Protocol), "ERROR: the master server reports that clients can not connect to this server.");
 			log_error(ProtocolToSystem(m_Protocol), "ERROR: configure your firewall/nat to let through udp on port %d.", m_ServerPort);
@@ -518,19 +561,33 @@ void CRegister::CProtocol::CJob::Run()
 	}
 }
 
-CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken) :
+CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, bool LegacyUdpStarted, bool QuicStarted, bool WebTransportStarted, const char *pRegisterHostname, const char *pQuicFragment, const char *pWebTransportFragment) :
 	m_pConfig(pConfig),
 	m_pConsole(pConsole),
 	m_pEngine(pEngine),
 	m_pHttp(pHttp),
 	m_ServerPort(ServerPort),
+	m_LegacyUdpStarted(LegacyUdpStarted),
+	m_QuicStarted(QuicStarted),
+	m_WebTransportStarted(WebTransportStarted),
 	m_aProtocols{
 		CProtocol(this, PROTOCOL_TW6_IPV6),
 		CProtocol(this, PROTOCOL_TW6_IPV4),
 		CProtocol(this, PROTOCOL_TW7_IPV6),
 		CProtocol(this, PROTOCOL_TW7_IPV4),
+		CProtocol(this, PROTOCOL_DDNET_QUIC_IPV6),
+		CProtocol(this, PROTOCOL_DDNET_QUIC_IPV4),
+		CProtocol(this, PROTOCOL_TW7_QUIC_IPV6),
+		CProtocol(this, PROTOCOL_TW7_QUIC_IPV4),
+		CProtocol(this, PROTOCOL_DDNET_WT_IPV6),
+		CProtocol(this, PROTOCOL_DDNET_WT_IPV4),
+		CProtocol(this, PROTOCOL_TW7_WT_IPV6),
+		CProtocol(this, PROTOCOL_TW7_WT_IPV4),
 	}
 {
+	str_copy(m_aRegisterHostname, pRegisterHostname);
+	str_copy(m_aQuicFragment, pQuicFragment);
+	str_copy(m_aWebTransportFragment, pWebTransportFragment);
 	static constexpr int HEADER_LEN = sizeof(SERVERBROWSE_CHALLENGE);
 	mem_copy(m_aVerifyPacketPrefix, SERVERBROWSE_CHALLENGE, HEADER_LEN);
 	FormatUuid(m_ChallengeSecret, m_aVerifyPacketPrefix + HEADER_LEN, sizeof(m_aVerifyPacketPrefix) - HEADER_LEN);
@@ -547,16 +604,48 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 	m_pConsole->Chain("sv_ipv4only", ConchainOnConfigChange, this);
 }
 
+void CRegister::UpdateProtocolEnabled()
+{
+	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
+	{
+		const CProtocolInfo &Info = ms_aProtocolInfos[Protocol];
+		bool Enabled = m_aProtocolRequested[Protocol];
+		if(Info.m_Transport == ETransport::LEGACY)
+			Enabled &= m_LegacyUdpStarted;
+		else
+			Enabled &= (Info.m_Transport == ETransport::QUIC ? m_QuicStarted : m_WebTransportStarted) && !m_aProtocols[Protocol].Unsupported();
+		if(Info.m_Sixup)
+			Enabled &= m_pConfig->m_SvSixup != 0;
+		if(Info.m_Ipresolve == IPRESOLVE::V6)
+			Enabled &= m_pConfig->m_SvIpv4Only == 0;
+		if(Enabled == m_aProtocolEnabled[Protocol])
+			continue;
+		m_aProtocolEnabled[Protocol] = Enabled;
+		if(!m_GotFirstUpdateCall)
+			continue;
+		if(Enabled)
+			m_aProtocols[Protocol].SendRegister();
+		else
+			m_aProtocols[Protocol].SendDeleteIfRegistered(false);
+	}
+}
+
 void CRegister::Update()
 {
+	UpdateProtocolEnabled();
 	if(!m_GotFirstUpdateCall)
 	{
-		bool Ipv6 = m_aProtocolEnabled[PROTOCOL_TW6_IPV6] || m_aProtocolEnabled[PROTOCOL_TW7_IPV6];
-		bool Ipv4 = m_aProtocolEnabled[PROTOCOL_TW6_IPV4] || m_aProtocolEnabled[PROTOCOL_TW7_IPV4];
-		if(Ipv6 && Ipv4)
+		bool Ipv6 = false;
+		bool Ipv4 = false;
+		for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 		{
-			dbg_assert(!m_pHttp->HasIpresolveBug(), "curl version < 7.77.0 does not support registering via both IPv4 and IPv6, set `sv_register ipv6` or `sv_register ipv4`");
+			if(!m_aProtocolEnabled[Protocol])
+				continue;
+			Ipv6 |= ProtocolToIpresolve(Protocol) == IPRESOLVE::V6;
+			Ipv4 |= ProtocolToIpresolve(Protocol) == IPRESOLVE::V4;
 		}
+		if(Ipv6 && Ipv4)
+			dbg_assert(!m_pHttp->HasIpresolveBug(), "curl version < 7.77.0 does not support registering via both IPv4 and IPv6, set `sv_register ipv6` or `sv_register ipv4`");
 		m_GotFirstUpdateCall = true;
 	}
 	if(!m_GotServerInfo)
@@ -575,59 +664,54 @@ void CRegister::Update()
 
 void CRegister::OnConfigChange()
 {
-	bool aOldProtocolEnabled[NUM_PROTOCOLS];
-	for(int i = 0; i < NUM_PROTOCOLS; i++)
 	{
-		aOldProtocolEnabled[i] = m_aProtocolEnabled[i];
+		const CLockScope LockScope(m_pGlobal->m_Lock);
+		m_pGlobal->m_ModernUnsupportedLogged = false;
 	}
+	for(auto &Protocol : m_aProtocols)
+		Protocol.ResetUnsupported();
 	const char *pProtocols = m_pConfig->m_SvRegister;
 	if(str_comp(pProtocols, "1") == 0)
 	{
-		for(auto &Enabled : m_aProtocolEnabled)
+		for(auto &Requested : m_aProtocolRequested)
 		{
-			Enabled = true;
+			Requested = true;
 		}
 	}
 	else if(str_comp(pProtocols, "0") == 0)
 	{
-		for(auto &Enabled : m_aProtocolEnabled)
+		for(auto &Requested : m_aProtocolRequested)
 		{
-			Enabled = false;
+			Requested = false;
 		}
 	}
 	else
 	{
-		for(auto &Enabled : m_aProtocolEnabled)
+		for(auto &Requested : m_aProtocolRequested)
 		{
-			Enabled = false;
+			Requested = false;
 		}
-		char aBuf[16];
+		char aBuf[sizeof(m_pConfig->m_SvRegister)];
 		while((pProtocols = str_next_token(pProtocols, ",", aBuf, sizeof(aBuf))))
 		{
 			int Protocol;
-			if(str_comp(aBuf, "ipv6") == 0)
+			// The groups take every transport with them.
+			const bool Ipv6 = str_comp(aBuf, "ipv6") == 0;
+			const bool Ipv4 = str_comp(aBuf, "ipv4") == 0;
+			const bool Tw6 = str_comp(aBuf, "tw0.6") == 0;
+			const bool Tw7 = str_comp(aBuf, "tw0.7") == 0;
+			if(Ipv6 || Ipv4 || Tw6 || Tw7)
 			{
-				m_aProtocolEnabled[PROTOCOL_TW6_IPV6] = true;
-				m_aProtocolEnabled[PROTOCOL_TW7_IPV6] = true;
-			}
-			else if(str_comp(aBuf, "ipv4") == 0)
-			{
-				m_aProtocolEnabled[PROTOCOL_TW6_IPV4] = true;
-				m_aProtocolEnabled[PROTOCOL_TW7_IPV4] = true;
-			}
-			else if(str_comp(aBuf, "tw0.6") == 0)
-			{
-				m_aProtocolEnabled[PROTOCOL_TW6_IPV6] = true;
-				m_aProtocolEnabled[PROTOCOL_TW6_IPV4] = true;
-			}
-			else if(str_comp(aBuf, "tw0.7") == 0)
-			{
-				m_aProtocolEnabled[PROTOCOL_TW7_IPV6] = true;
-				m_aProtocolEnabled[PROTOCOL_TW7_IPV4] = true;
+				for(int i = 0; i < NUM_PROTOCOLS; i++)
+				{
+					const CProtocolInfo &Info = ms_aProtocolInfos[i];
+					if((Ipv6 && Info.m_Ipresolve == IPRESOLVE::V6) || (Ipv4 && Info.m_Ipresolve == IPRESOLVE::V4) || (Tw6 && !Info.m_Sixup) || (Tw7 && Info.m_Sixup))
+						m_aProtocolRequested[i] = true;
+				}
 			}
 			else if(!ProtocolFromString(&Protocol, aBuf))
 			{
-				m_aProtocolEnabled[Protocol] = true;
+				m_aProtocolRequested[Protocol] = true;
 			}
 			else
 			{
@@ -635,16 +719,6 @@ void CRegister::OnConfigChange()
 				continue;
 			}
 		}
-	}
-	if(!m_pConfig->m_SvSixup)
-	{
-		m_aProtocolEnabled[PROTOCOL_TW7_IPV6] = false;
-		m_aProtocolEnabled[PROTOCOL_TW7_IPV4] = false;
-	}
-	if(m_pConfig->m_SvIpv4Only)
-	{
-		m_aProtocolEnabled[PROTOCOL_TW6_IPV6] = false;
-		m_aProtocolEnabled[PROTOCOL_TW7_IPV6] = false;
 	}
 	m_GotCommunityToken = (bool)m_pConfig->m_SvRegisterCommunityToken[0];
 	if(m_GotCommunityToken)
@@ -669,26 +743,7 @@ void CRegister::OnConfigChange()
 		str_copy(m_aaExtraHeaders[m_NumExtraHeaders], aHeader);
 		m_NumExtraHeaders += 1;
 	}
-	// Don't start registering before the first `CRegister::Update` call.
-	if(!m_GotFirstUpdateCall)
-	{
-		return;
-	}
-	for(int i = 0; i < NUM_PROTOCOLS; i++)
-	{
-		if(aOldProtocolEnabled[i] == m_aProtocolEnabled[i])
-		{
-			continue;
-		}
-		if(m_aProtocolEnabled[i])
-		{
-			m_aProtocols[i].SendRegister();
-		}
-		else
-		{
-			m_aProtocols[i].SendDeleteIfRegistered(false);
-		}
-	}
+	UpdateProtocolEnabled();
 }
 
 bool CRegister::OnPacket(const CNetChunk *pPacket)
@@ -789,6 +844,20 @@ void CRegister::OnNewInfo(const char *pInfo)
 	}
 }
 
+void CRegister::OnModernTrustChanged(const char *pQuicFragment, const char *pWebTransportFragment)
+{
+	const bool QuicChanged = str_comp(m_aQuicFragment, pQuicFragment) != 0;
+	const bool WebTransportChanged = str_comp(m_aWebTransportFragment, pWebTransportFragment) != 0;
+	str_copy(m_aQuicFragment, pQuicFragment);
+	str_copy(m_aWebTransportFragment, pWebTransportFragment);
+	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
+	{
+		const ETransport Transport = ProtocolToTransport(Protocol);
+		if(m_aProtocolEnabled[Protocol] && ((QuicChanged && Transport == ETransport::QUIC) || (WebTransportChanged && Transport == ETransport::WEBTRANSPORT)))
+			m_aProtocols[Protocol].SendRegister();
+	}
+}
+
 void CRegister::OnShutdown()
 {
 	for(int i = 0; i < NUM_PROTOCOLS; i++)
@@ -801,7 +870,7 @@ void CRegister::OnShutdown()
 	}
 }
 
-IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken)
+IRegister *CreateRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, bool LegacyUdpStarted, bool QuicStarted, bool WebTransportStarted, const char *pRegisterHostname, const char *pQuicFragment, const char *pWebTransportFragment)
 {
-	return new CRegister(pConfig, pConsole, pEngine, pHttp, ServerPort, SixupSecurityToken);
+	return new CRegister(pConfig, pConsole, pEngine, pHttp, ServerPort, SixupSecurityToken, LegacyUdpStarted, QuicStarted, WebTransportStarted, pRegisterHostname, pQuicFragment, pWebTransportFragment);
 }

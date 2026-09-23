@@ -6,7 +6,7 @@
 #include <game/prng.h>
 
 class CDbConnectionPool;
-class CGameContext;
+class CGameServices;
 class CGameTeams;
 class IDbConnection;
 class IServer;
@@ -31,9 +31,9 @@ class CScore
 	CDbConnectionPool *m_pPool;
 	CGameTeams *m_pTeams;
 
-	CGameContext *GameServer() const { return m_pGameServer; }
+	CGameServices &Services() const { return m_Services; }
 	IServer *Server() const { return m_pServer; }
-	CGameContext *m_pGameServer;
+	CGameServices &m_Services;
 	IServer *m_pServer;
 
 	std::vector<std::string> m_vWordlist;
@@ -61,7 +61,7 @@ class CScore
 	bool RateLimitPlayer(int ClientId);
 
 public:
-	CScore(CGameContext *pGameServer, CDbConnectionPool *pPool, CGameTeams *pTeams);
+	CScore(CGameServices &Services, CDbConnectionPool *pPool, CGameTeams *pTeams);
 
 	CPlayerData *PlayerData(int Id) { return &m_aPlayerData[Id]; }
 	const std::optional<float> &CurrentRecord() const { return m_CurrentRecord; }

@@ -7,29 +7,37 @@
 #include <generated/protocol.h>
 #include <generated/server_data.h>
 
+#include <game/collision.h>
+#include <game/gamecore.h>
 #include <game/mapitems.h>
 #include <game/server/entities/door.h>
 #include <game/server/entities/dragger.h>
 #include <game/server/entities/gun.h>
 #include <game/server/entities/light.h>
 #include <game/server/entities/projectile.h>
-#include <game/server/gamecontext.h>
+#include <game/server/gamecontroller.h>
+#include <game/server/gameworld.h>
 
-bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, int Layer, int Flags, int Number)
+bool CreateDDRaceMapEntity(CGameServices &Services, const CMapEntityContext &Context)
 {
-	dbg_assert(pGameServer != nullptr, "Game server must not be null");
+	const int Index = Context.m_Index;
+	int x = Context.m_X;
+	int y = Context.m_Y;
+	const int Layer = Context.m_Layer;
+	const int Flags = Context.m_Flags;
+	const int Number = Context.m_Number;
 	dbg_assert(Index >= 0, "Invalid entity index");
 
 	const vec2 Pos(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
 	int aSides[8];
-	aSides[0] = pGameServer->Collision()->Entity(x, y + 1, Layer);
-	aSides[1] = pGameServer->Collision()->Entity(x + 1, y + 1, Layer);
-	aSides[2] = pGameServer->Collision()->Entity(x + 1, y, Layer);
-	aSides[3] = pGameServer->Collision()->Entity(x + 1, y - 1, Layer);
-	aSides[4] = pGameServer->Collision()->Entity(x, y - 1, Layer);
-	aSides[5] = pGameServer->Collision()->Entity(x - 1, y - 1, Layer);
-	aSides[6] = pGameServer->Collision()->Entity(x - 1, y, Layer);
-	aSides[7] = pGameServer->Collision()->Entity(x - 1, y + 1, Layer);
+	aSides[0] = Services.Collision()->Entity(x, y + 1, Layer);
+	aSides[1] = Services.Collision()->Entity(x + 1, y + 1, Layer);
+	aSides[2] = Services.Collision()->Entity(x + 1, y, Layer);
+	aSides[3] = Services.Collision()->Entity(x + 1, y - 1, Layer);
+	aSides[4] = Services.Collision()->Entity(x, y - 1, Layer);
+	aSides[5] = Services.Collision()->Entity(x - 1, y - 1, Layer);
+	aSides[6] = Services.Collision()->Entity(x - 1, y, Layer);
+	aSides[7] = Services.Collision()->Entity(x - 1, y + 1, Layer);
 
 	if(Index == ENTITY_DOOR)
 	{
@@ -38,7 +46,7 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 			if(aSides[i] >= ENTITY_LASER_SHORT && aSides[i] <= ENTITY_LASER_LONG)
 			{
 				new CDoor(
-					&pGameServer->m_World,
+					&Services.World(),
 					Pos,
 					pi / 4 * i,
 					32 * 3 + 32 * (aSides[i] - ENTITY_LASER_SHORT) * 3,
@@ -60,7 +68,7 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 			Dir = 3;
 		const float Deg = Dir * (pi / 2);
 		CProjectile *pBullet = new CProjectile(
-			&pGameServer->m_World,
+			&Services.World(),
 			WEAPON_SHOTGUN,
 			-1,
 			Pos,
@@ -88,7 +96,7 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 			Dir = 3;
 		const float Deg = Dir * (pi / 2);
 		CProjectile *pBullet = new CProjectile(
-			&pGameServer->m_World,
+			&Services.World(),
 			WEAPON_SHOTGUN,
 			-1,
 			Pos,
@@ -106,14 +114,14 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 	if(Index >= ENTITY_LASER_FAST_CCW && Index <= ENTITY_LASER_FAST_CW)
 	{
 		int aSides2[8];
-		aSides2[0] = pGameServer->Collision()->Entity(x, y + 2, Layer);
-		aSides2[1] = pGameServer->Collision()->Entity(x + 2, y + 2, Layer);
-		aSides2[2] = pGameServer->Collision()->Entity(x + 2, y, Layer);
-		aSides2[3] = pGameServer->Collision()->Entity(x + 2, y - 2, Layer);
-		aSides2[4] = pGameServer->Collision()->Entity(x, y - 2, Layer);
-		aSides2[5] = pGameServer->Collision()->Entity(x - 2, y - 2, Layer);
-		aSides2[6] = pGameServer->Collision()->Entity(x - 2, y, Layer);
-		aSides2[7] = pGameServer->Collision()->Entity(x - 2, y + 2, Layer);
+		aSides2[0] = Services.Collision()->Entity(x, y + 2, Layer);
+		aSides2[1] = Services.Collision()->Entity(x + 2, y + 2, Layer);
+		aSides2[2] = Services.Collision()->Entity(x + 2, y, Layer);
+		aSides2[3] = Services.Collision()->Entity(x + 2, y - 2, Layer);
+		aSides2[4] = Services.Collision()->Entity(x, y - 2, Layer);
+		aSides2[5] = Services.Collision()->Entity(x - 2, y - 2, Layer);
+		aSides2[6] = Services.Collision()->Entity(x - 2, y, Layer);
+		aSides2[7] = Services.Collision()->Entity(x - 2, y + 2, Layer);
 
 		int Ind = Index - ENTITY_LASER_STOP;
 		int M;
@@ -140,7 +148,7 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 		{
 			if(aSides[i] >= ENTITY_LASER_SHORT && aSides[i] <= ENTITY_LASER_LONG)
 			{
-				CLight *pLight = new CLight(&pGameServer->m_World, Pos, pi / 4 * i, 32 * 3 + 32 * (aSides[i] - ENTITY_LASER_SHORT) * 3, Layer, Number);
+				CLight *pLight = new CLight(&Services.World(), Pos, pi / 4 * i, 32 * 3 + 32 * (aSides[i] - ENTITY_LASER_SHORT) * 3, Layer, Number);
 				pLight->m_AngularSpeed = AngularSpeed;
 				if(aSides2[i] >= ENTITY_LASER_C_SLOW && aSides2[i] <= ENTITY_LASER_C_FAST)
 				{
@@ -160,32 +168,32 @@ bool CreateDDRaceMapEntity(CGameContext *pGameServer, int Index, int x, int y, i
 	}
 	if(Index >= ENTITY_DRAGGER_WEAK && Index <= ENTITY_DRAGGER_STRONG)
 	{
-		new CDragger(&pGameServer->m_World, Pos, Index - ENTITY_DRAGGER_WEAK + 1, false, Layer, Number);
+		new CDragger(&Services.World(), Pos, Index - ENTITY_DRAGGER_WEAK + 1, false, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index >= ENTITY_DRAGGER_WEAK_NW && Index <= ENTITY_DRAGGER_STRONG_NW)
 	{
-		new CDragger(&pGameServer->m_World, Pos, Index - ENTITY_DRAGGER_WEAK_NW + 1, true, Layer, Number);
+		new CDragger(&Services.World(), Pos, Index - ENTITY_DRAGGER_WEAK_NW + 1, true, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAE)
 	{
-		new CGun(&pGameServer->m_World, Pos, false, true, Layer, Number);
+		new CGun(&Services.World(), Pos, false, true, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAF)
 	{
-		new CGun(&pGameServer->m_World, Pos, true, false, Layer, Number);
+		new CGun(&Services.World(), Pos, true, false, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMA)
 	{
-		new CGun(&pGameServer->m_World, Pos, true, true, Layer, Number);
+		new CGun(&Services.World(), Pos, true, true, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	if(Index == ENTITY_PLASMAU)
 	{
-		new CGun(&pGameServer->m_World, Pos, false, false, Layer, Number);
+		new CGun(&Services.World(), Pos, false, false, Layer, Number);
 		return true; // NOLINT(clang-analyzer-unix.Malloc)
 	}
 	return false;

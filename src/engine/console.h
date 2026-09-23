@@ -124,6 +124,8 @@ public:
 	virtual bool RegisterOwned(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner) = 0;
 	virtual void DeregisterOwner(const void *pOwner) = 0;
 	virtual void RegisterTemp(const char *pName, const char *pParams, int Flags, const char *pHelp) = 0;
+	// pHelp must outlive the command
+	virtual void SetHelp(const char *pName, int FlagMask, const char *pHelp) = 0;
 	virtual void DeregisterTemp(const char *pName) = 0;
 	virtual void DeregisterTempAll() = 0;
 	virtual void Chain(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser) = 0;

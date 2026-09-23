@@ -420,6 +420,7 @@ private:
 	bool m_VoteWillPass;
 	static void ConKillPlayer(IConsole::IResult *pResult, void *pUserData);
 	static void ConDamagePlayer(IConsole::IResult *pResult, void *pUserData);
+	static void ConMovePlayer(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConHelp(IConsole::IResult *pResult, void *pUserData);
 	static void ConRules(IConsole::IResult *pResult, void *pUserData);

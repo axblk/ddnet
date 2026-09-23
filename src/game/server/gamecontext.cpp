@@ -248,6 +248,17 @@ void CGameContext::ConDamagePlayer(IConsole::IResult *pResult, void *pUserData)
 	pVictim->TakeDamage(vec2(0, 0), pResult->GetInteger(2), pAttacker->GetPlayer()->GetCid(), Weapon);
 }
 
+void CGameContext::ConMovePlayer(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = static_cast<CGameContext *>(pUserData);
+	CCharacter *pCharacter = pSelf->GetPlayerChar(pResult->GetInteger(0));
+	if(!pCharacter)
+		return;
+
+	pCharacter->SetPosition(vec2(pResult->GetFloat(1), pResult->GetFloat(2)) * 32.0f);
+	pCharacter->ResetVelocity();
+}
+
 const CPlayer *CGameContext::FindPlayerByName(const char *pName) const
 {
 	std::optional<int> ClientId = FindClientIdByName(pName);
@@ -1868,9 +1879,6 @@ bool CGameContext::OnClientDDNetVersionKnown(int ClientId)
 	}
 
 	CPlayer *pPlayer = m_apPlayers[ClientId];
-	if(ClientVersion >= VERSION_DDNET_GAMETICK)
-		pPlayer->m_TimerType = g_Config.m_SvDefaultTimerType;
-
 	m_GameHost.Controller()->OnPlayerDDNetVersionKnown(ClientId);
 
 	// And report correct tunings.
@@ -3355,6 +3363,9 @@ void CGameContext::OnConsoleInit()
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
+	static const std::string s_GameTypeHelp = std::string("Game type (") + GameModeNames() + ")";
+	Console()->SetHelp("sv_gametype", CFGFLAG_SERVER, s_GameTypeHelp.c_str());
+
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value or show current value");
 	Console()->Register("toggle_tune", "s[tuning] f[value 1] f[value 2]", CFGFLAG_SERVER, ConToggleTuneParam, this, "Toggle tune variable");
 	Console()->Register("tune_reset", "?s[tuning]", CFGFLAG_SERVER, ConTuneReset, this, "Reset all or one tuning variable to default");
@@ -3370,6 +3381,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
 	Console()->Register("damage_player", "i[victim-id] i[attacker-id] i[damage] i[weapon]", CFGFLAG_SERVER | CMDFLAG_TEST, ConDamagePlayer, this, "Damage a player for testing");
+	Console()->Register("move_player", "i[id] f[x] f[y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConMovePlayer, this, "Move a player to a position in tiles for testing, in any game mode");
 	Console()->Register("reload_censorlist", "", CFGFLAG_SERVER, ConReloadCensorlist, this, "Reload the censorlist");
 
 	Console()->Register("add_vote", "s[name] r[command]", CFGFLAG_SERVER, ConAddVote, this, "Add a voting option");
@@ -3483,7 +3495,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 	if(!m_GameHost.Select(Config()->m_SvGametype))
 	{
-		log_warn("server", "unknown game type '%s', playing 'ddnet'", Config()->m_SvGametype);
+		log_warn("server", "unknown game type '%s', playing 'ddnet' (game types: %s)", Config()->m_SvGametype, GameModeNames());
 		dbg_assert(m_GameHost.Select("ddnet"), "failed to select the fallback game type");
 	}
 

@@ -924,7 +924,6 @@ def vanilla_ctf_stock_07_match_lifecycle(test_env):
 		"sv_map ctf1",
 		"sv_scorelimit 100",
 		"sv_test_cmds 1",
-		"sv_practice_by_default 1",
 	])
 	attacker.wait_for_startup()
 	server.wait_for_log_exact("game: selected game type 'CTF'", timeout=10)
@@ -952,14 +951,20 @@ def vanilla_ctf_stock_07_match_lifecycle(test_env):
 	if "sixup=1" not in observer_join:
 		raise AssertionError(f"sixup=1 not found in {observer_join!r}")
 
+	# The chat comes in order with the rest, so the observer that shows this knows the attacker.
+	server.command("say observer ready")
+	observer.wait_for_log(lambda l: l.level == "chat" and l.line.endswith("observer ready"), "the observer in the game", timeout=10)
+
 	blue_x, blue_y = stands[1]
-	attacker.command(f"say /tpxy {blue_x} {blue_y}")
+	# /tpxy is a command of the DDNet mode; the test command moves a tee in any mode.
+	server.command(f"move_player {attacker_id} {blue_x} {blue_y}")
 	server.wait_for_log_prefix(f"game: flag_grab player='{attacker_id}:attacker' team=0", timeout=5)
 
 	red_x, red_y = stands[0]
-	attacker.command(f"say /tpxy {red_x} {red_y}")
+	server.command(f"move_player {attacker_id} {red_x} {red_y}")
 	server.wait_for_log_prefix(f"game: flag_capture player='{attacker_id}:attacker' team=0", timeout=5)
-	observer.wait_for_log_prefix("*** The blue flag was captured by 'attacker' (", timeout=5)
+	# The 0.7 observer gets the capture as a game message, which it does not
+	# log; it has to take it and stay until the server shuts down.
 	server.wait_for_log_exact("game: end round type='TestCTF'", timeout=5)
 	attacker.exit()
 

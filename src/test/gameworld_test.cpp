@@ -29,6 +29,7 @@
 #include <game/server/gamemodes/ddnet.h>
 #include <game/server/gamemodes/ddrace.h>
 #include <game/server/gamemodes/ddrace_character.h>
+#include <game/server/gamemodes/ddrace_player.h>
 #include <game/server/gameworld.h>
 #include <game/server/interactions.h>
 #include <game/server/mode/game_mode_registry.h>
@@ -126,6 +127,9 @@ public:
 	template<typename TController>
 	TController &SelectController(const char *pName)
 	{
+		// characters keep a reference to the mode that made them
+		for(const CPlayer *pPlayer : GameServer()->m_apPlayers)
+			EXPECT_EQ(pPlayer, nullptr) << "cannot switch modes with live players";
 		GameServer()->GameHost().Shutdown();
 		auto pController = std::make_unique<TController>(GameServices(), *FindGameMode(pName));
 		TController &Controller = *pController;
@@ -458,7 +462,7 @@ TEST_F(GameWorld, CharacterEmote)
 	// ninja jetpack
 	pPlayer->Pause(CPlayer::PAUSE_NONE, true);
 	pChr->Unfreeze();
-	pPlayer->m_NinjaJetpack = true;
+	static_cast<CPlayerDDRace *>(pPlayer)->m_NinjaJetpack = true;
 	pChr->SetJetpack(true);
 	pChr->SetActiveWeapon(WEAPON_GUN);
 	ASSERT_EQ(pChr->DetermineEyeEmote(), EMOTE_HAPPY);
@@ -939,12 +943,12 @@ TEST_F(GameWorld, DDRaceSaveUsesPlayerNinjaJetpack)
 	ASSERT_NE(pCharacter, nullptr);
 	CPlayer *pPlayer = pCharacter->GetPlayer();
 
-	pPlayer->m_NinjaJetpack = true;
+	static_cast<CPlayerDDRace *>(pPlayer)->m_NinjaJetpack = true;
 	CSaveTee SavedTee;
 	SavedTee.Save(pCharacter, false);
-	pPlayer->m_NinjaJetpack = false;
+	static_cast<CPlayerDDRace *>(pPlayer)->m_NinjaJetpack = false;
 	ASSERT_TRUE(SavedTee.Load(pCharacter));
-	EXPECT_TRUE(pPlayer->m_NinjaJetpack);
+	EXPECT_TRUE(static_cast<CPlayerDDRace *>(pPlayer)->m_NinjaJetpack);
 }
 
 TEST_F(GameWorld, DDRaceSaveIsBlockedByDraggerBeam)
@@ -958,7 +962,7 @@ TEST_F(GameWorld, DDRaceSaveIsBlockedByDraggerBeam)
 	auto *pDragger = new CDragger(&GameServer()->m_World, vec2(64.0f, 64.0f), 1.0f, false);
 	new CDraggerBeam(&GameServer()->m_World, pDragger, pDragger->GetPos(), 1.0f, false, ClientId, 0, 0);
 	CSaveTeam SavedTeam; // NOLINT(clang-analyzer-unix.Malloc)
-	EXPECT_EQ(SavedTeam.Save(GameServer(), &RaceTeams(), Team, true, false), ESaveResult::DRAGGER_ACTIVE);
+	EXPECT_EQ(SavedTeam.Save(GameServices(), &RaceTeams(), Team, true, false), ESaveResult::DRAGGER_ACTIVE);
 }
 
 TEST_F(GameWorld, DDRaceRescueStateIsCharacterOwned)
@@ -1925,7 +1929,7 @@ TEST_F(GameWorld, DDRacePlayerCommandUsesModeOwnedState)
 	GameServer()->Console()->ExecuteLine("showothers 2", ClientId);
 	EXPECT_EQ(RaceTeams().PlayerState(ClientId).m_ShowOthers, 2);
 	GameServer()->Console()->ExecuteLine("ninjajetpack 1", ClientId);
-	EXPECT_TRUE(pPlayer->m_NinjaJetpack);
+	EXPECT_TRUE(static_cast<CPlayerDDRace *>(pPlayer)->m_NinjaJetpack);
 }
 
 TEST_F(GameWorld, DDRaceAdminAndPracticeCommandsUseModeOwnedState)

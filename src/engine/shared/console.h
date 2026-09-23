@@ -193,6 +193,7 @@ public:
 	bool RegisterOwned(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp, const void *pOwner) override;
 	void DeregisterOwner(const void *pOwner) override;
 	void RegisterTemp(const char *pName, const char *pParams, int Flags, const char *pHelp) override;
+	void SetHelp(const char *pName, int FlagMask, const char *pHelp) override;
 	void DeregisterTemp(const char *pName) override;
 	void DeregisterTempAll() override;
 	void Chain(const char *pName, FChainCommandCallback pfnChainFunc, void *pUser) override;

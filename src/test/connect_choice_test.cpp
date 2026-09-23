@@ -3,6 +3,7 @@
 
 #include <engine/serverbrowser.h>
 #include <engine/shared/connect_choice.h>
+#include <engine/shared/connect_target.h>
 
 #include <gtest/gtest.h>
 
@@ -196,6 +197,28 @@ TEST_F(ConnectChoice, DdnetBeforeSixup)
 	AddAddress(Sixup, aQuic7);
 	EXPECT_EQ(Address(Sixup, -1, IPV6), aQuic7);
 	EXPECT_EQ(Address(Sixup, LEGACY, IPV6), "tw-0.7+udp://127.0.0.1:8303");
+}
+
+// What goes into the box connects to the endpoint it was written from.
+TEST_F(ConnectChoice, AddressConnectsToTheEndpoint)
+{
+	for(const int Protocol : {QUIC, LEGACY})
+	{
+		for(const int Family : {IPV4, IPV6})
+		{
+			const std::string Line = Address(m_Info, Protocol, Family, EConnectPrecedence::ADDRESS_FAMILY);
+			CConnectTarget Target;
+			ASSERT_TRUE(Target.Parse(Line.c_str(), NETTYPE_ALL)) << Line;
+			ASSERT_EQ(Target.m_NumAddrs, 1);
+			bool Endpoint = false;
+			for(int i = 0; i < m_Info.m_NumAddresses; i++)
+				Endpoint |= m_Info.m_aAddresses[i] == Target.m_aAddrs[0];
+			EXPECT_TRUE(Endpoint) << Line;
+			char aFragment[sizeof(m_Info.m_Pin.m_aWebTransport)];
+			m_Info.m_Pin.Fragment(Target.m_aAddrs[0], aFragment, sizeof(aFragment));
+			EXPECT_STREQ(Target.m_aFragment, aFragment) << Line;
+		}
+	}
 }
 
 TEST_F(ConnectChoice, ServerHasAddress)

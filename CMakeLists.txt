@@ -2526,6 +2526,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   config_variables.h
   connect_choice.cpp
   connect_choice.h
+  connect_target.cpp
+  connect_target.h
   console.cpp
   console.h
   csv.cpp
@@ -2614,6 +2616,7 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
 # them; the rest of the engine does without the library.
 set(ENGINE_NET
   # tidy-alphabetical-start
+  src/engine/shared/connect_target.cpp
   src/engine/shared/network_client.cpp
   src/engine/shared/network_library.cpp
   src/engine/shared/network_server.cpp
@@ -3666,6 +3669,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     color_test.cpp
     compression_test.cpp
     connect_choice_test.cpp
+    connect_target_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp

@@ -159,7 +159,7 @@ void CCharacterCore::Reset()
 	m_HookTick = 0;
 	m_HookState = HOOK_IDLE;
 	SetHookedPlayer(-1);
-	m_AttachedPlayers.clear();
+	m_AttachedPlayers.reset();
 	m_Jumped = 0;
 	m_JumpedTotal = 0;
 	m_Jumps = 2;
@@ -194,7 +194,8 @@ void CCharacterCore::Reset()
 
 void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 {
-	m_MoveRestrictions = m_pCollision->GetMoveRestrictions(UseInput ? IsSwitchActiveCb : nullptr, this, m_Pos);
+	const bool DDNetPhysics = UsesDDNetPhysics();
+	m_MoveRestrictions = DDNetPhysics ? m_pCollision->GetMoveRestrictions(UseInput ? IsSwitchActiveCb : nullptr, this, m_Pos) : 0;
 	m_TriggeredEvents = 0;
 
 	// get ground state
@@ -335,7 +336,7 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 		bool GoingToRetract = false;
 		bool GoingThroughTele = false;
 		int TeleNr = 0;
-		int Hit = m_pCollision->IntersectLineTeleHook(m_HookPos, NewPos, &NewPos, nullptr, &TeleNr);
+		int Hit = DDNetPhysics ? m_pCollision->IntersectLineTeleHook(m_HookPos, NewPos, &NewPos, nullptr, &TeleNr, m_pWorld->m_PhysicsRules.m_TeleportHookOld) : m_pCollision->IntersectLine(m_HookPos, NewPos, &NewPos, nullptr);
 
 		if(Hit)
 		{
@@ -349,13 +350,13 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 		}
 
 		// Check against other players first
-		if(!m_HookHitDisabled && m_pWorld && m_Tuning.m_PlayerHooking && (m_HookState == HOOK_FLYING || !m_NewHook))
+		if((!DDNetPhysics || !m_HookHitDisabled) && m_pWorld && m_Tuning.m_PlayerHooking && (m_HookState == HOOK_FLYING || !m_NewHook))
 		{
 			float Distance = 0.0f;
 			for(int i = 0; i < MAX_CLIENTS; i++)
 			{
 				CCharacterCore *pCharCore = m_pWorld->m_apCharacters[i];
-				if(!pCharCore || pCharCore == this || (!(m_Super || pCharCore->m_Super) && ((m_Id != -1 && !m_pTeams->CanCollide(i, m_Id)) || pCharCore->m_Solo || m_Solo)))
+				if(!pCharCore || pCharCore == this || (DDNetPhysics && !(m_Super || pCharCore->m_Super) && ((m_Id != -1 && !m_pTeams->CanCollide(i, m_Id)) || pCharCore->m_Solo || m_Solo)))
 					continue;
 
 				vec2 ClosestPoint;
@@ -390,7 +391,9 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 				m_HookState = HOOK_RETRACT_START;
 			}
 
-			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty())
+			// only the server can draw between several exits, the prediction waits for it
+			if(GoingThroughTele && m_pWorld && !m_pCollision->TeleOuts(TeleNr - 1).empty() &&
+				(m_pWorld->m_pPrng != nullptr || m_pCollision->TeleOuts(TeleNr - 1).size() == 1))
 			{
 				m_TriggeredEvents = 0;
 				SetHookedPlayer(-1);
@@ -413,7 +416,7 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 		if(m_HookedPlayer != -1 && m_pWorld)
 		{
 			CCharacterCore *pCharCore = m_pWorld->m_apCharacters[m_HookedPlayer];
-			if(pCharCore && m_Id != -1 && m_pTeams->CanKeepHook(m_Id, pCharCore->m_Id))
+			if(pCharCore && m_Id != -1 && (!DDNetPhysics || m_pTeams->CanKeepHook(m_Id, pCharCore->m_Id)))
 				m_HookPos = pCharCore->m_Pos;
 			else
 			{
@@ -464,6 +467,7 @@ void CCharacterCore::Tick(bool UseInput, bool DoDeferredTick)
 
 void CCharacterCore::TickDeferred()
 {
+	const bool DDNetPhysics = UsesDDNetPhysics();
 	if(m_pWorld)
 	{
 		for(int i = 0; i < MAX_CLIENTS; i++)
@@ -472,10 +476,10 @@ void CCharacterCore::TickDeferred()
 			if(!pCharCore)
 				continue;
 
-			if(pCharCore == this || (m_Id != -1 && !m_pTeams->CanCollide(m_Id, i)))
+			if(pCharCore == this || (DDNetPhysics && m_Id != -1 && !m_pTeams->CanCollide(m_Id, i)))
 				continue; // make sure that we don't nudge our self
 
-			if(!(m_Super || pCharCore->m_Super) && (m_Solo || pCharCore->m_Solo))
+			if(DDNetPhysics && !(m_Super || pCharCore->m_Super) && (m_Solo || pCharCore->m_Solo))
 				continue;
 
 			// handle player <-> player collision
@@ -484,7 +488,7 @@ void CCharacterCore::TickDeferred()
 			{
 				vec2 Dir = normalize(m_Pos - pCharCore->m_Pos);
 
-				bool CanCollide = (m_Super || pCharCore->m_Super) || (!m_CollisionDisabled && !pCharCore->m_CollisionDisabled && m_Tuning.m_PlayerCollision);
+				bool CanCollide = DDNetPhysics ? (m_Super || pCharCore->m_Super) || (!m_CollisionDisabled && !pCharCore->m_CollisionDisabled && m_Tuning.m_PlayerCollision) : m_Tuning.m_PlayerCollision;
 
 				if(CanCollide && Distance < PhysicalSize() * 1.25f)
 				{
@@ -503,7 +507,7 @@ void CCharacterCore::TickDeferred()
 				}
 
 				// handle hook influence
-				if(!m_HookHitDisabled && m_HookedPlayer == i && m_Tuning.m_PlayerHooking)
+				if((!DDNetPhysics || !m_HookHitDisabled) && m_HookedPlayer == i && m_Tuning.m_PlayerHooking)
 				{
 					if(Distance > PhysicalSize() * 1.50f)
 					{
@@ -537,6 +541,7 @@ void CCharacterCore::TickDeferred()
 
 void CCharacterCore::Move()
 {
+	const bool DDNetPhysics = UsesDDNetPhysics();
 	float RampValue = VelocityRamp(length(m_Vel) * 50, m_Tuning.m_VelrampStart, m_Tuning.m_VelrampRange, m_Tuning.m_VelrampCurvature);
 
 	m_Vel.x = m_Vel.x * RampValue;
@@ -569,7 +574,7 @@ void CCharacterCore::Move()
 
 	m_Vel.x = m_Vel.x * (1.0f / RampValue);
 
-	if(m_pWorld && (m_Super || (m_Tuning.m_PlayerCollision && !m_CollisionDisabled && !m_Solo)))
+	if(m_pWorld && (DDNetPhysics ? m_Super || (m_Tuning.m_PlayerCollision && !m_CollisionDisabled && !m_Solo) : m_Tuning.m_PlayerCollision))
 	{
 		// check player collision
 		float Distance = distance(m_Pos, NewPos);
@@ -586,7 +591,7 @@ void CCharacterCore::Move()
 					CCharacterCore *pCharCore = m_pWorld->m_apCharacters[p];
 					if(!pCharCore || pCharCore == this)
 						continue;
-					if((!(pCharCore->m_Super || m_Super) && (m_Solo || pCharCore->m_Solo || pCharCore->m_CollisionDisabled || (m_Id != -1 && !m_pTeams->CanCollide(m_Id, p)))))
+					if(DDNetPhysics && !(pCharCore->m_Super || m_Super) && (m_Solo || pCharCore->m_Solo || pCharCore->m_CollisionDisabled || (m_Id != -1 && !m_pTeams->CanCollide(m_Id, p))))
 						continue;
 					float D = distance(Pos, pCharCore->m_Pos);
 					if(D < PhysicalSize())
@@ -715,7 +720,7 @@ void CCharacterCore::SetHookedPlayer(int HookedPlayer)
 			CCharacterCore *pCharCore = m_pWorld->m_apCharacters[m_HookedPlayer];
 			if(pCharCore)
 			{
-				pCharCore->m_AttachedPlayers.erase(m_Id);
+				pCharCore->m_AttachedPlayers.reset(m_Id);
 			}
 		}
 		if(HookedPlayer != -1 && m_Id != -1 && m_pWorld)
@@ -723,7 +728,7 @@ void CCharacterCore::SetHookedPlayer(int HookedPlayer)
 			CCharacterCore *pCharCore = m_pWorld->m_apCharacters[HookedPlayer];
 			if(pCharCore)
 			{
-				pCharCore->m_AttachedPlayers.insert(m_Id);
+				pCharCore->m_AttachedPlayers.set(m_Id);
 			}
 		}
 		m_HookedPlayer = HookedPlayer;
@@ -744,6 +749,25 @@ bool CCharacterCore::IsSwitchActiveCb(unsigned char Number, void *pUser)
 		if(pThis->m_Id != -1 && pThis->m_pTeams->Team(pThis->m_Id) != pThis->m_pTeams->TeamSuper())
 			return pThis->m_pWorld->m_vSwitchers[Number].m_aStatus[pThis->m_pTeams->Team(pThis->m_Id)];
 	return false;
+}
+
+CPhysicsRules CPhysicsRules::DDNet(bool OldTeleportHook, bool OldTeleportWeapons, bool Hit, bool OldLaser, bool NoWeakHook, bool Deepfly, bool DestroyLasersOnDeath)
+{
+	CPhysicsRules Rules;
+	Rules.m_DDNetMovement = true;
+	Rules.m_TeleportHookOld = OldTeleportHook;
+	Rules.m_TeleportWeaponsOld = OldTeleportWeapons;
+	Rules.m_WeaponsHitOthers = Hit;
+	Rules.m_OldLaser = OldLaser;
+	Rules.m_WeakHook = !NoWeakHook;
+	Rules.m_Deepfly = Deepfly;
+	Rules.m_DestroyLasersOnDeath = DestroyLasersOnDeath;
+	return Rules;
+}
+
+CPhysicsRules CPhysicsRules::DDNetFromConfig()
+{
+	return DDNet(g_Config.m_SvOldTeleportHook, g_Config.m_SvOldTeleportWeapons, g_Config.m_SvHit, g_Config.m_SvOldLaser, g_Config.m_SvNoWeakHook, g_Config.m_SvDeepfly, g_Config.m_SvDestroyLasersOnDeath);
 }
 
 void CWorldCore::InitSwitchers(int HighestSwitchNumber)

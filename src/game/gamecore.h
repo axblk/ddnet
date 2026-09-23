@@ -14,7 +14,6 @@
 #include <game/teamscore.h>
 
 #include <limits>
-#include <set>
 #include <vector>
 
 class CCollision;
@@ -145,6 +144,27 @@ struct SSwitchers
 	int m_aLastUpdateTick[NUM_DDRACE_TEAMS];
 };
 
+// The physics a world runs under, the same on the server and in the prediction.
+// The defaults are vanilla physics.
+class CPhysicsRules
+{
+public:
+	// teleporters, jetpack, freeze, solo, super and the other DDNet tiles
+	bool m_DDNetMovement = false;
+	bool m_TeleportHookOld = false;
+	bool m_TeleportWeaponsOld = false;
+	bool m_WeaponsHitOthers = true;
+	bool m_OldLaser = true;
+	// hooks connecting in the same tick are resolved by client id
+	bool m_WeakHook = true;
+	bool m_Deepfly = true;
+	bool m_DestroyLasersOnDeath = false;
+
+	// DDNet physics under the given game settings (sv_old_teleport_hook, ...)
+	static CPhysicsRules DDNet(bool OldTeleportHook, bool OldTeleportWeapons, bool Hit, bool OldLaser, bool NoWeakHook, bool Deepfly, bool DestroyLasersOnDeath);
+	static CPhysicsRules DDNetFromConfig();
+};
+
 class CWorldCore
 {
 public:
@@ -171,6 +191,7 @@ public:
 
 	class CCharacterCore *m_apCharacters[MAX_CLIENTS];
 	CPrng *m_pPrng;
+	CPhysicsRules m_PhysicsRules;
 
 	void InitSwitchers(int HighestSwitchNumber);
 	std::vector<SSwitchers> m_vSwitchers;
@@ -194,7 +215,7 @@ public:
 	vec2 m_HookTeleBase;
 	int m_HookTick;
 	int m_HookState;
-	std::set<int> m_AttachedPlayers;
+	CClientMask m_AttachedPlayers;
 	int HookedPlayer() const { return m_HookedPlayer; }
 	void SetHookedPlayer(int HookedPlayer);
 
@@ -240,6 +261,7 @@ public:
 	void Read(const CNetObj_CharacterCore *pObjCore);
 	void Write(CNetObj_CharacterCore *pObjCore) const;
 	void Quantize();
+	bool UsesDDNetPhysics() const { return m_pWorld && m_pWorld->m_PhysicsRules.m_DDNetMovement; }
 
 	// DDRace
 	int m_Id;

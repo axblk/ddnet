@@ -23,6 +23,7 @@ CGameWorld::CGameWorld()
 	m_pGameServer = nullptr;
 	m_pConfig = nullptr;
 	m_pServer = nullptr;
+	m_pCollision = nullptr;
 
 	m_Paused = false;
 	m_ResetRequested = false;
@@ -47,7 +48,30 @@ void CGameWorld::SetGameServer(CGameContext *pGameServer)
 void CGameWorld::Init(CCollision *pCollision, CTuningParams *pTuningList)
 {
 	m_Core.InitSwitchers(pCollision->m_HighestSwitchNumber);
+	m_pCollision = pCollision;
 	m_pTuningList = pTuningList;
+}
+
+int CGameWorld::GameTick() const
+{
+	return m_pServer->Tick();
+}
+
+int CGameWorld::GameTickSpeed() const
+{
+	return m_pServer->TickSpeed();
+}
+
+int CGameWorld::AllocSnapId()
+{
+	// -1 for "the server has no id left", which is what the predicted world
+	// says for every entity: an entity without an id is simply not snapped.
+	return m_pServer->SnapNewId().value_or(-1);
+}
+
+void CGameWorld::FreeSnapId(int Id)
+{
+	m_pServer->SnapFreeId(Id);
 }
 
 CEntity *CGameWorld::FindFirst(int Type)
@@ -149,7 +173,7 @@ void CGameWorld::Reset()
 		}
 	RemoveEntities();
 
-	GameServer()->m_pController->OnReset();
+	GameServer()->GameHost().Controller()->OnReset();
 	RemoveEntities();
 
 	m_ResetRequested = false;
@@ -199,8 +223,21 @@ void CGameWorld::RemoveEntities()
 		}
 }
 
+void CGameWorld::SetDDNetPhysics(bool DDNetPhysics)
+{
+	m_DDNetPhysics = DDNetPhysics;
+	UpdatePhysicsRules();
+}
+
+void CGameWorld::UpdatePhysicsRules()
+{
+	m_Core.m_PhysicsRules = m_DDNetPhysics ? CPhysicsRules::DDNetFromConfig() : CPhysicsRules();
+}
+
 void CGameWorld::Tick()
 {
+	UpdatePhysicsRules();
+
 	if(m_ResetRequested)
 		Reset();
 
@@ -211,13 +248,13 @@ void CGameWorld::Tick()
 		{
 			// It's important to call PreTick() and Tick() after each other.
 			// If we call PreTick() before, and Tick() after other entities have been processed, it causes physics changes such as a stronger shotgun or grenade.
-			if(g_Config.m_SvNoWeakHook && i == ENTTYPE_CHARACTER)
+			if(!m_Core.m_PhysicsRules.m_WeakHook && i == ENTTYPE_CHARACTER)
 			{
 				auto *pEnt = m_apFirstEntityTypes[i];
 				for(; pEnt;)
 				{
 					m_pNextTraverseEntity = pEnt->m_pNextTypeEntity;
-					((CCharacter *)pEnt)->PreTick();
+					pEnt->PreTick();
 					pEnt = m_pNextTraverseEntity;
 				}
 			}
@@ -260,21 +297,6 @@ void CGameWorld::Tick()
 		pChar->m_StrongWeakId = StrongWeakId;
 		StrongWeakId++;
 	}
-}
-
-ESaveResult CGameWorld::BlocksSave(int ClientId)
-{
-	// check all objects
-	for(auto *pEnt : m_apFirstEntityTypes)
-		for(; pEnt;)
-		{
-			m_pNextTraverseEntity = pEnt->m_pNextTypeEntity;
-			ESaveResult Result = pEnt->BlocksSave(ClientId);
-			if(Result != ESaveResult::SUCCESS)
-				return Result;
-			pEnt = m_pNextTraverseEntity;
-		}
-	return ESaveResult::SUCCESS;
 }
 
 void CGameWorld::SwapClients(int Client1, int Client2)

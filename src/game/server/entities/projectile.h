@@ -4,6 +4,7 @@
 #define GAME_SERVER_ENTITIES_PROJECTILE_H
 
 #include <game/server/entity.h>
+#include <game/server/interactions.h>
 
 class CProjectile : public CEntity
 {
@@ -34,11 +35,14 @@ public:
 	void TickPaused() override;
 	void Snap(int SnappingClient) override;
 	void SwapClients(int Client1, int Client2) override;
+	void LoseOwner();
 
 private:
 	vec2 m_Direction;
 	int m_LifeSpan;
 	int m_Owner;
+	int m_OwnerTeam;
+	bool m_OwnerDetached;
 	int m_Type;
 	int m_SoundImpact;
 	int m_StartTick;
@@ -51,8 +55,7 @@ private:
 	bool m_Freeze;
 	int m_TuneZone;
 	bool m_BelongsToPracticeTeam;
-	int m_DDRaceTeam;
-	bool m_IsSolo;
+	CInteractions m_InteractState;
 	vec2 m_InitDir;
 
 public:

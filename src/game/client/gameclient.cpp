@@ -1979,6 +1979,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	}
 
 	CGameInfo Info;
+	Info.m_DeclaresRuleset = Version >= 2;
 	Info.m_FlagStartsRace = FastCap;
 	Info.m_TimeScore = Race;
 	Info.m_UnlimitedAmmo = Race;
@@ -2145,8 +2146,10 @@ void CGameClient::BuildSnapState(CSessionId SessionId, int Conn)
 	CGameState &ActiveState = Session.GameState(Conn);
 	CGameState::CRuntimeState &Runtime = ActiveState.m_Runtime;
 	CGameState::CSnapState &Snap = ActiveState.m_Snap;
-	auto &&Evolve = [&Session](CNetObj_Character *pCharacter, int Tick) {
+	const CPhysicsRules PhysicsRules = PredictedPhysicsRules(Session, ActiveState);
+	auto &&Evolve = [&Session, &PhysicsRules](CNetObj_Character *pCharacter, int Tick) {
 		CWorldCore TempWorld;
+		TempWorld.m_PhysicsRules = PhysicsRules;
 		CCharacterCore TempCore = CCharacterCore();
 		CTeamsCore TempTeams = CTeamsCore();
 		TempCore.Init(&TempWorld, Session.m_MapContext.Collision(), &TempTeams);
@@ -2515,9 +2518,13 @@ void CGameClient::BuildSnapState(CSessionId SessionId, int Conn)
 		// Vanilla servers send laser_bounce_num 1, DDNet has laser_bounce_num 1000 since ~2014
 		CTuningParams VanillaTuning;
 		VanillaTuning.m_LaserBounceNum = 1;
+		const CGameInfo &GameInfo = ActiveState.CoreGameInfo();
 		if(str_comp(ServerInfo.m_aGameType, "DM") != 0 && str_comp(ServerInfo.m_aGameType, "TDM") != 0 && str_comp(ServerInfo.m_aGameType, "CTF") != 0)
 			Runtime.m_ServerMode = CGameState::SERVERMODE_MOD;
-		else if(mem_comp(&VanillaTuning, &Runtime.m_CurrentTuning, 33 * sizeof(CTuneParam)) == 0)
+		// A server that states its ruleset is taken at its word, tuning commands and
+		// all. Only the ones that state nothing are measured against the vanilla
+		// tuning, because a mod calling itself DM is what this check is here to spot.
+		else if(GameInfo.m_DeclaresRuleset ? GameInfo.m_PredictVanilla : mem_comp(&VanillaTuning, &Runtime.m_CurrentTuning, 33 * sizeof(CTuneParam)) == 0)
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PURE;
 		else
 			Runtime.m_ServerMode = CGameState::SERVERMODE_PUREMOD;
@@ -3754,6 +3761,20 @@ void CGameClient::UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &S
 	}
 }
 
+CPhysicsRules CGameClient::PredictedPhysicsRules(const CGameSessionContext &Session, const CGameState &State) const
+{
+	const CGameInfo &GameInfo = State.CoreGameInfo();
+	if(!GameInfo.m_PredictDDRace)
+		return CPhysicsRules();
+	// only the weak hook is in the game info, the rest are game settings the map sets on both sides
+	CPhysicsRules Rules = CPhysicsRules::DDNetFromConfig();
+	Rules.m_WeakHook = !GameInfo.m_NoWeakHookAndBounce;
+	const CConfig &GameConfig = Session.m_MapContext.GameConfig().Values();
+	Rules.m_WeaponsHitOthers = GameConfig.m_SvHit;
+	Rules.m_Deepfly = GameConfig.m_SvDeepfly;
+	return Rules;
+}
+
 void CGameClient::UpdatePrediction()
 {
 	const CSessionId SessionId = Client()->FocusedSessionId();
@@ -3764,6 +3785,7 @@ void CGameClient::UpdatePrediction()
 	CGameState::CRuntimeState &Runtime = ActiveState.m_Runtime;
 	GameWorld().m_WorldConfig.m_IsVanilla = FocusedGameInfo().m_PredictVanilla;
 	GameWorld().m_WorldConfig.m_IsDDRace = FocusedGameInfo().m_PredictDDRace;
+	GameWorld().m_Core.m_PhysicsRules = PredictedPhysicsRules(SessionContext(SessionId), ActiveState);
 	GameWorld().m_WorldConfig.m_IsFNG = FocusedGameInfo().m_PredictFNG;
 	GameWorld().m_WorldConfig.m_PredictDDRace = FocusedGameInfo().m_PredictDDRace;
 	GameWorld().m_WorldConfig.m_PredictTiles = FocusedGameInfo().m_PredictDDRace && FocusedGameInfo().m_PredictDDRaceTiles;

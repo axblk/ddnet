@@ -73,6 +73,9 @@ enum
 {
 	SPEC_FREEVIEW=-1,
 	SPEC_FOLLOW=-2,
+	// only 0.7 clients can select the flags
+	SPEC_FLAGRED=-3,
+	SPEC_FLAGBLUE=-4,
 };
 
 enum

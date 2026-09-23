@@ -12,26 +12,22 @@
 #include <generated/protocol.h>
 
 #include <game/alloc.h>
-#include <game/server/save.h>
-
-#include <memory>
-#include <optional>
 
 class CCharacter;
 class CGameContext;
+class CGameServices;
 class IServer;
 struct CVoteOptionServer;
+struct CNetMsg_Cl_CameraInfo;
 struct CNetObj_PlayerInput;
-struct CScorePlayerResult;
-
 // player object
 class CPlayer
 {
-	MACRO_ALLOC_POOL_ID()
+	MACRO_ALLOC_HEAP()
 
 public:
-	CPlayer(CGameContext *pGameServer, uint32_t UniqueClientId, int ClientId, int Team);
-	~CPlayer();
+	CPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId, int Team);
+	virtual ~CPlayer();
 
 	void Reset();
 
@@ -45,7 +41,6 @@ public:
 	int GetCid() const { return m_ClientId; }
 	uint32_t GetUniqueCid() const { return m_UniqueClientId; }
 	int GetClientVersion() const;
-	bool SetTimerType(int TimerType);
 
 	void Tick();
 	void PostTick();
@@ -104,7 +99,6 @@ public:
 	int m_aLastCommands[4];
 	int m_LastCommandPos;
 	int m_LastWhisperTo;
-	int m_LastInvited;
 
 	int m_SendVoteIndex;
 	// last option sent, only read while m_SendVoteIndex is greater than zero. Options
@@ -128,12 +122,8 @@ public:
 	// network latency calculations
 	struct
 	{
-		int m_Accum;
 		int m_AccumMin;
-		int m_AccumMax;
-		int m_Avg;
 		int m_Min;
-		int m_Max;
 	} m_Latency;
 
 private:
@@ -147,8 +137,11 @@ private:
 	CGameContext *m_pGameServer;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
+
+protected:
 	IServer *Server() const;
 
+private:
 	//
 	bool m_Spawning;
 	bool m_WeakHookSpawn;
@@ -157,6 +150,8 @@ private:
 
 	// used for spectator mode
 	int m_SpectatorId;
+	// team of the spectated flag, -1 for none
+	int m_SpectatorFlagTeam = -1;
 
 	int m_Paused;
 	int64_t m_ForcePauseTime;
@@ -176,16 +171,6 @@ public:
 		PAUSE_SPEC
 	};
 
-	enum
-	{
-		TIMERTYPE_DEFAULT = -1,
-		TIMERTYPE_GAMETIMER,
-		TIMERTYPE_BROADCAST,
-		TIMERTYPE_GAMETIMER_AND_BROADCAST,
-		TIMERTYPE_SIXUP,
-		TIMERTYPE_NONE,
-	};
-
 	bool m_DND;
 	bool m_Whispers;
 	int64_t m_FirstVoteTick;
@@ -199,13 +184,9 @@ public:
 
 	bool IsPlaying() const;
 	int64_t m_LastKickVote;
-	std::optional<int64_t> m_LastDDRaceTeamChange;
-	int m_ShowOthers;
 	bool m_ShowAll;
 	bool m_EnableSpectatorCount;
 	vec2 m_ShowDistance;
-	bool m_SpecTeam;
-	bool m_NinjaJetpack;
 
 	// camera info is used sparingly for converting aim target to absolute world coordinates
 	class CCameraInfo
@@ -217,6 +198,10 @@ public:
 		int m_FollowFactor;
 
 	public:
+		bool HasInfo() const { return m_HasCameraInfo; }
+		float Zoom() const { return m_Zoom; }
+		int Deadzone() const { return m_Deadzone; }
+		int FollowFactor() const { return m_FollowFactor; }
 		vec2 ConvertTargetToWorld(vec2 Position, vec2 Target) const;
 		void Write(const CNetMsg_Cl_CameraInfo *pMsg);
 		void Reset();
@@ -245,7 +230,6 @@ public:
 	bool m_LastTargetInit;
 
 	bool m_EyeEmoteEnabled;
-	int m_TimerType;
 
 	// Tick at which to kick the client if it still hasn't identified as a DDNet-based client
 	int m_DDNetVersionKickTick;
@@ -253,22 +237,6 @@ public:
 	int GetDefaultEmote() const;
 	void OverrideDefaultEmote(int Emote, int Tick);
 	bool CanOverrideDefaultEmote() const;
-
-	bool m_FirstPacket;
-	int64_t m_LastSqlQuery;
-	void ProcessScoreResult(CScorePlayerResult &Result);
-	std::shared_ptr<CScorePlayerResult> m_ScoreQueryResult;
-	std::shared_ptr<CScorePlayerResult> m_ScoreFinishResult;
-	bool m_NotEligibleForFinish;
-	int64_t m_EligibleForFinishCheck;
-	bool m_VotedForPractice;
-	int m_SwapTargetsClientId; //Client ID of the swap target for the given player
-	bool m_BirthdayAnnounced;
-
-	int m_RescueMode;
-
-	CSaveTee m_LastTeleTee;
-	std::optional<CSaveTee> m_LastDeath;
 };
 
 #endif

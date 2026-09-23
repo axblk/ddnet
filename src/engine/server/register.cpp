@@ -349,7 +349,10 @@ void CRegister::CProtocol::SendDeleteIfRegistered(bool Shutdown)
 {
 	{
 		const CLockScope LockScope(m_pShared->m_Lock);
-		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK;
+		// A register without an answer yet may have reached the master, and on
+		// shutdown there is no time to find out.
+		const bool Outstanding = Shutdown && m_pShared->m_NumTotalRequests > m_pShared->m_LatestResponseIndex + 1;
+		const bool ShouldSendDelete = m_pShared->m_LatestResponseStatus == STATUS_OK || Outstanding;
 		m_pShared->m_LatestResponseStatus = STATUS_NONE;
 		if(!ShouldSendDelete)
 			return;

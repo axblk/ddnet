@@ -42,6 +42,7 @@ bool CNetClient::Open(NETADDR BindAddr)
 
 bool CNetClient::OpenLibrary()
 {
+	CNetBase::UpdateLogLevel();
 	char aBindAddr[NETADDR_MAXSTRSIZE];
 	BindAddrStr(m_BindAddr, aBindAddr, sizeof(aBindAddr));
 

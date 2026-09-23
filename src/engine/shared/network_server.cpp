@@ -139,6 +139,7 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 
 bool CNetServer::OpenLibrary()
 {
+	CNetBase::UpdateLogLevel();
 	char aBindAddr[NETADDR_MAXSTRSIZE];
 	BindAddrStr(m_Address, aBindAddr, sizeof(aBindAddr));
 

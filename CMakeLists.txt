@@ -1361,7 +1361,7 @@ endif()
 
 if(NET_SHARED)
   # Where the build tree keeps the networking library, for everything that
-  # runs from there: the test runner and the tools, not only the game.
+  # runs from there: the test runner and twping, not only the game.
   list(APPEND CMAKE_BUILD_RPATH "${PROJECT_BINARY_DIR}")
 endif()
 
@@ -2567,6 +2567,7 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   network_client.cpp
   network_console.cpp
   network_console_conn.cpp
+  network_library.cpp
   network_server.cpp
   network_stun.cpp
   packer.cpp
@@ -2599,6 +2600,18 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   video.h
   # tidy-alphabetical-end
 )
+# The connections over the networking library, for the programs that make
+# them; the rest of the engine does without the library.
+set(ENGINE_NET
+  # tidy-alphabetical-start
+  src/engine/shared/network_client.cpp
+  src/engine/shared/network_library.cpp
+  src/engine/shared/network_server.cpp
+  # tidy-alphabetical-end
+)
+foreach(s ${ENGINE_NET})
+  list(REMOVE_ITEM ENGINE_SHARED "${PROJECT_SOURCE_DIR}/${s}")
+endforeach()
 set_src(ENGINE_GFX GLOB src/engine/gfx
   # tidy-alphabetical-start
   image.cpp
@@ -2682,7 +2695,6 @@ set(LIBS
   # tidy-alphabetical-end
   # Add Rust part of our code.
   rust_engine_shared
-  rust_net
   ${PLATFORM_LIBS}
   # Add pthreads (on non-Windows) at the end, so that other libraries can depend
   # on it.
@@ -2693,15 +2705,17 @@ set(LIBS
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
+add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
 # tidy-alphabetical-start
+add_dependencies(engine-net generate_protocol)
 add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-shared game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -3112,6 +3126,7 @@ if(CLIENT)
     ${TARGET_STEAMAPI}
 
     ${PLATFORM_CLIENT_LIBS}
+    rust_net
     ${LIBS}
   )
 
@@ -3152,6 +3167,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3166,6 +3182,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3180,6 +3197,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3194,6 +3212,7 @@ if(CLIENT)
       PROPERTY OUTPUT_NAME ${CLIENT_EXECUTABLE}
   )
   target_link_libraries(game-client ${LIBS_CLIENT})
+  set_rust_net_rpath(game-client)
 
   if(TARGET_OS STREQUAL "ios")
     set(IOS_INFO_PLIST "${PROJECT_BINARY_DIR}/ios-Info.plist")
@@ -3392,6 +3411,7 @@ if(SERVER)
     ${MYSQL_LIBRARIES}
     ${TARGET_ANTIBOT}
 
+    rust_net
     ${LIBS}
   )
 
@@ -3419,6 +3439,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3432,6 +3453,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3442,6 +3464,7 @@ if(SERVER)
       PROPERTY OUTPUT_NAME ${SERVER_EXECUTABLE}
   )
   target_link_libraries(game-server ${LIBS_SERVER})
+  set_rust_net_rpath(game-server)
   list(APPEND TARGETS_OWN game-server)
   list(APPEND TARGETS_LINK game-server)
 
@@ -3520,6 +3543,10 @@ if(TOOLS)
       if(TOOL MATCHES "^config_")
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
+      if(TOOL MATCHES "^twping$")
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-net>)
+        set(TOOL_LIBS rust_net ${TOOL_LIBS})
+      endif()
       if(TOOL MATCHES "^map_render$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
@@ -3540,6 +3567,9 @@ if(TOOLS)
       )
       target_include_directories(${TOOL} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
       target_link_libraries(${TOOL} ${TOOL_LIBS})
+      if(TOOL MATCHES "^twping$")
+        set_rust_net_rpath(${TOOL})
+      endif()
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
           src/engine/client/graphics_threaded.cpp
@@ -3692,6 +3722,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS_EXTRA}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
+    $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
@@ -3700,6 +3731,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${DEPS}
   )
   target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${LIBS_SERVER})
+  set_rust_net_rpath(${TARGET_TESTRUNNER})
   target_include_directories(${TARGET_TESTRUNNER} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
 
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
@@ -3720,7 +3752,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
 endif()
 
 if(ENABLE_IPO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  foreach(target engine-gfx engine-shared game-shared rust-bridge-shared json md5 zlib)
+  foreach(target engine-gfx engine-net engine-shared game-shared rust-bridge-shared json md5 zlib)
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE -ffat-lto-objects)
     endif()
@@ -3743,15 +3775,11 @@ list(APPEND TARGETS_LINK rust_test)
 set(RUST_TEST_LIBS ${LIBS} $<TARGET_FILE:rust_test>)
 list(REMOVE_ITEM RUST_TEST_LIBS "rust_engine_shared")
 list(REMOVE_ITEM RUST_TEST_LIBS "-pthread")
-# The Rust test build takes file names, so the name of the imported target
-# means nothing to it.
-list(REMOVE_ITEM RUST_TEST_LIBS "rust_net")
-list(APPEND RUST_TEST_LIBS "$<TARGET_FILE:rust_net>")
 add_custom_target(run_rust_tests
   COMMAND ${CMAKE_COMMAND} -E env "DDNET_TEST_LIBRARIES=${RUST_TEST_LIBS}" ${CARGO_TEST}
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
   USES_TERMINAL
-  DEPENDS rust_test rust_net_target
+  DEPENDS rust_test
   VERBATIM
 )
 
@@ -4295,7 +4323,6 @@ endif()
 set(TARGETS ${TARGETS_OWN} ${TARGETS_DEP})
 
 foreach(target ${TARGETS})
-  set_rust_net_rpath(${target})
   if(MSVC)
     set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded) # Use static CRT
     # tidy-alphabetical-start

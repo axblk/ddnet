@@ -545,8 +545,9 @@ class CNetBase
 
 public:
 	static void Init();
-	// Tells the network library how much to log, so that it formats only
-	// what some logger would take; called from the update loops.
+	// Hands the network library's log to ours and tells it how much to log,
+	// so that it formats only what some logger would take; called before a
+	// library is opened and from the update loops.
 	static void UpdateLogLevel();
 	static int Compress(const void *pData, int DataSize, void *pOutput, int OutputSize);
 	static int Decompress(const void *pData, int DataSize, void *pOutput, int OutputSize);

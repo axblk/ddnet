@@ -24,6 +24,7 @@
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
+#include <engine/shared/quic_transport.h>
 #include <engine/shared/serverinfo.h>
 #include <engine/storage.h>
 
@@ -437,6 +438,21 @@ bool CServerBrowser::SortCompareFavoritesNumPlayersAndPing(int Index1, int Index
 	return IsFavorite1 && !IsFavorite2;
 }
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// A browser reaches websockets and WebTransport and nothing else.
+static bool HasCompatibleAddress(const CServerInfo &Info)
+{
+	const bool SecureOnly = net_websocket_secure_default();
+	for(int i = 0; i < Info.m_NumAddresses; i++)
+	{
+		const NETADDR &Addr = Info.m_aAddresses[i];
+		if((Addr.type & (NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_IPV6)) != 0 && (!SecureOnly || (Addr.type & NETTYPE_WEBSOCKET_TLS) != 0))
+			return true;
+	}
+	return Info.m_WebTransport.m_NumAddresses > 0 && CQuicTransport::IsWebTransportClientAvailable();
+}
+#endif
+
 void CServerBrowser::Filter()
 {
 	m_NumSortedPlayers = 0;
@@ -453,6 +469,10 @@ void CServerBrowser::Filter()
 	for(int ServerIndex = 0; ServerIndex < (int)m_vpServerlist.size(); ServerIndex++)
 	{
 		CServerInfo &Info = m_vpServerlist[ServerIndex]->m_Info;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(!HasCompatibleAddress(Info))
+			continue;
+#endif
 		bool Filtered = false;
 
 		if(g_Config.m_BrFilterEmpty && Info.m_NumFilteredPlayers == 0)
@@ -734,12 +754,8 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, NETADDR 
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
-		if(pAddrs[i].type & NETTYPE_TW7)
-		{
-			str_append(pBuffer, "tw-0.7+udp://", BufferSize);
-		}
-		char aIpAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
+		char aIpAddr[NETADDR_URL_MAXSTRSIZE];
+		net_addr_url_str(&pAddrs[i], aIpAddr, sizeof(aIpAddr), true);
 		str_append(pBuffer, aIpAddr, BufferSize);
 	}
 }
@@ -748,6 +764,10 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) cons
 {
 	const CServerInfo TmpInfo = pEntry->m_Info;
 	pEntry->m_Info = Info;
+	// The modern transports come from the master server or from a LAN answer,
+	// the callers that have them set them after this.
+	pEntry->m_Info.m_Quic = TmpInfo.m_Quic;
+	pEntry->m_Info.m_WebTransport = TmpInfo.m_WebTransport;
 	pEntry->m_Info.m_Favorite = TmpInfo.m_Favorite;
 	pEntry->m_Info.m_FavoriteAllowPing = TmpInfo.m_FavoriteAllowPing;
 	pEntry->m_Info.m_ServerIndex = TmpInfo.m_ServerIndex;
@@ -988,6 +1008,10 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 	if(m_ServerlistType == IServerBrowser::TYPE_LAN)
 	{
 		SetInfo(pEntry, *pInfo);
+		// There is no master server on a LAN, so the answer is the only place the
+		// modern transports are announced.
+		pEntry->m_Info.m_Quic = pInfo->m_Quic;
+		pEntry->m_Info.m_WebTransport = pInfo->m_WebTransport;
 		pEntry->m_Info.m_Latency = std::min(static_cast<int>((time_get() - m_BroadcastTime) * 1000 / time_freq()), 999);
 	}
 	else if(pEntry->m_RequestTime > 0)
@@ -1220,8 +1244,28 @@ void CServerBrowser::UpdateFromHttp()
 			continue;
 		}
 		UpdateServerLatency(&Info, OwnLocation);
-		CServerEntry *pEntry = Add(Info.m_aAddresses, Info.m_NumAddresses);
+		// A server that is only reachable over a modern transport is indexed by
+		// the address this client can dial it at.
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		const CModernTransportInfo &IndexTransport = Info.m_WebTransport;
+#else
+		const CModernTransportInfo &IndexTransport = Info.m_Quic;
+#endif
+		const bool ModernOnly = Info.m_NumAddresses == 0;
+		CServerEntry *pEntry = ModernOnly ? Add(IndexTransport.m_aAddresses, IndexTransport.m_NumAddresses) : Add(Info.m_aAddresses, Info.m_NumAddresses);
 		SetInfo(pEntry, Info);
+		pEntry->m_Info.m_Quic = Info.m_Quic;
+		pEntry->m_Info.m_WebTransport = Info.m_WebTransport;
+		for(const CModernTransportInfo *pTransport : {&Info.m_Quic, &Info.m_WebTransport})
+		{
+			for(int j = 0; j < pTransport->m_NumAddresses; j++)
+			{
+				NETADDR Address = pTransport->m_aAddresses[j];
+				m_ByAddr[Address] = pEntry->m_Info.m_ServerIndex;
+				Address.type &= ~NETTYPE_TW7;
+				m_ByAddr[Address] = pEntry->m_Info.m_ServerIndex;
+			}
+		}
 		pEntry->m_RequestIgnoreInfo = true;
 	}
 
@@ -1290,6 +1334,7 @@ void CServerBrowser::Update()
 		m_RefreshingHttp = false;
 		CleanUp();
 		UpdateFromHttp();
+		log_info("serverbrowser", "loaded %d servers from HTTP", NumServers());
 		// TODO: move this somewhere else
 		Sort();
 		return;
@@ -1776,7 +1821,7 @@ bool CServerBrowser::IsRefreshing() const
 
 bool CServerBrowser::IsGettingServerlist() const
 {
-	return m_pHttp->IsRefreshing();
+	return m_RefreshingHttp;
 }
 
 bool CServerBrowser::IsServerlistError() const
@@ -2434,6 +2479,18 @@ bool CServerBrowser::IsRegistered(const NETADDR &Addr)
 			if(net_addr_comp(&Info.m_aAddresses[j], &Addr) == 0)
 			{
 				return true;
+			}
+		}
+		NETADDR NormalizedAddr = Addr;
+		NormalizedAddr.type &= ~NETTYPE_TW7;
+		for(const CModernTransportInfo *pTransport : {&Info.m_Quic, &Info.m_WebTransport})
+		{
+			for(int j = 0; j < pTransport->m_NumAddresses; j++)
+			{
+				NETADDR Address = pTransport->m_aAddresses[j];
+				Address.type &= ~NETTYPE_TW7;
+				if(Address == NormalizedAddr)
+					return true;
 			}
 		}
 	}

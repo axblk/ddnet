@@ -1,8 +1,10 @@
 #include "serverinfo.h"
 
 #include "json.h"
+#include "transport_pin.h"
 
 #include <base/mem.h>
+#include <base/net.h>
 #include <base/str.h>
 
 #include <engine/external/json-parser/json.h>
@@ -37,6 +39,128 @@ bool ParseCrc(unsigned int *pResult, const char *pString)
 		}
 	}
 	return sscanf(pString, "%08x", pResult) != 1;
+}
+
+static constexpr char QUIC_SERVERINFO_EXTRA_PREFIX[] = "ddnet-transport-v2|quic|identity-sha256=";
+static constexpr char QUIC_SERVERINFO_EXTRA_SUFFIX[] = "|capabilities=datagram,map-stream,resume-v1,game-protocol-7";
+// A server that only serves WebTransport has no identity to send, so it says so
+// in its own prefix.
+static constexpr char QUIC_SERVERINFO_EXTRA_WT_PREFIX[] = "ddnet-transport-v2|webtransport";
+
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra)
+{
+	if(Extra.m_RawQuic)
+	{
+		char aIdentityFingerprint[SHA256_MAXSTRSIZE];
+		sha256_str(Extra.m_IdentityFingerprint, aIdentityFingerprint, sizeof(aIdentityFingerprint));
+		str_format(pBuffer, BufferSize, "%s%s%s", QUIC_SERVERINFO_EXTRA_PREFIX, aIdentityFingerprint, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+	else
+	{
+		str_format(pBuffer, BufferSize, "%s%s", QUIC_SERVERINFO_EXTRA_WT_PREFIX, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+
+	// Everything past the capabilities is optional and keyed, so a client skips
+	// the segments it does not know.
+	if(!Extra.m_WebTransport)
+		return;
+	const CModernTransportPin &Pin = Extra.m_WebTransportPin;
+	if(Pin.m_Trust == EModernTransportTrust::CERTIFICATE_HASH)
+	{
+		char aCertificate[SHA256_MAXSTRSIZE];
+		sha256_str(Pin.m_Fingerprint, aCertificate, sizeof(aCertificate));
+		str_append(pBuffer, "|webtransport=hash|wt-cert-sha256=", BufferSize);
+		str_append(pBuffer, aCertificate, BufferSize);
+		if(Pin.m_HasNextFingerprint)
+		{
+			sha256_str(Pin.m_NextFingerprint, aCertificate, sizeof(aCertificate));
+			str_append(pBuffer, ",", BufferSize);
+			str_append(pBuffer, aCertificate, BufferSize);
+		}
+	}
+	else
+	{
+		str_append(pBuffer, "|webtransport=webpki", BufferSize);
+		// Web PKI cannot validate a bare address, so the client needs the name.
+		if(Extra.m_pHostname != nullptr && Extra.m_pHostname[0] != '\0')
+		{
+			str_append(pBuffer, "|hostname=", BufferSize);
+			str_append(pBuffer, Extra.m_pHostname, BufferSize);
+		}
+	}
+}
+
+bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, const NETADDR &Addr)
+{
+	pInfo->m_Quic = {};
+	pInfo->m_WebTransport = {};
+
+	const char *pSegments;
+	if(const char *pWebTransportOnly = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_WT_PREFIX))
+	{
+		pSegments = str_startswith(pWebTransportOnly, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		if(pSegments == nullptr)
+			return true;
+	}
+	else
+	{
+		const char *pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_PREFIX);
+		if(!pFingerprint || str_length(pFingerprint) < (int)SHA256_DIGEST_LENGTH * 2)
+			return true;
+		pSegments = str_startswith(pFingerprint + SHA256_DIGEST_LENGTH * 2, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		str_truncate(aFingerprint, sizeof(aFingerprint), pFingerprint, SHA256_DIGEST_LENGTH * 2);
+		if(pSegments == nullptr || sha256_from_str(&pInfo->m_Quic.m_Pin.m_Fingerprint, aFingerprint))
+			return true;
+		pInfo->m_Quic.m_Pin.m_Trust = EModernTransportTrust::IDENTITY;
+		pInfo->m_Quic.m_aAddresses[0] = Addr;
+		pInfo->m_Quic.m_NumAddresses = 1;
+	}
+
+	// Unknown segments are skipped, so a server can add one without shutting out
+	// the clients that do not know it yet.
+	CModernTransportPin &WebTransportPin = pInfo->m_WebTransport.m_Pin;
+	while(*pSegments == '|')
+	{
+		char aSegment[2 * SHA256_MAXSTRSIZE + 32];
+		const char *pEnd = str_find(pSegments + 1, "|");
+		if(pEnd == nullptr)
+			str_copy(aSegment, pSegments + 1);
+		else
+			str_truncate(aSegment, sizeof(aSegment), pSegments + 1, pEnd - pSegments - 1);
+		pSegments = pEnd ? pEnd : "";
+
+		if(const char *pMode = str_startswith(aSegment, "webtransport="))
+		{
+			if(str_comp(pMode, "hash") == 0)
+				WebTransportPin.m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
+			else if(str_comp(pMode, "webpki") == 0)
+				WebTransportPin.m_Trust = EModernTransportTrust::WEBPKI;
+		}
+		else if(const char *pCertificates = str_startswith(aSegment, "wt-cert-sha256="))
+		{
+			CModernTransportPin Pin = {};
+			if(ParseCertificateHashes(pCertificates, &Pin))
+			{
+				WebTransportPin.m_Fingerprint = Pin.m_Fingerprint;
+				WebTransportPin.m_NextFingerprint = Pin.m_NextFingerprint;
+				WebTransportPin.m_HasNextFingerprint = Pin.m_HasNextFingerprint;
+			}
+		}
+		else if(const char *pHostname = str_startswith(aSegment, "hostname="))
+		{
+			// This becomes the TLS server name and the host of the WebTransport URL.
+			char aUrl[256];
+			if(pHostname[0] != '[' && FormatWebTransportUrl(aUrl, sizeof(aUrl), pHostname, Addr.port))
+				str_copy(pInfo->m_WebTransport.m_aHostname, pHostname);
+		}
+	}
+	if(WebTransportPin.m_Trust != EModernTransportTrust::INVALID)
+	{
+		pInfo->m_WebTransport.m_aAddresses[0] = Addr;
+		pInfo->m_WebTransport.m_NumAddresses = 1;
+	}
+	return false;
 }
 
 bool CServerInfo2::FromJson(CServerInfo2 *pOut, const json_value *pJson)

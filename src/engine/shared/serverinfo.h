@@ -56,4 +56,38 @@ public:
 
 bool ParseCrc(unsigned int *pResult, const char *pString);
 
+/**
+ * What a server advertises about its modern transports in the reserved extra
+ * info field of an extended server info answer. This is how a LAN server,
+ * which no master server lists, announces them.
+ */
+struct CQuicServerInfoExtra
+{
+	bool m_RawQuic;
+	SHA256_DIGEST m_IdentityFingerprint;
+	bool m_WebTransport;
+	CModernTransportPin m_WebTransportPin;
+	const char *m_pHostname;
+};
+
+enum
+{
+	// Two certificate hashes and a hostname on top of the base string. The
+	// packer takes this as an upper bound, only the actual text is sent.
+	QUIC_SERVERINFO_EXTRA_MAXSIZE = 640,
+};
+
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra);
+/**
+ * Reads the modern transports of a server from the extra info field of its
+ * extended server info answer.
+ *
+ * @param pInfo Its modern transports are replaced by the ones read.
+ * @param pExtraInfo The extra info field.
+ * @param Addr The address the answer came from, which the transports share.
+ *
+ * @return `true` on error.
+ */
+bool ParseQuicServerInfoExtra(CServerInfo *pInfo, const char *pExtraInfo, const NETADDR &Addr);
+
 #endif // ENGINE_SHARED_SERVERINFO_H

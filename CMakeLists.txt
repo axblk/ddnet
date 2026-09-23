@@ -113,7 +113,17 @@ elseif(TARGET_OS STREQUAL "mac")
   set(AUTO_VULKAN_BACKEND OFF)
 endif()
 
+# The QUIC transport is written in Rust, which every build needs anyway, so it
+# is compiled in wherever it can run. The two targets that are left out have no
+# native socket for it: emscripten reaches servers through WebTransport, and
+# the Android build does not carry the Rust QUIC dependencies.
+set(AUTO_QUIC ON)
+if(TARGET_OS STREQUAL "emscripten" OR TARGET_OS STREQUAL "android")
+  set(AUTO_QUIC OFF)
+endif()
+
 option(WEBSOCKETS "Enable websockets support" OFF)
+option(QUIC "Build the native QUIC and WebTransport transport" ${AUTO_QUIC})
 option(MYSQL "Enable mysql support" OFF)
 option(TEST_MYSQL "Test mysql support in unit tests (also sets -DMYSQL=ON)" OFF)
 option(AUTOUPDATE "Enable the autoupdater" OFF)
@@ -1020,8 +1030,14 @@ set_glob(RUST_ENGINE_SHARED GLOB_RECURSE "rs;toml" src/engine/shared
   Cargo.toml
   build.rs
   config.rs
+  game_wire.rs
+  game_wire_bridge.rs
   lib.rs
+  quic.rs
+  quic/sans_io.rs
+  quic/webtransport.rs
   rust_version.rs
+  udp_port_mux_classifier.rs
   # tidy-alphabetical-end
 )
 
@@ -1029,10 +1045,22 @@ set_src(RUST_BRIDGE_SHARED GLOB_RECURSE src/rust-bridge
   # tidy-alphabetical-start
   cpp/console.cpp
   cpp/console.h
+  engine/shared/game_wire.cpp
+  engine/shared/game_wire.h
+  engine/shared/quic.cpp
+  engine/shared/quic.h
   engine/shared/rust_version.cpp
   engine/shared/rust_version.h
   # tidy-alphabetical-end
 )
+# The QUIC transport and the game wire codec are bridged in engine-quic, which
+# only the programs that connect link.
+set(RUST_BRIDGE_QUIC ${RUST_BRIDGE_SHARED})
+list(FILTER RUST_BRIDGE_QUIC INCLUDE REGEX "engine/shared/(game_wire|quic)\\.(cpp|h)$")
+list(FILTER RUST_BRIDGE_SHARED EXCLUDE REGEX "engine/shared/(game_wire|quic)\\.(cpp|h)$")
+if(NOT QUIC)
+  list(FILTER RUST_BRIDGE_QUIC EXCLUDE REGEX "engine/shared/quic\\.(cpp|h)$")
+endif()
 
 set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
   # tidy-alphabetical-start
@@ -1046,6 +1074,15 @@ set_glob(RUST_MASTERSRV GLOB "rs;toml" src/mastersrv/src
 
 add_library(rust-bridge-shared EXCLUDE_FROM_ALL OBJECT ${RUST_BRIDGE_SHARED})
 list(APPEND TARGETS_OWN rust-bridge-shared)
+if(QUIC AND NOT MSVC)
+  # cxx maps Rust Result errors to C++ exceptions, which the adapter catches.
+  # A source option follows the global -fno-exceptions flag on the command line.
+  set_property(SOURCE
+    src/engine/shared/quic_transport.cpp
+    src/rust-bridge/engine/shared/quic.cpp
+    src/tools/quic_cli.cpp
+    APPEND PROPERTY COMPILE_OPTIONS -fexceptions)
+endif()
 
 if(TARGET_OS STREQUAL "android")
   set(CARGO_BUILD_DIR "${CARGO_NDK_TARGET}/")
@@ -1055,6 +1092,13 @@ else()
   set(CARGO_BUILD_DIR "")
   set(CARGO_BUILD ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} DDNET_TEST_NO_LINK=1 ${RUST_CARGO} build --locked --manifest-path "${PROJECT_SOURCE_DIR}/Cargo.toml")
   set(CARGO_TEST ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${PROJECT_BINARY_DIR} ${RUST_CARGO} test --locked)
+endif()
+if(QUIC)
+  if(TARGET_OS STREQUAL "emscripten")
+    message(FATAL_ERROR "QUIC is a native-only build target")
+  endif()
+  list(APPEND CARGO_BUILD --features ddnet-engine-shared/quic)
+  list(APPEND CARGO_TEST --features ddnet-engine-shared/quic)
 endif()
 if(MSVC)
   list(INSERT CARGO_BUILD 0 ${CMAKE_COMMAND} -E env $<$<CONFIG:Debug>:CFLAGS=/MTd> $<$<CONFIG:Debug>:CXXFLAGS=/MTd>)
@@ -2399,6 +2443,9 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   protocol_ex_msgs.h
   protocolglue.cpp
   protocolglue.h
+  quic_transport.cpp
+  quic_transport.h
+  quic_transport_browser.cpp
   ringbuffer.cpp
   ringbuffer.h
   serverinfo.cpp
@@ -2414,6 +2461,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   teehistorian_ex_chunks.h
   translation_context.cpp
   translation_context.h
+  transport_pin.cpp
+  transport_pin.h
   uuid_manager.cpp
   uuid_manager.h
   video.cpp
@@ -2515,7 +2564,11 @@ set(LIBS
 # Targets
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
+set(ENGINE_QUIC ${ENGINE_SHARED})
+list(FILTER ENGINE_QUIC INCLUDE REGEX "src/engine/shared/quic_transport")
+list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/quic_transport")
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
+add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
@@ -2524,7 +2577,7 @@ add_dependencies(engine-shared generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-quic engine-shared game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -2590,6 +2643,8 @@ if(CLIENT)
     checksum.h
     client.cpp
     client.h
+    connect_target.cpp
+    connect_target.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2978,6 +3033,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -2992,6 +3048,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3006,6 +3063,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-gfx>
+      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3246,6 +3304,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3259,6 +3318,7 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
@@ -3323,12 +3383,16 @@ if(TOOLS)
     map_resave.cpp
     map_test.cpp
     packetgen.cpp
+    quic_cli.cpp
     stun.cpp
     twping.cpp
     unicode_confusables.cpp
     uuid.cpp
     # tidy-alphabetical-end
   )
+  if(NOT QUIC)
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "quic_cli\\.cpp$")
+  endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
     if(T MATCHES "\\.cpp$")
@@ -3351,6 +3415,11 @@ if(TOOLS)
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
         list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${EGL_LIBRARY} ${OPENGL_gl_LIBRARY})
+      endif()
+      if(TOOL MATCHES "^quic_cli$")
+        # The Rust library the transport lives in also needs the C++ side of
+        # the other bridges.
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-quic> $<TARGET_OBJECTS:rust-bridge-shared>)
       endif()
       set(EXCLUDE_FROM_ALL)
       if(DEV)
@@ -3450,6 +3519,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     chunk_header_test.cpp
     color_test.cpp
     compression_test.cpp
+    connect_target_test.cpp
     csv_test.cpp
     datafile_test.cpp
     dbg_test.cpp
@@ -3501,6 +3571,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/connect_target.cpp
+    src/engine/client/connect_target.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp
@@ -3519,6 +3591,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${TESTS_EXTRA}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
+    $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
@@ -4248,6 +4321,9 @@ foreach(target ${TARGETS_OWN})
   if(CRYPTO_FOUND)
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
+  endif()
+  if(QUIC)
+    target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
   if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)

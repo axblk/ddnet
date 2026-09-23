@@ -17,6 +17,7 @@
 #include <engine/shared/jobs.h>
 #include <engine/shared/linereader.h>
 #include <engine/shared/serverinfo.h>
+#include <engine/shared/transport_pin.h>
 #include <engine/storage.h>
 
 #include <chrono>
@@ -339,22 +340,55 @@ private:
 		STATE_DONE,
 		STATE_WANTREFRESH,
 		STATE_REFRESHING,
+		STATE_PARSING,
 		STATE_NO_MASTER,
 	};
 
-	static bool Validate(json_value *pJson);
-	static bool Parse(json_value *pJson, std::vector<CServerInfo> *pvServers);
+	/**
+	 * Turns the master's answer into server entries in a worker thread.
+	 *
+	 * The parsing itself is quick, but an address the master publishes as a host
+	 * name has to be resolved, and a resolver that does not answer takes as long as
+	 * it likes. On the game thread that is a freeze on every refresh, triggered by
+	 * whatever name a server operator registered.
+	 */
+	class CParseJob : public IJob
+	{
+	public:
+		CParseJob(json_value *pJson) :
+			m_pJson(pJson)
+		{
+		}
+		~CParseJob() override { json_value_free(m_pJson); }
 
+		bool Success() const { return m_Success; }
+		std::vector<CServerInfo> &Servers() { return m_vServers; }
+
+	private:
+		void Run() override { m_Success = !ServerBrowserHttpParse(m_pJson, &m_vServers); }
+
+		json_value *m_pJson;
+		bool m_Success = false;
+		std::vector<CServerInfo> m_vServers;
+	};
+
+	static bool Validate(json_value *pJson);
+	void OnListFailure();
+
+	IEngine *m_pEngine;
 	IHttp *m_pHttp;
 
 	int m_State = STATE_WANTREFRESH;
 	std::shared_ptr<IHttpRequest> m_pGetServers;
+	std::shared_ptr<CParseJob> m_pParseJob;
+	int m_ResultAgeSeconds = 0;
 	std::unique_ptr<CChooseMaster> m_pChooseMaster;
 
 	std::vector<CServerInfo> m_vServers;
 };
 
 CServerBrowserHttp::CServerBrowserHttp(IEngine *pEngine, IHttp *pHttp, const char **ppUrls, int NumUrls, int PreviousBestIndex) :
+	m_pEngine(pEngine),
 	m_pHttp(pHttp),
 	m_pChooseMaster(new CChooseMaster(pEngine, pHttp, Validate, ppUrls, NumUrls, PreviousBestIndex))
 {
@@ -373,7 +407,17 @@ void CServerBrowserHttp::Shutdown()
 		m_pGetServers->Abort();
 		m_pGetServers = nullptr;
 	}
+	// The parse job cannot be interrupted, but it owns everything it touches, so
+	// letting go of it is enough; the job pool keeps it alive until it returns.
+	m_pParseJob = nullptr;
 	m_pChooseMaster->Shutdown();
+}
+
+void CServerBrowserHttp::OnListFailure()
+{
+	log_error("serverbrowser_http", "failed getting serverlist, trying to find best URL");
+	m_pChooseMaster->Reset();
+	m_pChooseMaster->Refresh();
 }
 
 void CServerBrowserHttp::Update()
@@ -402,37 +446,49 @@ void CServerBrowserHttp::Update()
 		{
 			return;
 		}
-		m_State = STATE_DONE;
 		std::shared_ptr<IHttpRequest> pGetServers = nullptr;
 		std::swap(m_pGetServers, pGetServers);
 
-		bool Success = true;
 		json_value *pJson = pGetServers->State() == EHttpState::DONE ? pGetServers->ResultJson() : nullptr;
-		Success = Success && pJson;
-		Success = Success && !Parse(pJson, &m_vServers);
-		json_value_free(pJson);
-		if(!Success)
+		if(pJson == nullptr)
 		{
-			log_error("serverbrowser_http", "failed getting serverlist, trying to find best URL");
-			m_pChooseMaster->Reset();
-			m_pChooseMaster->Refresh();
+			m_State = STATE_DONE;
+			OnListFailure();
+			return;
 		}
-		else
+		m_ResultAgeSeconds = SanitizeAge(pGetServers->ResultAgeSeconds());
+		m_pParseJob = std::make_shared<CParseJob>(pJson);
+		m_pEngine->AddJob(m_pParseJob);
+		m_State = STATE_PARSING;
+	}
+	else if(m_State == STATE_PARSING)
+	{
+		if(!m_pParseJob->Done())
 		{
-			// Try to find new master if the current one returns
-			// results that are 5 minutes old.
-			int Age = SanitizeAge(pGetServers->ResultAgeSeconds());
-			if(Age > 300)
-			{
-				log_info("serverbrowser_http", "got stale serverlist, age=%ds, trying to find best URL", Age);
-				m_pChooseMaster->Refresh();
-			}
+			return;
+		}
+		m_State = STATE_DONE;
+		std::shared_ptr<CParseJob> pParseJob = nullptr;
+		std::swap(m_pParseJob, pParseJob);
+
+		if(!pParseJob->Success())
+		{
+			OnListFailure();
+			return;
+		}
+		m_vServers = std::move(pParseJob->Servers());
+		// Try to find new master if the current one returns
+		// results that are 5 minutes old.
+		if(m_ResultAgeSeconds > 300)
+		{
+			log_info("serverbrowser_http", "got stale serverlist, age=%ds, trying to find best URL", m_ResultAgeSeconds);
+			m_pChooseMaster->Refresh();
 		}
 	}
 }
 void CServerBrowserHttp::Refresh()
 {
-	if(m_State == STATE_WANTREFRESH || m_State == STATE_REFRESHING || m_State == STATE_NO_MASTER)
+	if(m_State == STATE_WANTREFRESH || m_State == STATE_REFRESHING || m_State == STATE_PARSING || m_State == STATE_NO_MASTER)
 	{
 		if(m_State == STATE_NO_MASTER)
 			m_State = STATE_WANTREFRESH;
@@ -449,12 +505,45 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl)
 		return true;
 	return false;
 }
+
+// The master server lists a modern transport address only once it verified it,
+// with the pin to check the server against in its fragment.
+static void AddModernAddress(CModernTransportInfo *pTransport, const char *pUrl, bool WebTransport)
+{
+	bool UrlWebTransport;
+	CModernTransportPin Pin;
+	if(!ParseModernTransportUrl(pUrl, &UrlWebTransport, &Pin) || UrlWebTransport != WebTransport || Pin.m_Trust == EModernTransportTrust::TOFU)
+		return;
+	NETADDR Address;
+	char aHost[128];
+	if(net_addr_from_url(&Address, pUrl, aHost, sizeof(aHost)) != 0)
+	{
+		// This resolves on the calling thread, which is why the whole server
+		// list is parsed in a worker job.
+		if(net_addr_from_url_lookup(&Address, pUrl, NETTYPE_ALL) != 0 || Address.port == 0)
+			return;
+		if(char *pPort = const_cast<char *>(str_rchr(aHost, ':')))
+			*pPort = '\0';
+		str_copy(pTransport->m_aHostname, aHost);
+	}
+	for(int i = 0; i < pTransport->m_NumAddresses; i++)
+	{
+		if(pTransport->m_aAddresses[i] == Address)
+			return;
+	}
+	if(pTransport->m_NumAddresses < MAX_SERVER_ADDRESSES)
+	{
+		pTransport->m_aAddresses[pTransport->m_NumAddresses++] = Address;
+		pTransport->m_Pin = Pin;
+	}
+}
+
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
-	return Parse(pJson, &vServers);
+	return ServerBrowserHttpParse(pJson, &vServers);
 }
-bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvServers)
+bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServers)
 {
 	std::vector<CServerInfo> vServers;
 
@@ -494,7 +583,8 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 		CServerInfo SetInfo = ParsedInfo;
 		SetInfo.m_Location = ParsedLocation;
 		SetInfo.m_NumAddresses = 0;
-		bool GotVersion6 = false;
+		// All endpoints are kept, which of them this client uses is decided by
+		// `CServerEndpoints`, where 0.7 is dropped for a server that speaks DDNet.
 		for(unsigned int a = 0; a < Addresses.u.array.length; a++)
 		{
 			const json_value &Address = Addresses[a];
@@ -502,21 +592,14 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			{
 				return true;
 			}
-			if(str_startswith(Addresses[a], "tw-0.6+udp://"))
+			if(str_startswith(Addresses[a], "ddnet+quic://") || str_startswith(Addresses[a], "tw-0.7+quic://"))
 			{
-				GotVersion6 = true;
-				break;
+				AddModernAddress(&SetInfo.m_Quic, Addresses[a], false);
+				continue;
 			}
-		}
-		for(unsigned int a = 0; a < Addresses.u.array.length; a++)
-		{
-			const json_value &Address = Addresses[a];
-			if(Address.type != json_string)
+			if(str_startswith(Addresses[a], "ddnet+wt://") || str_startswith(Addresses[a], "tw-0.7+wt://"))
 			{
-				return true;
-			}
-			if(GotVersion6 && str_startswith(Addresses[a], "tw-0.7+udp://"))
-			{
+				AddModernAddress(&SetInfo.m_WebTransport, Addresses[a], true);
 				continue;
 			}
 			NETADDR ParsedAddr;
@@ -531,7 +614,7 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 				SetInfo.m_NumAddresses += 1;
 			}
 		}
-		if(SetInfo.m_NumAddresses > 0)
+		if(SetInfo.m_NumAddresses > 0 || SetInfo.m_Quic.m_NumAddresses > 0 || SetInfo.m_WebTransport.m_NumAddresses > 0)
 		{
 			vServers.push_back(SetInfo);
 		}

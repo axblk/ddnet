@@ -83,3 +83,21 @@
    fun:_ZSt11make_sharedI13CFutureLoggerJEESt10shared_ptrINSt9enable_ifIXntsrSt8is_arrayIT_E5valueES4_E4typeEEDpOT0_
    fun:main
 }
+
+{
+   QuicRingPacketProtectionSendmsg
+   Memcheck:Param
+   sendmsg(msg.msg_iov[0])
+   fun:*sendmsg*
+   ...
+   fun:*quinn_udp*send*
+   ...
+}
+
+{
+   RingAeadTagComparison
+   Memcheck:Cond
+   fun:*ring*verify_slices_are_equal*
+   fun:*ring*aead*
+   ...
+}

@@ -1593,6 +1593,7 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	}
 
 	CGameInfo Info;
+	Info.m_DeclaresRuleset = Version >= 2;
 	Info.m_FlagStartsRace = FastCap;
 	Info.m_TimeScore = Race;
 	Info.m_UnlimitedAmmo = Race;
@@ -2261,7 +2262,10 @@ void CGameClient::OnNewSnapshot(bool DummySwapped)
 		VanillaTuning.m_LaserBounceNum = 1;
 		if(str_comp(ServerInfo.m_aGameType, "DM") != 0 && str_comp(ServerInfo.m_aGameType, "TDM") != 0 && str_comp(ServerInfo.m_aGameType, "CTF") != 0)
 			m_ServerMode = SERVERMODE_MOD;
-		else if(mem_comp(&VanillaTuning, &m_aTuning[g_Config.m_ClDummy], 33 * sizeof(CTuneParam)) == 0)
+		// A server that states its ruleset is taken at its word, tuning commands and
+		// all. Only the ones that state nothing are measured against the vanilla
+		// tuning, because a mod calling itself DM is what this check is here to spot.
+		else if(m_GameInfo.m_DeclaresRuleset ? m_GameInfo.m_PredictVanilla : mem_comp(&VanillaTuning, &m_aTuning[g_Config.m_ClDummy], 33 * sizeof(CTuneParam)) == 0)
 			m_ServerMode = SERVERMODE_PURE;
 		else
 			m_ServerMode = SERVERMODE_PUREMOD;

@@ -27,6 +27,9 @@
 
 #include <algorithm>
 
+// how long the scoreboard of a finished round stays up, 0.7 clients count it down
+static constexpr int ROUND_RESTART_DELAY_SECONDS = 10;
+
 IGameController::IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo) :
 	m_Services(Services),
 	m_pGameServer(Services.GameServer()),
@@ -337,8 +340,10 @@ void IGameController::EvaluateSpawnType(CSpawnEval *pEval, ESpawnType SpawnType,
 	if(!PlayerCollision && pEval->m_Got)
 		return;
 
-	// j == 0: Find an empty slot, j == 1: Take any slot if no empty one found
-	for(int j = 0; j < 2; j++)
+	// j == 0: Find an empty slot, j == 1: Take any slot if no empty one found.
+	// Only DDRace takes an occupied one, a vanilla tee would be stuck in the other.
+	const int NumPasses = Info().m_DDRace ? 2 : 1;
+	for(int j = 0; j < NumPasses; j++)
 	{
 		// get spawn point
 		for(const vec2 &SpawnPoint : m_avSpawnPoints[SpawnType])
@@ -770,7 +775,7 @@ void IGameController::SendGameInfoSixup(int ClientId)
 {
 	protocol7::CNetMsg_Sv_GameInfo Msg;
 	Msg.m_GameFlags = Info().m_GameFlags;
-	Msg.m_MatchCurrent = 1;
+	Msg.m_MatchCurrent = Match().RoundCount() + 1;
 	Msg.m_MatchNum = 0;
 	Msg.m_ScoreLimit = ScoreLimit();
 	Msg.m_TimeLimit = TimeLimit();
@@ -779,11 +784,12 @@ void IGameController::SendGameInfoSixup(int ClientId)
 
 void IGameController::Tick()
 {
-	// 0.7 clients only learn the limits from the game info message
-	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit)
+	// 0.7 clients only learn the limits and the round from the game info message
+	if(ScoreLimit() != m_SixupScoreLimit || TimeLimit() != m_SixupTimeLimit || Match().RoundCount() != m_SixupRoundCount)
 	{
 		m_SixupScoreLimit = ScoreLimit();
 		m_SixupTimeLimit = TimeLimit();
+		m_SixupRoundCount = Match().RoundCount();
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 		{
 			if(Server()->ClientIngame(ClientId) && Server()->IsSixup(ClientId))
@@ -794,7 +800,7 @@ void IGameController::Tick()
 	if(Match().TickWarmup())
 		StartRound();
 
-	if(Match().ShouldRestartRound(Server()->Tick(), Server()->TickSpeed() * 10))
+	if(Match().ShouldRestartRound(Server()->Tick(), ROUND_RESTART_DELAY_SECONDS * Server()->TickSpeed()))
 	{
 		StartRound();
 		Match().AdvanceRound();
@@ -845,7 +851,20 @@ void IGameController::Snap(int SnappingClient)
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
 		if(IsGamePaused())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
-		GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
+		// 0.7 clients count down to the end of the state they are told about
+		if(Match().IsGameOver())
+		{
+			GameData.m_GameStateEndTick = Match().GameOverTick() + ROUND_RESTART_DELAY_SECONDS * Server()->TickSpeed();
+		}
+		else if(Match().IsWarmup())
+		{
+			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_WARMUP;
+			GameData.m_GameStateEndTick = Server()->Tick() + Match().WarmupTicks();
+		}
+		else
+		{
+			GameData.m_GameStateEndTick = TimeLimit() > 0 ? Match().RoundStartTick() + TimeLimit() * Server()->TickSpeed() * 60 : 0;
+		}
 		Server()->SnapNewItem(0, GameData);
 	}
 

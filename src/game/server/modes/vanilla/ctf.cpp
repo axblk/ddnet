@@ -194,6 +194,15 @@ CFlag *CGameControllerVanillaCTF::Flag(int Team) const
 	return Team >= TEAM_RED && Team <= TEAM_BLUE ? m_apFlags[Team] : nullptr;
 }
 
+bool CGameControllerVanillaCTF::FlagPosition(int Team, vec2 *pOutPos) const
+{
+	const CFlag *pFlag = Flag(Team);
+	if(!pFlag)
+		return false;
+	*pOutPos = pFlag->m_Pos;
+	return true;
+}
+
 int CGameControllerVanillaCTF::FlagCarrierState(const CFlag *pFlag, int SnappingClient) const
 {
 	if(!pFlag)

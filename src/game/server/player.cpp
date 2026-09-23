@@ -274,8 +274,14 @@ void CPlayer::PostTick()
 	}
 
 	// update view pos for spectators
-	if((m_Team == TEAM_SPECTATORS || m_Paused || GameServer()->GameHost().Controller()->IsPlayerDeadSpectator(m_ClientId)) && m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
-		m_ViewPos = GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter()->m_Pos;
+	if(m_Team == TEAM_SPECTATORS || m_Paused || GameServer()->GameHost().Controller()->IsPlayerDeadSpectator(m_ClientId))
+	{
+		vec2 FlagPos;
+		if(m_SpectatorFlagTeam >= 0 && GameServer()->GameHost().Controller()->FlagPosition(m_SpectatorFlagTeam, &FlagPos))
+			m_ViewPos = FlagPos;
+		else if(m_SpectatorId != SPEC_FREEVIEW && GameServer()->m_apPlayers[m_SpectatorId] && GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter())
+			m_ViewPos = GameServer()->m_apPlayers[m_SpectatorId]->GetCharacter()->m_Pos;
+	}
 
 	UpdateNetworkClipRadius();
 }
@@ -365,7 +371,10 @@ void CPlayer::Snap(int SnappingClient)
 		else
 		{
 			protocol7::CNetObj_SpectatorInfo SpectatorInfo = {};
-			SpectatorInfo.m_SpecMode = m_SpectatorId == SPEC_FREEVIEW ? protocol7::SPEC_FREEVIEW : protocol7::SPEC_PLAYER;
+			if(m_SpectatorFlagTeam >= 0)
+				SpectatorInfo.m_SpecMode = m_SpectatorFlagTeam == TEAM_RED ? protocol7::SPEC_FLAGRED : protocol7::SPEC_FLAGBLUE;
+			else
+				SpectatorInfo.m_SpecMode = m_SpectatorId == SPEC_FREEVIEW ? protocol7::SPEC_FREEVIEW : protocol7::SPEC_PLAYER;
 			SpectatorInfo.m_SpectatorId = SpectatorId;
 			SpectatorInfo.m_X = m_ViewPos.x;
 			SpectatorInfo.m_Y = m_ViewPos.y;
@@ -876,6 +885,17 @@ void CPlayer::SpectatePlayerName(const char *pName)
 
 void CPlayer::SetSpectatorId(int Id)
 {
+	// the server moves the flag camera, everything else sees a free view
+	m_SpectatorFlagTeam = -1;
+	if(Id == SPEC_FLAGRED || Id == SPEC_FLAGBLUE)
+	{
+		const int Team = Id == SPEC_FLAGRED ? TEAM_RED : TEAM_BLUE;
+		vec2 FlagPos;
+		if(GameServer()->GameHost().Controller()->FlagPosition(Team, &FlagPos))
+			m_SpectatorFlagTeam = Team;
+		Id = SPEC_FREEVIEW;
+	}
+
 	m_SpectatorId = Id;
 	GameServer()->m_PlayerMapping.ResetSeeOthers(m_ClientId);
 }

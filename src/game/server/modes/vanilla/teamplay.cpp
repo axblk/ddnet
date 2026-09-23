@@ -133,6 +133,21 @@ bool CGameControllerVanillaTeamplay::CanBeMovedOnBalance(const CPlayer *pPlayer)
 
 void CGameControllerVanillaTeamplay::StartRound()
 {
+	// sides swap after a match that ended, not after a restart in the middle of one
+	if(g_Config.m_SvMatchSwap && Match().IsGameOver())
+	{
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			CPlayer *pPlayer = Services().Player(ClientId);
+			if(!pPlayer || (pPlayer->GetTeam() != TEAM_RED && pPlayer->GetTeam() != TEAM_BLUE))
+				continue;
+			// being swapped is not activity, so it must not postpone the idle kick
+			const int LastActionTick = pPlayer->m_LastActionTick;
+			DoTeamChange(pPlayer, pPlayer->GetTeam() ^ 1, false);
+			pPlayer->m_LastActionTick = LastActionTick;
+		}
+		Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_SWAP);
+	}
 	m_aTeamScores.fill(0);
 	CGameControllerVanillaPvP::StartRound();
 }

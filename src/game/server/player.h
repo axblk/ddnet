@@ -148,6 +148,8 @@ private:
 
 	// used for spectator mode
 	int m_SpectatorId;
+	// team of the spectated flag, -1 for none
+	int m_SpectatorFlagTeam = -1;
 
 	int m_Paused;
 	int64_t m_ForcePauseTime;

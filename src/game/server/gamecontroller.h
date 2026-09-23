@@ -157,6 +157,7 @@ protected:
 	virtual int TimeLimit() const { return 0; }
 	int m_SixupScoreLimit = -1;
 	int m_SixupTimeLimit = -1;
+	int m_SixupRoundCount = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
 
@@ -262,6 +263,8 @@ public:
 	virtual int PlayerTeamGroup(int ClientId) const;
 	virtual bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const;
 	virtual bool IsPlayerDeadSpectator(int ClientId) const { return false; }
+	// for spectators following a flag
+	virtual bool FlagPosition(int Team, vec2 *pOutPos) const { return false; }
 	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
 	virtual void OnPlayerPracticeTeleport(int ClientId, vec2 Pos) {}
 	virtual int PlayerAutoRespawnTick(const CPlayer *pPlayer) const;

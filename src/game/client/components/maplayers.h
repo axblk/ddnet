@@ -29,6 +29,11 @@ public:
 	void OnMapLoad() override;
 	void Load(CLayers *pLayers, IMapImages *pImages);
 	void Unload();
+	// The layers hold GPU buffers, and this component outlives the graphics
+	// object: it is destroyed with the game client, after the engine took the
+	// renderer down. So they are given back here, while there is still someone
+	// to give them back to.
+	void OnShutdown() override;
 
 	CEnvelopeState &EnvEvaluator() { return m_EnvEvaluator; }
 

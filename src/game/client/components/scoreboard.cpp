@@ -307,6 +307,7 @@ void CScoreboard::RenderTitleBar(const CRenderContext &Context, CUIRect TitleBar
 
 void CScoreboard::RenderGoals(const CRenderContext &Context, CUIRect Goals)
 {
+	GameClient()->m_Menus.RenderBackdropRegion(Goals);
 	Goals.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 	Goals.VMargin(5.0f, &Goals);
 
@@ -342,6 +343,7 @@ void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Specta
 	const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(GameState.m_Conn);
 	if(pClientsByName == nullptr)
 		return;
+	GameClient()->m_Menus.RenderBackdropRegion(Spectators);
 	Spectators.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 	constexpr float SpectatorCut = 5.0f;
 	Spectators.Margin(SpectatorCut, &Spectators);
@@ -1081,6 +1083,8 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 
 		CUIRect RedScoreboard, BlueScoreboard, RedTitle, BlueTitle;
 		Scoreboard.VSplitMid(&RedScoreboard, &BlueScoreboard, ROUNDING);
+		GameClient()->m_Menus.RenderBackdropRegion(RedScoreboard);
+		GameClient()->m_Menus.RenderBackdropRegion(BlueScoreboard);
 		RedScoreboard.HSplitTop(TitleHeight, &RedTitle, &RedScoreboard);
 		BlueScoreboard.HSplitTop(TitleHeight, &BlueTitle, &BlueScoreboard);
 
@@ -1113,6 +1117,7 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 	}
 	else
 	{
+		GameClient()->m_Menus.RenderBackdropRegion(Scoreboard);
 		Scoreboard.Draw(BACKGROUND_COLOR, IGraphics::CORNER_ALL, ROUNDING);
 
 		const char *pTitle;

@@ -459,6 +459,7 @@ private:
 
 	std::function<void(const IInput::CEvent &Event)> m_DispatchInputFunction;
 	std::function<void()> m_OnBackButtonPressedFunction;
+	std::function<void(CUIRect)> m_RenderPopupMenuBackdropFunction;
 
 	CUIRect m_Screen;
 
@@ -488,6 +489,7 @@ private:
 	IGraphics *m_pGraphics;
 	IInput *m_pInput;
 	ITextRender *m_pTextRender;
+	class CRenderTools *m_pRenderTools;
 
 	std::vector<CUIElement *> m_vpOwnUIElements; // ui elements maintained by CUi class
 	std::vector<CUIElement *> m_vpUIElements;
@@ -502,11 +504,12 @@ public:
 
 	static const float ms_FontmodHeight;
 
-	void Init(IKernel *pKernel);
+	void Init(IKernel *pKernel, class CRenderTools *pRenderTools);
 	IClient *Client() const { return m_pClient; }
 	IGraphics *Graphics() const { return m_pGraphics; }
 	IInput *Input() const { return m_pInput; }
 	ITextRender *TextRender() const { return m_pTextRender; }
+	class CRenderTools *RenderTools() const { return m_pRenderTools; }
 
 	CUi();
 	~CUi();
@@ -733,6 +736,7 @@ public:
 	// found in ui_popups.cpp
 	void DoPopupMenu(const SPopupMenuId *pId, float X, float Y, float Width, float Height, void *pContext, FPopupMenuFunction pfnFunc, const SPopupMenuProperties &Props = {});
 	void RenderPopupMenus();
+	void SetRenderPopupMenuBackdropCallback(std::function<void(CUIRect)> pfnCallback) { m_RenderPopupMenuBackdropFunction = std::move(pfnCallback); }
 	void ClosePopupMenu(const SPopupMenuId *pId, bool IncludeDescendants = false);
 	void ClosePopupMenus();
 	bool IsPopupOpen() const;
@@ -785,7 +789,9 @@ public:
 	struct SSelectionPopupContext : public SPopupMenuId
 	{
 		CUi *m_pUI; // set by CUi when popup is shown
-		CScrollRegion *m_pScrollRegion;
+		// The popup scrolls when it does not fit on the screen, so whoever shows
+		// one has to give it a scroll region that lives as long as the popup.
+		CScrollRegion *m_pScrollRegion = nullptr;
 		SPopupMenuProperties m_Props;
 		char m_aMessage[256];
 		std::vector<std::string> m_vEntries;

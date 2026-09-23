@@ -91,7 +91,7 @@ class CSound : public IEngineSound
 	std::atomic<int> m_SoundVolume = 100;
 	int m_MixingRate = 48000;
 
-	class IEngineGraphics *m_pGraphics = nullptr;
+	class IGraphicsWindow *m_pWindow = nullptr;
 	IStorage *m_pStorage = nullptr;
 
 	int *m_pMixBuffer = nullptr;

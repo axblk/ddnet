@@ -78,6 +78,14 @@ public:
 	int m_MinTeamSize = 0;
 	int m_MaxTeamSize = 0;
 
+	/**
+	 * Whether the server clips its snapshot to the size the client asked for.
+	 *
+	 * Cl_ShowDistance is a DDNet extension. A server that does not know it clips
+	 * to a fixed distance around the player instead, and a view that reaches past
+	 * that shows empty space where entities should be.
+	 */
+	bool m_ClipsToShowDistance = false;
 	int m_NumDDRaceTeams = 0;
 
 	/**

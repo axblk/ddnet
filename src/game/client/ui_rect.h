@@ -7,13 +7,19 @@
 #include <base/vmath.h>
 
 class IGraphics;
+class CRenderTools;
 
 class CUIRect
 {
 	static IGraphics *ms_pGraphics;
+	static CRenderTools *ms_pRenderTools;
 
 public:
-	static void Init(IGraphics *pGraphics) { ms_pGraphics = pGraphics; }
+	static void Init(IGraphics *pGraphics, CRenderTools *pRenderTools)
+	{
+		ms_pGraphics = pGraphics;
+		ms_pRenderTools = pRenderTools;
+	}
 
 	float x, y, w, h;
 

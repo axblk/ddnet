@@ -128,12 +128,12 @@ public:
 	int GetOverriddenTuneZone() const;
 	int GetPureTuneZone() const;
 
-	bool HammerHitDisabled() const { return m_Core.m_HammerHitDisabled; }
-	bool ShotgunHitDisabled() const { return m_Core.m_ShotgunHitDisabled; }
-	bool LaserHitDisabled() const { return m_Core.m_LaserHitDisabled; }
-	bool GrenadeHitDisabled() const { return m_Core.m_GrenadeHitDisabled; }
+	bool HammerHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HammerHitDisabled; }
+	bool ShotgunHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_ShotgunHitDisabled; }
+	bool LaserHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_LaserHitDisabled; }
+	bool GrenadeHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_GrenadeHitDisabled; }
 
-	bool IsSuper() const { return m_Core.m_Super; }
+	bool IsSuper() const { return m_Core.UsesDDNetPhysics() && m_Core.m_Super; }
 
 	// antiping
 	void AntiPingInterference(int ClientId, bool DisallowReset = false, bool HasToBeUnfrozen = false);

@@ -2,6 +2,7 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "infomessages.h"
 
+#include <base/dbg.h>
 #include <base/math.h>
 #include <base/str.h>
 #include <base/time.h>

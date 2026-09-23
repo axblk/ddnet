@@ -90,6 +90,7 @@ endif()
 
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
+include(CheckCSourceCompiles)
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
   include(CheckLinkerFlag)
 endif()
@@ -135,6 +136,7 @@ option(HEADLESS_CLIENT "Build the client without graphics" OFF)
 option(CLIENT "Compile client" ON)
 option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
+option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -602,7 +604,7 @@ find_package(Crypto)
 if(NOT TARGET_OS STREQUAL "emscripten")
   find_package(Curl)
 endif()
-if(CLIENT AND VIDEORECORDER)
+if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   find_package(FFMPEG)
 endif()
 find_package(Freetype)
@@ -612,7 +614,6 @@ endif()
 if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
   find_package(GLEW)
 endif()
-find_package(EGL QUIET)
 find_package(GTest)
 if(UPNP)
   find_package(Miniupnpc)
@@ -638,6 +639,43 @@ if(UNIX)
   set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 endif()
 find_package(Threads)
+set(WEBGPU_NATIVE_BACKEND OFF)
+if(WEBGPU_BACKEND_PROTOTYPE)
+  if(NOT(TARGET_OS STREQUAL "windows" OR TARGET_OS STREQUAL "linux" OR TARGET_OS STREQUAL "mac" OR TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
+    message(FATAL_ERROR "The WebGPU backend supports Windows, Linux, macOS, Android and Emscripten SDL surfaces")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND FAT)
+    message(FATAL_ERROR "The WebGPU backend requires a single-architecture macOS build")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+    message(FATAL_ERROR "The WebGPU backend currently requires a native-architecture macOS build")
+  endif()
+  if(TARGET_OS STREQUAL "mac" AND CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 11.0)
+    message(FATAL_ERROR "The pinned wgpu-native macOS library requires CMAKE_OSX_DEPLOYMENT_TARGET=11.0 or newer")
+  endif()
+  if(NOT SDL2_FOUND)
+    message(FATAL_ERROR "The WebGPU backend requires SDL2")
+  endif()
+  if(NOT CLIENT)
+    message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE requires CLIENT")
+  endif()
+  if(HEADLESS_CLIENT)
+    message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE does not support HEADLESS_CLIENT")
+  endif()
+  if(NOT(TARGET_OS STREQUAL "mac" OR TARGET_OS STREQUAL "emscripten"))
+    set(CMAKE_REQUIRED_INCLUDES ${ORIGINAL_CMAKE_REQUIRED_INCLUDES} ${SDL2_INCLUDE_DIRS})
+    check_c_source_compiles("#include <SDL_version.h>\n#if !SDL_VERSION_ATLEAST(2, 26, 0)\n#error SDL 2.26 required\n#endif\nint main(void) { return 0; }" WEBGPU_HAS_SDL_2_26)
+    set(CMAKE_REQUIRED_INCLUDES ${ORIGINAL_CMAKE_REQUIRED_INCLUDES})
+    if(NOT WEBGPU_HAS_SDL_2_26)
+      message(FATAL_ERROR "WEBGPU_BACKEND_PROTOTYPE requires SDL 2.26 or newer for physical window sizes")
+    endif()
+  endif()
+  if(NOT TARGET_OS STREQUAL "emscripten")
+    set(WEBGPU_NATIVE_BACKEND ON)
+    find_package(WgpuNative REQUIRED)
+    file(RELATIVE_PATH WGPU_NATIVE_RUNTIME_RELATIVE "${PROJECT_SOURCE_DIR}" "${WGPU_NATIVE_RUNTIME_LIBRARY}")
+  endif()
+endif()
 find_package(Wavpack)
 if(WEBSOCKETS)
   find_package(Websockets)
@@ -660,7 +698,7 @@ if(TARGET_OS AND TARGET_OS STREQUAL "mac")
   set(DMGBUILD_FOUND ${DMGBUILD})
 endif()
 
-set(VULKAN_SHADER_FILE_LIST "" CACHE STRING "Vulkan shader file list")
+set(VULKAN_SHADER_OUTPUT_PATHS "" CACHE STRING "Vulkan shader output list")
 if(CLIENT AND VULKAN)
   find_package(Vulkan)
   include(cmake/BuildVulkanShaders.cmake)
@@ -695,7 +733,7 @@ endfunction()
 if(NOT TARGET_OS STREQUAL "emscripten")
   show_dependency_status("Curl" CURL)
 endif()
-if(CLIENT AND VIDEORECORDER)
+if(CLIENT AND VIDEORECORDER AND NOT TARGET_OS STREQUAL "emscripten")
   show_dependency_status("FFmpeg" FFMPEG)
 endif()
 show_dependency_status("Freetype" FREETYPE)
@@ -722,6 +760,9 @@ show_dependency_status("Python3" Python3)
 show_dependency_status("SDL2" SDL2)
 show_dependency_status("SQLite3" SQLite3)
 show_dependency_status("Wavpack" WAVPACK)
+if(WEBGPU_NATIVE_BACKEND)
+  show_dependency_status("wgpu-native" WgpuNative)
+endif()
 show_dependency_status("Zlib" ZLIB)
 if(DISCORD)
   show_dependency_status("DiscordSdk" DiscordSdk)
@@ -805,6 +846,9 @@ endif()
 if(CLIENT AND VULKAN AND NOT(VULKAN_FOUND))
   message(SEND_ERROR "You must install Vulkan libraries to compile the ${CMAKE_PROJECT_NAME} client")
 endif()
+
+# What a client links, without OpenGL and desktop notifications; set below.
+set(PLATFORM_HEADLESS_CLIENT_LIBS)
 
 if(TARGET_OS STREQUAL "windows")
   set(PLATFORM_CLIENT)
@@ -918,8 +962,16 @@ else()
     set(PLATFORM_LIBS)
   endif()
 endif()
+
+set(PLATFORM_HEADLESS_CLIENT_LIBS ${PLATFORM_CLIENT_LIBS})
+list(REMOVE_ITEM PLATFORM_HEADLESS_CLIENT_LIBS
+  opengl32.lib
+  ${NOTIFY_LIBRARIES}
+  ${OPENGL}
+  ${OPENGL_gl_LIBRARY}
+)
+
 if(TOOLS)
-  show_dependency_status("EGL" EGL) # egl also checks for OpenGL::EGL
 endif()
 
 ########################################################################
@@ -1828,38 +1880,6 @@ set(EXPECTED_DATA
   menuimages/settings.png
   particles.png
   race_flag.png
-  shader/pipeline.frag
-  shader/pipeline.vert
-  shader/prim.frag
-  shader/prim.vert
-  shader/primex.frag
-  shader/primex.vert
-  shader/quad.frag
-  shader/quad.vert
-  shader/spritemulti.frag
-  shader/spritemulti.vert
-  shader/text.frag
-  shader/text.vert
-  shader/tile.frag
-  shader/tile.vert
-  shader/tile_border.frag
-  shader/tile_border.vert
-  shader/vulkan/prim.frag
-  shader/vulkan/prim.vert
-  shader/vulkan/prim3d.frag
-  shader/vulkan/prim3d.vert
-  shader/vulkan/primex.frag
-  shader/vulkan/primex.vert
-  shader/vulkan/quad.frag
-  shader/vulkan/quad.vert
-  shader/vulkan/spritemulti.frag
-  shader/vulkan/spritemulti.vert
-  shader/vulkan/text.frag
-  shader/vulkan/text.vert
-  shader/vulkan/tile.frag
-  shader/vulkan/tile.vert
-  shader/vulkan/tile_border.frag
-  shader/vulkan/tile_border.vert
   skins/PaladiN.png
   skins/antiantey.png
   skins/beast.png
@@ -2117,12 +2137,22 @@ set_glob(DATA GLOB_RECURSE "cfg;frag;json;map;otf;png;rules;trace;ttc;ttf;txt;ve
 # COPY DATA AND SHARED LIBS
 ########################################################################
 
+# The copy below runs at configure time; the custom commands underneath also
+# copy data files changed afterwards.
+set(DATA_COPY_OUTPUTS)
 foreach(datafile ${DATA})
   file(RELATIVE_PATH OUT ${PROJECT_SOURCE_DIR}/data ${datafile})
   get_filename_component(DESTINATION data/${OUT} PATH)
   file(MAKE_DIRECTORY ${DESTINATION})
   file(COPY ${datafile} DESTINATION ${DESTINATION})
+  add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/data/${OUT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${datafile} ${PROJECT_BINARY_DIR}/data/${OUT}
+    DEPENDS ${datafile}
+    COMMENT ""
+    VERBATIM)
+  list(APPEND DATA_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/data/${OUT})
 endforeach()
+add_custom_target(copy_data ALL DEPENDS ${DATA_COPY_OUTPUTS})
 set(COPY_FILES
   # tidy-alphabetical-start
   ${CRASHDUMP_COPY_FILES}
@@ -2140,6 +2170,9 @@ set(COPY_FILES
   ${WEBSOCKETS_COPY_FILES}
   # tidy-alphabetical-end
 )
+if(WEBGPU_NATIVE_BACKEND)
+  list(APPEND COPY_FILES ${WGPU_NATIVE_RUNTIME_RELATIVE})
+endif()
 if(TARGET_OS STREQUAL "emscripten")
   list(APPEND COPY_FILES other/emscripten/background.png)
   list(APPEND COPY_FILES other/emscripten/index.html)
@@ -2356,6 +2389,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   ghost.h
   graphics.cpp
   graphics.h
+  graphics_window.h
   http.cpp
   http.h
   image.h
@@ -2365,6 +2399,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   map.h
   message.h
   notifications.h
+  render_handle.h
   rust.h
   server.h
   serverbrowser.h
@@ -2618,6 +2653,7 @@ if(CLIENT)
     # tidy-alphabetical-start
     backend/backend_base.cpp
     backend/backend_base.h
+    backend/embedded_shaders.h
     backend/glsl_shader_compiler.cpp
     backend/glsl_shader_compiler.h
     backend/null/backend_null.cpp
@@ -2626,28 +2662,24 @@ if(CLIENT)
     backend/opengl/backend_opengl.h
     backend/opengl/backend_opengl3.cpp
     backend/opengl/backend_opengl3.h
-    backend/opengl/opengl_sl.cpp
-    backend/opengl/opengl_sl.h
-    backend/opengl/opengl_sl_program.cpp
-    backend/opengl/opengl_sl_program.h
-    backend/opengles/backend_opengles.cpp
+    backend/opengl/backend_opengl_base.cpp
+    backend/opengl/backend_opengl_base.h
     backend/opengles/backend_opengles3.cpp
     backend/opengles/backend_opengles3.h
+    backend/opengles/backend_opengles_base.cpp
     backend/opengles/gles_class_defines.h
-    backend/opengles/opengles_sl.cpp
-    backend/opengles/opengles_sl_program.cpp
     backend/vulkan/backend_vulkan.cpp
     backend/vulkan/backend_vulkan.h
-    backend_egl.cpp
-    backend_egl.h
-    backend_sdl.cpp
-    backend_sdl.h
+    backend/webgpu/backend_webgpu.cpp
+    backend/webgpu/backend_webgpu.h
     backend_threaded.cpp
+    backend_threaded.h
     blocklist_driver.cpp
     blocklist_driver.h
     checksum.h
     client.cpp
     client.h
+    command_buffer.h
     connect_target.cpp
     connect_target.h
     connection.h
@@ -2662,10 +2694,10 @@ if(CLIENT)
     ghost.h
     graph.cpp
     graph.h
+    graphics_backend.h
     graphics_defines.h
     graphics_threaded.cpp
     graphics_threaded.h
-    graphics_threaded_sprites.cpp
     input.cpp
     input.h
     keyboard.cpp
@@ -2674,6 +2706,9 @@ if(CLIENT)
     keynames.h
     notifications.cpp
     notifications.h
+    presentation_surface.h
+    render_command_queue.cpp
+    render_command_queue.h
     serverbrowser.cpp
     serverbrowser.h
     serverbrowser_http.cpp
@@ -2696,7 +2731,11 @@ if(CLIENT)
     updater.h
     video.cpp
     video.h
+    video_webcodecs.cpp
     warning.cpp
+    window_offscreen.cpp
+    window_sdl.cpp
+    window_sdl.h
     # tidy-alphabetical-end
   )
   set_src(GAME_CLIENT GLOB_RECURSE src/game/client
@@ -2981,6 +3020,8 @@ if(CLIENT)
     render_layer.h
     render_map.cpp
     render_map.h
+    tile_chunk_cache.cpp
+    tile_chunk_cache.h
     # tidy-alphabetical-end
   )
   set(GAME_GENERATED_CLIENT
@@ -2992,6 +3033,104 @@ if(CLIENT)
     src/generated/client_data7.h
     # tidy-alphabetical-end
   )
+  # The graphics without the window. Compiled without the SDL include
+  # directories; the test runner links it alone.
+  set(ENGINE_CLIENT_GRAPHICS_FILES
+    # tidy-alphabetical-start
+    backend/backend_base.cpp
+    backend/backend_base.h
+    backend/embedded_shaders.h
+    backend/glsl_shader_compiler.cpp
+    backend/glsl_shader_compiler.h
+    backend/null/backend_null.cpp
+    backend/null/backend_null.h
+    backend/opengl/backend_opengl.cpp
+    backend/opengl/backend_opengl.h
+    backend/opengl/backend_opengl3.cpp
+    backend/opengl/backend_opengl3.h
+    backend/opengl/backend_opengl_base.cpp
+    backend/opengl/backend_opengl_base.h
+    backend/opengles/backend_opengles3.cpp
+    backend/opengles/backend_opengles3.h
+    backend/opengles/backend_opengles_base.cpp
+    backend/opengles/gles_class_defines.h
+    backend/vulkan/backend_vulkan.cpp
+    backend/vulkan/backend_vulkan.h
+    backend/webgpu/backend_webgpu.cpp
+    backend/webgpu/backend_webgpu.h
+    backend_threaded.cpp
+    backend_threaded.h
+    blocklist_driver.cpp
+    blocklist_driver.h
+    command_buffer.h
+    graphics_backend.h
+    graphics_defines.h
+    graphics_threaded.cpp
+    graphics_threaded.h
+    presentation_surface.h
+    render_command_queue.cpp
+    render_command_queue.h
+    warning.cpp
+    window_offscreen.cpp
+    # tidy-alphabetical-end
+  )
+  set(ENGINE_CLIENT_GRAPHICS)
+  foreach(file ${ENGINE_CLIENT_GRAPHICS_FILES})
+    list(APPEND ENGINE_CLIENT_GRAPHICS "${PROJECT_SOURCE_DIR}/src/engine/client/${file}")
+  endforeach()
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
+
+  # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
+  # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
+  set_glob(ENGINE_CLIENT_SHADERS GLOB "frag;glsl;vert" src/engine/client/backend/shaders
+    # tidy-alphabetical-start
+    blur.frag
+    dialect.glsl
+    planar_yuv.frag
+    prim.frag
+    prim.vert
+    prim3d.frag
+    prim3d.vert
+    primex.frag
+    primex.vert
+    quad.frag
+    quad.vert
+    spritemulti.frag
+    spritemulti.vert
+    text.frag
+    text.vert
+    tile.frag
+    tile.vert
+    tile_border.frag
+    tile_border.vert
+    # tidy-alphabetical-end
+  )
+  set(EMBED_SHADER_ARGS)
+  foreach(file ${ENGINE_CLIENT_SHADERS})
+    get_filename_component(SHADER_NAME "${file}" NAME)
+    list(APPEND EMBED_SHADER_ARGS "${SHADER_NAME}=${file}")
+  endforeach()
+  set(EMBED_SHADER_DEPENDS ${ENGINE_CLIENT_SHADERS})
+  if(VULKAN)
+    foreach(file ${VULKAN_SHADER_OUTPUT_PATHS})
+      get_filename_component(SHADER_NAME "${file}" NAME)
+      list(APPEND EMBED_SHADER_ARGS "vulkan/${SHADER_NAME}=${file}")
+    endforeach()
+    list(APPEND EMBED_SHADER_DEPENDS ${VULKAN_SHADER_OUTPUT_PATHS})
+  endif()
+  set(EMBEDDED_SHADERS_SRC "${PROJECT_BINARY_DIR}/src/generated/embedded_shaders.cpp")
+  add_custom_command(OUTPUT "${EMBEDDED_SHADERS_SRC}"
+    COMMAND ${Python3_EXECUTABLE} scripts/embed_shaders.py "${EMBEDDED_SHADERS_SRC}" ${EMBED_SHADER_ARGS}
+    DEPENDS scripts/embed_shaders.py ${EMBED_SHADER_DEPENDS}
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    COMMENT "Embedding shaders"
+    VERBATIM
+  )
+  # Both graphics libraries use this file, so the Xcode generator needs it to
+  # be generated by a target of its own.
+  add_custom_target(generate_embedded_shaders DEPENDS "${EMBEDDED_SHADERS_SRC}")
+  set_source_files_properties("${EMBEDDED_SHADERS_SRC}" PROPERTIES GENERATED TRUE)
+
   set(CLIENT_SRC ${ENGINE_CLIENT} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP})
@@ -3018,6 +3157,9 @@ if(CLIENT)
     ${PLATFORM_CLIENT_LIBS}
     ${LIBS}
   )
+  if(WEBGPU_NATIVE_BACKEND)
+    list(APPEND LIBS_CLIENT WGPU::Native)
+  endif()
 
   if(DISCORD)
     if(NOT DISCORD_DYNAMIC)
@@ -3046,6 +3188,42 @@ if(CLIENT)
     set(CLIENT_MANIFEST)
   endif()
 
+  # Graphics object library, see ENGINE_CLIENT_GRAPHICS_FILES above. The
+  # generated headers are listed so that their generation belongs to this
+  # target and not to the client, which depends on this target.
+  function(add_graphics_lib NAME)
+    add_library(${NAME} EXCLUDE_FROM_ALL OBJECT ${ARGN} ${EMBEDDED_SHADERS_SRC} src/generated/data_types.h)
+    add_dependencies(${NAME} generate_content_types generate_embedded_shaders)
+    target_include_directories(${NAME} SYSTEM PRIVATE ${PNG_INCLUDE_DIRS} ${VULKAN_INCLUDE_DIRS} ${PLATFORM_CLIENT_INCLUDE_DIRS})
+    if(VULKAN)
+      add_dependencies(${NAME} build_vulkan_shaders)
+      target_compile_definitions(${NAME} PRIVATE CONF_BACKEND_VULKAN)
+    endif()
+    if(WEBGPU_NATIVE_BACKEND)
+      target_link_libraries(${NAME} WGPU::Native)
+    endif()
+    if(WEBGPU_BACKEND_PROTOTYPE)
+      target_compile_definitions(${NAME} PRIVATE CONF_BACKEND_WEBGPU)
+      if(TARGET_OS STREQUAL "emscripten")
+        target_compile_options(${NAME} PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+      endif()
+    endif()
+    set(TARGETS_OWN ${TARGETS_OWN} ${NAME} PARENT_SCOPE)
+  endfunction()
+
+  add_graphics_lib(engine-client-graphics ${ENGINE_CLIENT_GRAPHICS})
+  target_include_directories(engine-client-graphics SYSTEM PRIVATE ${GLEW_INCLUDE_DIRS})
+  if(GLEW_BUNDLED)
+    target_compile_definitions(engine-client-graphics PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
+  endif()
+
+  # Without the OpenGL backends, for what draws offscreen, so that it needs
+  # neither GLEW nor the GL library.
+  set(ENGINE_CLIENT_GRAPHICS_HEADLESS ${ENGINE_CLIENT_GRAPHICS})
+  list(FILTER ENGINE_CLIENT_GRAPHICS_HEADLESS EXCLUDE REGEX "/backend/opengl(es)?/")
+  add_graphics_lib(engine-client-graphics-headless ${ENGINE_CLIENT_GRAPHICS_HEADLESS})
+  target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_NO_OPENGL)
+
   # Target
   if(TARGET_OS STREQUAL "android")
     add_library(game-client SHARED
@@ -3055,6 +3233,7 @@ if(CLIENT)
       ${CLIENT_MANIFEST}
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
@@ -3070,6 +3249,7 @@ if(CLIENT)
       ${CLIENT_MANIFEST}
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
@@ -3085,6 +3265,7 @@ if(CLIENT)
       ${CLIENT_MANIFEST}
       ${DEPS_CLIENT}
       # tidy-alphabetical-start
+      $<TARGET_OBJECTS:engine-client-graphics>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
@@ -3102,6 +3283,10 @@ if(CLIENT)
   )
   target_link_libraries(game-client ${LIBS_CLIENT})
 
+  if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
+    target_compile_options(game-client PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+    target_link_options(game-client PRIVATE "--use-port=emdawnwebgpu:cpp_bindings=false")
+  endif()
   if(TARGET_OS STREQUAL "ios")
     set(IOS_INFO_PLIST "${PROJECT_BINARY_DIR}/ios-Info.plist")
     configure_file("${PROJECT_SOURCE_DIR}/scripts/ios/files/Info.plist.in" "${IOS_INFO_PLIST}")
@@ -3146,8 +3331,23 @@ if(CLIENT)
     ${PLATFORM_CLIENT_INCLUDE_DIRS}
   )
 
-  if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC)
+  if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
     set_own_rpath(game-client)
+  endif()
+  if(WEBGPU_NATIVE_BACKEND)
+    if(TARGET_OS STREQUAL "mac")
+      set_property(TARGET game-client PROPERTY BUILD_RPATH "@loader_path")
+      set_property(TARGET game-client PROPERTY INSTALL_RPATH "@loader_path/../lib/ddnet")
+    endif()
+    foreach(CLIENT_COPY_FILE ${COPY_FILES})
+      get_filename_component(CLIENT_COPY_FILE_ABSOLUTE "${CLIENT_COPY_FILE}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+      add_custom_command(TARGET game-client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CLIENT_COPY_FILE_ABSOLUTE}"
+          "$<TARGET_FILE_DIR:game-client>"
+        VERBATIM
+      )
+    endforeach()
   endif()
 
   if(GLEW_BUNDLED)
@@ -3156,6 +3356,9 @@ if(CLIENT)
 
   if(VULKAN)
     target_compile_definitions(game-client PRIVATE CONF_BACKEND_VULKAN)
+  endif()
+  if(WEBGPU_BACKEND_PROTOTYPE)
+    target_compile_definitions(game-client PRIVATE CONF_BACKEND_WEBGPU)
   endif()
 
   list(APPEND TARGETS_OWN game-client)
@@ -3446,13 +3649,15 @@ if(TOOLS)
   if(NOT QUIC)
     list(FILTER TOOLS_SRC EXCLUDE REGEX "quic_cli\\.cpp$")
   endif()
+  if(NOT CLIENT)
+    # The map renderer draws through the client's graphics backend, so there is
+    # nothing for it to link against in a server-only build.
+    list(FILTER TOOLS_SRC EXCLUDE REGEX "map_render\\.cpp$")
+  endif()
   foreach(ABS_T ${TOOLS_SRC})
     file(RELATIVE_PATH T "${PROJECT_SOURCE_DIR}/src/tools/" ${ABS_T})
     if(T MATCHES "\\.cpp$")
       string(REGEX REPLACE "\\.cpp$" "" TOOL "${T}")
-      if(TOOL MATCHES "^map_render$" AND NOT EGL_FOUND)
-        continue()
-      endif()
       set(TOOL_DEPS ${DEPS})
       set(TOOL_LIBS ${LIBS})
       unset(EXTRA_TOOL_SRC)
@@ -3465,9 +3670,17 @@ if(TOOLS)
         list(APPEND EXTRA_TOOL_SRC "src/tools/config_common.h")
       endif()
       if(TOOL MATCHES "^map_render$")
-        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS} ${FREETYPE_INCLUDE_DIRS} ${GLEW_INCLUDE_DIRS})
-        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx> ${GLEW_DEP})
-        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${FREETYPE_LIBRARIES} ${GLEW_LIBRARIES} ${CMAKE_DL_LIBS} ${EGL_LIBRARY} ${OPENGL_gl_LIBRARY})
+        list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-client-graphics-headless> $<TARGET_OBJECTS:engine-gfx>)
+        # The tool draws with the client's backends and links what the client
+        # links for its window system.
+        list(APPEND TOOL_INCLUDE_DIRS ${PLATFORM_CLIENT_INCLUDE_DIRS})
+        list(APPEND TOOL_LIBS ${PNG_LIBRARIES} ${CMAKE_DL_LIBS} ${PLATFORM_HEADLESS_CLIENT_LIBS} ${VULKAN_LIBRARIES})
+        if(WEBGPU_NATIVE_BACKEND)
+          # engine-client-graphics links this, but the tool takes its objects
+          # rather than the target, and objects carry no link interface.
+          list(APPEND TOOL_LIBS WGPU::Native)
+        endif()
       endif()
       if(TOOL MATCHES "^quic_cli$")
         # The Rust library the transport lives in also needs the C++ side of
@@ -3491,29 +3704,15 @@ if(TOOLS)
       target_link_libraries(${TOOL} ${TOOL_LIBS})
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
-          src/engine/client/graphics_threaded.cpp
-          src/engine/client/backend_egl.cpp
-          src/engine/client/backend/opengl/backend_opengl.cpp
-          src/engine/client/backend/opengl/backend_opengl3.cpp
-          src/engine/client/backend/opengl/opengl_sl.cpp
-          src/engine/client/backend/opengl/opengl_sl_program.cpp
-          src/engine/client/backend/glsl_shader_compiler.cpp
-          src/engine/client/backend/backend_base.cpp
-          src/engine/client/backend_threaded.cpp
-          src/engine/client/blocklist_driver.cpp
-          src/engine/client/warning.cpp
+          # tidy-alphabetical-start
+          src/game/map/envelope_extrema.cpp
           src/game/map/map_renderer.cpp
+          src/game/map/render_component.cpp
           src/game/map/render_layer.cpp
           src/game/map/render_map.cpp
-          src/game/map/render_component.cpp
-          src/game/map/envelope_extrema.cpp
-          ${PROJECT_BINARY_DIR}/src/generated/client_data.h
+          src/game/map/tile_chunk_cache.cpp
+          # tidy-alphabetical-end
         )
-        target_include_directories(map_render PRIVATE ${PROJECT_BINARY_DIR})
-        target_compile_definitions(map_render PRIVATE BACKEND_NO_SDL)
-        if(GLEW_BUNDLED)
-          target_compile_definitions(map_render PRIVATE CONF_GLEW_HAS_CONTEXT_INIT)
-        endif()
       endif()
       list(APPEND TARGETS_TOOLS ${TOOL})
     endif()
@@ -3590,6 +3789,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     game_state_test.cpp
     gameworld_test.cpp
     git_revision_test.cpp
+    graphics_frontend_test.cpp
+    graphics_threaded_test.cpp
     hash_test.cpp
     huffman_test.cpp
     io_test.cpp
@@ -3624,18 +3825,18 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     test.cpp
     test.h
     thread_test.cpp
+    tile_chunk_cache_test.cpp
     time_test.cpp
     timestamp_test.cpp
     unix_test.cpp
     uuid_test.cpp
+    view_size_test.cpp
     vmath_test.cpp
     windows_test.cpp
     # tidy-alphabetical-end
   )
   set(TESTS_EXTRA
     # tidy-alphabetical-start
-    src/engine/client/blocklist_driver.cpp
-    src/engine/client/blocklist_driver.h
     src/engine/client/connect_target.cpp
     src/engine/client/connect_target.h
     src/engine/client/graph.cpp
@@ -3707,10 +3908,31 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   list(APPEND TARGETS_OWN ${TARGET_CLIENT_GAME_STATE_TESTS})
   list(APPEND TARGETS_LINK ${TARGET_CLIENT_GAME_STATE_TESTS})
 
+  # The graphics are tested without a window and without SDL.
+  if(CLIENT)
+    set(TESTS_GRAPHICS
+      $<TARGET_OBJECTS:engine-client-graphics>
+    )
+    set(TESTS_GRAPHICS_LIBS ${GLEW_LIBRARIES} ${VULKAN_LIBRARIES} ${PLATFORM_CLIENT_LIBS})
+    if(WEBGPU_NATIVE_BACKEND)
+      list(APPEND TESTS_GRAPHICS_LIBS WGPU::Native)
+    endif()
+  else()
+    list(REMOVE_ITEM TESTS "${PROJECT_SOURCE_DIR}/src/test/graphics_frontend_test.cpp")
+    set(TESTS_GRAPHICS
+      src/engine/client/blocklist_driver.cpp
+      src/engine/client/blocklist_driver.h
+      src/engine/client/render_command_queue.cpp
+      src/engine/client/render_command_queue.h
+    )
+    set(TESTS_GRAPHICS_LIBS)
+  endif()
+
   set(TARGET_TESTRUNNER testrunner)
   add_executable(${TARGET_TESTRUNNER} EXCLUDE_FROM_ALL
     ${TESTS}
     ${TESTS_EXTRA}
+    ${TESTS_GRAPHICS}
     # tidy-alphabetical-start
     $<TARGET_OBJECTS:engine-gfx>
     $<TARGET_OBJECTS:engine-quic>
@@ -3719,9 +3941,9 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
     # tidy-alphabetical-end
-    ${DEPS}
+    ${DEPS} ${GLEW_DEP}
   )
-  target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${LIBS_SERVER})
+  target_link_libraries(${TARGET_TESTRUNNER} ${PNG_LIBRARIES} ${GTEST_LIBRARIES} ${TESTS_GRAPHICS_LIBS} ${LIBS_SERVER})
   target_include_directories(${TARGET_TESTRUNNER} SYSTEM PRIVATE ${GTEST_INCLUDE_DIRS})
 
   list(APPEND TARGETS_OWN ${TARGET_TESTRUNNER})
@@ -3984,7 +4206,7 @@ if(TOOLS)
     map_extract
     # tidy-alphabetical-end
   )
-  if(EGL_FOUND)
+  if(TARGET map_render)
     list(APPEND TARGET_TOOLS map_render)
   endif()
 else()
@@ -4016,10 +4238,7 @@ set(CPACK_FILES
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
 endif()
-
-set(CPACK_GEN_FILES
-  ${VULKAN_SHADER_FILE_LIST}
-)
+set(CPACK_GEN_FILES)
 
 if(TARGET_OS STREQUAL "windows")
   list(APPEND CPACK_FILES other/config_directory.bat)
@@ -4032,6 +4251,13 @@ if(NOT DEV)
   install(DIRECTORY data DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ddnet COMPONENT data)
   if(TARGET game-client)
     install(TARGETS game-client DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT client)
+    if(WEBGPU_NATIVE_BACKEND)
+      if(TARGET_OS STREQUAL "windows")
+        install(FILES "${WGPU_NATIVE_RUNTIME_LIBRARY}" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT client)
+      else()
+        install(FILES "${WGPU_NATIVE_RUNTIME_LIBRARY}" DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
+      endif()
+    endif()
   endif()
   if(STEAMAPI_KIND STREQUAL SHARED)
     install(TARGETS ${TARGET_STEAMAPI} DESTINATION ${CMAKE_INSTALL_LIBDIR}/ddnet COMPONENT client)
@@ -4053,9 +4279,6 @@ if(NOT DEV)
     if(TARGET game-server)
       install(FILES other/icons/DDNet-Server_${SIZE}x${SIZE}x32.png DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/${SIZE}x${SIZE}/apps RENAME ddnet-server.png COMPONENT server)
     endif()
-  endforeach()
-  foreach(file ${VULKAN_SHADER_OUTPUT_PATHS})
-    install(FILES ${file} DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ddnet/data/shader/vulkan COMPONENT client)
   endforeach()
 endif()
 
@@ -4118,6 +4341,14 @@ if(CLIENT AND DMGBUILD_FOUND)
     set(STEAM_API_DYLIB_FOR_PACKAGE "${PROJECT_BINARY_DIR}/libsteam_api.dylib")
   endif()
 
+  if(WEBGPU_NATIVE_BACKEND)
+    set(DMG_WEBGPU_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${WGPU_NATIVE_RUNTIME_LIBRARY} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/)
+    set(DMG_WEBGPU_DEPENDS ${WGPU_NATIVE_RUNTIME_LIBRARY})
+  else()
+    set(DMG_WEBGPU_COMMANDS)
+    set(DMG_WEBGPU_DEPENDS)
+  endif()
+
   if(MACOS_CODESIGN)
     set(CODESIGN_COMMANDS
         # tidy-alphabetical-start
@@ -4133,6 +4364,11 @@ if(CLIENT AND DMGBUILD_FOUND)
         COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libswscale.8.dylib
         # tidy-alphabetical-end
     )
+    if(WEBGPU_NATIVE_BACKEND)
+      list(APPEND CODESIGN_COMMANDS
+        COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/libwgpu_native.dylib
+      )
+    endif()
     foreach(target ${TARGET_TOOLS})
       list(APPEND CODESIGN_COMMANDS
           COMMAND codesign --force --options runtime --timestamp --sign "${MACOS_APP_IDENTITY}" ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/${target}
@@ -4204,6 +4440,7 @@ if(CLIENT AND DMGBUILD_FOUND)
     COMMAND ${CMAKE_COMMAND} -E copy bundle/client/Info.plist ${PROJECT_SOURCE_DIR}/other/bundle/client/PkgInfo ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:game-client> ${TARGET_TOOLS_FILES} ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/MacOS/
     COMMAND /bin/cp -a ${PROJECT_SOURCE_DIR}/ddnet-libs/sdl/${LIB_DIR}/SDL2.framework ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
+    ${DMG_WEBGPU_COMMANDS}
     # tidy-alphabetical-start
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/discord/${LIB_DIR}/discord_game_sdk.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
     COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/ddnet-libs/ffmpeg/${LIB_DIR}/libavcodec.61.dylib ${DMG_TMPDIR}/${CLIENT_EXECUTABLE}.app/Contents/Frameworks/
@@ -4229,6 +4466,7 @@ if(CLIENT AND DMGBUILD_FOUND)
     DEPENDS
       game-client
       ${TARGET_STEAMAPI}
+      ${DMG_WEBGPU_DEPENDS}
       ${PROJECT_BINARY_DIR}/bundle/client/Info.plist
       ${DMG_SERVER_DEPENDS}
       # tidy-alphabetical-start

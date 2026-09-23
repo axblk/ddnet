@@ -10,6 +10,7 @@
 #include <game/client/game_state.h>
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
+#include <game/client/render.h>
 
 void CDamageInd::Create(CGameState &State, vec2 Pos, vec2 Dir, int OwnerClientId, float Alpha)
 {
@@ -52,8 +53,8 @@ void CDamageInd::OnInit()
 
 	m_DmgIndQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	float ScaleX, ScaleY;
-	Graphics()->GetSpriteScale(SPRITE_STAR1, ScaleX, ScaleY);
+	RenderTools()->GetSpriteScale(SPRITE_STAR1, ScaleX, ScaleY);
 	Graphics()->QuadsSetSubset(0, 0, 1, 1);
-	Graphics()->QuadContainerAddSprite(m_DmgIndQuadContainerIndex, 48.f * ScaleX, 48.f * ScaleY);
+	RenderTools()->QuadContainerAddSprite(m_DmgIndQuadContainerIndex, 48.f * ScaleX, 48.f * ScaleY);
 	Graphics()->QuadContainerUpload(m_DmgIndQuadContainerIndex);
 }

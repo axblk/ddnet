@@ -61,6 +61,7 @@
 #include <engine/favorites.h>
 #include <engine/friends.h>
 #include <engine/graphics.h>
+#include <engine/graphics_window.h>
 #include <engine/map.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
@@ -392,9 +393,10 @@ void CGameClient::OnInit()
 	});
 
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
+	m_pWindow = Kernel()->RequestInterface<IGraphicsWindow>();
 
 	// propagate pointers
-	m_UI.Init(Kernel());
+	m_UI.Init(Kernel(), &m_RenderTools);
 	m_UI.SetOnBackButtonPressedCallback([this]() {
 		m_BackButtonHandledKeyBind = m_KeyBinder.HasPendingKeyReader();
 		if(m_BackButtonHandledKeyBind)
@@ -409,6 +411,7 @@ void CGameClient::OnInit()
 		}
 		OnInput(Event);
 	});
+	m_UI.SetRenderPopupMenuBackdropCallback([this](CUIRect Rect) { m_Menus.RenderBackdropRegion(Rect); });
 	m_RenderTools.Init(Graphics(), TextRender());
 	m_RenderMap.Init(Graphics(), TextRender());
 
@@ -494,7 +497,7 @@ void CGameClient::OnInit()
 
 	// Aggressively try to grab window again since some Windows users report
 	// window not being focused after starting client.
-	Graphics()->SetWindowGrab(true);
+	Window()->SetWindowGrab(true);
 
 	CChecksumData *pChecksum = Client()->ChecksumData();
 	pChecksum->m_SizeofGameClient = sizeof(*this);
@@ -841,7 +844,7 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	m_LastShowDistanceZoom = 0.0f;
 	m_LastZoom = 0.0f;
-	m_LastScreenAspect = 0.0f;
+	m_LastShowDistance = vec2(0.0f, 0.0f);
 	m_LastDeadzone = 0.0f;
 	m_LastFollowFactor = 0.0f;
 	m_LastDummyConnected = false;
@@ -956,7 +959,8 @@ void CGameClient::OnRender()
 	const bool IsVideoOutput = false;
 #endif
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
+	if(!m_Menus.BeginMenuBackdrop(ClearColor))
+		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 	auto RenderInView = [this](const CViewport &Viewport, const auto &Render) {
 		const bool CustomViewport = Viewport.m_Width > 0 && Viewport.m_Height > 0;
 		if(CustomViewport)
@@ -1049,14 +1053,26 @@ void CGameClient::OnRender()
 		m_TouchControls.OnRender(InputContext);
 		m_TouchControls.RenderApplicationOverlay();
 	});
+	m_Menus.FinishMenuBackdrop();
 	m_Scoreboard.BeginRenderFrame();
 	RenderComponents({&m_Scoreboard});
 	RenderInView(InputViewport, [&]() {
 		m_Scoreboard.RenderApplicationOverlay(InputContext);
 	});
 	RenderComponents({&m_Statboard, &m_Motd});
+	// After the backdrop, so that opening the scoreboard does not smear the
+	// cursor along with the scene behind it, and after the boards that blur
+	// it, because a crosshair that is aimed through has to be on top of what
+	// it is aimed through. The menu and the console still cover it: they
+	// take the mouse over and bring their own pointer.
+	for(const CRenderContext &Context : vContexts)
+		RenderInView(Context.m_View.Viewport(), [&]() { m_Hud.RenderCursor(Context); });
 	for(CComponent *pComponent : {static_cast<CComponent *>(&m_Menus), static_cast<CComponent *>(&m_Tooltips), static_cast<CComponent *>(&m_GameConsole)})
 		pComponent->OnRenderApplicationOverlay();
+
+	// Nothing captured what was drawn over the scene, so it goes to the screen
+	// as it is.
+	m_Menus.PresentMenuBackdrop();
 
 	CLineInput::RenderCandidates();
 }
@@ -1979,6 +1995,9 @@ static CGameInfo GetGameInfo(const CNetObj_GameInfoEx *pInfoEx, int InfoExSize, 
 	}
 
 	CGameInfo Info;
+	// Anything that sends the extended game info also knows Cl_ShowDistance;
+	// both are DDNet extensions and no server has one without the other.
+	Info.m_ClipsToShowDistance = Version >= 0;
 	Info.m_DeclaresRuleset = Version >= 2;
 	Info.m_FlagStartsRace = FastCap;
 	Info.m_TimeScore = Race;
@@ -2755,13 +2774,16 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		}
 
 		// send show distance
-		if(ShowDistanceZoom != m_LastShowDistanceZoom || Graphics()->ScreenAspect() != m_LastScreenAspect)
+		// The size itself decides, not what went into it: the zoom, the screen and
+		// the setting for wide screens all move it, and the server only cares that it
+		// clips to what is on screen.
+		float ShowDistanceX, ShowDistanceY;
+		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
+		if(ShowDistanceX != m_LastShowDistance.x || ShowDistanceY != m_LastShowDistance.y)
 		{
 			CNetMsg_Cl_ShowDistance Msg;
-			float x, y;
-			Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
-			Msg.m_X = x;
-			Msg.m_Y = y;
+			Msg.m_X = ShowDistanceX;
+			Msg.m_Y = ShowDistanceY;
 			Client()->ChecksumData()->m_Zoom = ShowDistanceZoom;
 			CMsgPacker Packer(&Msg);
 			Msg.Pack(&Packer);
@@ -2787,8 +2809,8 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		}
 
 		m_LastShowDistanceZoom = ShowDistanceZoom;
+		m_LastShowDistance = vec2(ShowDistanceX, ShowDistanceY);
 		m_LastZoom = Zoom;
-		m_LastScreenAspect = Graphics()->ScreenAspect();
 		m_LastDeadzone = Deadzone;
 		m_LastFollowFactor = FollowFactor;
 		m_LastDummyConnected = Client()->DummyConnected();

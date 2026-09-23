@@ -1,22 +1,17 @@
 #ifndef ENGINE_CLIENT_BACKEND_BACKEND_BASE_H
 #define ENGINE_CLIENT_BACKEND_BACKEND_BASE_H
 
-#include <engine/client/graphics_threaded.h>
+#include <engine/client/command_buffer.h>
+#include <engine/client/graphics_backend.h>
+#include <engine/client/presentation_surface.h>
 #include <engine/graphics.h>
-
-#ifndef BACKEND_NO_SDL
-#include <SDL_video.h>
-#else
-struct SDL_Window;
-#endif
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
-
-struct SBackendCapabilities;
 
 enum EDebugGfxModes
 {
@@ -55,25 +50,13 @@ enum EGfxWarningType
 	GFX_WARNING_TYPE_INIT_FAILED,
 	GFX_WARNING_TYPE_INIT_FAILED_MISSING_INTEGRATED_GPU_DRIVER,
 	GFX_WARNING_TYPE_INIT_FAILED_NO_DEVICE_WITH_REQUIRED_VERSION,
-	GFX_WARNING_LOW_ON_MEMORY,
 	GFX_WARNING_MISSING_EXTENSION,
-	GFX_WARNING_TYPE_UNKNOWN,
 };
 
 struct SGfxErrorContainer
 {
-	struct SError
-	{
-		bool m_RequiresTranslation;
-		std::string m_Err;
-
-		bool operator==(const SError &Other) const
-		{
-			return m_RequiresTranslation == Other.m_RequiresTranslation && m_Err == Other.m_Err;
-		}
-	};
 	EGfxErrorType m_ErrorType = EGfxErrorType::GFX_ERROR_TYPE_NONE;
-	std::vector<SError> m_vErrors;
+	std::vector<std::string> m_vErrors;
 };
 
 struct SGfxWarningContainer
@@ -82,22 +65,54 @@ struct SGfxWarningContainer
 	std::vector<std::string> m_vWarnings;
 };
 
-class CCommandProcessorFragment_GLBase
+class CCommandProcessorFragment_Renderer
 {
 protected:
 	SGfxErrorContainer m_Error;
 	SGfxWarningContainer m_Warning;
 
-	static void Texture2DTo3D(uint8_t *pImageBuffer, int ImageWidth, int ImageHeight, size_t PixelSize, int SplitCountWidth, int SplitCountHeight, uint8_t *pTarget3DImageData, int &Target3DImageWidth, int &Target3DImageHeight);
+	// Which of the frontend's handles are alive on this side.
+	CGenerationHandleStore<IGraphics::CTextureHandle> m_TextureHandles;
+	CGenerationHandleStore<IGraphics::CBufferHandle> m_BufferHandles;
 
-	virtual bool GetPresentedImageData(uint32_t &Width, uint32_t &Height, CImageInfo::EImageFormat &Format, std::vector<uint8_t> &vDstData) = 0;
+	/**
+	 * Turns the screen rectangle a draw is in into the scale and translation
+	 * that map it onto clip space. Vulkan's clip space has y pointing down,
+	 * OpenGL's and WebGPU's point up.
+	 *
+	 * @return false when the rectangle is empty.
+	 */
+	[[nodiscard]] static bool ScreenToClip(const CCommandBuffer::SPoint &ScreenTL, const CCommandBuffer::SPoint &ScreenBR, bool ClipYUp, vec2 &Scale, vec2 &Translate);
+
+	/**
+	 * Turns a 2D atlas into the layer-major image an array or volume texture is
+	 * uploaded from, resizing first when the atlas does not divide into whole
+	 * layers.
+	 *
+	 * @return The converted buffer, or nullptr when an allocation failed.
+	 */
+	static std::unique_ptr<uint8_t, decltype(&free)> PrepareLayeredImage(const uint8_t *pData, int Width, int Height, size_t PixelSize, int LayerColumns, int LayerRows, int &LayerWidth, int &LayerHeight);
+
+	// Whether the handles a draw names are alive and its program exists. True
+	// for anything that is not a draw.
+	[[nodiscard]] bool IsDrawCommandValid(const CCommandBuffer::SCommand *pCommand) const;
+
+	// Copies a mapped readback whose rows are Pitch bytes apart into a tight
+	// RGBA image, swapping red and blue for BGRA.
+	static void CopyReadbackRows(const uint8_t *pSource, size_t Pitch, uint32_t Width, uint32_t Height, bool BGRA, bool OpaqueAlpha, uint8_t *pDestination);
+
+	// A timestamp difference in nanoseconds, rounded and saturated.
+	[[nodiscard]] static uint64_t TicksToNanoseconds(uint64_t Ticks, float PeriodNanoseconds);
+
+	// Reports a command the backend cannot carry out, once per reason.
+	void DropCommand(const char *pReason) const;
+
+private:
+	mutable std::vector<std::string> m_vDroppedCommandReasons;
 
 public:
-	virtual ~CCommandProcessorFragment_GLBase() = default;
+	virtual ~CCommandProcessorFragment_Renderer() = default;
 	virtual ERunCommandReturnTypes RunCommand(const CCommandBuffer::SCommand *pBaseCommand) = 0;
-
-	virtual void StartCommands(size_t CommandCount, size_t EstimatedRenderCallCount) {}
-	virtual void EndCommands() {}
 
 	const SGfxErrorContainer &GetError() { return m_Error; }
 	virtual void ErroneousCleanup() {}
@@ -106,10 +121,23 @@ public:
 
 	enum
 	{
-		CMD_PRE_INIT = CCommandBuffer::CMDGROUP_PLATFORM_GL,
+		CMD_PRE_INIT = CCommandBuffer::CMDGROUP_RENDERER,
 		CMD_INIT,
 		CMD_SHUTDOWN,
 		CMD_POST_SHUTDOWN,
+	};
+
+	// Whether there is a surface. Without one there is no swapchain, present
+	// queue, vsync or swap.
+	struct SPresentationSurface
+	{
+		// Who owns the window, asked for a Vulkan surface, a native window
+		// handle or a buffer swap. Null without a surface.
+		IPresentationSurface *m_pSurface = nullptr;
+		uint32_t m_Width = 0;
+		uint32_t m_Height = 0;
+
+		[[nodiscard]] bool IsPresentable() const { return m_pSurface != nullptr; }
 	};
 
 	struct SCommand_PreInit : public CCommandBuffer::SCommand
@@ -117,9 +145,7 @@ public:
 		SCommand_PreInit() :
 			SCommand(CMD_PRE_INIT) {}
 
-		SDL_Window *m_pWindow;
-		uint32_t m_Width;
-		uint32_t m_Height;
+		SPresentationSurface m_Surface;
 
 		char *m_pVendorString;
 		char *m_pVersionString;
@@ -133,19 +159,16 @@ public:
 		SCommand_Init() :
 			SCommand(CMD_INIT) {}
 
-		SDL_Window *m_pWindow;
-		uint32_t m_Width;
-		uint32_t m_Height;
+		SPresentationSurface m_Surface;
 
 		class IStorage *m_pStorage;
 		std::atomic<uint64_t> *m_pTextureMemoryUsage;
 		std::atomic<uint64_t> *m_pBufferMemoryUsage;
 		std::atomic<uint64_t> *m_pStreamMemoryUsage;
 		std::atomic<uint64_t> *m_pStagingMemoryUsage;
+		SGpuTimingShared *m_pGpuTiming = nullptr;
 
 		TTwGraphicsGpuList *m_pGpuList;
-
-		TGLBackendReadPresentedImageData *m_pReadPresentedImageDataFunc;
 
 		SBackendCapabilities *m_pCapabilities;
 		int *m_pInitError;
@@ -159,6 +182,8 @@ public:
 		int m_RequestedMajor;
 		int m_RequestedMinor;
 		int m_RequestedPatch;
+		bool m_VSync;
+		uint32_t m_RequestedMultiSamplingCount;
 
 		EBackendType m_RequestedBackend;
 

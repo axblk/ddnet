@@ -667,7 +667,7 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 		break;
 	}
 	case WEAPON_GUN:
-		if(!pCharacter->Core()->m_Jetpack || !pCharacter->GetPlayer()->m_NinjaJetpack || pCharacter->HasTelegunGun())
+		if(!pCharacter->Core()->m_Jetpack || !pCharacter->NinjaJetpack() || pCharacter->HasTelegunGun())
 		{
 			new CProjectile(
 				pCharacter->GameWorld(),

@@ -41,7 +41,6 @@ public:
 	int GetCid() const { return m_ClientId; }
 	uint32_t GetUniqueCid() const { return m_UniqueClientId; }
 	int GetClientVersion() const;
-	bool SetTimerType(int TimerType);
 
 	void Tick();
 	void PostTick();
@@ -138,8 +137,11 @@ private:
 	CGameContext *m_pGameServer;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
+
+protected:
 	IServer *Server() const;
 
+private:
 	//
 	bool m_Spawning;
 	bool m_WeakHookSpawn;
@@ -169,16 +171,6 @@ public:
 		PAUSE_SPEC
 	};
 
-	enum
-	{
-		TIMERTYPE_DEFAULT = -1,
-		TIMERTYPE_GAMETIMER,
-		TIMERTYPE_BROADCAST,
-		TIMERTYPE_GAMETIMER_AND_BROADCAST,
-		TIMERTYPE_SIXUP,
-		TIMERTYPE_NONE,
-	};
-
 	bool m_DND;
 	bool m_Whispers;
 	int64_t m_FirstVoteTick;
@@ -195,7 +187,6 @@ public:
 	bool m_ShowAll;
 	bool m_EnableSpectatorCount;
 	vec2 m_ShowDistance;
-	bool m_NinjaJetpack;
 
 	// camera info is used sparingly for converting aim target to absolute world coordinates
 	class CCameraInfo
@@ -239,7 +230,6 @@ public:
 	bool m_LastTargetInit;
 
 	bool m_EyeEmoteEnabled;
-	int m_TimerType;
 
 	// Tick at which to kick the client if it still hasn't identified as a DDNet-based client
 	int m_DDNetVersionKickTick;

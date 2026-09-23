@@ -4,8 +4,9 @@
 
 #include <engine/shared/protocol.h>
 
+#include <game/gamecore.h>
 #include <game/race_state.h>
-#include <game/server/gamecontext.h>
+#include <game/server/mode/game_services.h>
 #include <game/server/save.h>
 #include <game/team_state.h>
 #include <game/teamscore.h>
@@ -17,6 +18,7 @@ class CCharacter;
 class CCharacterDDRace;
 class CPlayer;
 class CScore;
+class IGameController;
 class IServer;
 struct CScoreSaveResult;
 
@@ -70,7 +72,9 @@ private:
 	int m_aLegacyTeamMap[NUM_DDRACE_TEAMS] = {};
 	void UpdateLegacyTeamMap();
 
-	CGameContext *m_pGameContext;
+	CGameServices &m_Services;
+	// the mode that owns these teams
+	const IGameController &m_Controller;
 	CScore *m_pScore = nullptr;
 	CScore &Score() const;
 
@@ -88,15 +92,14 @@ private:
 public:
 	CTeamsCore &m_Core;
 
-	CGameTeams(CGameContext *pGameContext, CTeamsCore &TeamsCore);
+	CGameTeams(CGameServices &Services, CTeamsCore &TeamsCore, const IGameController &Controller);
 	void SetScore(CScore *pScore) { m_pScore = pScore; }
 
 	// helper methods
 	CCharacterDDRace *Character(int ClientId);
 	const CCharacterDDRace *Character(int ClientId) const;
 	CPlayer *GetPlayer(int ClientId);
-	CGameContext *GameServer();
-	const CGameContext *GameServer() const;
+	CGameServices &Services() const { return m_Services; }
 	IServer *Server();
 	const IServer *Server() const;
 
@@ -124,7 +127,7 @@ public:
 
 	void ChangeTeamState(int Team, ETeamState State);
 
-	CClientMask TeamMask(int Team, int ExceptId = -1, int Asker = -1, int VersionFlags = CGameContext::FLAG_SIX | CGameContext::FLAG_SIXUP);
+	CClientMask TeamMask(int Team, int ExceptId = -1, int Asker = -1, int VersionFlags = CGameServices::FLAG_SIX | CGameServices::FLAG_SIXUP);
 
 	int TeamSize(int Team) const;
 

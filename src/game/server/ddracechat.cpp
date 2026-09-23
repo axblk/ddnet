@@ -141,8 +141,7 @@ void CGameContext::ConWhispers(IConsole::IResult *pResult, void *pUserData)
 
 void CGameControllerDDRace::ConMap(IConsole::IResult *pResult, void *pUserData)
 {
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	auto *pController = static_cast<CGameControllerDDRace *>(pSelf->GameHost().Controller());
+	CGameControllerDDRace *pSelf = static_cast<CGameControllerDDRace *>(pUserData);
 	if(!CheckClientId(pResult->m_ClientId))
 		return;
 
@@ -158,39 +157,38 @@ void CGameControllerDDRace::ConMap(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
+	CPlayer *pPlayer = pSelf->Services().Player(pResult->m_ClientId);
 	if(!pPlayer)
 		return;
 
-	if(pSelf->RateLimitPlayerVote(pResult->m_ClientId) || pSelf->RateLimitPlayerMapVote(pResult->m_ClientId))
+	if(pSelf->Services().Votes().RateLimit(pResult->m_ClientId) || pSelf->Services().Votes().RateLimitMap(pResult->m_ClientId))
 		return;
 
-	pController->RaceScore().MapVote(pResult->m_ClientId, pResult->GetString(0));
+	pSelf->RaceScore().MapVote(pResult->m_ClientId, pResult->GetString(0));
 }
 
 void CGameControllerDDRace::ConMapInfo(IConsole::IResult *pResult, void *pUserData)
 {
-	CGameContext *pSelf = (CGameContext *)pUserData;
-	auto *pController = static_cast<CGameControllerDDRace *>(pSelf->GameHost().Controller());
+	CGameControllerDDRace *pSelf = static_cast<CGameControllerDDRace *>(pUserData);
 	if(!CheckClientId(pResult->m_ClientId))
 		return;
 
-	CPlayer *pPlayer = pSelf->m_apPlayers[pResult->m_ClientId];
+	CPlayer *pPlayer = pSelf->Services().Player(pResult->m_ClientId);
 	if(!pPlayer)
 		return;
 
 	// use cached map info for current map
-	const bool IsCurrentMap = pResult->NumArguments() == 0 || str_comp_nocase(pResult->GetString(0), pSelf->Map()->BaseName()) == 0;
-	if(IsCurrentMap && pController->RaceScore().MapInfoMessage()[0] != '\0')
+	const bool IsCurrentMap = pResult->NumArguments() == 0 || str_comp_nocase(pResult->GetString(0), pSelf->Services().Map()->BaseName()) == 0;
+	if(IsCurrentMap && pSelf->RaceScore().MapInfoMessage()[0] != '\0')
 	{
-		pSelf->SendChatTarget(pResult->m_ClientId, pController->RaceScore().MapInfoMessage());
+		pSelf->Services().SendChatTarget(pResult->m_ClientId, pSelf->RaceScore().MapInfoMessage());
 		return;
 	}
 
 	if(pResult->NumArguments() > 0)
-		pController->RaceScore().MapInfo(pResult->m_ClientId, pResult->GetString(0));
+		pSelf->RaceScore().MapInfo(pResult->m_ClientId, pResult->GetString(0));
 	else
-		pController->RaceScore().MapInfo(pResult->m_ClientId, pSelf->Map()->BaseName());
+		pSelf->RaceScore().MapInfo(pResult->m_ClientId, pSelf->Services().Map()->BaseName());
 }
 
 void CGameContext::ConTimeout(IConsole::IResult *pResult, void *pUserData)

@@ -5,6 +5,10 @@
 
 #include <game/server/gamecontroller.h>
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 // zero-initialized before any registration runs, whatever the order of the static initializers
 static const CGameModeRegistration *gs_pFirstGameMode = nullptr;
 
@@ -27,6 +31,22 @@ static const CGameModeRegistration *FindRegistration(const char *pName)
 		pFound = pMode;
 	}
 	return pFound;
+}
+
+const char *GameModeNames()
+{
+	// the registrations are complete before main, so the list is built once and lives as long as the program
+	static const std::string s_Names = [] {
+		std::vector<std::string> vNames;
+		for(const CGameModeRegistration *pMode = gs_pFirstGameMode; pMode; pMode = pMode->m_pNext)
+			vNames.emplace_back(pMode->m_Info.m_pName);
+		std::sort(vNames.begin(), vNames.end());
+		std::string Names;
+		for(const std::string &Name : vNames)
+			Names += (Names.empty() ? "" : ", ") + Name;
+		return Names;
+	}();
+	return s_Names.c_str();
 }
 
 const CGameModeInfo *FindGameMode(const char *pName)

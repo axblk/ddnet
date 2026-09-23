@@ -3173,6 +3173,8 @@ if(SERVER)
     gamemodes/ddrace_character.h
     gamemodes/ddrace_map_entities.cpp
     gamemodes/ddrace_map_entities.h
+    gamemodes/ddrace_player.cpp
+    gamemodes/ddrace_player.h
     gameworld.cpp
     gameworld.h
     interactions.cpp

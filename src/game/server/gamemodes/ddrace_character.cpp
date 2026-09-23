@@ -1,6 +1,7 @@
 #include "ddrace_character.h"
 
 #include "ddrace.h"
+#include "ddrace_player.h"
 
 #include <base/log.h>
 #include <base/mem.h>
@@ -12,9 +13,10 @@
 #include <generated/protocol.h>
 #include <generated/server_data.h>
 
+#include <game/collision.h>
+#include <game/gamecore.h>
 #include <game/mapitems.h>
 #include <game/server/entities/pickup.h>
-#include <game/server/gamecontext.h>
 #include <game/server/gamecontroller.h>
 #include <game/server/player.h>
 #include <game/server/score.h>
@@ -24,12 +26,33 @@
 #include <cmath>
 #include <vector>
 
+CCharacterDDRace::CCharacterDDRace(CGameControllerDDRace &Controller, CGameWorld *pWorld, CNetObj_PlayerInput LastInput) :
+	CCharacter(pWorld, LastInput),
+	m_Controller(Controller)
+{
+}
+
+CGameServices &CCharacterDDRace::Services() const
+{
+	return m_Controller.Services();
+}
+
+CPlayerDDRace *CCharacterDDRace::RacePlayer() const
+{
+	return static_cast<CPlayerDDRace *>(m_pPlayer);
+}
+
+bool CCharacterDDRace::NinjaJetpack() const
+{
+	return RacePlayer()->m_NinjaJetpack;
+}
+
 void CCharacterDDRace::PreTick()
 {
 	if(m_StartTime > GameWorld()->GameTick())
 	{
 		// Time penalty tiles can move the race start into the future. Do not expose a negative race time.
-		GameServer()->SendChatTarget(m_Core.m_Id, "You died of old age");
+		Services().SendChatTarget(m_Core.m_Id, "You died of old age");
 		Die(m_Core.m_Id, WEAPON_WORLD);
 	}
 	CCharacter::PreTick();
@@ -66,7 +89,7 @@ bool CCharacterDDRace::TryStartWarning()
 void CCharacterDDRace::SendStartWarning(const char *pMessage)
 {
 	if(TryStartWarning())
-		GameServer()->SendChatTarget(m_Core.m_Id, pMessage);
+		Services().SendChatTarget(m_Core.m_Id, pMessage);
 }
 
 void CCharacterDDRace::SetRaceTeams(CGameTeams *pTeams)
@@ -163,7 +186,7 @@ bool CCharacterDDRace::Rescue()
 		{
 			char aBuf[256];
 			str_format(aBuf, sizeof(aBuf), "You have to wait %d seconds until you can rescue yourself", (int)((m_LastRescue + (int64_t)g_Config.m_SvRescueDelay * GameWorld()->GameTickSpeed() - GameWorld()->GameTick()) / GameWorld()->GameTickSpeed()));
-			GameServer()->SendChatTarget(m_Core.m_Id, aBuf);
+			Services().SendChatTarget(m_Core.m_Id, aBuf);
 			return false;
 		}
 
@@ -200,16 +223,16 @@ void CCharacterDDRace::HandleBroadcast()
 		char aBroadcast[128];
 		float Diff = m_aCurrentTimeCp[m_LastTimeCp] - pData->m_aBestTimeCp[m_LastTimeCp];
 		str_format(aBroadcast, sizeof(aBroadcast), "Checkpoint | Diff : %+5.2f", Diff);
-		GameServer()->SendBroadcast(aBroadcast, m_Core.m_Id);
+		Services().SendBroadcast(aBroadcast, m_Core.m_Id);
 		m_LastTimeCpBroadcasted = m_LastTimeCp;
 		m_LastBroadcast = GameWorld()->GameTick();
 	}
-	else if((m_pPlayer->m_TimerType == CPlayer::TIMERTYPE_BROADCAST || m_pPlayer->m_TimerType == CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) && m_DDRaceState == ERaceState::STARTED && m_LastBroadcast + GameWorld()->GameTickSpeed() * g_Config.m_SvTimeInBroadcastInterval <= GameWorld()->GameTick())
+	else if((RacePlayer()->m_TimerType == CPlayerDDRace::TIMERTYPE_BROADCAST || RacePlayer()->m_TimerType == CPlayerDDRace::TIMERTYPE_GAMETIMER_AND_BROADCAST) && m_DDRaceState == ERaceState::STARTED && m_LastBroadcast + GameWorld()->GameTickSpeed() * g_Config.m_SvTimeInBroadcastInterval <= GameWorld()->GameTick())
 	{
 		char aBuf[32];
 		int Time = (int64_t)100 * ((float)(GameWorld()->GameTick() - m_StartTime) / ((float)GameWorld()->GameTickSpeed()));
 		str_time(Time, ETimeFormat::HOURS, aBuf, sizeof(aBuf));
-		GameServer()->SendBroadcast(aBuf, m_Core.m_Id, false);
+		Services().SendBroadcast(aBuf, m_Core.m_Id, false);
 		m_LastTimeCpBroadcasted = m_LastTimeCp;
 		m_LastBroadcast = GameWorld()->GameTick();
 	}
@@ -228,8 +251,8 @@ void CCharacterDDRace::HandleRaceDeathTiles()
 			if(GameWorld()->GameTick() - m_pPlayer->m_DieTick >= GameWorld()->GameTickSpeed())
 			{
 				m_pPlayer->m_DieTick = GameWorld()->GameTick();
-				GameServer()->CreateSound(m_Pos, SOUND_PLAYER_DIE, TeamMask());
-				GameServer()->CreateDeath(m_Pos, m_Core.m_Id, TeamMask());
+				Services().CreateSound(m_Pos, SOUND_PLAYER_DIE, TeamMask());
+				Services().CreateDeath(m_Pos, m_Core.m_Id, TeamMask());
 			}
 		}
 		else
@@ -381,7 +404,7 @@ void CCharacterDDRace::HandleRaceTiles(int MapIndex)
 	if(TeleCheckpoint)
 		m_TeleCheckpoint = TeleCheckpoint;
 
-	static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->HandleRaceTiles(this, MapIndex);
+	m_Controller.HandleRaceTiles(this, MapIndex);
 }
 
 void CCharacterDDRace::HandleRaceTimeTiles(int SwitchType, int SwitchNumber, int SwitchDelay)
@@ -405,9 +428,9 @@ void CCharacterDDRace::HandleRaceTimeTiles(int SwitchType, int SwitchNumber, int
 	{
 		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
 		{
-			if(TeamsCore()->Team(ClientId) == Team() && ClientId != m_Core.m_Id && GameServer()->m_apPlayers[ClientId])
+			if(TeamsCore()->Team(ClientId) == Team() && ClientId != m_Core.m_Id && Services().Player(ClientId))
 			{
-				CCharacterDDRace *pCharacter = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[ClientId]->GetCharacter());
+				CCharacterDDRace *pCharacter = static_cast<CCharacterDDRace *>(Services().Player(ClientId)->GetCharacter());
 				if(pCharacter)
 					pCharacter->m_StartTime = m_StartTime;
 			}
@@ -474,7 +497,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	// hit others
 	if(((m_TileIndex == TILE_HIT_DISABLE) || (m_TileFIndex == TILE_HIT_DISABLE)) && (!m_Core.m_HammerHitDisabled || !m_Core.m_ShotgunHitDisabled || !m_Core.m_GrenadeHitDisabled || !m_Core.m_LaserHitDisabled))
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't hit others");
+		Services().SendChatTarget(m_Core.m_Id, "You can't hit others");
 		m_Core.m_HammerHitDisabled = true;
 		m_Core.m_ShotgunHitDisabled = true;
 		m_Core.m_GrenadeHitDisabled = true;
@@ -482,7 +505,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	}
 	else if(((m_TileIndex == TILE_HIT_ENABLE) || (m_TileFIndex == TILE_HIT_ENABLE)) && (m_Core.m_HammerHitDisabled || m_Core.m_ShotgunHitDisabled || m_Core.m_GrenadeHitDisabled || m_Core.m_LaserHitDisabled))
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can hit others");
+		Services().SendChatTarget(m_Core.m_Id, "You can hit others");
 		m_Core.m_ShotgunHitDisabled = false;
 		m_Core.m_GrenadeHitDisabled = false;
 		m_Core.m_HammerHitDisabled = false;
@@ -492,36 +515,36 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	// collide with others
 	if(((m_TileIndex == TILE_NPC_DISABLE) || (m_TileFIndex == TILE_NPC_DISABLE)) && !m_Core.m_CollisionDisabled)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't collide with others");
+		Services().SendChatTarget(m_Core.m_Id, "You can't collide with others");
 		m_Core.m_CollisionDisabled = true;
 	}
 	else if(((m_TileIndex == TILE_NPC_ENABLE) || (m_TileFIndex == TILE_NPC_ENABLE)) && m_Core.m_CollisionDisabled)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can collide with others");
+		Services().SendChatTarget(m_Core.m_Id, "You can collide with others");
 		m_Core.m_CollisionDisabled = false;
 	}
 
 	// hook others
 	if(((m_TileIndex == TILE_NPH_DISABLE) || (m_TileFIndex == TILE_NPH_DISABLE)) && !m_Core.m_HookHitDisabled)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't hook others");
+		Services().SendChatTarget(m_Core.m_Id, "You can't hook others");
 		m_Core.m_HookHitDisabled = true;
 	}
 	else if(((m_TileIndex == TILE_NPH_ENABLE) || (m_TileFIndex == TILE_NPH_ENABLE)) && m_Core.m_HookHitDisabled)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can hook others");
+		Services().SendChatTarget(m_Core.m_Id, "You can hook others");
 		m_Core.m_HookHitDisabled = false;
 	}
 
 	// unlimited air jumps
 	if(((m_TileIndex == TILE_UNLIMITED_JUMPS_ENABLE) || (m_TileFIndex == TILE_UNLIMITED_JUMPS_ENABLE)) && !m_Core.m_EndlessJump)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You have unlimited air jumps");
+		Services().SendChatTarget(m_Core.m_Id, "You have unlimited air jumps");
 		m_Core.m_EndlessJump = true;
 	}
 	else if(((m_TileIndex == TILE_UNLIMITED_JUMPS_DISABLE) || (m_TileFIndex == TILE_UNLIMITED_JUMPS_DISABLE)) && m_Core.m_EndlessJump)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You don't have unlimited air jumps");
+		Services().SendChatTarget(m_Core.m_Id, "You don't have unlimited air jumps");
 		m_Core.m_EndlessJump = false;
 	}
 
@@ -539,12 +562,12 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	// jetpack gun
 	if(((m_TileIndex == TILE_JETPACK_ENABLE) || (m_TileFIndex == TILE_JETPACK_ENABLE)) && !m_Core.m_Jetpack)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You have a jetpack gun");
+		Services().SendChatTarget(m_Core.m_Id, "You have a jetpack gun");
 		m_Core.m_Jetpack = true;
 	}
 	else if(((m_TileIndex == TILE_JETPACK_DISABLE) || (m_TileFIndex == TILE_JETPACK_DISABLE)) && m_Core.m_Jetpack)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You lost your jetpack gun");
+		Services().SendChatTarget(m_Core.m_Id, "You lost your jetpack gun");
 		m_Core.m_Jetpack = false;
 	}
 
@@ -565,50 +588,50 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	{
 		m_Core.m_HasTelegunGun = true;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport gun enabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport gun enabled");
 	}
 	else if(((m_TileIndex == TILE_TELE_GUN_DISABLE) || (m_TileFIndex == TILE_TELE_GUN_DISABLE)) && m_Core.m_HasTelegunGun)
 	{
 		m_Core.m_HasTelegunGun = false;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport gun disabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport gun disabled");
 	}
 
 	if(((m_TileIndex == TILE_TELE_GRENADE_ENABLE) || (m_TileFIndex == TILE_TELE_GRENADE_ENABLE)) && !m_Core.m_HasTelegunGrenade)
 	{
 		m_Core.m_HasTelegunGrenade = true;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport grenade enabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport grenade enabled");
 	}
 	else if(((m_TileIndex == TILE_TELE_GRENADE_DISABLE) || (m_TileFIndex == TILE_TELE_GRENADE_DISABLE)) && m_Core.m_HasTelegunGrenade)
 	{
 		m_Core.m_HasTelegunGrenade = false;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport grenade disabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport grenade disabled");
 	}
 
 	if(((m_TileIndex == TILE_TELE_LASER_ENABLE) || (m_TileFIndex == TILE_TELE_LASER_ENABLE)) && !m_Core.m_HasTelegunLaser)
 	{
 		m_Core.m_HasTelegunLaser = true;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport laser enabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport laser enabled");
 	}
 	else if(((m_TileIndex == TILE_TELE_LASER_DISABLE) || (m_TileFIndex == TILE_TELE_LASER_DISABLE)) && m_Core.m_HasTelegunLaser)
 	{
 		m_Core.m_HasTelegunLaser = false;
 
-		GameServer()->SendChatTarget(m_Core.m_Id, "Teleport laser disabled");
+		Services().SendChatTarget(m_Core.m_Id, "Teleport laser disabled");
 	}
 
 	// solo part
 	if(((m_TileIndex == TILE_SOLO_ENABLE) || (m_TileFIndex == TILE_SOLO_ENABLE)) && !TeamsCore()->GetSolo(m_Core.m_Id))
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You are now in a solo part");
+		Services().SendChatTarget(m_Core.m_Id, "You are now in a solo part");
 		SetSolo(true);
 	}
 	else if(((m_TileIndex == TILE_SOLO_DISABLE) || (m_TileFIndex == TILE_SOLO_DISABLE)) && TeamsCore()->GetSolo(m_Core.m_Id))
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You are now out of the solo part");
+		Services().SendChatTarget(m_Core.m_Id, "You are now out of the solo part");
 		SetSolo(false);
 	}
 
@@ -685,42 +708,42 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 	}
 	else if(SwitchType == TILE_HIT_ENABLE && m_Core.m_HammerHitDisabled && SwitchDelay == WEAPON_HAMMER)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can hammer hit others");
+		Services().SendChatTarget(m_Core.m_Id, "You can hammer hit others");
 		m_Core.m_HammerHitDisabled = false;
 	}
 	else if(SwitchType == TILE_HIT_DISABLE && !(m_Core.m_HammerHitDisabled) && SwitchDelay == WEAPON_HAMMER)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't hammer hit others");
+		Services().SendChatTarget(m_Core.m_Id, "You can't hammer hit others");
 		m_Core.m_HammerHitDisabled = true;
 	}
 	else if(SwitchType == TILE_HIT_ENABLE && m_Core.m_ShotgunHitDisabled && SwitchDelay == WEAPON_SHOTGUN)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can shoot others with shotgun");
+		Services().SendChatTarget(m_Core.m_Id, "You can shoot others with shotgun");
 		m_Core.m_ShotgunHitDisabled = false;
 	}
 	else if(SwitchType == TILE_HIT_DISABLE && !(m_Core.m_ShotgunHitDisabled) && SwitchDelay == WEAPON_SHOTGUN)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't shoot others with shotgun");
+		Services().SendChatTarget(m_Core.m_Id, "You can't shoot others with shotgun");
 		m_Core.m_ShotgunHitDisabled = true;
 	}
 	else if(SwitchType == TILE_HIT_ENABLE && m_Core.m_GrenadeHitDisabled && SwitchDelay == WEAPON_GRENADE)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can shoot others with grenade");
+		Services().SendChatTarget(m_Core.m_Id, "You can shoot others with grenade");
 		m_Core.m_GrenadeHitDisabled = false;
 	}
 	else if(SwitchType == TILE_HIT_DISABLE && !(m_Core.m_GrenadeHitDisabled) && SwitchDelay == WEAPON_GRENADE)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't shoot others with grenade");
+		Services().SendChatTarget(m_Core.m_Id, "You can't shoot others with grenade");
 		m_Core.m_GrenadeHitDisabled = true;
 	}
 	else if(SwitchType == TILE_HIT_ENABLE && m_Core.m_LaserHitDisabled && SwitchDelay == WEAPON_LASER)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can shoot others with laser");
+		Services().SendChatTarget(m_Core.m_Id, "You can shoot others with laser");
 		m_Core.m_LaserHitDisabled = false;
 	}
 	else if(SwitchType == TILE_HIT_DISABLE && !(m_Core.m_LaserHitDisabled) && SwitchDelay == WEAPON_LASER)
 	{
-		GameServer()->SendChatTarget(m_Core.m_Id, "You can't shoot others with laser");
+		Services().SendChatTarget(m_Core.m_Id, "You can't shoot others with laser");
 		m_Core.m_LaserHitDisabled = true;
 	}
 	else if(SwitchType == TILE_JUMP)
@@ -740,7 +763,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 				str_format(aBuf, sizeof(aBuf), "You can jump %d time", NewJumps);
 			else
 				str_format(aBuf, sizeof(aBuf), "You can jump %d times", NewJumps);
-			GameServer()->SendChatTarget(m_Core.m_Id, aBuf);
+			Services().SendChatTarget(m_Core.m_Id, aBuf);
 			m_Core.m_Jumps = NewJumps;
 		}
 	}
@@ -808,7 +831,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 		}
 		// if no checkpointout have been found (or if there no recorded checkpoint), teleport to start
 		vec2 SpawnPos;
-		if(GameServer()->GameHost().Controller()->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, m_Core.m_Id))
+		if(m_Controller.CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, m_Core.m_Id))
 		{
 			m_Core.m_Pos = SpawnPos;
 			m_Core.m_Vel = vec2(0, 0);
@@ -843,7 +866,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 		}
 		// if no checkpointout have been found (or if there no recorded checkpoint), teleport to start
 		vec2 SpawnPos;
-		if(GameServer()->GameHost().Controller()->CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, m_Core.m_Id))
+		if(m_Controller.CanSpawn(m_pPlayer->GetTeam(), &SpawnPos, m_Core.m_Id))
 		{
 			m_Core.m_Pos = SpawnPos;
 
@@ -859,7 +882,7 @@ void CCharacterDDRace::HandleDDNetPhysicsTiles(int Index)
 void CCharacterDDRace::HandleTuneLayer()
 {
 	m_TuneZoneOld = TuningZone();
-	SetTuningZone(GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos));
+	SetTuningZone(m_Controller.TuningZoneAt(m_Pos));
 
 	if(TuningZone() != m_TuneZoneOld) // don't send tunigs all the time
 	{
@@ -872,9 +895,9 @@ void CCharacterDDRace::SendZoneMsgs()
 {
 	// send zone leave msg
 	// (m_TuneZoneOld >= 0: avoid zone leave msgs on spawn)
-	if(m_TuneZoneOld >= 0 && GameServer()->m_aaZoneLeaveMsg[m_TuneZoneOld][0])
+	if(m_TuneZoneOld >= 0 && Services().ZoneMessage(m_TuneZoneOld, false)[0])
 	{
-		const char *pCur = GameServer()->m_aaZoneLeaveMsg[m_TuneZoneOld];
+		const char *pCur = Services().ZoneMessage(m_TuneZoneOld, false);
 		const char *pPos;
 		while((pPos = str_find(pCur, "\\n")))
 		{
@@ -882,14 +905,14 @@ void CCharacterDDRace::SendZoneMsgs()
 			str_copy(aBuf, pCur, pPos - pCur + 1);
 			aBuf[pPos - pCur + 1] = '\0';
 			pCur = pPos + 2;
-			GameServer()->SendChatTarget(m_Core.m_Id, aBuf);
+			Services().SendChatTarget(m_Core.m_Id, aBuf);
 		}
-		GameServer()->SendChatTarget(m_Core.m_Id, pCur);
+		Services().SendChatTarget(m_Core.m_Id, pCur);
 	}
 	// send zone enter msg
-	if(GameServer()->m_aaZoneEnterMsg[TuningZone()][0])
+	if(Services().ZoneMessage(TuningZone(), true)[0])
 	{
-		const char *pCur = GameServer()->m_aaZoneEnterMsg[TuningZone()];
+		const char *pCur = Services().ZoneMessage(TuningZone(), true);
 		const char *pPos;
 		while((pPos = str_find(pCur, "\\n")))
 		{
@@ -897,9 +920,9 @@ void CCharacterDDRace::SendZoneMsgs()
 			str_copy(aBuf, pCur, pPos - pCur + 1);
 			aBuf[pPos - pCur + 1] = '\0';
 			pCur = pPos + 2;
-			GameServer()->SendChatTarget(m_Core.m_Id, aBuf);
+			Services().SendChatTarget(m_Core.m_Id, aBuf);
 		}
-		GameServer()->SendChatTarget(m_Core.m_Id, pCur);
+		Services().SendChatTarget(m_Core.m_Id, pCur);
 	}
 }
 
@@ -957,8 +980,8 @@ void CCharacterDDRace::SnapDDRace(int SnappingClient, int Id)
 	DDNetCharacter.m_Jumps = m_Core.m_Jumps;
 	DDNetCharacter.m_TeleCheckpoint = m_TeleCheckpoint;
 	int StrongWeakId = m_StrongWeakId;
-	if(!Server()->ClientSupportsServerMaxClients(SnappingClient) && SnappingClient >= 0 && GameServer()->m_apPlayers[SnappingClient])
-		StrongWeakId = GameServer()->m_apPlayers[SnappingClient]->m_aStrongWeakId[Id];
+	if(!Server()->ClientSupportsServerMaxClients(SnappingClient) && SnappingClient >= 0 && Services().Player(SnappingClient))
+		StrongWeakId = Services().Player(SnappingClient)->m_aStrongWeakId[Id];
 	DDNetCharacter.m_StrongWeakId = StrongWeakId;
 
 	// Display Information
@@ -993,7 +1016,7 @@ void CCharacterDDRace::SnapDDRace(int SnappingClient, int Id)
 void CCharacterDDRace::DDRaceTick()
 {
 	mem_copy(&m_Input, &m_SavedInput, sizeof(m_Input));
-	static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->SetArmorProgress(this, m_FreezeTime);
+	m_Controller.SetArmorProgress(this, m_FreezeTime);
 	if(m_Core.m_LiveFrozen && !m_Core.m_Super && !m_Core.m_Invincible)
 	{
 		m_Input.m_Direction = 0;
@@ -1004,7 +1027,7 @@ void CCharacterDDRace::DDRaceTick()
 	{
 		if(m_FreezeTime % GameWorld()->GameTickSpeed() == GameWorld()->GameTickSpeed() - 1)
 		{
-			GameServer()->CreateDamageInd(m_Pos, 0, (m_FreezeTime + 1) / GameWorld()->GameTickSpeed(), TeamMask() & GameServer()->ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
+			Services().CreateDamageInd(m_Pos, 0, (m_FreezeTime + 1) / GameWorld()->GameTickSpeed(), TeamMask() & Services().ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
 		}
 		m_FreezeTime--;
 		m_Input.m_Direction = 0;
@@ -1047,8 +1070,8 @@ void CCharacterDDRace::DDRacePostCoreTick()
 	{
 		const int NinjaTime = m_Core.m_Ninja.m_ActivationTick + (g_pData->m_Weapons.m_Ninja.m_Duration * GameWorld()->GameTickSpeed() / 1000) - GameWorld()->GameTick();
 		if(NinjaTime % GameWorld()->GameTickSpeed() == 0 && NinjaTime / GameWorld()->GameTickSpeed() <= 5)
-			GameServer()->CreateDamageInd(m_Pos, 0, NinjaTime / GameWorld()->GameTickSpeed(), TeamMask() & GameServer()->ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
-		static_cast<CGameControllerDDRace *>(GameServer()->GameHost().Controller())->SetArmorProgress(this, NinjaTime);
+			Services().CreateDamageInd(m_Pos, 0, NinjaTime / GameWorld()->GameTickSpeed(), TeamMask() & Services().ClientsMaskExcludeClientVersionAndHigher(VERSION_DDNET_NEW_HUD));
+		m_Controller.SetArmorProgress(this, NinjaTime);
 	}
 
 	if(m_Core.m_EndlessHook || (m_Core.m_Super && g_Config.m_SvEndlessSuperHook))
@@ -1116,12 +1139,12 @@ void CCharacterDDRace::DDRacePostCoreTick()
 	// teleport gun
 	if(m_TeleGunTeleport)
 	{
-		GameServer()->CreateDeath(m_Pos, m_Core.m_Id, TeamMask());
+		Services().CreateDeath(m_Pos, m_Core.m_Id, TeamMask());
 		m_Core.m_Pos = m_TeleGunPos;
 		if(!m_IsBlueTeleGunTeleport)
 			m_Core.m_Vel = vec2(0, 0);
-		GameServer()->CreateDeath(m_TeleGunPos, m_Core.m_Id, TeamMask());
-		GameServer()->CreateSound(m_TeleGunPos, SOUND_WEAPON_SPAWN, TeamMask());
+		Services().CreateDeath(m_TeleGunPos, m_Core.m_Id, TeamMask());
+		Services().CreateSound(m_TeleGunPos, SOUND_WEAPON_SPAWN, TeamMask());
 		m_TeleGunTeleport = false;
 		m_IsBlueTeleGunTeleport = false;
 	}
@@ -1160,9 +1183,9 @@ void CCharacterDDRace::DDRaceInit()
 	{
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && GameServer()->m_apPlayers[i])
+			if(TeamsCore()->Team(i) == Team && i != m_Core.m_Id && Services().Player(i))
 			{
-				CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(GameServer()->m_apPlayers[i]->GetCharacter());
+				CCharacterDDRace *pChar = static_cast<CCharacterDDRace *>(Services().Player(i)->GetCharacter());
 
 				if(pChar)
 				{
@@ -1178,10 +1201,10 @@ void CCharacterDDRace::DDRaceInit()
 		SendStartWarning("Please join a team before you start");
 	}
 
-	SetTuningZone(GameServer()->GameHost().Controller()->TuningZoneAt(m_Pos));
+	SetTuningZone(m_Controller.TuningZoneAt(m_Pos));
 	m_TuneZoneOld = -1; // no zone leave msg on spawn
 	SendZoneMsgs(); // we want an enter message also on spawn
-	GameServer()->SendTuningParams(m_Core.m_Id, TuningZone());
+	Services().SendTuningParams(m_Core.m_Id, TuningZone());
 	TrySetRescue(RESCUEMODE_MANUAL);
 	Server()->StartRecord(m_Core.m_Id);
 }

@@ -236,6 +236,8 @@ public:
 	bool HasTelegunGun() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunGun; }
 	bool HasTelegunGrenade() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunGrenade; }
 	bool HasTelegunLaser() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HasTelegunLaser; }
+	// the player shows their jetpack gun as a ninja
+	virtual bool NinjaJetpack() const { return false; }
 
 	bool HammerHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_HammerHitDisabled; }
 	bool ShotgunHitDisabled() const { return m_Core.UsesDDNetPhysics() && m_Core.m_ShotgunHitDisabled; }

@@ -137,10 +137,9 @@ private:
 	CMatchLifecycle m_MatchLifecycle;
 	char m_aTestingGameType[32];
 
-protected:
-	CGameServices &Services() const { return m_Services; }
-	// the DDRace modes still use the whole game server, other modes use Services()
 	CGameContext *GameServer() const { return m_pGameServer; }
+
+protected:
 	IServer *Server() const { return m_pServer; }
 	IGameModeMapReloadState *MapReloadState() const;
 	void DiscardMapReloadState(int ClientId);
@@ -190,6 +189,8 @@ public:
 	virtual ~IGameController();
 	virtual void Init(CDbConnectionPool *pDbPool);
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
+	// what the mode may use of the game server
+	CGameServices &Services() const { return m_Services; }
 	// What the mode tells a client about itself, and with that which physics
 	// the client will predict under.
 	virtual int GameInfoFlags(int SnappingClient) const { return 0; }

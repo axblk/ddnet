@@ -521,7 +521,7 @@ void CCharacter::SetEmote(int Emote, int Tick)
 int CCharacter::DetermineEyeEmote()
 {
 	const bool IsFrozen = m_Core.m_DeepFrozen || m_FreezeTime > 0 || m_Core.m_LiveFrozen;
-	const bool HasNinjajetpack = m_pPlayer->m_NinjaJetpack && m_Core.m_Jetpack && m_Core.m_ActiveWeapon == WEAPON_GUN;
+	const bool HasNinjajetpack = NinjaJetpack() && m_Core.m_Jetpack && m_Core.m_ActiveWeapon == WEAPON_GUN;
 
 	if(GetPlayer()->IsAfk() || GetPlayer()->IsPaused())
 		return (m_Core.m_DeepFrozen || m_FreezeTime > 0) ? EMOTE_NORMAL : EMOTE_BLINK;
@@ -918,7 +918,7 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 	}
 
 	// use ninja graphic and set ammo count if player has ninjajetpack
-	if(m_pPlayer->m_NinjaJetpack && m_Core.m_Jetpack && m_Core.m_ActiveWeapon == WEAPON_GUN && !m_Core.m_DeepFrozen && m_FreezeTime == 0 && !m_Core.m_HasTelegunGun)
+	if(NinjaJetpack() && m_Core.m_Jetpack && m_Core.m_ActiveWeapon == WEAPON_GUN && !m_Core.m_DeepFrozen && m_FreezeTime == 0 && !m_Core.m_HasTelegunGun)
 	{
 		Weapon = WEAPON_NINJA;
 		AmmoCount = 10;

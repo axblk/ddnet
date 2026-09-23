@@ -39,6 +39,8 @@ public:
 };
 
 const CGameModeInfo *FindGameMode(const char *pName);
+// the names of all registered modes, sorted and separated by ", "
+const char *GameModeNames();
 std::unique_ptr<IGameController> CreateGameController(const char *pName, CGameServices &Services);
 
 #endif // GAME_SERVER_MODE_GAME_MODE_REGISTRY_H

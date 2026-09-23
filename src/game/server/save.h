@@ -12,7 +12,7 @@
 #include <optional>
 
 class IGameController;
-class CGameContext;
+class CGameServices;
 class CGameTeams;
 class CGameWorld;
 class CCharacterDDRace;
@@ -189,16 +189,16 @@ public:
 	int FromString(const char *pString);
 	// returns true if a team can load, otherwise writes a nice error Message in pMessage
 	bool MatchPlayers(const char (*paNames)[MAX_NAME_LENGTH], const int *pClientId, int NumPlayer, char *pMessage, int MessageLen) const;
-	ESaveResult Save(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool Dry = false, bool Force = false);
-	bool Load(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers = false);
+	ESaveResult Save(CGameServices &Services, CGameTeams *pTeams, int Team, bool Dry = false, bool Force = false);
+	bool Load(CGameServices &Services, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers = false);
 
 	CSaveTee *m_pSavedTees = nullptr;
 
 	// returns true if an error occurred
-	static bool HandleSaveError(ESaveResult Result, int ClientId, CGameContext *pGameContext);
+	static bool HandleSaveError(ESaveResult Result, int ClientId, CGameServices &Services);
 
 private:
-	CCharacterDDRace *MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const;
+	CCharacterDDRace *MatchCharacter(CGameServices &Services, int ClientId, int SaveId, bool KeepCurrentCharacter) const;
 
 	char m_aString[MAX_SAVE_STRING_LENGTH];
 

@@ -23,6 +23,9 @@ public:
 	const CGameTeams &RaceTeams() const;
 	CScore &RaceScore();
 	const CScore &RaceScore() const;
+	CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override;
+	// nullptr for ids without a player
+	CPlayerDDRace *RacePlayer(int ClientId) const;
 	CCharacterDDRace *CreateCharacter(CPlayer *pPlayer) override;
 	bool OnEntity(const CMapEntityContext &Context) override;
 	bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const override;

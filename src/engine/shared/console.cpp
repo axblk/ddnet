@@ -1062,6 +1062,13 @@ bool CConsole::RegisterCommand(const char *pName, const char *pParams, int Flags
 	return true;
 }
 
+void CConsole::SetHelp(const char *pName, int FlagMask, const char *pHelp)
+{
+	CCommand *pCommand = FindCommand(pName, FlagMask);
+	dbg_assert(pCommand != nullptr, "no command '%s' to set the help of", pName);
+	pCommand->m_pHelp = pHelp;
+}
+
 void CConsole::Register(const char *pName, const char *pParams, int Flags, FCommandCallback pfnFunc, void *pUser, const char *pHelp)
 {
 	RegisterCommand(pName, pParams, Flags, pfnFunc, pUser, pHelp, nullptr, true);

@@ -2,6 +2,8 @@
 /* Based on Race mod stuff and tweaked by GreYFoX@GTi and others to fit our DDRace needs. */
 #include "ddnet.h"
 
+#include "ddrace_player.h"
+
 #include <base/time.h>
 
 #include <engine/server.h>
@@ -11,9 +13,9 @@
 
 #include <generated/protocol7.h>
 
+#include <game/collision.h>
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
-#include <game/server/gamecontext.h>
 #include <game/server/player.h>
 #include <game/server/score.h>
 #include <game/server/teams.h>
@@ -58,7 +60,7 @@ void CGameControllerDDNet::InitGameSettings()
 		g_Config.m_SvTeam = SV_TEAM_ALLOWED;
 		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_OFF;
 
-		for(auto &Switcher : GameServer()->Switchers())
+		for(auto &Switcher : Services().Switchers())
 			Switcher.m_Initial = true;
 	}
 
@@ -69,13 +71,13 @@ void CGameControllerDDNet::InitGameSettings()
 		g_Config.m_SvTeam = SV_TEAM_FORCED_SOLO;
 		g_Config.m_SvShowOthersDefault = SHOW_OTHERS_ON;
 
-		GameServer()->GlobalTuning()->Set("player_collision", 0);
-		GameServer()->GlobalTuning()->Set("player_hooking", 0);
+		Services().GlobalTuning()->Set("player_collision", 0);
+		Services().GlobalTuning()->Set("player_hooking", 0);
 
 		for(int i = 0; i < TuneZone::NUM; i++)
 		{
-			GameServer()->TuningList()[i].Set("player_collision", 0);
-			GameServer()->TuningList()[i].Set("player_hooking", 0);
+			Services().TuningList()[i].Set("player_collision", 0);
+			Services().TuningList()[i].Set("player_hooking", 0);
 		}
 	}
 
@@ -84,14 +86,14 @@ void CGameControllerDDNet::InitGameSettings()
 
 void CGameControllerDDNet::UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient)
 {
-	CPlayer *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? GameServer()->m_apPlayers[SnappingClient] : nullptr;
-	if(!pPlayer || (pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER && pPlayer->m_TimerType != CPlayer::TIMERTYPE_GAMETIMER_AND_BROADCAST) || pPlayer->GetClientVersion() < VERSION_DDNET_GAMETICK)
+	CPlayerDDRace *pPlayer = SnappingClient != SERVER_DEMO_CLIENT ? RacePlayer(SnappingClient) : nullptr;
+	if(!pPlayer || (pPlayer->m_TimerType != CPlayerDDRace::TIMERTYPE_GAMETIMER && pPlayer->m_TimerType != CPlayerDDRace::TIMERTYPE_GAMETIMER_AND_BROADCAST) || pPlayer->GetClientVersion() < VERSION_DDNET_GAMETICK)
 		return;
 
 	CCharacterDDRace *pChr = nullptr;
 	if((pPlayer->GetTeam() == TEAM_SPECTATORS || pPlayer->IsPaused()) && pPlayer->SpectatorId() != SPEC_FREEVIEW)
 	{
-		CPlayer *pSpectatedPlayer = GameServer()->m_apPlayers[pPlayer->SpectatorId()];
+		CPlayer *pSpectatedPlayer = Services().Player(pPlayer->SpectatorId());
 		if(pSpectatedPlayer)
 			pChr = static_cast<CCharacterDDRace *>(pSpectatedPlayer->GetCharacter());
 	}
@@ -153,22 +155,22 @@ void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pCharacter, int Map
 	CPlayer *pPlayer = pCharacter->GetPlayer();
 	const int ClientId = pPlayer->GetCid();
 
-	int TileIndex = GameServer()->Collision()->GetTileIndex(MapIndex);
-	int TileFIndex = GameServer()->Collision()->GetFrontTileIndex(MapIndex);
+	int TileIndex = Services().Collision()->GetTileIndex(MapIndex);
+	int TileFIndex = Services().Collision()->GetFrontTileIndex(MapIndex);
 
 	//Sensitivity
-	int S1 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
-	int S2 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
-	int S3 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
-	int S4 = GameServer()->Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
-	int Tile1 = GameServer()->Collision()->GetTileIndex(S1);
-	int Tile2 = GameServer()->Collision()->GetTileIndex(S2);
-	int Tile3 = GameServer()->Collision()->GetTileIndex(S3);
-	int Tile4 = GameServer()->Collision()->GetTileIndex(S4);
-	int FTile1 = GameServer()->Collision()->GetFrontTileIndex(S1);
-	int FTile2 = GameServer()->Collision()->GetFrontTileIndex(S2);
-	int FTile3 = GameServer()->Collision()->GetFrontTileIndex(S3);
-	int FTile4 = GameServer()->Collision()->GetFrontTileIndex(S4);
+	int S1 = Services().Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
+	int S2 = Services().Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x + pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
+	int S3 = Services().Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y - pCharacter->GetProximityRadius() / 3.f));
+	int S4 = Services().Collision()->GetPureMapIndex(vec2(pCharacter->GetPos().x - pCharacter->GetProximityRadius() / 3.f, pCharacter->GetPos().y + pCharacter->GetProximityRadius() / 3.f));
+	int Tile1 = Services().Collision()->GetTileIndex(S1);
+	int Tile2 = Services().Collision()->GetTileIndex(S2);
+	int Tile3 = Services().Collision()->GetTileIndex(S3);
+	int Tile4 = Services().Collision()->GetTileIndex(S4);
+	int FTile1 = Services().Collision()->GetFrontTileIndex(S1);
+	int FTile2 = Services().Collision()->GetFrontTileIndex(S2);
+	int FTile3 = Services().Collision()->GetFrontTileIndex(S3);
+	int FTile4 = Services().Collision()->GetFrontTileIndex(S4);
 
 	const ERaceState PlayerDDRaceState = pCharacter->m_DDRaceState;
 	bool IsOnStartTile = (TileIndex == TILE_START) || (TileFIndex == TILE_START) || FTile1 == TILE_START || FTile2 == TILE_START || FTile3 == TILE_START || FTile4 == TILE_START || Tile1 == TILE_START || Tile2 == TILE_START || Tile3 == TILE_START || Tile4 == TILE_START;
@@ -216,7 +218,7 @@ void CGameControllerDDNet::HandleRaceTiles(CCharacterDDRace *pCharacter, int Map
 	else if(((TileIndex == TILE_UNLOCK_TEAM) || (TileFIndex == TILE_UNLOCK_TEAM)) && RaceTeams().TeamLocked(RaceTeams().m_Core.Team(ClientId)))
 	{
 		RaceTeams().SetTeamLock(RaceTeams().m_Core.Team(ClientId), false);
-		GameServer()->SendChatTeam(RaceTeams().m_Core.Team(ClientId), "Your team was unlocked by an unlock team tile");
+		Services().SendChatTeam(RaceTeams().m_Core.Team(ClientId), "Your team was unlocked by an unlock team tile");
 	}
 }
 
@@ -297,10 +299,10 @@ void CGameControllerDDNet::OnPlayerConnect(CPlayer *pPlayer)
 	{
 		char aBuf[512];
 		str_format(aBuf, sizeof(aBuf), "'%s' entered and joined the %s", Server()->ClientName(ClientId), GetTeamName(pPlayer->GetTeam()));
-		GameServer()->SendChat(-1, TEAM_ALL, aBuf, -1);
+		Services().SendChat(-1, TEAM_ALL, aBuf, -1);
 
-		GameServer()->SendChatTarget(ClientId, "DDraceNetwork Mod. Version: " GAME_VERSION);
-		GameServer()->SendChatTarget(ClientId, "please visit DDNet.org or say /info and make sure to read our /rules");
+		Services().SendChatTarget(ClientId, "DDraceNetwork Mod. Version: " GAME_VERSION);
+		Services().SendChatTarget(ClientId, "please visit DDNet.org or say /info and make sure to read our /rules");
 	}
 }
 
@@ -311,8 +313,8 @@ void CGameControllerDDNet::OnPlayerDisconnect(CPlayer *pPlayer, const char *pRea
 
 	CGameControllerDDRace::OnPlayerDisconnect(pPlayer, pReason);
 
-	if(!GameServer()->PlayerModerating() && WasModerator)
-		GameServer()->SendChat(-1, TEAM_ALL, "Server kick/spec votes are no longer actively moderated.");
+	if(!Services().Votes().Moderating() && WasModerator)
+		Services().SendChat(-1, TEAM_ALL, "Server kick/spec votes are no longer actively moderated.");
 
 	if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO)
 		RaceTeams().SetForceCharacterTeam(ClientId, TEAM_FLOCK);

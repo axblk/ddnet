@@ -1864,9 +1864,6 @@ bool CGameContext::OnClientDDNetVersionKnown(int ClientId)
 	}
 
 	CPlayer *pPlayer = m_apPlayers[ClientId];
-	if(ClientVersion >= VERSION_DDNET_GAMETICK)
-		pPlayer->m_TimerType = g_Config.m_SvDefaultTimerType;
-
 	m_GameHost.Controller()->OnPlayerDDNetVersionKnown(ClientId);
 
 	// And report correct tunings.
@@ -3351,6 +3348,9 @@ void CGameContext::OnConsoleInit()
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 
+	static const std::string s_GameTypeHelp = std::string("Game type (") + GameModeNames() + ")";
+	Console()->SetHelp("sv_gametype", CFGFLAG_SERVER, s_GameTypeHelp.c_str());
+
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_SERVER | CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value or show current value");
 	Console()->Register("toggle_tune", "s[tuning] f[value 1] f[value 2]", CFGFLAG_SERVER, ConToggleTuneParam, this, "Toggle tune variable");
 	Console()->Register("tune_reset", "?s[tuning]", CFGFLAG_SERVER, ConTuneReset, this, "Reset all or one tuning variable to default");
@@ -3479,7 +3479,7 @@ void CGameContext::OnInit(const void *pPersistentData)
 
 	if(!m_GameHost.Select(Config()->m_SvGametype))
 	{
-		log_warn("server", "unknown game type '%s', playing 'ddnet'", Config()->m_SvGametype);
+		log_warn("server", "unknown game type '%s', playing 'ddnet' (game types: %s)", Config()->m_SvGametype, GameModeNames());
 		dbg_assert(m_GameHost.Select("ddnet"), "failed to select the fallback game type");
 	}
 

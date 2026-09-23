@@ -70,10 +70,6 @@ void CPlayer::Reset()
 	m_ChatScore = 0;
 	m_Moderating = false;
 	m_EyeEmoteEnabled = true;
-	if(Server()->IsSixup(m_ClientId))
-		m_TimerType = TIMERTYPE_SIXUP;
-	else
-		m_TimerType = (g_Config.m_SvDefaultTimerType == TIMERTYPE_GAMETIMER || g_Config.m_SvDefaultTimerType == TIMERTYPE_GAMETIMER_AND_BROADCAST) ? TIMERTYPE_BROADCAST : g_Config.m_SvDefaultTimerType;
 
 	m_DefEmote = EMOTE_NORMAL;
 	m_Afk = true;
@@ -113,7 +109,6 @@ void CPlayer::Reset()
 	m_ShowAll = g_Config.m_SvShowAllDefault;
 	m_EnableSpectatorCount = true;
 	m_ShowDistance = vec2(1200, 800);
-	m_NinjaJetpack = false;
 
 	m_Paused = PAUSE_NONE;
 	m_DND = false;
@@ -650,52 +645,6 @@ void CPlayer::SetTeam(int Team, bool DoChatMsg)
 	}
 
 	Server()->ExpireServerInfo();
-}
-
-bool CPlayer::SetTimerType(int TimerType)
-{
-	if(TimerType == TIMERTYPE_DEFAULT)
-	{
-		if(Server()->IsSixup(m_ClientId))
-			m_TimerType = TIMERTYPE_SIXUP;
-		else
-			SetTimerType(g_Config.m_SvDefaultTimerType);
-
-		return true;
-	}
-
-	if(Server()->IsSixup(m_ClientId))
-	{
-		if(TimerType == TIMERTYPE_SIXUP || TimerType == TIMERTYPE_NONE)
-		{
-			m_TimerType = TimerType;
-			return true;
-		}
-		else
-			return false;
-	}
-
-	if(TimerType == TIMERTYPE_GAMETIMER)
-	{
-		if(GetClientVersion() >= VERSION_DDNET_GAMETICK)
-			m_TimerType = TimerType;
-		else
-			return false;
-	}
-	else if(TimerType == TIMERTYPE_GAMETIMER_AND_BROADCAST)
-	{
-		if(GetClientVersion() >= VERSION_DDNET_GAMETICK)
-			m_TimerType = TimerType;
-		else
-		{
-			m_TimerType = TIMERTYPE_BROADCAST;
-			return false;
-		}
-	}
-	else
-		m_TimerType = TimerType;
-
-	return true;
 }
 
 void CPlayer::TryRespawn()

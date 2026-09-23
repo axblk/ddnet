@@ -5,6 +5,9 @@
 #include <game/server/entities/character.h>
 #include <game/server/save.h>
 
+class CGameControllerDDRace;
+class CGameServices;
+class CPlayerDDRace;
 class CGameTeams;
 class CScore;
 
@@ -38,9 +41,14 @@ private:
 	CGameTeams *m_pRaceTeams = nullptr;
 	CScore *m_pRaceScore = nullptr;
 	int64_t m_LastStartWarning = -1;
+	// players, which own their characters, are deleted before the mode that made them
+	CGameControllerDDRace &m_Controller;
 
 public:
-	using CCharacter::CCharacter;
+	CCharacterDDRace(CGameControllerDDRace &Controller, CGameWorld *pWorld, CNetObj_PlayerInput LastInput);
+	CGameServices &Services() const;
+	CPlayerDDRace *RacePlayer() const;
+	bool NinjaJetpack() const override;
 
 	ERaceState m_DDRaceState = ERaceState::NONE;
 	int m_StartTime = 0;

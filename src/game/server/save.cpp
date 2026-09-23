@@ -10,12 +10,13 @@
 #include <engine/shared/config.h>
 #include <engine/shared/protocol.h>
 
+#include <game/collision.h>
 #include <game/mapitems.h>
 #include <game/server/entities/character.h>
 #include <game/server/entities/dragger_beam.h>
-#include <game/server/gamecontext.h>
 #include <game/server/gamemodes/ddnet.h>
 #include <game/server/gamemodes/ddrace_character.h>
+#include <game/server/gamemodes/ddrace_player.h>
 #include <game/team_state.h>
 
 #include <cstdio> // sscanf
@@ -63,7 +64,7 @@ void CSaveTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 
 	m_EndlessJump = pChr->m_Core.m_EndlessJump;
 	m_Jetpack = pChr->m_Core.m_Jetpack;
-	m_NinjaJetpack = pChr->m_pPlayer->m_NinjaJetpack;
+	m_NinjaJetpack = pChr->RacePlayer()->m_NinjaJetpack;
 	m_FreezeTime = pChr->m_FreezeTime;
 	m_FreezeStart = pChr->Server()->Tick() - pChr->m_Core.m_FreezeStart;
 
@@ -139,7 +140,7 @@ void CSaveTee::Save(CCharacterDDRace *pChr, bool AddPenalty)
 
 	m_ReloadTimer = pChr->m_ReloadTimer;
 
-	FormatUuid(pChr->GameServer()->GameUuid(), m_aGameUuid, sizeof(m_aGameUuid));
+	FormatUuid(pChr->Services().GameUuid(), m_aGameUuid, sizeof(m_aGameUuid));
 }
 
 bool CSaveTee::Load(CCharacterDDRace *pChr, std::optional<int> Team)
@@ -180,7 +181,7 @@ bool CSaveTee::Load(CCharacterDDRace *pChr, std::optional<int> Team)
 
 	pChr->m_Core.m_EndlessJump = m_EndlessJump;
 	pChr->m_Core.m_Jetpack = m_Jetpack;
-	pChr->m_pPlayer->m_NinjaJetpack = m_NinjaJetpack;
+	pChr->RacePlayer()->m_NinjaJetpack = m_NinjaJetpack;
 	pChr->m_FreezeTime = m_FreezeTime;
 	pChr->m_Core.m_FreezeStart = pChr->Server()->Tick() - m_FreezeStart;
 
@@ -565,7 +566,7 @@ CSaveTeam::~CSaveTeam()
 	delete[] m_pSavedTees;
 }
 
-ESaveResult CSaveTeam::Save(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool Dry, bool Force)
+ESaveResult CSaveTeam::Save(CGameServices &Services, CGameTeams *pTeams, int Team, bool Dry, bool Force)
 {
 	if(g_Config.m_SvTeam != SV_TEAM_FORCED_SOLO && (Team == TEAM_FLOCK || !pTeams->IsValidTeamNumber(Team)) && !Force)
 		return ESaveResult::TEAM_FLOCK;
@@ -589,14 +590,14 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, CGameTeams *pTeams, int T
 		return ESaveResult::NOT_STARTED;
 	}
 
-	m_HighestSwitchNumber = pGameServer->Collision()->m_HighestSwitchNumber;
+	m_HighestSwitchNumber = Services.Collision()->m_HighestSwitchNumber;
 	m_TeamLocked = pTeams->TeamLocked(Team);
 	m_Practice = pTeams->IsPractice(Team);
 
 	m_pSavedTees = new CSaveTee[MembersCount];
 	int aPlayerCids[MAX_CLIENTS];
 	int j = 0;
-	CCharacterDDRace *p = static_cast<CCharacterDDRace *>(pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_CHARACTER));
+	CCharacterDDRace *p = static_cast<CCharacterDDRace *>(Services.World().FindFirst(CGameWorld::ENTTYPE_CHARACTER));
 	for(; p; p = static_cast<CCharacterDDRace *>(p->TypeNext()))
 	{
 		if(pTeams->m_Core.Team(p->GetPlayer()->GetCid()) != Team)
@@ -605,7 +606,7 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, CGameTeams *pTeams, int T
 			return ESaveResult::CHAR_NOT_FOUND;
 		if(!Force)
 		{
-			for(CEntity *pEntity = pGameServer->m_World.FindFirst(CGameWorld::ENTTYPE_LASER); pEntity; pEntity = pEntity->TypeNext())
+			for(CEntity *pEntity = Services.World().FindFirst(CGameWorld::ENTTYPE_LASER); pEntity; pEntity = pEntity->TypeNext())
 			{
 				auto *pDraggerBeam = dynamic_cast<CDraggerBeam *>(pEntity);
 				if(pDraggerBeam && pDraggerBeam->TargetsClient(p->GetPlayer()->GetCid()))
@@ -619,57 +620,57 @@ ESaveResult CSaveTeam::Save(CGameContext *pGameServer, CGameTeams *pTeams, int T
 	if(m_MembersCount != j && !Force)
 		return ESaveResult::CHAR_NOT_FOUND;
 
-	const int HighestSwitchNumber = pGameServer->Collision()->m_HighestSwitchNumber;
+	const int HighestSwitchNumber = Services.Collision()->m_HighestSwitchNumber;
 	if(HighestSwitchNumber > 0)
 	{
 		m_pSwitchers = new SSimpleSwitchers[HighestSwitchNumber + 1];
 
 		for(int i = 1; i < HighestSwitchNumber + 1; i++)
 		{
-			m_pSwitchers[i].m_Status = pGameServer->Switchers()[i].m_aStatus[Team];
-			if(pGameServer->Switchers()[i].m_aEndTick[Team])
-				m_pSwitchers[i].m_EndTime = pGameServer->Server()->Tick() - pGameServer->Switchers()[i].m_aEndTick[Team];
+			m_pSwitchers[i].m_Status = Services.Switchers()[i].m_aStatus[Team];
+			if(Services.Switchers()[i].m_aEndTick[Team])
+				m_pSwitchers[i].m_EndTime = Services.Server()->Tick() - Services.Switchers()[i].m_aEndTick[Team];
 			else
 				m_pSwitchers[i].m_EndTime = 0;
-			m_pSwitchers[i].m_Type = pGameServer->Switchers()[i].m_aType[Team];
+			m_pSwitchers[i].m_Type = Services.Switchers()[i].m_aType[Team];
 		}
 	}
 	if(!Dry)
 	{
-		pGameServer->m_World.RemoveEntitiesFromPlayers(aPlayerCids, m_MembersCount);
+		Services.World().RemoveEntitiesFromPlayers(aPlayerCids, m_MembersCount);
 	}
 	return ESaveResult::SUCCESS;
 }
 
-bool CSaveTeam::HandleSaveError(ESaveResult Result, int ClientId, CGameContext *pGameContext)
+bool CSaveTeam::HandleSaveError(ESaveResult Result, int ClientId, CGameServices &Services)
 {
 	switch(Result)
 	{
 	case ESaveResult::SUCCESS:
 		return false;
 	case ESaveResult::TEAM_FLOCK:
-		pGameContext->SendChatTarget(ClientId, "You have to be in a team (from 1-127)");
+		Services.SendChatTarget(ClientId, "You have to be in a team (from 1-127)");
 		break;
 	case ESaveResult::TEAM_NOT_FOUND:
-		pGameContext->SendChatTarget(ClientId, "Could not find your Team");
+		Services.SendChatTarget(ClientId, "Could not find your Team");
 		break;
 	case ESaveResult::CHAR_NOT_FOUND:
-		pGameContext->SendChatTarget(ClientId, "To save all players in your team have to be alive and not in '/spec'");
+		Services.SendChatTarget(ClientId, "To save all players in your team have to be alive and not in '/spec'");
 		break;
 	case ESaveResult::NOT_STARTED:
-		pGameContext->SendChatTarget(ClientId, "Your team has not started yet");
+		Services.SendChatTarget(ClientId, "Your team has not started yet");
 		break;
 	case ESaveResult::TEAM_0_MODE:
-		pGameContext->SendChatTarget(ClientId, "Team can't be saved while in team 0 mode");
+		Services.SendChatTarget(ClientId, "Team can't be saved while in team 0 mode");
 		break;
 	case ESaveResult::DRAGGER_ACTIVE:
-		pGameContext->SendChatTarget(ClientId, "Team can't be saved while a dragger is active");
+		Services.SendChatTarget(ClientId, "Team can't be saved while a dragger is active");
 		break;
 	}
 	return true;
 }
 
-bool CSaveTeam::Load(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers)
+bool CSaveTeam::Load(CGameServices &Services, CGameTeams *pTeams, int Team, bool KeepCurrentWeakStrong, bool IgnorePlayers)
 {
 	pTeams->ChangeTeamState(Team, m_TeamState);
 	pTeams->SetTeamLock(Team, m_TeamLocked);
@@ -684,40 +685,40 @@ bool CSaveTeam::Load(CGameContext *pGameServer, CGameTeams *pTeams, int Team, bo
 		{
 			int ClientId = m_pSavedTees[i].GetClientId();
 			aPlayerCids[i] = ClientId;
-			if(pGameServer->m_apPlayers[ClientId] && pTeams->m_Core.Team(ClientId) == Team)
+			if(Services.Player(ClientId) && pTeams->m_Core.Team(ClientId) == Team)
 			{
-				CCharacterDDRace *pChr = MatchCharacter(pGameServer, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
+				CCharacterDDRace *pChr = MatchCharacter(Services, m_pSavedTees[i].GetClientId(), i, KeepCurrentWeakStrong);
 				ContainsInvalidPlayer |= !m_pSavedTees[i].Load(pChr, Team);
 			}
 		}
 	}
 
-	if(pGameServer->Collision()->m_HighestSwitchNumber)
+	if(Services.Collision()->m_HighestSwitchNumber)
 	{
-		for(int i = 1; i < std::min(m_HighestSwitchNumber, pGameServer->Collision()->m_HighestSwitchNumber) + 1; i++)
+		for(int i = 1; i < std::min(m_HighestSwitchNumber, Services.Collision()->m_HighestSwitchNumber) + 1; i++)
 		{
-			pGameServer->Switchers()[i].m_aStatus[Team] = m_pSwitchers[i].m_Status;
+			Services.Switchers()[i].m_aStatus[Team] = m_pSwitchers[i].m_Status;
 			if(m_pSwitchers[i].m_EndTime)
-				pGameServer->Switchers()[i].m_aEndTick[Team] = pGameServer->Server()->Tick() - m_pSwitchers[i].m_EndTime;
-			pGameServer->Switchers()[i].m_aType[Team] = m_pSwitchers[i].m_Type;
+				Services.Switchers()[i].m_aEndTick[Team] = Services.Server()->Tick() - m_pSwitchers[i].m_EndTime;
+			Services.Switchers()[i].m_aType[Team] = m_pSwitchers[i].m_Type;
 		}
 	}
 	// remove projectiles and laser
 	if(!IgnorePlayers)
-		pGameServer->m_World.RemoveEntitiesFromPlayers(aPlayerCids, m_MembersCount);
+		Services.World().RemoveEntitiesFromPlayers(aPlayerCids, m_MembersCount);
 
 	return !ContainsInvalidPlayer;
 }
 
-CCharacterDDRace *CSaveTeam::MatchCharacter(CGameContext *pGameServer, int ClientId, int SaveId, bool KeepCurrentCharacter) const
+CCharacterDDRace *CSaveTeam::MatchCharacter(CGameServices &Services, int ClientId, int SaveId, bool KeepCurrentCharacter) const
 {
-	if(KeepCurrentCharacter && pGameServer->m_apPlayers[ClientId]->GetCharacter())
+	if(KeepCurrentCharacter && Services.Player(ClientId)->GetCharacter())
 	{
 		// keep old character to retain current weak/strong order
-		return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->GetCharacter());
+		return static_cast<CCharacterDDRace *>(Services.Player(ClientId)->GetCharacter());
 	}
-	pGameServer->m_apPlayers[ClientId]->KillCharacter(WEAPON_GAME);
-	return static_cast<CCharacterDDRace *>(pGameServer->m_apPlayers[ClientId]->ForceSpawn(m_pSavedTees[SaveId].GetPos()));
+	Services.Player(ClientId)->KillCharacter(WEAPON_GAME);
+	return static_cast<CCharacterDDRace *>(Services.Player(ClientId)->ForceSpawn(m_pSavedTees[SaveId].GetPos()));
 }
 
 const char *CSaveTeam::GetString()

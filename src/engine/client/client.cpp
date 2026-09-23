@@ -43,6 +43,7 @@
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/compression.h>
 #include <engine/shared/config.h>
+#include <engine/shared/connect_target.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/filecollection.h>
@@ -619,46 +620,6 @@ void CClient::GenerateTimeoutCodes(const NETADDR *pAddrs, int NumAddrs)
 	}
 }
 
-// Splits the next address off a comma-separated list. A comma inside a
-// fragment, between the certificate hashes a browser takes, does not end the
-// address: what follows it there is a hash or another fragment key, never an
-// address.
-static const char *NextConnectAddress(const char *pList, char *pBuffer, int BufferSize)
-{
-	if(pList == nullptr || pList[0] == '\0')
-	{
-		return nullptr;
-	}
-	const char *pEnd = pList;
-	bool InFragment = false;
-	for(; *pEnd != '\0'; pEnd++)
-	{
-		if(*pEnd == '#')
-		{
-			InFragment = true;
-		}
-		else if(*pEnd == ',')
-		{
-			if(!InFragment)
-			{
-				break;
-			}
-			const char *pNext = pEnd + 1;
-			int HexDigits = 0;
-			while(('0' <= pNext[HexDigits] && pNext[HexDigits] <= '9') || ('a' <= pNext[HexDigits] && pNext[HexDigits] <= 'f') || ('A' <= pNext[HexDigits] && pNext[HexDigits] <= 'F'))
-			{
-				HexDigits++;
-			}
-			if(HexDigits != 64 && str_startswith(pNext, "cert-sha256=") == nullptr && str_startswith(pNext, "identity-sha256=") == nullptr && str_startswith(pNext, "webpki") == nullptr)
-			{
-				break;
-			}
-		}
-	}
-	str_truncate(pBuffer, BufferSize, pList, pEnd - pList);
-	return *pEnd == ',' ? pEnd + 1 : pEnd;
-}
-
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
@@ -676,90 +637,8 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", m_aConnectAddressStr);
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aMsg, CLIENT_NETWORK_PRINT_COLOR);
 
-	int NumConnectAddrs = 0;
-	NETADDR aConnectAddrs[MAX_SERVER_ADDRESSES];
-	mem_zero(aConnectAddrs, sizeof(aConnectAddrs));
-	const char *pNextAddr = pAddress;
-	// One address with its host name and fragment.
-	char aBuffer[NETADDR_URL_MAXSTRSIZE + 128 + 1 + 160];
-	bool OnlySixup = true;
-	// The fragment of a QUIC or WebSocket address: the identity it pins, the
-	// certificates a browser takes; nothing if none has one. The host name
-	// such an address came as, for a browser to connect by.
-	char aConnectFragment[256] = "";
-	char aConnectHost[128] = "";
-	while((pNextAddr = NextConnectAddress(pNextAddr, aBuffer, sizeof(aBuffer))) != nullptr)
-	{
-		if(aBuffer[0] == '\0')
-		{
-			continue;
-		}
-		NETADDR NextAddr;
-		char aHost[128];
-		const int UrlParseResult = net_addr_from_url(&NextAddr, aBuffer, aHost, sizeof(aHost));
-		// The lookup below starts the address over, so the flags are kept aside.
-		bool Sixup = NextAddr.type & NETTYPE_TW7;
-		const bool Quic = NextAddr.type & NETTYPE_QUIC;
-		const bool WebTransport = NextAddr.type & NETTYPE_WEBTRANSPORT;
-		const bool WebSocket = NextAddr.type & NETTYPE_WEBSOCKET;
-		const bool WebSocketTls = NextAddr.type & NETTYPE_WEBSOCKET_TLS;
-		if(UrlParseResult > 0)
-			str_copy(aHost, aBuffer);
-
-		if(net_host_lookup(aHost, &NextAddr, m_aNetClient[CONN_MAIN].NetType()) != 0)
-		{
-			log_error("client", "could not find address of %s", aHost);
-			continue;
-		}
-		if(NumConnectAddrs == (int)std::size(aConnectAddrs))
-		{
-			log_warn("client", "too many connect addresses, ignoring %s", aHost);
-			continue;
-		}
-		if(NextAddr.port == 0)
-		{
-			NextAddr.port = 8303;
-		}
-		if(Sixup)
-			NextAddr.type |= NETTYPE_TW7;
-		else
-			OnlySixup = false;
-		if(Quic || WebSocket)
-		{
-			if(Quic)
-				NextAddr.type |= NETTYPE_QUIC | (WebTransport ? NETTYPE_WEBTRANSPORT : 0);
-			if(WebSocket)
-				NextAddr.type |= NETTYPE_WEBSOCKET | (WebSocketTls ? NETTYPE_WEBSOCKET_TLS : 0);
-			// The library reads the fragment: the identity as the masterserver
-			// lists it, the certificate hashes for a browser.
-			const char *pFragment = str_find(aBuffer, "#");
-			if(pFragment != nullptr)
-			{
-				str_copy(aConnectFragment, pFragment + 1);
-			}
-			if(UrlParseResult < 0 && NumConnectAddrs == 0)
-			{
-				// A name, with its port still on it; an IP address
-				// would have parsed above.
-				const char *pPort = str_rchr(aHost, ':');
-				str_truncate(aConnectHost, sizeof(aConnectHost), aHost, pPort != nullptr ? pPort - aHost : str_length(aHost));
-			}
-		}
-
-		char aNextAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
-		log_debug("client", "resolved connect address '%s' to %s", aBuffer, aNextAddr);
-
-		if(NextAddr == LastAddr)
-		{
-			m_SendPassword = true;
-		}
-
-		aConnectAddrs[NumConnectAddrs] = NextAddr;
-		NumConnectAddrs += 1;
-	}
-
-	if(NumConnectAddrs == 0)
+	CConnectTarget Target;
+	if(!Target.Parse(pAddress, m_aNetClient[CONN_MAIN].NetType()))
 	{
 		log_error("client", "could not find any connect address");
 		char aWarning[256];
@@ -768,6 +647,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		Warning.m_AutoHide = false;
 		AddWarning(Warning);
 		return;
+	}
+	for(int i = 0; i < Target.m_NumAddrs; i++)
+	{
+		if(Target.m_aAddrs[i] == LastAddr)
+		{
+			m_SendPassword = true;
+		}
 	}
 
 	m_ConnectionId = RandomUuid();
@@ -789,16 +675,8 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 	m_CanReceiveServerCapabilities = true;
 
-	m_Sixup = OnlySixup;
-	m_aNetClient[CONN_MAIN].SetConnectTarget(aConnectHost, aConnectFragment);
-	if(m_Sixup)
-	{
-		m_aNetClient[CONN_MAIN].Connect7(aConnectAddrs, NumConnectAddrs);
-	}
-	else
-	{
-		m_aNetClient[CONN_MAIN].Connect(aConnectAddrs, NumConnectAddrs);
-	}
+	m_Sixup = Target.m_Sixup;
+	Target.Start(m_aNetClient[CONN_MAIN]);
 
 	m_aNetClient[CONN_MAIN].RefreshStun();
 	SetState(IClient::STATE_CONNECTING);
@@ -806,7 +684,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_aInputtimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 	m_aGametimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 
-	GenerateTimeoutCodes(aConnectAddrs, NumConnectAddrs);
+	GenerateTimeoutCodes(Target.m_aAddrs, Target.m_NumAddrs);
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -929,15 +807,9 @@ void CClient::DummyConnect()
 	g_Config.m_ClDummyHammer = 0;
 
 	m_DummyConnecting = true;
-	// connect to the server, the same way and with the same identity
-	char aFragment[96] = "";
-	if(m_aNetClient[CONN_MAIN].ServerIdentity()[0] != '\0')
-		str_format(aFragment, sizeof(aFragment), "identity-sha256=%s", m_aNetClient[CONN_MAIN].ServerIdentity());
-	m_aNetClient[CONN_DUMMY].SetConnectTarget(m_aNetClient[CONN_MAIN].ConnectHost(), aFragment);
-	if(IsSixup())
-		m_aNetClient[CONN_DUMMY].Connect7(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
-	else
-		m_aNetClient[CONN_DUMMY].Connect(m_aNetClient[CONN_MAIN].ServerAddress(), 1);
+	CConnectTarget Target;
+	Target.SameServer(m_aNetClient[CONN_MAIN], IsSixup());
+	Target.Start(m_aNetClient[CONN_DUMMY]);
 
 	m_aInputtimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);
 	m_aGametimeMarginGraphs[CONN_DUMMY].Init(-150.0f, 150.0f);

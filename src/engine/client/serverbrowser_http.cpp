@@ -520,15 +520,6 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl, char *pHostna
 	}
 	return pOut->port == 0;
 }
-// Copies the 64 hex digits of an identity; `true` if there is something
-// else in front of the next fragment key.
-static bool ServerbrowserParseIdentity(const char *pHex, char *pIdentity, int IdentitySize)
-{
-	str_copy(pIdentity, pHex, IdentitySize);
-	if(char *pComma = (char *)str_find(pIdentity, ","))
-		*pComma = '\0';
-	return str_length(pIdentity) != 64 || !str_isallnum_hex(pIdentity);
-}
 
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
@@ -611,22 +602,9 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			{
 				str_copy(SetInfo.m_aHostname, aHostname);
 			}
-			if((ParsedAddr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+			if(const char *pFragment = str_find(Addresses[a], "#"))
 			{
-				// The fragment carries what the server is pinned by: the
-				// identity, the same for every transport, on the QUIC and
-				// WebSocket addresses, the certificates a browser takes on
-				// the WebTransport address.
-				const char *pFragment = str_find(Addresses[a], "#");
-				const char *pIdentity = pFragment != nullptr ? str_startswith(pFragment + 1, "identity-sha256=") : nullptr;
-				if(pIdentity != nullptr && SetInfo.m_aIdentity[0] == '\0' && ServerbrowserParseIdentity(pIdentity, SetInfo.m_aIdentity, sizeof(SetInfo.m_aIdentity)))
-				{
-					SetInfo.m_aIdentity[0] = '\0';
-				}
-				if(pFragment != nullptr && (ParsedAddr.type & NETTYPE_WEBTRANSPORT) != 0 && SetInfo.m_aWebTransportFragment[0] == '\0' && (str_startswith(pFragment + 1, "cert-sha256=") != nullptr || str_comp(pFragment + 1, "webpki") == 0))
-				{
-					str_copy(SetInfo.m_aWebTransportFragment, pFragment + 1);
-				}
+				SetInfo.m_Pin.AddFragment(ParsedAddr, pFragment + 1);
 			}
 			if(SetInfo.m_NumAddresses < (int)std::size(SetInfo.m_aAddresses))
 			{

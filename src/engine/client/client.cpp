@@ -984,9 +984,9 @@ void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 	m_CurrentServerInfoRequestTime = -1;
 	// The server's own answer has no identity; the one it showed on
 	// connecting is it.
-	if(m_CurrentServerInfo.m_aIdentity[0] == '\0')
+	if(m_CurrentServerInfo.m_Pin.m_aIdentity[0] == '\0')
 	{
-		str_copy(m_CurrentServerInfo.m_aIdentity, m_aNetClient[CONN_MAIN].ServerIdentity());
+		str_copy(m_CurrentServerInfo.m_Pin.m_aIdentity, m_aNetClient[CONN_MAIN].ServerIdentity());
 	}
 	str_copy(m_CurrentServerInfo.m_aMap, GameClient()->Map()->BaseName());
 	m_CurrentServerInfo.m_MapCrc = GameClient()->Map()->Crc();
@@ -4062,8 +4062,7 @@ void CClient::Con_BeginFavoriteGroup(IConsole::IResult *pResult, void *pUserData
 	pSelf->m_FavoritesGroup = true;
 	pSelf->m_FavoritesGroupAllowPing = false;
 	pSelf->m_FavoritesGroupNum = 0;
-	pSelf->m_aFavoritesGroupIdentity[0] = '\0';
-	pSelf->m_aFavoritesGroupWebTransportFragment[0] = '\0';
+	pSelf->m_FavoritesGroupPin.Reset();
 }
 
 void CClient::Con_EndFavoriteGroup(IConsole::IResult *pResult, void *pUserData)
@@ -4075,7 +4074,7 @@ void CClient::Con_EndFavoriteGroup(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 	log_info("client", "adding group of %d favorites", pSelf->m_FavoritesGroupNum);
-	pSelf->m_pFavorites->Add(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum, pSelf->m_aFavoritesGroupIdentity, pSelf->m_aFavoritesGroupWebTransportFragment);
+	pSelf->m_pFavorites->Add(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum, &pSelf->m_FavoritesGroupPin);
 	if(pSelf->m_FavoritesGroupAllowPing)
 	{
 		pSelf->m_pFavorites->AllowPing(pSelf->m_aFavoritesGroupAddresses, pSelf->m_FavoritesGroupNum, true);
@@ -4096,21 +4095,12 @@ void CClient::Con_AddFavorite(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 	bool AllowPing = pResult->NumArguments() > 1 && str_find(pResult->GetString(1), "allow_ping");
-	// The fragment a modern address was saved with: the identity, or the
-	// certificates of a WebTransport address.
-	char aIdentity[65] = "";
-	char aWebTransportFragment[160] = "";
-	const char *pFragment = str_find(pResult->GetString(0), "#");
-	if(pFragment != nullptr && (Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0)
+	// The fragment a modern address was saved with.
+	CServerPin Pin;
+	Pin.Reset();
+	if(const char *pFragment = str_find(pResult->GetString(0), "#"))
 	{
-		if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
-		{
-			str_copy(aWebTransportFragment, pFragment + 1);
-		}
-		else if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
-		{
-			str_copy(aIdentity, pIdentity);
-		}
+		Pin.AddFragment(Addr, pFragment + 1);
 	}
 	char aAddr[NETADDR_MAXSTRSIZE];
 	net_addr_str(&Addr, aAddr, sizeof(aAddr), true);
@@ -4125,19 +4115,12 @@ void CClient::Con_AddFavorite(IConsole::IResult *pResult, void *pUserData)
 		pSelf->m_aFavoritesGroupAddresses[pSelf->m_FavoritesGroupNum] = Addr;
 		pSelf->m_FavoritesGroupAllowPing = pSelf->m_FavoritesGroupAllowPing || AllowPing;
 		pSelf->m_FavoritesGroupNum += 1;
-		if(pSelf->m_aFavoritesGroupIdentity[0] == '\0')
-		{
-			str_copy(pSelf->m_aFavoritesGroupIdentity, aIdentity);
-		}
-		if(pSelf->m_aFavoritesGroupWebTransportFragment[0] == '\0')
-		{
-			str_copy(pSelf->m_aFavoritesGroupWebTransportFragment, aWebTransportFragment);
-		}
+		pSelf->m_FavoritesGroupPin.Merge(Pin);
 	}
 	else
 	{
 		log_info("client", "adding %s to favorites", aAddr);
-		pSelf->m_pFavorites->Add(&Addr, 1, aIdentity, aWebTransportFragment);
+		pSelf->m_pFavorites->Add(&Addr, 1, &Pin);
 		if(AllowPing)
 		{
 			pSelf->m_pFavorites->AllowPing(&Addr, 1, true);

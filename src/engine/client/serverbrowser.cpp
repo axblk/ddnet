@@ -738,16 +738,9 @@ static void ServerBrowserFormatAddresses(char *pBuffer, int BufferSize, const CS
 		{
 			str_append(pBuffer, ",", BufferSize);
 		}
-		char aAddr[NETADDR_URL_MAXSTRSIZE];
-		net_addr_url_str(&Info.m_aAddresses[i], aAddr, sizeof(aAddr), true);
+		char aAddr[CServerPin::URL_MAXSTRSIZE];
+		Info.m_Pin.AddressUrl(Info.m_aAddresses[i], aAddr, sizeof(aAddr));
 		str_append(pBuffer, aAddr, BufferSize);
-		char aFragment[sizeof(Info.m_aWebTransportFragment)];
-		CServerInfo::AddressFragment(aFragment, sizeof(aFragment), Info, Info.m_aAddresses[i]);
-		if(aFragment[0] != '\0')
-		{
-			str_append(pBuffer, "#", BufferSize);
-			str_append(pBuffer, aFragment, BufferSize);
-		}
 	}
 }
 
@@ -763,14 +756,7 @@ void CServerBrowser::SetInfo(CServerEntry *pEntry, const CServerInfo &Info) cons
 	// Only the masterserver's list knows the identity, the certificates and
 	// the host name; an answer from the server itself must not take them
 	// away.
-	if(pEntry->m_Info.m_aIdentity[0] == '\0')
-	{
-		str_copy(pEntry->m_Info.m_aIdentity, TmpInfo.m_aIdentity);
-	}
-	if(pEntry->m_Info.m_aWebTransportFragment[0] == '\0')
-	{
-		str_copy(pEntry->m_Info.m_aWebTransportFragment, TmpInfo.m_aWebTransportFragment);
-	}
+	pEntry->m_Info.m_Pin.Merge(TmpInfo.m_Pin);
 	if(pEntry->m_Info.m_aHostname[0] == '\0')
 	{
 		str_copy(pEntry->m_Info.m_aHostname, TmpInfo.m_aHostname);
@@ -1271,8 +1257,7 @@ void CServerBrowser::UpdateFromHttp()
 			CServerEntry *pEntry = Add(pFavorites[i].m_aAddrs, pFavorites[i].m_NumAddrs);
 			// What the favorite was saved with pins the server, now that
 			// the master's list has nothing for it.
-			str_copy(pEntry->m_Info.m_aIdentity, pFavorites[i].m_aIdentity);
-			str_copy(pEntry->m_Info.m_aWebTransportFragment, pFavorites[i].m_aWebTransportFragment);
+			pEntry->m_Info.m_Pin = pFavorites[i].m_Pin;
 			ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
 			str_copy(pEntry->m_Info.m_aName, pEntry->m_Info.m_aAddress);
 			if(pFavorites[i].m_AllowPing)
@@ -2514,19 +2499,6 @@ ColorRGBA CServerInfo::GametypeColor(const char *pGametype)
 	else
 		HslaColor = ColorHSLA(1.0f, 1.0f, 1.0f);
 	return color_cast<ColorRGBA>(HslaColor);
-}
-
-void CServerInfo::AddressFragment(char *pBuffer, int BufferSize, const CServerInfo &Info, const NETADDR &Addr)
-{
-	pBuffer[0] = '\0';
-	if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
-	{
-		str_copy(pBuffer, Info.m_aWebTransportFragment, BufferSize);
-	}
-	else if((Addr.type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0 && Info.m_aIdentity[0] != '\0')
-	{
-		str_format(pBuffer, BufferSize, "identity-sha256=%s", Info.m_aIdentity);
-	}
 }
 
 bool CServerInfo::ParseLocation(int *pResult, const char *pString)

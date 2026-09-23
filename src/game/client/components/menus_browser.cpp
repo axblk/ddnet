@@ -1289,7 +1289,7 @@ void CMenus::RenderServerbrowserInfo(CUIRect View)
 				}
 				else
 				{
-					Favorites()->Add(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses, pSelectedServer->m_aIdentity, pSelectedServer->m_aWebTransportFragment);
+					Favorites()->Add(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses, &pSelectedServer->m_Pin);
 					if(g_Config.m_UiPage == PAGE_LAN)
 					{
 						Favorites()->AllowPing(pSelectedServer->m_aAddresses, pSelectedServer->m_NumAddresses, true);

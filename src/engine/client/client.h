@@ -22,6 +22,7 @@
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
 #include <engine/shared/network.h>
+#include <engine/shared/server_pin.h>
 #include <engine/textrender.h>
 #include <engine/warning.h>
 
@@ -266,9 +267,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	bool m_FavoritesGroupAllowPing = false;
 	int m_FavoritesGroupNum = 0;
 	NETADDR m_aFavoritesGroupAddresses[MAX_SERVER_ADDRESSES];
-	// The fragments of the group's addresses, the first of each kind.
-	char m_aFavoritesGroupIdentity[65] = "";
-	char m_aFavoritesGroupWebTransportFragment[160] = "";
+	// What the fragments of the group's addresses pin, the first of each kind.
+	CServerPin m_FavoritesGroupPin = {};
 
 	void UpdateDemoIntraTimers();
 	int MaxLatencyTicks() const;

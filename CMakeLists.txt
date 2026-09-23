@@ -2581,6 +2581,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   protocolglue.h
   ringbuffer.cpp
   ringbuffer.h
+  server_pin.cpp
+  server_pin.h
   serverinfo.cpp
   serverinfo.h
   sixup_translate_snapshot.cpp
@@ -3682,6 +3684,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     replace_words_test.cpp
     score_test.cpp
     secure_random_test.cpp
+    server_pin_test.cpp
     server_test.cpp
     serverbrowser_test.cpp
     serverinfo_test.cpp

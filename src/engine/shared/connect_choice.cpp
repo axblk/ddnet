@@ -217,9 +217,9 @@ bool ConnectAddressFor(const CServerInfo &Server, int PickedProtocol, int Picked
 		}
 	}
 	const NETADDR &Address = Server.m_aAddresses[Chosen];
-	char aFragment[sizeof(Server.m_aWebTransportFragment)];
-	CServerInfo::AddressFragment(aFragment, sizeof(aFragment), Server, Address);
-	const bool SignedForName = (Address.type & NETTYPE_WEBSOCKET_TLS) != 0 || ((Address.type & NETTYPE_WEBTRANSPORT) != 0 && str_comp(aFragment, "webpki") == 0);
+	char aFragment[sizeof(Server.m_Pin.m_aWebTransport)];
+	Server.m_Pin.Fragment(Address, aFragment, sizeof(aFragment));
+	const bool SignedForName = Server.m_Pin.SignedForName(Address);
 	if(SignedForName && Server.m_aHostname[0] != '\0')
 	{
 		net_addr_url_str(&Address, pBuffer, BufferSize, false);

@@ -17,12 +17,8 @@ static void AddAddress(CServerInfo &Info, const char *pUrl)
 	str_truncate(aAddress, sizeof(aAddress), pUrl, pFragment != nullptr ? pFragment - pUrl : str_length(pUrl));
 	NETADDR &Addr = Info.m_aAddresses[Info.m_NumAddresses++];
 	ASSERT_EQ(net_addr_from_url(&Addr, aAddress, nullptr, 0), 0);
-	if(pFragment == nullptr)
-		return;
-	if((Addr.type & NETTYPE_WEBTRANSPORT) != 0)
-		str_copy(Info.m_aWebTransportFragment, pFragment + 1);
-	else if(const char *pIdentity = str_startswith(pFragment + 1, "identity-sha256="))
-		str_copy(Info.m_aIdentity, pIdentity);
+	if(pFragment != nullptr)
+		Info.m_Pin.AddFragment(Addr, pFragment + 1);
 }
 
 class ConnectChoice : public ::testing::Test // NOLINT(readability-identifier-naming)
@@ -32,6 +28,7 @@ protected:
 
 	void SetUp() override
 	{
+		m_Info.m_Pin.Reset();
 		char aQuic[256];
 		str_format(aQuic, sizeof(aQuic), "ddnet+quic://127.0.0.1:8303#identity-sha256=%s", IDENTITY);
 		AddAddress(m_Info, "tw-0.6+udp://127.0.0.1:8303");
@@ -94,6 +91,7 @@ TEST_F(ConnectChoice, ConnectAddress)
 	EXPECT_STREQ(aAddress, "127.0.0.1:8303");
 
 	CServerInfo Empty{};
+	Empty.m_Pin.Reset();
 	str_copy(aAddress, "unchanged");
 	EXPECT_FALSE(ConnectAddressFor(Empty, (int)EConnectProtocol::LEGACY, (int)EConnectAddressFamily::IPV4, aAddress, sizeof(aAddress)));
 	EXPECT_STREQ(aAddress, "unchanged");

@@ -19,7 +19,7 @@ protected:
 public:
 	TRISTATE IsFavorite(const NETADDR *pAddrs, int NumAddrs) const override;
 	TRISTATE IsPingAllowed(const NETADDR *pAddrs, int NumAddrs) const override;
-	void Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity, const char *pWebTransportFragment) override;
+	void Add(const NETADDR *pAddrs, int NumAddrs, const CServerPin *pPin) override;
 	void AllowPing(const NETADDR *pAddrs, int NumAddrs, bool AllowPing) override;
 	void Remove(const NETADDR *pAddrs, int NumAddrs) override;
 	void AllEntries(const CEntry **ppEntries, int *pNumEntries) override;
@@ -46,18 +46,8 @@ void CFavorites::OnConfigSave(IConfigManager *pConfigManager)
 		{
 			// Each modern address with its fragment, the way the master
 			// lists them, quoted, since `#` starts a comment otherwise.
-			char aAddr[NETADDR_URL_MAXSTRSIZE + 1 + sizeof(Entry.m_aWebTransportFragment)];
-			net_addr_url_str(&Entry.m_aAddrs[i], aAddr, sizeof(aAddr), true);
-			if((Entry.m_aAddrs[i].type & NETTYPE_WEBTRANSPORT) != 0 && Entry.m_aWebTransportFragment[0] != '\0')
-			{
-				str_append(aAddr, "#");
-				str_append(aAddr, Entry.m_aWebTransportFragment);
-			}
-			else if((Entry.m_aAddrs[i].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0 && Entry.m_aIdentity[0] != '\0')
-			{
-				str_append(aAddr, "#identity-sha256=");
-				str_append(aAddr, Entry.m_aIdentity);
-			}
+			char aAddr[CServerPin::URL_MAXSTRSIZE];
+			Entry.m_Pin.AddressUrl(Entry.m_aAddrs[i], aAddr, sizeof(aAddr));
 			char aBuffer[sizeof(aAddr) + 32];
 			if(!Entry.m_AllowPing && str_find(aAddr, "#") == nullptr)
 			{
@@ -145,7 +135,7 @@ TRISTATE CFavorites::IsPingAllowed(const NETADDR *pAddrs, int NumAddrs) const
 	}
 }
 
-void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity, const char *pWebTransportFragment)
+void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs, const CServerPin *pPin)
 {
 	if(NumAddrs == 0)
 	{
@@ -187,8 +177,10 @@ void CFavorites::Add(const NETADDR *pAddrs, int NumAddrs, const char *pIdentity,
 		m_ByAddr[pAddrs[i]] = m_vEntries.size();
 	}
 	NewEntry.m_AllowPing = false;
-	str_copy(NewEntry.m_aIdentity, pIdentity);
-	str_copy(NewEntry.m_aWebTransportFragment, pWebTransportFragment);
+	if(pPin != nullptr)
+	{
+		NewEntry.m_Pin = *pPin;
+	}
 	m_vEntries.push_back(NewEntry);
 }
 

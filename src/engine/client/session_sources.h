@@ -9,6 +9,7 @@
 
 #include <engine/client/enums.h>
 #include <engine/serverbrowser.h>
+#include <engine/sessions.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/translation_context.h>
 
@@ -128,8 +129,8 @@ private:
 class CDemoSessionSource : public CSessionSourceBase
 {
 	CSnapshotDelta m_aSnapshotDeltas[2];
-	CSnapshotStorage::CHolder m_aSnapshotHolders[IClient::NUM_SNAPSHOT_TYPES];
-	CSnapshotBuffer m_aaSnapshotData[IClient::NUM_SNAPSHOT_TYPES][2];
+	CSnapshotStorage::CHolder m_aSnapshotHolders[ISessions::NUM_SNAPSHOT_TYPES];
+	CSnapshotBuffer m_aaSnapshotData[ISessions::NUM_SNAPSHOT_TYPES][2];
 
 public:
 	CDemoPlayer m_DemoPlayer;

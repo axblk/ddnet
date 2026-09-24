@@ -75,7 +75,7 @@ void CMenus::RenderSettingsCredits(CUIRect MainView)
 
 		if(Ui()->DoButtonLogic(pLinkId, 0, &LinkRect, BUTTONFLAG_LEFT))
 		{
-			Client()->ViewLink(pUrl);
+			ClientFrontend()->ViewLink(pUrl);
 		}
 
 		SuffixText.Render(TextRender(), vec2(Line.x, Line.y), TextRender()->DefaultTextColor());

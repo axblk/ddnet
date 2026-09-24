@@ -111,7 +111,7 @@ void CGameClient::ApplySkin7InfoFromGameMsg(CSessionId SessionId, const T *pMsg,
 		Protocol7Client.m_aUseCustomColors[Part] = pMsg->m_aUseCustomColors[Part];
 		Protocol7Client.m_aSkinPartColors[Part] = pMsg->m_aSkinPartColors[Part];
 	}
-	m_Skins7.ValidateSkinParts(apSkinPartsPtr, Protocol7Client.m_aUseCustomColors, Protocol7Client.m_aSkinPartColors, Client()->TranslationContext(SessionId).m_GameFlags);
+	m_Skins7.ValidateSkinParts(apSkinPartsPtr, Protocol7Client.m_aUseCustomColors, Protocol7Client.m_aSkinPartColors, Sessions()->TranslationContext(SessionId).m_GameFlags);
 }
 
 void CGameClient::ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn)
@@ -194,7 +194,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 	{
 		return m_NetObjHandler.SecureUnpackMsg(*pMsgId, pUnpacker);
 	}
-	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CTranslationContext &TranslationContext = Sessions()->TranslationContext(SessionId);
 
 	void *pRawMsg = m_NetObjHandler7.SecureUnpackMsg(*pMsgId, pUnpacker);
 	if(!pRawMsg)
@@ -249,7 +249,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		}
 
 		TranslationContext.m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;
-		if(SessionId == Client()->FocusedSessionId())
+		if(SessionId == Sessions()->FocusedSessionId())
 		{
 			m_aClients[pMsg7->m_ClientId].m_Team = pMsg7->m_Team;
 			if(m_aClients[pMsg7->m_ClientId].m_Active)
@@ -400,7 +400,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				if(pUnpacker->Error())
 					continue;
 
-				if(!DummyConnection && Client()->SessionType(SessionId) != ESessionSourceType::DEMO)
+				if(!DummyConnection && Sessions()->SessionType(SessionId) != ESessionSourceType::DEMO)
 				{
 					CGameSessionContext &Session = SessionContext(SessionId);
 					Session.m_Vote.AddOption(pDescription);
@@ -728,7 +728,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				case STR_TEAM_SPECTATORS: pMsg = "All players were moved to the spectators"; break;
 				}
 				if(!DummyConnection)
-					m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pMsg, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
+					m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pMsg, Sessions()->GameTick(SessionId, Conn), Sessions()->GameTickSpeed()); // client side broadcast
 			}
 			break;
 			case protocol7::GAMEMSG_TEAM_BALANCE_VICTIM:
@@ -740,7 +740,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				case STR_TEAM_BLUE: pMsg = "You were moved to the blue team due to team balancing"; break;
 				}
 				if(!DummyConnection)
-					m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pMsg, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
+					m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pMsg, Sessions()->GameTick(SessionId, Conn), Sessions()->GameTickSpeed()); // client side broadcast
 			}
 			break;
 			case protocol7::GAMEMSG_CTF_GRAB:
@@ -763,7 +763,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 				if(!DummyConnection)
 					SourceSession.m_Stats.Client(ClientId).m_FlagCaptures++;
 
-				float Time = aParaI[2] / (float)Client()->GameTickSpeed();
+				float Time = aParaI[2] / (float)Sessions()->GameTickSpeed();
 				char aName[MAX_NAME_LENGTH];
 				GetStateClientName(SourceState, ClientId, aName, sizeof(aName));
 				if(Time <= 60)
@@ -808,7 +808,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 			break;
 		case DO_BROADCAST:
 			if(!DummyConnection)
-				m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pText, Client()->GameTick(SessionId, Conn), Client()->GameTickSpeed()); // client side broadcast
+				m_Broadcast.DoBroadcast(SourceSession.m_Broadcast, pText, Sessions()->GameTick(SessionId, Conn), Sessions()->GameTickSpeed()); // client side broadcast
 			break;
 		}
 

@@ -7,6 +7,7 @@
 #include "smooth_time.h"
 
 #include <engine/client.h>
+#include <engine/sessions.h>
 #include <engine/shared/protocol.h>
 #include <engine/shared/snapshot.h>
 
@@ -39,7 +40,7 @@ public:
 	CGraph m_GametimeMarginGraph;
 
 	CSnapshotStorage m_SnapshotStorage;
-	CSnapshotStorage::CHolder *m_apSnapshots[IClient::NUM_SNAPSHOT_TYPES] = {};
+	CSnapshotStorage::CHolder *m_apSnapshots[ISessions::NUM_SNAPSHOT_TYPES] = {};
 	int m_ReceivedSnapshots = 0;
 	char m_aSnapshotIncomingData[CSnapshot::MAX_SIZE] = {};
 	int m_SnapshotIncomingDataSize = 0;

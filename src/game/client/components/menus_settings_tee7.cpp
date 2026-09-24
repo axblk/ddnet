@@ -13,6 +13,7 @@
 
 #include <game/client/animstate.h>
 #include <game/client/components/console.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/skins7.h>
 #include <game/client/components/sounds.h>
 #include <game/client/gameclient.h>
@@ -188,7 +189,7 @@ void CMenus::RenderSettingsTee7(CUIRect MainView)
 	}
 
 	static CLineInput s_SkinFilterInput(g_Config.m_ClSkinFilterString, sizeof(g_Config.m_ClSkinFilterString));
-	if(Ui()->DoEditBox_Search(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+	if(Ui()->DoEditBox_Search(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive()))
 	{
 		m_SkinList7LastRefreshTime = std::nullopt;
 		m_SkinPartsList7LastRefreshTime = std::nullopt;
@@ -199,7 +200,7 @@ void CMenus::RenderSettingsTee7(CUIRect MainView)
 	{
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "skins7", aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("skins7", IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 	Ui()->DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Open the directory to add custom skins"));
 
@@ -207,7 +208,7 @@ void CMenus::RenderSettingsTee7(CUIRect MainView)
 	TextRender()->SetRenderFlags(ETextRenderFlags::TEXT_RENDER_FLAG_ONLY_ADVANCE_WIDTH | ETextRenderFlags::TEXT_RENDER_FLAG_NO_X_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_Y_BEARING | ETextRenderFlags::TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT | ETextRenderFlags::TEXT_RENDER_FLAG_NO_OVERSIZE);
 	static CButtonContainer s_SkinRefreshButton;
 	if(DoButton_Menu(&s_SkinRefreshButton, FontIcon::ARROW_ROTATE_RIGHT, 0, &RefreshButton) ||
-		(!Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && (Input()->KeyPress(KEY_F5) || (Input()->ModifierIsPressed() && Input()->KeyPress(KEY_R)))))
+		(!Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive() && (Input()->KeyPress(KEY_F5) || (Input()->ModifierIsPressed() && Input()->KeyPress(KEY_R)))))
 	{
 		// reset render flags for possible loading screen
 		TextRender()->SetRenderFlags(0);

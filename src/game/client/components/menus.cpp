@@ -36,6 +36,7 @@
 #include <game/client/animstate.h>
 #include <game/client/components/binds.h>
 #include <game/client/components/console.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/key_binder.h>
 #include <game/client/components/menu_background.h>
 #include <game/client/components/sounds.h>
@@ -515,7 +516,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		}
 		else
 		{
-			Client()->Quit();
+			ClientFrontend()->Quit();
 		}
 	}
 	Ui()->DoToolTip(&s_QuitButton, &Button, Localize("Quit"));
@@ -763,7 +764,7 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 	// An export running in the background loads its next demo without anybody
 	// waiting for it, so its loading screen would flash over whatever the user
 	// is actually doing. The export overlay already says that something runs.
-	if(Client()->VideoSessionId().IsValid() && Client()->VideoSessionId() != Client()->FocusedSessionId())
+	if(Client()->VideoSessionId().IsValid() && Client()->VideoSessionId() != Sessions()->FocusedSessionId())
 		return;
 #endif
 
@@ -772,7 +773,7 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 
 	Ui()->MapScreen();
 
-	if(!GameClient()->m_MenuBackground.Render())
+	if(!Frontend()->m_MenuBackground.Render())
 	{
 		RenderBackground();
 	}
@@ -832,7 +833,7 @@ bool CMenus::VideoProgress(CVideoProgress &Progress)
 	int FirstTick;
 	int CurrentTick;
 	int LastTick;
-	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+	if(!ClientFrontend()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
 		return false;
 	Progress.m_Status = IVideo::Current()->Status();
 	const int TotalTicks = LastTick - FirstTick;
@@ -843,7 +844,7 @@ bool CMenus::VideoProgress(CVideoProgress &Progress)
 		m_DemoRenderStartTime = Now;
 	m_DemoRenderLastSubmittedFrames = Progress.m_Status.m_SubmittedFrames;
 	Progress.m_Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
-	Progress.m_QueueSize = Client()->DemoPlayer_RenderQueueSize();
+	Progress.m_QueueSize = ClientFrontend()->DemoPlayer_RenderQueueSize();
 	return true;
 }
 
@@ -954,7 +955,7 @@ bool CMenus::RenderVideoProgressScreen(const CVideoProgress &Progress)
 	static CButtonContainer s_DemoRenderCancelAllButton;
 	const bool CancelAll = DoButton_Menu(&s_DemoRenderCancelAllButton, Localize("Cancel all"), 0, &CancelAllButton);
 	if(CancelAll)
-		Client()->DemoPlayer_ClearRenderQueue();
+		ClientFrontend()->DemoPlayer_ClearRenderQueue();
 	RenderTools()->RenderCursor(Ui()->MousePos(), 24.0f);
 	Ui()->FinishCheck();
 	Ui()->ClearHotkeys();
@@ -982,7 +983,7 @@ void CMenus::FinishLoading()
 
 void CMenus::RenderNews(CUIRect MainView)
 {
-	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_NEWS);
+	Frontend()->m_MenuBackground.ChangePosition(CMenuBackground::POS_NEWS);
 
 	g_Config.m_UiUnreadNews = false;
 
@@ -993,7 +994,7 @@ void CMenus::RenderNews(CUIRect MainView)
 
 	CUIRect Label;
 
-	const char *pStr = Client()->News();
+	const char *pStr = ClientFrontend()->News();
 	char aLine[256];
 	while((pStr = str_next_token(pStr, "\n", aLine, sizeof(aLine))))
 	{
@@ -1099,7 +1100,6 @@ void CMenus::OnUpdate()
 {
 	FinishImageLoads();
 	FinishAssetPreviewLoads();
-	UpdateGhostlistScan();
 }
 
 bool CMenus::StartupAssetsLoaded() const
@@ -1252,12 +1252,13 @@ void CMenus::Render()
 	}
 	else
 	{
-		if(!m_MenuBackdropBackgroundRendered)
+		if(!m_BackgroundInScene)
 			RenderMenuBackground();
 		ms_ColorTabbarInactive = ms_ColorTabbarInactiveOutgame;
 		ms_ColorTabbarActive = ms_ColorTabbarActiveOutgame;
 		ms_ColorTabbarHover = ms_ColorTabbarHoverOutgame;
 	}
+	m_BackgroundInScene = false;
 
 	CUIRect Screen = *Ui()->Screen();
 	if(Client()->State() != IClient::STATE_DEMOPLAYBACK || m_Popup != POPUP_NONE)
@@ -1394,7 +1395,7 @@ void CMenus::Render()
 	Ui()->RenderPopupMenus();
 
 	// Prevent UI elements from being hovered while a key reader is active
-	if(GameClient()->m_KeyBinder.IsActive())
+	if(Frontend()->m_KeyBinder.IsActive())
 	{
 		Ui()->SetHotItem(nullptr);
 	}
@@ -1424,12 +1425,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	else if(m_Popup == POPUP_DISCONNECTED)
 	{
 		pTitle = Localize("Disconnected");
-		pExtraText = Client()->ErrorString();
+		pExtraText = ClientFrontend()->ErrorString();
 		pButtonText = Localize("Ok");
 		if(ClientNetwork()->ReconnectTime() > 0)
 		{
 			str_format(aBuf, sizeof(aBuf), Localize("Reconnect in %d sec"), (int)((ClientNetwork()->ReconnectTime() - time_get()) / time_freq()) + 1);
-			pTitle = Client()->ErrorString();
+			pTitle = ClientFrontend()->ErrorString();
 			pExtraText = aBuf;
 			pButtonText = Localize("Abort");
 		}
@@ -1487,9 +1488,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	else if(m_Popup == POPUP_POINTS)
 	{
 		pTitle = Localize("Existing Player");
-		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && ClientFrontend()->Points() > 50)
 		{
-			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), Client()->Points());
+			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), ClientFrontend()->Points());
 			pExtraText = aBuf;
 			TopAlign = true;
 		}
@@ -1629,12 +1630,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			if(m_Popup == POPUP_RESTART)
 			{
 				m_Popup = POPUP_NONE;
-				Client()->Restart();
+				ClientFrontend()->Restart();
 			}
 			else
 			{
 				m_Popup = POPUP_NONE;
-				Client()->Quit();
+				ClientFrontend()->Quit();
 			}
 		}
 	}
@@ -2119,7 +2120,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		CloseButton.VSplitRight(20.0f, &CloseButton, nullptr);
 		ButtonBar.VSplitMid(&RemoveButton, &StartButton, 20.0f);
 
-		const bool RenderActive = Client()->DemoPlayer_RenderQueueActive();
+		const bool RenderActive = ClientFrontend()->DemoPlayer_RenderQueueActive();
 		if(RenderActive)
 		{
 			CUIRect ActiveLabel, CancelActiveButton;
@@ -2129,14 +2130,14 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			ActiveLabel.VSplitRight(10.0f, &ActiveLabel, nullptr);
 			char aActiveName[128];
 			char aActive[192];
-			str_format(aActive, sizeof(aActive), "%s: %s", Localize("Currently rendering"), DemoName(Client()->DemoPlayer_ActiveRenderName(), aActiveName));
+			str_format(aActive, sizeof(aActive), "%s: %s", Localize("Currently rendering"), DemoName(ClientFrontend()->DemoPlayer_ActiveRenderName(), aActiveName));
 			Ui()->DoLabel(&ActiveLabel, aActive, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = ActiveLabel.w, .m_EllipsisAtEnd = true});
 			static CButtonContainer s_ButtonCancelActive;
 			if(DoButton_Menu(&s_ButtonCancelActive, Localize("Cancel current"), 0, &CancelActiveButton))
-				Client()->DemoPlayer_CancelActiveRender();
+				ClientFrontend()->DemoPlayer_CancelActiveRender();
 		}
 
-		const int PendingCount = static_cast<int>(Client()->DemoPlayer_RenderQueuePending());
+		const int PendingCount = static_cast<int>(ClientFrontend()->DemoPlayer_RenderQueuePending());
 		static int s_SelectedIndex = 0;
 		s_SelectedIndex = std::clamp(s_SelectedIndex, 0, std::max(PendingCount - 1, 0));
 
@@ -2148,7 +2149,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		s_ListBox.DoStart(20.0f, PendingCount, 1, 3, s_SelectedIndex, &Box);
 		for(int i = 0; i < PendingCount; ++i)
 		{
-			const char *pDemoPath = Client()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
+			const char *pDemoPath = ClientFrontend()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
 			const CListboxItem Item = s_ListBox.DoNextItem(pDemoPath, i == s_SelectedIndex);
 			if(!Item.m_Visible)
 				continue;
@@ -2162,12 +2163,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			Ui()->DoLabel(&Label, aPosition, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = Label.w, .m_EllipsisAtEnd = true});
 			if(i > 0 && Ui()->DoButton_FontIcon(&m_RenderQueueRowIds[i].m_Up, FontIcon::CHEVRON_UP, 0, &MoveUpButton, BUTTONFLAG_LEFT))
 			{
-				Client()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), true);
+				ClientFrontend()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), true);
 				s_SelectedIndex = i - 1;
 			}
 			if(i < PendingCount - 1 && Ui()->DoButton_FontIcon(&m_RenderQueueRowIds[i].m_Down, FontIcon::CHEVRON_DOWN, 0, &MoveDownButton, BUTTONFLAG_LEFT))
 			{
-				Client()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), false);
+				ClientFrontend()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), false);
 				s_SelectedIndex = i + 1;
 			}
 		}
@@ -2180,15 +2181,15 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_ButtonRemove;
 		if(DoButton_Menu(&s_ButtonRemove, Localize("Remove"), 0, &RemoveButton) && PendingCount > 0)
 		{
-			Client()->DemoPlayer_RenderQueueErase(static_cast<size_t>(s_SelectedIndex));
-			if(Client()->DemoPlayer_RenderQueueSize() == 0)
+			ClientFrontend()->DemoPlayer_RenderQueueErase(static_cast<size_t>(s_SelectedIndex));
+			if(ClientFrontend()->DemoPlayer_RenderQueueSize() == 0)
 				m_Popup = POPUP_NONE;
 		}
 
 		static CButtonContainer s_ButtonStart;
 		if(DoButton_Menu(&s_ButtonStart, Localize("Start rendering"), RenderActive, &StartButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			Client()->DemoPlayer_StartRenderQueue();
+			ClientFrontend()->DemoPlayer_StartRenderQueue();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2213,7 +2214,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_ButtonOpenFolder;
 		if(DoButton_Menu(&s_ButtonOpenFolder, Localize("Videos directory"), 0, &OpenFolder))
 		{
-			Client()->ViewFile(aSaveFolder);
+			ClientFrontend()->ViewFile(aSaveFolder);
 		}
 
 		static CButtonContainer s_ButtonOk;
@@ -2368,8 +2369,8 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			{
 				// Activate internet tab before joining tutorial to make sure the server info
 				// for the tutorial servers is available.
-				GameClient()->m_Menus.SetMenuPage(CMenus::PAGE_INTERNET);
-				GameClient()->m_Menus.RefreshBrowserTab(true);
+				Frontend()->m_Menus.SetMenuPage(CMenus::PAGE_INTERNET);
+				Frontend()->m_Menus.RefreshBrowserTab(true);
 				m_JoinTutorial.m_Status = CJoinTutorial::EStatus::REFRESHING;
 				m_JoinTutorial.m_TryRefresh = false;
 				m_JoinTutorial.m_TriedRefresh = true;
@@ -2390,7 +2391,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			char *pDst = aMotd + str_length(aMotd);
 			str_escape(&pDst, Localize("You're playing on a local server because no online Tutorial server could be found.\n\nYour record will only be saved locally."), aMotd + sizeof(aMotd) - 1);
 			str_append(aMotd, "\"");
-			if(GameClient()->m_LocalServer.RunServer({"sv_register 0", "sv_map Tutorial", aMotd}))
+			if(Frontend()->m_LocalServer.RunServer({"sv_register 0", "sv_map Tutorial", aMotd}))
 			{
 				m_JoinTutorial.m_LocalServerState = CJoinTutorial::ELocalServerState::WAITING_START;
 				m_JoinTutorial.m_StateChange = time_get_nanoseconds();
@@ -2404,9 +2405,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		{
 			if(LastStateChangeSeconds >= RefreshDelay)
 			{
-				if(GameClient()->m_LocalServer.IsServerRunning())
+				if(Frontend()->m_LocalServer.IsServerRunning())
 				{
-					GameClient()->m_LocalServer.KillServer();
+					Frontend()->m_LocalServer.KillServer();
 					m_JoinTutorial.m_LocalServerState = CJoinTutorial::ELocalServerState::WAITING_STOP;
 					m_JoinTutorial.m_StateChange = time_get_nanoseconds();
 				}
@@ -2428,7 +2429,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			}
 			else
 			{
-				if(!GameClient()->m_LocalServer.IsServerRunning())
+				if(!Frontend()->m_LocalServer.IsServerRunning())
 				{
 					RunServer();
 				}
@@ -2439,16 +2440,16 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		}
 		else if(m_JoinTutorial.m_LocalServerState == CJoinTutorial::ELocalServerState::WAITING_START)
 		{
-			if(LastStateChangeSeconds >= 5.0f && !GameClient()->m_LocalServer.IsStarting())
+			if(LastStateChangeSeconds >= 5.0f && !Frontend()->m_LocalServer.IsStarting())
 			{
 				ShowFinalErrorMessage();
 			}
 			else
 			{
 				if(LastStateChangeSeconds >= 2.0f &&
-					GameClient()->m_LocalServer.IsServerRunning())
+					Frontend()->m_LocalServer.IsServerRunning())
 				{
-					GameClient()->m_LocalServer.Connect();
+					Frontend()->m_LocalServer.Connect();
 				}
 
 				pProgressLabel = Localize("Waiting for local server to start…");
@@ -2467,7 +2468,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) ||
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			GameClient()->m_LocalServer.CancelConnect();
+			Frontend()->m_LocalServer.CancelConnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2477,7 +2478,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		Box.HSplitBottom(24.0f, &Box, &Part);
 		Part.VMargin(120.0f, &Part);
 
-		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && ClientFrontend()->Points() > 50)
 		{
 			CUIRect Yes, No;
 			Part.VSplitMid(&No, &Yes, 40.0f);
@@ -2796,7 +2797,7 @@ void CMenus::DemoRenderResolution(int *pWidth, int *pHeight) const
 {
 	// The same numbers the export itself will use, so what the dialog shows and
 	// checks is what comes out.
-	const CVideoExportSettings Settings = Client()->DefaultVideoExportSettings();
+	const CVideoExportSettings Settings = ClientFrontend()->DefaultVideoExportSettings();
 	*pWidth = Settings.m_Width;
 	*pHeight = Settings.m_Height;
 }
@@ -2807,8 +2808,8 @@ void CMenus::PopupConfirmDemoReplaceVideo()
 	str_format(aBuf, sizeof(aBuf), "%s/%s.demo", m_aCurrentDemoFolder, m_aCurrentDemoSelectionName);
 	char aVideoName[IO_MAX_PATH_LENGTH];
 	str_copy(aVideoName, m_DemoRenderInput.GetString());
-	const CVideoExportSettings Settings = Client()->DefaultVideoExportSettings();
-	const char *pError = Client()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, Settings, m_Speed, !m_DemoRenderQueueOnly);
+	const CVideoExportSettings Settings = ClientFrontend()->DefaultVideoExportSettings();
+	const char *pError = ClientFrontend()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, Settings, m_Speed, !m_DemoRenderQueueOnly);
 	if(!pError)
 	{
 		m_DemoRenderStartTime = std::chrono::nanoseconds::zero();
@@ -2865,7 +2866,6 @@ void CMenus::OnShutdown()
 	m_SettingsCreditsText.Reset(TextRender());
 	m_SettingsDdnetUpdaterText.Reset(TextRender());
 	m_SettingsLanguageCreditsText.Reset(TextRender());
-	DestroyMenuBackdropTextures();
 	m_BlobResource.Reset();
 	Graphics()->UnloadTexture(&m_TextureBlob);
 	for(CMenuImage &MenuImage : m_vMenuImages)
@@ -2914,9 +2914,9 @@ void CMenus::OnStateChange(int NewState, int OldState)
 		if(OldState >= IClient::STATE_ONLINE && NewState < IClient::STATE_QUITTING)
 			UpdateMusicState();
 		m_Popup = POPUP_NONE;
-		if(Client()->ErrorString() && Client()->ErrorString()[0] != 0)
+		if(ClientFrontend()->ErrorString() && ClientFrontend()->ErrorString()[0] != 0)
 		{
-			if(str_find(Client()->ErrorString(), "password"))
+			if(str_find(ClientFrontend()->ErrorString(), "password"))
 			{
 				m_Popup = POPUP_PASSWORD;
 				m_PasswordInput.SelectAll();
@@ -2952,237 +2952,28 @@ void CMenus::OnWindowResize()
 	m_SettingsDdnetUpdaterText.Reset(TextRender());
 	m_SettingsLanguageCreditsText.Reset(TextRender());
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
-	DestroyMenuBackdropTextures();
-}
-
-void CMenus::DestroyMenuBackdropTextures()
-{
-	m_MenuBackdropActive = false;
-	m_MenuBackdropOverlayActive = false;
-	m_MenuBackdropReady = false;
-	Graphics()->UnloadTexture(&m_MenuBackdropSceneTexture);
-	Graphics()->UnloadTexture(&m_MenuBackdropOverlayTexture);
-	for(IGraphics::CTextureHandle &Texture : m_aMenuBackdropDownsampleTextures)
-		Graphics()->UnloadTexture(&Texture);
-	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[0]);
-	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[1]);
-	m_MenuBackdropWidth = 0;
-	m_MenuBackdropHeight = 0;
-}
-
-bool CMenus::EnsureMenuBackdropTextures()
-{
-	const int Width = Graphics()->ScreenWidth();
-	const int Height = Graphics()->ScreenHeight();
-	if(Width <= 0 || Height <= 0)
-		return false;
-	if(Width == m_MenuBackdropWidth && Height == m_MenuBackdropHeight)
-		return MenuBackdropTexturesValid();
-
-	DestroyMenuBackdropTextures();
-	m_MenuBackdropWidth = Width;
-	m_MenuBackdropHeight = Height;
-
-	IGraphics::CTextureDesc Desc;
-	Desc.m_Width = Width;
-	Desc.m_Height = Height;
-	Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
-	Desc.m_Usage = IGraphics::TEXTURE_USAGE_SAMPLED | IGraphics::TEXTURE_USAGE_COLOR_TARGET;
-	m_MenuBackdropSceneTexture = Graphics()->CreateTexture(Desc);
-	m_MenuBackdropOverlayTexture = Graphics()->CreateTexture(Desc);
-
-	// The two blur passes run on an eighth of the screen, which is what decides
-	// how coarse the result looks. Getting down there in one step would sample
-	// four of the sixty-four pixels a target pixel covers, and which four
-	// changes as the scene moves, which is what made the blur crawl. Halving
-	// three times averages all of them.
-	for(int i = 0; i < NUM_MENU_BACKDROP_DOWNSAMPLES; ++i)
-	{
-		Desc.m_Width = std::max(1, (Width + (2 << i) - 1) / (2 << i));
-		Desc.m_Height = std::max(1, (Height + (2 << i) - 1) / (2 << i));
-		m_aMenuBackdropDownsampleTextures[i] = Graphics()->CreateTexture(Desc);
-	}
-	m_aMenuBackdropBlurTextures[0] = Graphics()->CreateTexture(Desc);
-	m_aMenuBackdropBlurTextures[1] = Graphics()->CreateTexture(Desc);
-	if(MenuBackdropTexturesValid())
-	{
-		log_debug("menus", "Created menu backdrop targets: scene=%dx%d blur=%dx%d", Width, Height, static_cast<int>(Desc.m_Width), static_cast<int>(Desc.m_Height));
-		return true;
-	}
-
-	DestroyMenuBackdropTextures();
-	log_debug("menus", "Menu backdrop render targets unavailable, using direct rendering");
-	return false;
-}
-
-bool CMenus::MenuBackdropTexturesValid() const
-{
-	if(!m_MenuBackdropSceneTexture.IsValid() || !m_MenuBackdropOverlayTexture.IsValid())
-		return false;
-	for(const IGraphics::CTextureHandle &Texture : m_aMenuBackdropDownsampleTextures)
-	{
-		if(!Texture.IsValid())
-			return false;
-	}
-	return m_aMenuBackdropBlurTextures[0].IsValid() && m_aMenuBackdropBlurTextures[1].IsValid();
-}
-
-bool CMenus::RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection)
-{
-	IGraphics::CRenderPassDesc Pass;
-	Pass.m_ColorTarget = Target;
-	if(!Graphics()->BeginRenderPass(Pass))
-		return false;
-	const bool Drawn = BlurDirection.has_value() ? Graphics()->BlurTexture(Source, BlurDirection.value()) : Graphics()->BlitTexture(Source);
-	const bool Ended = Graphics()->EndRenderPass();
-	return Drawn && Ended;
-}
-
-bool CMenus::BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source)
-{
-	IGraphics::CTextureHandle Current = Source;
-	for(const IGraphics::CTextureHandle &Downsample : m_aMenuBackdropDownsampleTextures)
-	{
-		if(!RenderMenuBackdropTexture(Downsample, Current, std::nullopt))
-			return false;
-		Current = Downsample;
-	}
-	return RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[1], Current, IGraphics::EBlurDirection::HORIZONTAL) &&
-	       RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[0], m_aMenuBackdropBlurTextures[1], IGraphics::EBlurDirection::VERTICAL);
-}
-
-bool CMenus::BeginMenuBackdrop(ColorRGBA ClearColor)
-{
-	m_MenuBackdropActive = false;
-	m_MenuBackdropOverlayActive = false;
-	m_MenuBackdropReady = false;
-	m_MenuBackdropBackgroundRendered = false;
-	if(!g_Config.m_ClMenuBackgroundBlur)
-	{
-		if(m_MenuBackdropSceneTexture.IsValid())
-			DestroyMenuBackdropTextures();
-		return false;
-	}
-
-	const IClient::EClientState ClientState = Client()->State();
-	if(!BackdropConsumerActive() && (ClientState == IClient::STATE_ONLINE || ClientState == IClient::STATE_DEMOPLAYBACK))
-		return false;
-	if(!EnsureMenuBackdropTextures())
-		return false;
-
-	IGraphics::CRenderPassDesc Pass;
-	Pass.m_ColorTarget = m_MenuBackdropSceneTexture;
-	Pass.m_LoadOp = IGraphics::ERenderPassLoadOp::CLEAR;
-	Pass.m_ClearColor = ClearColor.WithAlpha(0.0f);
-	m_MenuBackdropActive = Graphics()->BeginRenderPass(Pass);
-	return m_MenuBackdropActive;
 }
 
 void CMenus::RenderMenuBackground()
 {
-	if(!GameClient()->m_MenuBackground.Render())
+	if(!Frontend()->m_MenuBackground.Render())
 		RenderBackground();
 }
 
-void CMenus::FinishMenuBackdrop()
+void CMenus::RenderSceneBackground()
 {
-	if(!m_MenuBackdropActive)
-		return;
-
-	const IClient::EClientState ClientState = Client()->State();
-	const bool RenderedBackground = ClientState != IClient::STATE_ONLINE && ClientState != IClient::STATE_DEMOPLAYBACK;
-	if(RenderedBackground)
-		RenderMenuBackground();
-
-	const bool SceneEnded = Graphics()->EndRenderPass();
-	// The console blurs its own picture later, so a frame where it is the
-	// only thing over the scene does not need the scene blurred at all.
-	const bool ApplyBlur = SceneBackdropConsumerActive() || RenderedBackground;
-	const bool Blurred = SceneEnded && ApplyBlur && BlurIntoMenuBackdrop(m_MenuBackdropSceneTexture);
-
-	// Everything that is drawn over the scene from here on goes into a second
-	// picture rather than straight to the screen, so that whatever is drawn
-	// last can have a blurred copy of all of it. The console is what needs
-	// that: it covers the menu just as it covers the game.
-	IGraphics::CRenderPassDesc OverlayPass;
-	OverlayPass.m_ColorTarget = m_MenuBackdropOverlayTexture;
-	m_MenuBackdropOverlayActive = Graphics()->BeginRenderPass(OverlayPass) && Graphics()->BlitTexture(m_MenuBackdropSceneTexture);
-	if(!m_MenuBackdropOverlayActive)
-	{
-		IGraphics::CRenderPassDesc PresentationPass;
-		const bool Started = Graphics()->BeginRenderPass(PresentationPass);
-		const bool Composited = Started && Graphics()->BlitTexture(m_MenuBackdropSceneTexture);
-		m_MenuBackdropReady = Blurred && Composited;
-		m_MenuBackdropBackgroundRendered = RenderedBackground && Composited;
-		m_MenuBackdropActive = false;
-		return;
-	}
-	m_MenuBackdropReady = Blurred;
-	m_MenuBackdropBackgroundRendered = RenderedBackground;
-	m_MenuBackdropActive = false;
-}
-
-bool CMenus::CaptureMenuBackdrop()
-{
-	if(!m_MenuBackdropOverlayActive)
-		return false;
-	const bool Ended = Graphics()->EndRenderPass();
-	const bool Blurred = Ended && BlurIntoMenuBackdrop(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropOverlayActive = false;
-	IGraphics::CRenderPassDesc PresentationPass;
-	const bool Started = Graphics()->BeginRenderPass(PresentationPass);
-	const bool Composited = Started && Graphics()->BlitTexture(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropReady = Blurred && Composited;
-	return m_MenuBackdropReady;
-}
-
-void CMenus::PresentMenuBackdrop()
-{
-	if(!m_MenuBackdropOverlayActive)
-		return;
-	const bool Ended = Graphics()->EndRenderPass();
-	m_MenuBackdropOverlayActive = false;
-	IGraphics::CRenderPassDesc PresentationPass;
-	if(Ended && Graphics()->BeginRenderPass(PresentationPass))
-		Graphics()->BlitTexture(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropReady = false;
-}
-
-bool CMenus::SceneBackdropConsumerActive() const
-{
-	return IsActive() || GameClient()->m_Scoreboard.IsActive() || GameClient()->m_Statboard.IsActive() || GameClient()->m_Motd.IsActive();
-}
-
-bool CMenus::BackdropConsumerActive() const
-{
-	return SceneBackdropConsumerActive() || GameClient()->m_GameConsole.IsActive();
+	RenderMenuBackground();
+	m_BackgroundInScene = true;
 }
 
 void CMenus::RenderBackdropRegion(const CUIRect &Rect, int Corners, float Rounding)
 {
-	if(!m_MenuBackdropReady || Rect.w <= 0.0f || Rect.h <= 0.0f)
-		return;
-
-	// The very geometry the box is drawn with, sampling the blurred picture at
-	// the spot on the screen each corner lands on. A rectangle cut out with a
-	// scissor showed the blur past rounded corners and snapped to whole pixels
-	// where the box did not.
-	Graphics()->TextureSet(m_aMenuBackdropBlurTextures[0]);
-	Graphics()->BlendNone();
-	Graphics()->WrapClamp();
-	Graphics()->QuadsBegin();
-	Graphics()->QuadsSetScreenTexCoords();
-	RenderTools()->DrawRectExt(Rect.x, Rect.y, Rect.w, Rect.h, Rounding, Corners);
-	Graphics()->QuadsEnd();
-	Graphics()->WrapNormal();
-	Graphics()->BlendNormal();
-	Graphics()->TextureClear();
+	GameClient()->m_Backdrop.RenderRegion(Rect, Corners, Rounding);
 }
 
 void CMenus::DrawSurface(const CUIRect &Rect, ColorRGBA Color, int Corners, float Rounding)
 {
-	RenderBackdropRegion(Rect, Corners, Rounding);
-	Rect.Draw(Color, Corners, Rounding);
+	GameClient()->m_Backdrop.DrawSurface(Rect, Color, Corners, Rounding);
 }
 
 void CMenus::OnRenderApplicationOverlay()
@@ -3205,7 +2996,6 @@ void CMenus::OnRenderApplicationOverlay()
 		}
 		else if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		{
-			FinishMenuBackdrop();
 			Ui()->ClearHotkeys();
 			return;
 		}
@@ -3213,7 +3003,6 @@ void CMenus::OnRenderApplicationOverlay()
 
 	Ui()->StartCheck();
 	UpdateColors();
-	FinishMenuBackdrop();
 
 	Ui()->Update();
 

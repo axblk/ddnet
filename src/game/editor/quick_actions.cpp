@@ -3,7 +3,7 @@
 
 #include <engine/keys.h>
 
-#include <game/client/gameclient.h>
+#include <game/client/components/frontend.h>
 #include <game/mapitems.h>
 
 void CEditor::FillGameTiles(EGameTileOp FillTile) const
@@ -246,8 +246,8 @@ void CEditor::TestMapLocally()
 		}
 	}
 
-	CGameClient *pGameClient = (CGameClient *)Kernel()->RequestInterface<IGameClient>();
-	if(pGameClient->m_LocalServer.IsServerRunning())
+	CGameFrontend *pFrontend = static_cast<CGameFrontend *>(Kernel()->RequestInterface<IGameFrontend>());
+	if(pFrontend->m_LocalServer.IsServerRunning())
 	{
 		m_PopupEventType = CEditor::POPEVENT_RESTART_SERVER;
 		m_PopupEventActivated = true;
@@ -256,11 +256,11 @@ void CEditor::TestMapLocally()
 	{
 		char aMapChange[IO_MAX_PATH_LENGTH + 64];
 		str_format(aMapChange, sizeof(aMapChange), "change_map %s", aFilenameNoExt);
-		if(pGameClient->m_LocalServer.RunServer({"sv_register 0", aMapChange}))
+		if(pFrontend->m_LocalServer.RunServer({"sv_register 0", aMapChange}))
 		{
 			OnClose();
 			g_Config.m_ClEditor = 0;
-			pGameClient->m_LocalServer.Connect();
+			pFrontend->m_LocalServer.Connect();
 		}
 		else
 		{

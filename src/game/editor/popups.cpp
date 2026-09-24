@@ -13,7 +13,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
-#include <game/client/gameclient.h>
+#include <game/client/components/frontend.h>
 #include <game/client/ui_scrollregion.h>
 #include <game/editor/mapitems/image.h>
 #include <game/editor/mapitems/sound.h>
@@ -501,7 +501,7 @@ CUi::EPopupMenuFunctionResult CEditor::CPopupMapTab::Render(void *pContext, CUIR
 				}
 				char aCompletePath[IO_MAX_PATH_LENGTH];
 				pEditor->Storage()->GetCompletePath(CheckStorageType, aParentDirectory, aCompletePath, sizeof(aCompletePath));
-				if(!pEditor->Client()->ViewFile(aCompletePath))
+				if(!pEditor->ClientFrontend()->ViewFile(aCompletePath))
 				{
 					pEditor->ShowFileDialogError("Failed to open the folder '%s'.", aCompletePath);
 				}
@@ -1856,8 +1856,8 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 		pTitle = "Restarting server";
 		pMessage = "Local server is restarting. Please wait…";
 
-		CGameClient *pGameClient = (CGameClient *)pEditor->Kernel()->RequestInterface<IGameClient>();
-		if(!pGameClient->m_LocalServer.IsServerRunning())
+		CGameFrontend *pFrontend = static_cast<CGameFrontend *>(pEditor->Kernel()->RequestInterface<IGameFrontend>());
+		if(!pFrontend->m_LocalServer.IsServerRunning())
 		{
 			pEditor->TestMapLocally();
 			return CUi::POPUP_CLOSE_CURRENT;
@@ -1959,8 +1959,8 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 		}
 		else if(pEditor->m_PopupEventType == POPEVENT_RESTART_SERVER)
 		{
-			CGameClient *pGameClient = (CGameClient *)pEditor->Kernel()->RequestInterface<IGameClient>();
-			pGameClient->m_LocalServer.KillServer();
+			CGameFrontend *pFrontend = static_cast<CGameFrontend *>(pEditor->Kernel()->RequestInterface<IGameFrontend>());
+			pFrontend->m_LocalServer.KillServer();
 			pEditor->m_PopupEventType = CEditor::POPEVENT_RESTARTING_SERVER;
 			pEditor->m_PopupEventActivated = true;
 		}
@@ -2192,7 +2192,7 @@ CUi::EPopupMenuFunctionResult CEditor::PopupSelectAutomapperConfig(void *pContex
 		pEditor->Storage()->GetCompletePath(IStorage::TYPE_SAVE, "editor/automap", aPath, sizeof(aPath));
 		pEditor->Storage()->CreateFolder("editor", IStorage::TYPE_SAVE);
 		pEditor->Storage()->CreateFolder("editor/automap", IStorage::TYPE_SAVE);
-		pEditor->Client()->ViewFile(aPath);
+		pEditor->ClientFrontend()->ViewFile(aPath);
 	}
 
 	View.HSplitBottom(5.0f, &View, &Button);

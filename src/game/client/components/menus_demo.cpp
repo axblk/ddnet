@@ -23,6 +23,7 @@
 #include <generated/client_data.h>
 
 #include <game/client/components/console.h>
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
@@ -54,7 +55,7 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 {
 	if((PositionToSeek >= 0.0f && PositionToSeek <= 1.0f) || TimeToSeek != 0.0f)
 	{
-		const CSessionId DemoSessionId = Client()->DemoSessionId();
+		const CSessionId DemoSessionId = Sessions()->DemoSessionId();
 		CGameSessionContext *pDemoSession = GameClient()->FindSessionContext(DemoSessionId);
 		dbg_assert(pDemoSession != nullptr, "missing Demo session context");
 		CGameState &DemoState = pDemoSession->GameState(IClient::CONN_MAIN);
@@ -80,14 +81,6 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 			DemoPlayer()->Pause();
 		}
 	}
-}
-
-void CMenus::DemoSeekTick(IDemoPlayer::ETickOffset TickOffset)
-{
-	GameClient()->m_SuppressEvents = true;
-	DemoPlayer()->SeekTick(TickOffset);
-	GameClient()->m_SuppressEvents = false;
-	DemoPlayer()->Pause();
 }
 
 void CMenus::RenderDemoPlayer(CUIRect MainView)
@@ -142,7 +135,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static_assert(SKIP_DURATIONS_SECONDS[DEFAULT_SKIP_DURATION_INDEX] == 5.0f);
 	static_assert(std::size(SKIP_DURATIONS_SECONDS) == std::size(SKIP_DURATIONS_STRINGS));
 
-	const float DemoLengthSeconds = TotalTicks / static_cast<float>(Client()->GameTickSpeed());
+	const float DemoLengthSeconds = TotalTicks / static_cast<float>(Sessions()->GameTickSpeed());
 	int NumDurationLabels = 0;
 	for(size_t i = 0; i < std::size(SKIP_DURATIONS_SECONDS); ++i)
 	{
@@ -162,7 +155,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	// handle keyboard shortcuts independent of active menu
 	float PositionToSeek = -1.0f;
 	float TimeToSeek = 0.0f;
-	if(!GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
+	if(!Frontend()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
 	{
 		// increase/decrease speed
 		if(!Input()->ModifierIsPressed() && !Input()->ShiftIsPressed() && !Input()->AltIsPressed())
@@ -255,11 +248,11 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		// Advance single frame forward/backward with period/comma key
 		if(Input()->KeyPress(KEY_PERIOD))
 		{
-			DemoSeekTick(IDemoPlayer::TICK_NEXT);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_NEXT);
 		}
 		else if(Input()->KeyPress(KEY_COMMA))
 		{
-			DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
 		}
 	}
 
@@ -479,9 +472,9 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 
 		// draw time
 		char aCurrentTime[32];
-		str_time((int64_t)CurrentTick / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aCurrentTime, sizeof(aCurrentTime));
+		str_time((int64_t)CurrentTick / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aCurrentTime, sizeof(aCurrentTime));
 		char aTotalTime[32];
-		str_time((int64_t)TotalTicks / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aTotalTime, sizeof(aTotalTime));
+		str_time((int64_t)TotalTicks / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aTotalTime, sizeof(aTotalTime));
 		char aSeekBarLabel[128];
 		str_format(aSeekBarLabel, sizeof(aSeekBarLabel), "%s / %s", aCurrentTime, aTotalTime);
 		Ui()->DoLabel(&SeekBar, aSeekBarLabel, SeekBar.h * 0.70f, TEXTALIGN_MC);
@@ -532,7 +525,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		{
 			const int HoveredTick = (int)(std::clamp((Ui()->MouseX() - SeekBar.x - Rounding) / (SeekBar.w - 2 * Rounding), 0.0f, 1.0f) * TotalTicks);
 			static char s_aHoveredTime[32];
-			str_time((int64_t)HoveredTick / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, s_aHoveredTime, sizeof(s_aHoveredTime));
+			str_time((int64_t)HoveredTick / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, s_aHoveredTime, sizeof(s_aHoveredTime));
 			Ui()->DoToolTip(&s_SeekBarId, &SeekBar, s_aHoveredTime);
 		}
 	}
@@ -625,7 +618,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static CButtonContainer s_OneTickBackButton;
 	if(Ui()->DoButton_FontIcon(&s_OneTickBackButton, FontIcon::BACKWARD_STEP, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
+		GameClient()->DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
 	}
 	Ui()->DoToolTip(&s_OneTickBackButton, &Button, Localize("Go back one tick"));
 
@@ -635,7 +628,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static CButtonContainer s_OneTickForwardButton;
 	if(Ui()->DoButton_FontIcon(&s_OneTickForwardButton, FontIcon::FORWARD_STEP, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		DemoSeekTick(IDemoPlayer::TICK_NEXT);
+		GameClient()->DemoSeekTick(IDemoPlayer::TICK_NEXT);
 	}
 	Ui()->DoToolTip(&s_OneTickForwardButton, &Button, Localize("Go forward one tick"));
 
@@ -736,7 +729,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	// close button
 	ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
 	static CButtonContainer s_ExitButton;
-	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
+	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !Frontend()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
 	{
 		ClientNetwork()->Disconnect();
 		SetMenuPage(PAGE_DEMOS);
@@ -828,11 +821,11 @@ void CMenus::RenderDemoPlayerSliceSavePopup(CUIRect MainView)
 	const int64_t RealSliceBegin = g_Config.m_ClDemoSliceBegin == -1 ? 0 : (g_Config.m_ClDemoSliceBegin - pInfo->m_FirstTick);
 	const int64_t RealSliceEnd = (g_Config.m_ClDemoSliceEnd == -1 ? pInfo->m_LastTick : g_Config.m_ClDemoSliceEnd) - pInfo->m_FirstTick;
 	char aSliceBegin[32];
-	str_time(RealSliceBegin / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceBegin, sizeof(aSliceBegin));
+	str_time(RealSliceBegin / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceBegin, sizeof(aSliceBegin));
 	char aSliceEnd[32];
-	str_time(RealSliceEnd / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceEnd, sizeof(aSliceEnd));
+	str_time(RealSliceEnd / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceEnd, sizeof(aSliceEnd));
 	char aSliceLength[32];
-	str_time((RealSliceEnd - RealSliceBegin) / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceLength, sizeof(aSliceLength));
+	str_time((RealSliceEnd - RealSliceBegin) / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceLength, sizeof(aSliceLength));
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "%s: %s – %s", Localize("Cut interval"), aSliceBegin, aSliceEnd);
 	Ui()->DoLabel(&SliceInterval, aBuf, 18.0f, TEXTALIGN_ML);
@@ -1136,7 +1129,7 @@ void CMenus::FetchAllHeaders()
 
 void CMenus::RenderDemoBrowser(CUIRect MainView)
 {
-	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
+	Frontend()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 
 	CUIRect ListView, DetailsView, ButtonsView;
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
@@ -1161,15 +1154,15 @@ void CMenus::RenderDemoBrowserList(CUIRect ListView, bool &WasListboxItemActivat
 	}
 
 #if defined(CONF_VIDEORECORDER)
-	if(!m_DemoRenderInput.IsEmpty() && !Client()->DemoPlayer_RenderQueueActive() && Client()->DemoPlayer_RenderQueueSize() == 0)
+	if(!m_DemoRenderInput.IsEmpty() && !ClientFrontend()->DemoPlayer_RenderQueueActive() && ClientFrontend()->DemoPlayer_RenderQueueSize() == 0)
 	{
-		if(Client()->DemoPlayer_RenderQueueError()[0] == '\0')
+		if(ClientFrontend()->DemoPlayer_RenderQueueError()[0] == '\0')
 		{
 			m_Popup = POPUP_RENDER_DONE;
 		}
 		else
 		{
-			PopupMessage(Localize("Error rendering demo"), Client()->DemoPlayer_RenderQueueError(), Localize("Ok"));
+			PopupMessage(Localize("Error rendering demo"), ClientFrontend()->DemoPlayer_RenderQueueError(), Localize("Ok"));
 			m_DemoRenderInput.Clear();
 		}
 	}
@@ -1513,7 +1506,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		CUIRect DemoSearch;
 		ButtonBarTop.VSplitLeft(ButtonBarBottom.h * 21.0f, &DemoSearch, &ButtonBarTop);
 		ButtonBarTop.VSplitLeft(ButtonBarTop.h / 2.0f, nullptr, &ButtonBarTop);
-		if(Ui()->DoEditBox_Search(&m_DemoSearchInput, &DemoSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+		if(Ui()->DoEditBox_Search(&m_DemoSearchInput, &DemoSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive()))
 		{
 			RefreshFilteredDemos();
 			DemolistOnUpdate(false);
@@ -1522,7 +1515,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 
 #if defined(CONF_VIDEORECORDER)
 	// Also shown while an export is running so that it can be inspected and cancelled
-	if(Client()->DemoPlayer_RenderQueueSize() > 0)
+	if(ClientFrontend()->DemoPlayer_RenderQueueSize() > 0)
 	{
 		CUIRect StartQueueButton, ClearQueueButton;
 		ButtonBarTop.VSplitRight(ButtonBarBottom.h * 10.0f, &ButtonBarTop, &StartQueueButton);
@@ -1531,7 +1524,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		StartQueueButton.VSplitRight(ButtonBarBottom.h / 2.0f, &StartQueueButton, nullptr);
 		static CButtonContainer s_StartQueueButton;
 		char aLabel[64];
-		str_format(aLabel, sizeof(aLabel), Localize("Render queue (%d)"), static_cast<int>(Client()->DemoPlayer_RenderQueueSize()));
+		str_format(aLabel, sizeof(aLabel), Localize("Render queue (%d)"), static_cast<int>(ClientFrontend()->DemoPlayer_RenderQueueSize()));
 		if(DoButton_Menu(&s_StartQueueButton, aLabel, 0, &StartQueueButton))
 			m_Popup = POPUP_RENDER_QUEUE;
 		Ui()->DoToolTip(&s_StartQueueButton, &StartQueueButton, Localize("Show and start the render queue"));
@@ -1539,7 +1532,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		SetIconMode(true);
 		if(DoButton_Menu(&s_ClearQueueButton, FontIcon::TRASH, 0, &ClearQueueButton))
 		{
-			Client()->DemoPlayer_ClearRenderQueue();
+			ClientFrontend()->DemoPlayer_ClearRenderQueue();
 			m_DemoRenderInput.Clear();
 		}
 		SetIconMode(false);
@@ -1588,7 +1581,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		{
 			char aBuf[IO_MAX_PATH_LENGTH];
 			Storage()->GetCompletePath(m_DemolistSelectedIndex >= 0 ? m_vpFilteredDemos[m_DemolistSelectedIndex]->m_StorageType : IStorage::TYPE_SAVE, m_aCurrentDemoFolder[0] == '\0' ? "demos" : m_aCurrentDemoFolder, aBuf, sizeof(aBuf));
-			Client()->ViewFile(aBuf);
+			ClientFrontend()->ViewFile(aBuf);
 		}
 		Ui()->DoToolTip(&s_DemosDirectoryButton, &DemosDirectoryButton, Localize("Open the directory that contains the demo files"));
 	}
@@ -1603,7 +1596,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		static CButtonContainer s_PlayButton;
 		const bool ActivateSelectedItem = DoButton_Menu(&s_PlayButton, (m_DemolistSelectedIndex >= 0 && m_vpFilteredDemos[m_DemolistSelectedIndex]->m_IsDir) ? FontIcon::FOLDER_OPEN : FontIcon::PLAY, 0, &PlayButton) || WasListboxItemActivated ||
 						  Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER) ||
-						  (Input()->KeyPress(KEY_P) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive());
+						  (Input()->KeyPress(KEY_P) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive());
 		SetIconMode(false);
 		const char *pPlayTooltip = m_vpFilteredDemos[m_DemolistSelectedIndex]->m_IsDir ? Localize("Open the selected folder") : Localize("Play the selected demo");
 		Ui()->DoToolTip(&s_PlayButton, &PlayButton, pPlayTooltip);
@@ -1692,7 +1685,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				CUIRect DeleteButton;
 				ButtonBarBottom.VSplitRight(ButtonBarBottom.h * 3.0f, &ButtonBarBottom, &DeleteButton);
 				ButtonBarBottom.VSplitRight(ButtonBarBottom.h / 2.0f, &ButtonBarBottom, nullptr);
-				if(DoButton_Menu(&s_DeleteButton, FontIcon::TRASH, 0, &DeleteButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_DELETE) || (Input()->KeyPress(KEY_D) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
+				if(DoButton_Menu(&s_DeleteButton, FontIcon::TRASH, 0, &DeleteButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_DELETE) || (Input()->KeyPress(KEY_D) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
 				{
 					SetIconMode(false);
 					char aBuf[128 + IO_MAX_PATH_LENGTH];
@@ -1714,7 +1707,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				ButtonBarTop.VSplitRight(ButtonBarBottom.h, &ButtonBarTop, nullptr);
 				SetIconMode(true);
 				static CButtonContainer s_RenderButton;
-				if(DoButton_Menu(&s_RenderButton, FontIcon::VIDEO, 0, &RenderButton) || (Input()->KeyPress(KEY_R) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
+				if(DoButton_Menu(&s_RenderButton, FontIcon::VIDEO, 0, &RenderButton) || (Input()->KeyPress(KEY_R) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
 				{
 					SetIconMode(false);
 					char aNameWithoutExt[IO_MAX_PATH_LENGTH];
@@ -1734,7 +1727,7 @@ void CMenus::PopupConfirmPlayDemo()
 {
 	char aBuf[IO_MAX_PATH_LENGTH];
 	str_format(aBuf, sizeof(aBuf), "%s/%s", m_aCurrentDemoFolder, m_vpFilteredDemos[m_DemolistSelectedIndex]->m_aFilename);
-	const char *pError = Client()->DemoPlayer_Play(aBuf, m_vpFilteredDemos[m_DemolistSelectedIndex]->m_StorageType);
+	const char *pError = ClientFrontend()->DemoPlayer_Play(aBuf, m_vpFilteredDemos[m_DemolistSelectedIndex]->m_StorageType);
 	m_LastPauseChange = -1.0f;
 	m_LastSpeedChange = -1.0f;
 	if(pError)

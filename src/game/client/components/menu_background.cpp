@@ -10,6 +10,7 @@
 #include <engine/shared/config.h>
 
 #include <game/client/components/camera.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/mapimages.h>
 #include <game/client/components/maplayers.h>
 #include <game/client/gameclient.h>
@@ -172,7 +173,7 @@ int CMenuBackground::ThemeScan(const char *pName, int IsDir, int DirType, void *
 
 	if(time_get_nanoseconds() - pSelf->m_ThemeScanStartTime > 500ms)
 	{
-		pSelf->GameClient()->m_Menus.RenderLoading(Localize("Loading menu themes"), "", 0);
+		pSelf->Frontend()->m_Menus.RenderLoading(Localize("Loading menu themes"), "", 0);
 	}
 	return 0;
 }
@@ -294,7 +295,7 @@ void CMenuBackground::FinishMapLoad()
 	m_vMapCandidates.clear();
 	m_pLayers->Init(m_pMap, true, true);
 
-	m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
+	m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
 	CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 
 	// look for custom positions

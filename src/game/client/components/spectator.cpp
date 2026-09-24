@@ -172,7 +172,7 @@ void CSpectator::ConKeySpectator(IConsole::IResult *pResult, void *pUserData)
 	}
 
 	const CGameSessionContext &Session = pSelf->GameClient()->SessionContext(View.SessionId());
-	const bool Demo = Session.Id() == pSelf->Client()->DemoSessionId();
+	const bool Demo = Session.Id() == pSelf->Sessions()->DemoSessionId();
 	if(!View.IsSpectating() && !Demo)
 	{
 		Selector.m_Active = false;
@@ -261,7 +261,7 @@ bool CSpectator::OnInput(const IInput::CEvent &Event)
 	if(g_Config.m_ClSpectatorMouseclicks)
 	{
 		if(GameClient()->Snap().m_SpecInfo.m_Active && !IsActive() && !GameClient()->MultiView().m_Active &&
-			!Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_Menus.IsActive())
+			!Ui()->IsPopupOpen() && !GameClient()->ConsoleActive() && !GameClient()->MenuActive())
 		{
 			if(Event.m_Flags & IInput::FLAG_PRESS && Event.m_Key == KEY_MOUSE_1)
 			{
@@ -660,18 +660,18 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 {
 	if(Selector.m_OriginDemo)
 	{
-		if(Selector.m_OriginSessionId != Client()->DemoSessionId())
+		if(Selector.m_OriginSessionId != Sessions()->DemoSessionId())
 			return;
 		GameClient()->m_DemoSpecId = std::clamp(SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
 		View.SetSpectatorMode(GameClient()->m_DemoSpecId);
 		// The tick must be rendered for the spectator mode to be updated, so we do it manually when demo playback is paused
 		// TODO: https://github.com/ddnet/ddnet/issues/11681
 		if(DemoPlayer()->BaseInfo()->m_Paused)
-			GameClient()->m_Menus.DemoSeekTick(IDemoPlayer::TICK_CURRENT);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_CURRENT);
 		return;
 	}
 
-	if(Selector.m_OriginSessionId != Client()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
+	if(Selector.m_OriginSessionId != Sessions()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
 		return;
 
 	if(Selector.m_OriginSixup)
@@ -699,9 +699,9 @@ void CSpectator::Spectate(int SpectatorId)
 {
 	CGameView::CSpectatorSelectorState Target;
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	Target.m_OriginSessionId = Target.m_OriginDemo ? Client()->DemoSessionId() : Client()->NetworkSessionId();
+	Target.m_OriginSessionId = Target.m_OriginDemo ? Sessions()->DemoSessionId() : Sessions()->NetworkSessionId();
 	Target.m_OriginConnection = Client()->ActiveConnection();
-	Target.m_OriginSixup = Client()->IsSixup(Target.m_OriginSessionId);
+	Target.m_OriginSixup = Sessions()->IsSixup(Target.m_OriginSessionId);
 	Spectate(GameClient()->LegacyGameView(), Target, SpectatorId);
 }
 

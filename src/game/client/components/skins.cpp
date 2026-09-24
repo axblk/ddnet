@@ -533,7 +533,7 @@ void CSkins::OnInit()
 
 	// load skins
 	Refresh([this]() {
-		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading skin files"), 0);
+		GameClient()->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading skin files"), 0);
 	});
 	GameClient()->CollectManagedTeeRenderInfos([this](const char *pSkinName) {
 		GameClient()->OnSkinUpdate(pSkinName);

@@ -15,8 +15,8 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 	Builder.Init();
 
 	float LocalTime = Client()->LocalTime();
-	int GameTick = Client()->GameTick(SessionId, Conn);
-	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	int GameTick = Sessions()->GameTick(SessionId, Conn);
+	CTranslationContext &TranslationContext = Sessions()->TranslationContext(SessionId);
 	CGameSessionContext &SourceSession = SessionContext(SessionId);
 	CGameState &SourceState = SourceSession.GameState(Conn);
 
@@ -441,7 +441,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 
 int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn)
 {
-	CTranslationContext &TranslationContext = Client()->TranslationContext(SessionId);
+	CTranslationContext &TranslationContext = Sessions()->TranslationContext(SessionId);
 	CGameSessionContext &NetworkSession = SessionContext(SessionId);
 	CGameState &State = NetworkSession.GameState(Conn);
 	CSnapshotBuilder Builder;

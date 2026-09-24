@@ -13,7 +13,6 @@
 #include <engine/shared/config.h>
 
 #include <game/client/components/chat.h>
-#include <game/client/components/console.h>
 #include <game/client/gameclient.h>
 
 static constexpr LOG_COLOR BIND_PRINT_COLOR{255, 255, 204};
@@ -26,7 +25,7 @@ bool CBinds::CBindsSpecial::OnInput(const IInput::CEvent &Event)
 	// only handle F and composed F binds
 	// do not handle F5 bind while menu is active
 	if(((Event.m_Key >= KEY_F1 && Event.m_Key <= KEY_F12) || (Event.m_Key >= KEY_F13 && Event.m_Key <= KEY_F24)) &&
-		(Event.m_Key != KEY_F5 || !GameClient()->m_Menus.IsActive()))
+		(Event.m_Key != KEY_F5 || !GameClient()->MenuActive()))
 	{
 		return m_pBinds->OnInput(Event);
 	}
@@ -177,8 +176,8 @@ bool CBinds::OnInput(const IInput::CEvent &Event)
 			// Prevent binds from being deactivated while chat, console and menus are open, as these components will
 			// still allow key release events to be forwarded to this component, so the active binds can be cleared.
 			if(GameClient()->m_Chat.IsActive() ||
-				GameClient()->m_GameConsole.IsActive() ||
-				GameClient()->m_Menus.IsActive())
+				GameClient()->ConsoleActive() ||
+				GameClient()->MenuActive())
 			{
 				return;
 			}

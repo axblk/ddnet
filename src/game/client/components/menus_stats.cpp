@@ -10,6 +10,7 @@
 
 #include <generated/client_data.h>
 
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/match_report_view.h>
 #include <game/client/match_stats_export.h>
@@ -128,7 +129,7 @@ void CMenus::RefreshStats()
 		Combat.Reset();
 	m_StatsInfo = {};
 	m_StatsInitialized = true;
-	CMatchJournal &Journal = GameClient()->MatchJournal();
+	CMatchJournal &Journal = Frontend()->m_MatchJournal;
 	if(!Journal.IsOpen())
 	{
 		m_StatsError = "Match journal is unavailable";
@@ -189,7 +190,7 @@ void CMenus::LoadSelectedStatsMatch()
 		return;
 	CStoredMatch Match;
 	const CMatchHistoryEntry &Entry = m_vStatsHistory[m_StatsSelectedIndex];
-	if(!GameClient()->MatchJournal().LoadMatch(Entry.m_OriginId.c_str(), Entry.m_MatchId, Match, &m_StatsError))
+	if(!Frontend()->m_MatchJournal.LoadMatch(Entry.m_OriginId.c_str(), Entry.m_MatchId, Match, &m_StatsError))
 		return;
 	m_StatsSelectedMatch = std::move(Match);
 	// the ranking points into the stored report, so it is built once the report has its place
@@ -240,7 +241,7 @@ void CMenus::PopupConfirmDeleteStatsMatch()
 	if(!m_StatsSelectedMatch.has_value())
 		return;
 	const CStoredMatch &Stored = *m_StatsSelectedMatch;
-	if(!GameClient()->MatchJournal().DeleteMatch(Stored.m_OriginId.c_str(), Stored.m_Report.m_MatchId, &m_StatsError))
+	if(!Frontend()->m_MatchJournal.DeleteMatch(Stored.m_OriginId.c_str(), Stored.m_Report.m_MatchId, &m_StatsError))
 	{
 		PopupMessage(Localize("Error"), m_StatsError.c_str(), Localize("Ok"));
 		return;
@@ -252,7 +253,7 @@ void CMenus::PopupConfirmDeleteStatsMatch()
 
 void CMenus::PopupConfirmDeleteStatsPeriod()
 {
-	if(!GameClient()->MatchJournal().DeleteAll(&m_StatsError))
+	if(!Frontend()->m_MatchJournal.DeleteAll(&m_StatsError))
 	{
 		PopupMessage(Localize("Error"), m_StatsError.c_str(), Localize("Ok"));
 		return;
@@ -423,7 +424,7 @@ void CMenus::RenderStatsMatchList(CUIRect View)
 	Search.VSplitRight(140.0f, &Search, &Mode);
 	Search.VSplitRight(6.0f, &Search, nullptr);
 	StatsModeDropDown(Mode);
-	if(Ui()->DoEditBox_SearchCached(&m_StatsHistorySearchInput, &Search, 12.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aStatsSearchUiElements.data(), &m_aStatsSearchUiElements[1]))
+	if(Ui()->DoEditBox_SearchCached(&m_StatsHistorySearchInput, &Search, 12.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_aStatsSearchUiElements.data(), &m_aStatsSearchUiElements[1]))
 	{
 		m_StatsSelectedIndex = -1;
 		RefreshStats();
@@ -948,7 +949,7 @@ void CMenus::RenderStatsProfile(CUIRect View)
 
 void CMenus::RenderStats(CUIRect MainView)
 {
-	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
+	Frontend()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 	if(!m_StatsInitialized)
 		RefreshStats();
 

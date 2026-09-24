@@ -120,23 +120,28 @@ class IUpdater *CComponentInterfaces::Updater() const
 
 int64_t CComponentInterfaces::time() const
 {
-	const CSessionId SessionId = Client()->FocusedSessionId();
-	if(Client()->SessionType(SessionId) == ESessionSourceType::DEMO)
-		return Client()->DemoPlaybackTime(SessionId);
+	const CSessionId SessionId = Sessions()->FocusedSessionId();
+	if(Sessions()->SessionType(SessionId) == ESessionSourceType::DEMO)
+		return Sessions()->DemoPlaybackTime(SessionId);
 	return time_get();
 }
 
 float CComponentInterfaces::LocalTime() const
 {
-	const CSessionId SessionId = Client()->FocusedSessionId();
-	if(Client()->SessionType(SessionId) == ESessionSourceType::DEMO)
-		return Client()->DemoPlaybackLocalTime(SessionId);
+	const CSessionId SessionId = Sessions()->FocusedSessionId();
+	if(Sessions()->SessionType(SessionId) == ESessionSourceType::DEMO)
+		return Sessions()->DemoPlaybackLocalTime(SessionId);
 	return Client()->LocalTime();
 }
 
 class IClient *CComponentInterfaces::Client() const
 {
 	return m_pClient->Client();
+}
+
+class ISessions *CComponentInterfaces::Sessions() const
+{
+	return m_pClient->Sessions();
 }
 
 class IClientNetwork *CComponentInterfaces::ClientNetwork() const

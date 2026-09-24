@@ -191,7 +191,7 @@ int CDemoViewerClient::Run()
 			log_error("client", "%s", pError);
 		else
 		{
-			while(m_State != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
+			while(State() != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
 			{
 				if(!HandleInput())
 					break;

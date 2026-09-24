@@ -73,6 +73,7 @@
 #include <generated/protocol7.h>
 #include <generated/protocolglue.h>
 
+#include <game/client/frontend.h>
 #include <game/localization.h>
 #include <game/version.h>
 
@@ -659,7 +660,7 @@ bool CClient::TryStartModernTransport(const CConnectTarget &Target)
 void CClient::Connect(const char *pAddress, const char *pPassword)
 {
 	// Disconnect will not change the state if we are already quitting/restarting
-	if(m_State == IClient::STATE_QUITTING || m_State == IClient::STATE_RESTARTING)
+	if(State() == IClient::STATE_QUITTING || State() == IClient::STATE_RESTARTING)
 		return;
 	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
 	if(m_UpdatingSessionId == m_NetworkSessionId)
@@ -934,7 +935,7 @@ void CClient::StopNetworkSession(const char *pReason)
 	m_QuicConnected = false;
 	m_QuicIdentityCheck.Reset();
 	m_aNetClient[CONN_MAIN].Disconnect(pReason);
-	if(Focused && m_State < IClient::STATE_QUITTING)
+	if(Focused && State() < IClient::STATE_QUITTING)
 		SetFocusedState(IClient::STATE_OFFLINE, true);
 	else
 		GameClient()->OnSessionClosed(m_NetworkSessionId);
@@ -957,12 +958,12 @@ void CClient::StopDemoSession(CSessionId SessionId, const char *pReason)
 	CDemoSessionSource &Source = DemoSource(SessionId);
 	const bool Focused = FocusedSessionId() == SessionId;
 	Source.m_DemoPlayer.Stop(pReason ? pReason : "");
-	if(m_State < IClient::STATE_QUITTING)
+	if(State() < IClient::STATE_QUITTING)
 		GameClient()->OnSessionClosed(SessionId);
 	Source.SetState(ESessionState::OFFLINE);
 	Source.m_Connection.ResetSnapshots();
 	Source.ResetMetadata();
-	if(Focused && m_State < IClient::STATE_QUITTING)
+	if(Focused && State() < IClient::STATE_QUITTING)
 	{
 		FocusSession(m_NetworkSessionId);
 		const CConnection &NetworkConnection = Connection(ActiveConnection());
@@ -1214,9 +1215,9 @@ void CClient::RenderDebug()
 		}
 		for(int i = CSnapshot::MAX_TYPE; i > (CSnapshot::MAX_TYPE - 64); i--)
 		{
-			if(SnapshotDelta()->GetDataRate(i) && Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT])
+			if(SnapshotDelta()->GetDataRate(i) && Connection(ActiveConnection()).m_apSnapshots[ISessions::SNAP_CURRENT])
 			{
-				const int Type = Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
+				const int Type = Connection(ActiveConnection()).m_apSnapshots[ISessions::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
 				if(Type == UUID_INVALID)
 				{
 					str_format(
@@ -1327,7 +1328,7 @@ void CClient::RecreateBrokenSockets()
 
 	// Reconnect afterwards, so the server can be rejoined with timeout protection.
 	const std::string ConnectAddress = ConnectAddressString();
-	const bool Reconnect = m_State != IClient::STATE_OFFLINE && m_State < IClient::STATE_QUITTING;
+	const bool Reconnect = State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING;
 	const bool ReconnectDummy = Reconnect && m_DummyConnected;
 	const bool DeactivateDummy = g_Config.m_ClDummy == 0;
 
@@ -2852,7 +2853,7 @@ void CClient::PumpNetwork()
 	}
 
 	// check for errors of main and dummy
-	if(Source.State() != ESessionState::OFFLINE && m_State < IClient::STATE_QUITTING)
+	if(Source.State() != ESessionState::OFFLINE && State() < IClient::STATE_QUITTING)
 	{
 		if(!m_UseQuic && m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
 		{
@@ -5669,7 +5670,9 @@ int main(int argc, const char **argv)
 
 	IKernel *pKernel = IKernel::Create();
 	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
+	pKernel->RegisterInterface(static_cast<ISessions *>(pClient), false);
 	pKernel->RegisterInterface(static_cast<IClientNetwork *>(pClient), false);
+	pKernel->RegisterInterface(static_cast<IClientFrontend *>(pClient), false);
 	pClient->RegisterInterfaces();
 	CleanerFunctions.emplace([pKernel, pClient]() {
 		// Ensure that the assert handler doesn't use the client/graphics after they've been destroyed
@@ -5880,6 +5883,7 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(CreateEditor(), false);
 	pKernel->RegisterInterface(CreateFavorites().release());
 	pKernel->RegisterInterface(CreateGameClient());
+	pKernel->RegisterInterface(CreateGameFrontend());
 
 	pEngine->Init();
 	pConsole->Init();

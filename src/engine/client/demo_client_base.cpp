@@ -139,18 +139,6 @@ void CDemoClientBase::OnWindowResize()
 	TextRender()->OnWindowResize();
 }
 
-void CDemoClientBase::GetGpuInfoString(char (&aGpuInfo)[512])
-{
-	str_format(aGpuInfo, sizeof(aGpuInfo), "%s\n%s\n%s",
-		Graphics()->GetVendorString(), Graphics()->GetRendererString(), Graphics()->GetVersionString());
-}
-
-const char *CDemoClientBase::DemoPlayer_Play(const char *pFilename, int StorageType)
-{
-	str_copy(m_aDemoPath, pFilename);
-	return PlayDemo();
-}
-
 const char *CDemoClientBase::PlayDemo()
 {
 	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
@@ -171,7 +159,7 @@ void CDemoClientBase::StopDemoSession(const char *pReason)
 		str_copy(m_aError, pReason);
 	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
 	Source.m_DemoPlayer.Stop(pReason == nullptr ? "" : pReason);
-	if(m_State < IClient::STATE_QUITTING)
+	if(State() < IClient::STATE_QUITTING)
 		GameClient()->OnSessionClosed(m_DemoSessionId);
 	Source.SetState(ESessionState::OFFLINE);
 	Source.m_Connection.ResetSnapshots();
@@ -236,22 +224,6 @@ bool CDemoClientBase::Exporting() const
 	return m_pVideo != nullptr && IVideo::Current() == m_pVideo.get();
 }
 
-bool CDemoClientBase::DemoPlayer_RenderQueueActive() const
-{
-	return m_pVideo != nullptr;
-}
-
-bool CDemoClientBase::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const
-{
-	if(m_pVideo == nullptr)
-		return false;
-	const IDemoPlayer::CInfo *pInfo = DemoPlayer().BaseInfo();
-	*pFirstTick = pInfo->m_FirstTick;
-	*pCurrentTick = pInfo->m_CurrentTick;
-	*pLastTick = pInfo->m_LastTick;
-	return true;
-}
-
 void CDemoClientBase::RenderExportFrame()
 {
 	const int64_t Now = time_get();
@@ -296,6 +268,7 @@ int DemoClientMain(CDemoClientBase *pClient, int ArgumentCount, const char **ppA
 
 	IKernel *pKernel = IKernel::Create();
 	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
+	pKernel->RegisterInterface(static_cast<ISessions *>(pClient), false);
 	pClient->RegisterInterfaces();
 
 	IEngine *pEngine = CreateEngine(GAME_NAME, pFutureConsoleLogger);

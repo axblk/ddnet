@@ -94,7 +94,7 @@ int CDemoRenderClient::Run()
 			// starts it at the same place, so that a demo makes the same
 			// video however its loading went.
 			srand(VIDEO_RANDOM_SEED);
-			while(m_State != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
+			while(State() != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
 			{
 				if(VideoExportInterrupted())
 				{

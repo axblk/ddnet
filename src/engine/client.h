@@ -94,8 +94,6 @@ public:
 	typedef std::function<void(ELoadingCallbackDetail Detail)> TLoadingCallback;
 
 protected:
-	// quick access to state of the client
-	EClientState m_State = IClient::STATE_OFFLINE;
 	ELoadingStateDetail m_LoadingStateDetail = ELoadingStateDetail::INITIAL;
 	int64_t m_StateStartTime;
 
@@ -106,20 +104,9 @@ protected:
 
 	TLoadingCallback m_LoadingCallback = nullptr;
 
-	char m_aNews[3000] = "";
-	int m_Points = -1;
 	int m_ActiveConnection = 0;
 
 public:
-	class CSnapItem
-	{
-	public:
-		int m_Type;
-		int m_Id;
-		const void *m_pData;
-		int m_DataSize;
-	};
-
 	enum
 	{
 		CONN_MAIN = 0,
@@ -134,30 +121,18 @@ public:
 		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid active game connection");
 		m_ActiveConnection = Conn;
 	}
-	virtual CSessionId FocusedSessionId() const = 0;
-	virtual CSessionId NetworkSessionId() const = 0;
-	virtual CSessionId DemoSessionId() const = 0;
-#if defined(CONF_VIDEORECORDER)
-	/**
-	 * The demo session queued video exports are rendered in, next to the one
-	 * a demo is watched in.
-	 */
-	virtual CSessionId VideoExportSessionId() const = 0;
-#endif
-	virtual ESessionSourceType SessionType(CSessionId SessionId) const = 0;
-	virtual ESessionState SessionState(CSessionId SessionId) const = 0;
 	/**
 	 * The connection of a session that takes input: the active one of a
 	 * network session, the only one of a demo.
 	 */
-	int ActiveConnection(CSessionId SessionId) const { return SessionType(SessionId) == ESessionSourceType::DEMO ? CONN_MAIN : m_ActiveConnection; }
-	virtual bool DemoPlaybackPaused(CSessionId SessionId) const = 0;
-	virtual float DemoPlaybackSpeed(CSessionId SessionId) const = 0;
-	virtual int64_t DemoPlaybackTime(CSessionId SessionId) const = 0;
-	virtual float DemoPlaybackLocalTime(CSessionId SessionId) const = 0;
+	virtual int ActiveConnection(CSessionId SessionId) const = 0;
 
 	//
-	EClientState State() const { return m_State; }
+	/**
+	 * The state of the session in focus, or that the client is quitting or
+	 * restarting.
+	 */
+	virtual EClientState State() const = 0;
 	virtual bool IsOnline() const = 0;
 	virtual bool IsDemoPlayback() const = 0;
 	ELoadingStateDetail LoadingStateDetail() const { return m_LoadingStateDetail; }
@@ -165,48 +140,6 @@ public:
 	void SetLoadingStateDetail(ELoadingStateDetail LoadingStateDetail) { m_LoadingStateDetail = LoadingStateDetail; }
 
 	void SetLoadingCallback(TLoadingCallback &&Func) { m_LoadingCallback = std::move(Func); }
-
-	// Game time.
-	//
-	// There are 50 ticks per second, by default we only send snapshot on
-	// every second tick.
-
-	/**
-	 * Tick of the second to most recently received snapshot (usually 2
-	 * less than `GameTick`).
-	 */
-	virtual int PrevGameTick(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * Tick of most recently received snapshot.
-	 */
-	virtual int GameTick(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * The tick we should predict to. Comes from a magic black box called
-	 * "smooth time".
-	 */
-	virtual int PredGameTick(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * Linear interpolation parameter between `PrevGameTick` (0) and
-	 * `GameTick` (1). Can be outside the interval [0, 1].
-	 */
-	virtual float IntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * Linear interpolation parameter between `PredGameTick - 1` (0) and
-	 * `PredGameTick` (1). Can be outside the interval [0, 1].
-	 */
-	virtual float PredIntraGameTick(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * (Fractional) ticks since `PrevGameTick`.
-	 */
-	virtual float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * Time in seconds since the second to most recently received snapshot.
-	 */
-	virtual float GameTickTime(CSessionId SessionId, int Conn) const = 0;
-	/**
-	 * 50
-	 */
-	int GameTickSpeed() const { return SERVER_TICK_SPEED; }
 
 	// Other time.
 
@@ -232,54 +165,7 @@ public:
 	float FrameTimeAverage() const { return m_FrameTimeAverage; }
 	virtual CRenderTrace *RenderTrace() = 0;
 
-	virtual void Restart() = 0;
-	virtual void Quit() = 0;
-	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
 #if defined(CONF_VIDEORECORDER)
-	/**
-	 * The export settings as the configuration has them, for every caller that
-	 * does not build its own. There is only one set of them, so a demo rendered
-	 * from the console comes out like one rendered from the dialog.
-	 */
-	virtual CVideoExportSettings DefaultVideoExportSettings() = 0;
-	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
-	virtual void DemoPlayer_StartRenderQueue() = 0;
-	virtual void DemoPlayer_ClearRenderQueue() = 0;
-	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
-	/**
-	 * Number of queued exports that have not been started yet.
-	 */
-	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
-	/**
-	 * Demo of the pending export at @p Index, which must be less than
-	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
-	 * with and what a name in it should say; the video name is derived from
-	 * it and says the same thing twice.
-	 */
-	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
-	/**
-	 * Demo of the export that is running, or an empty string when none is.
-	 */
-	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
-	/**
-	 * Removes the pending export at @p Index, which must be less than
-	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
-	 */
-	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
-	/**
-	 * Moves the pending export at @p Index one position towards the front or
-	 * back of the queue. Both @p Index and the resulting position must be less
-	 * than `DemoPlayer_RenderQueuePending()`.
-	 */
-	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
-	/**
-	 * Aborts the export that is currently running. Pending exports are kept and
-	 * the next one is started afterwards.
-	 */
-	virtual void DemoPlayer_CancelActiveRender() = 0;
-	virtual bool DemoPlayer_RenderQueueActive() const = 0;
-	virtual const char *DemoPlayer_RenderQueueError() const = 0;
-	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
 	virtual CSessionId VideoSessionId() const = 0;
 	virtual bool VideoUsesOfflineAudio() const = 0;
 #endif
@@ -289,80 +175,14 @@ public:
 
 	virtual void UpdateAndSwap() = 0;
 
-	// input
-	virtual int *GetInput(CSessionId SessionId, int Conn, int Tick) const = 0;
-
-	// server info
-	virtual const class CServerInfo &ServerInfo(CSessionId SessionId) const = 0;
-
-	virtual int GetPredictionTime(CSessionId SessionId, int Conn) = 0;
-	virtual int GetPredictionTick(CSessionId SessionId, int Conn) = 0;
-
-	// snapshot interface
-
-	enum
-	{
-		SNAP_CURRENT = 0,
-		SNAP_PREV = 1,
-		NUM_SNAPSHOT_TYPES = 2,
-	};
-
-	// TODO: Refactor: should redo this a bit i think, too many virtual calls
-	virtual int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const = 0;
-	virtual const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const = 0;
-	virtual CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const = 0;
-
-	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
-	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
-
 	//
 	virtual const char *PlayerName() const = 0;
 	virtual const char *DummyName() = 0;
-	virtual const char *ErrorString() const = 0;
-
-	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
-
-	// DDRace
-
-	const char *News() const { return m_aNews; }
-	int Points() const { return m_Points; }
-
-	virtual bool IsSixup(CSessionId SessionId) const = 0;
-	virtual CTranslationContext &TranslationContext(CSessionId SessionId) = 0;
-	virtual const CTranslationContext &TranslationContext(CSessionId SessionId) const = 0;
-
-	virtual void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
 	virtual IFriends *Foes() = 0;
-
-	/**
-	 * Opens a link in the browser.
-	 *
-	 * @param pLink The link to open in a browser.
-	 *
-	 * @return `true` on success, `false` on failure.
-	 *
-	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
-	 */
-	virtual bool ViewLink(const char *pLink) = 0;
-	/**
-	 * Opens a file or directory with the default program.
-	 *
-	 * @param pFilename The file or folder to open with the default program.
-	 *
-	 * @return `true` on success, `false` on failure.
-	 *
-	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
-	 *
-	 * @remark On iOS the file or directory is shown in the Files app.
-	 */
-	virtual bool ViewFile(const char *pFilename) = 0;
-
-	virtual std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) = 0;
-	virtual void GetGpuInfoString(char (&aGpuInfo)[512]) = 0;
 };
 
 /**
@@ -486,6 +306,99 @@ public:
 	virtual void ShellRegister() = 0;
 	virtual void ShellUnregister() = 0;
 #endif
+};
+
+/**
+ * What only the front end asks of the client: quitting and restarting it,
+ * playing and exporting demos from the demo browser, why the last connection
+ * ended, news and points from the info server, and opening links and files.
+ * Only the full client registers it; a program without a front end has none.
+ */
+class IClientFrontend : public IInterface
+{
+	MACRO_INTERFACE("clientfrontend")
+public:
+	virtual void Restart() = 0;
+	virtual void Quit() = 0;
+	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
+#if defined(CONF_VIDEORECORDER)
+	/**
+	 * The export settings as the configuration has them, for every caller that
+	 * does not build its own. There is only one set of them, so a demo rendered
+	 * from the console comes out like one rendered from the dialog.
+	 */
+	virtual CVideoExportSettings DefaultVideoExportSettings() = 0;
+	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
+	virtual void DemoPlayer_StartRenderQueue() = 0;
+	virtual void DemoPlayer_ClearRenderQueue() = 0;
+	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
+	/**
+	 * Number of queued exports that have not been started yet.
+	 */
+	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
+	/**
+	 * Demo of the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
+	 * with and what a name in it should say; the video name is derived from
+	 * it and says the same thing twice.
+	 */
+	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
+	/**
+	 * Demo of the export that is running, or an empty string when none is.
+	 */
+	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
+	/**
+	 * Removes the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
+	 */
+	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
+	/**
+	 * Moves the pending export at @p Index one position towards the front or
+	 * back of the queue. Both @p Index and the resulting position must be less
+	 * than `DemoPlayer_RenderQueuePending()`.
+	 */
+	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
+	/**
+	 * Aborts the export that is currently running. Pending exports are kept and
+	 * the next one is started afterwards.
+	 */
+	virtual void DemoPlayer_CancelActiveRender() = 0;
+	virtual bool DemoPlayer_RenderQueueActive() const = 0;
+	virtual const char *DemoPlayer_RenderQueueError() const = 0;
+	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
+#endif
+
+	virtual const char *ErrorString() const = 0;
+
+	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
+
+	// DDRace
+
+	virtual const char *News() const = 0;
+	virtual int Points() const = 0;
+
+	/**
+	 * Opens a link in the browser.
+	 *
+	 * @param pLink The link to open in a browser.
+	 *
+	 * @return `true` on success, `false` on failure.
+	 *
+	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
+	 */
+	virtual bool ViewLink(const char *pLink) = 0;
+	/**
+	 * Opens a file or directory with the default program.
+	 *
+	 * @param pFilename The file or folder to open with the default program.
+	 *
+	 * @return `true` on success, `false` on failure.
+	 *
+	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
+	 *
+	 * @remark On iOS the file or directory is shown in the Files app.
+	 */
+	virtual bool ViewFile(const char *pFilename) = 0;
 };
 
 class IGameClient : public IInterface

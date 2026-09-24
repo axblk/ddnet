@@ -13,6 +13,7 @@
 #include <game/client/animstate.h>
 #include <game/client/components/console.h>
 #include <game/client/components/emoticon.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/skins.h>
 #include <game/client/gameclient.h>
 #include <game/client/skin.h>
@@ -53,10 +54,10 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	}
 
 	if(Client()->State() == IClient::STATE_ONLINE &&
-		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Client()->GameTick(Client()->NetworkSessionId(), m_Dummy))
+		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy))
 	{
 		char aChangeInfo[128], aTimeLeft[32];
-		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Client()->GameTick(Client()->NetworkSessionId(), m_Dummy) + Client()->GameTickSpeed() - 1) / Client()->GameTickSpeed());
+		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
 		DoLabel(ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}
@@ -477,7 +478,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		}
 	}
 
-	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aSettingsTeeSearchUiElements.data(), m_aSettingsTeeSearchUiElements.data() + 1))
+	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_aSettingsTeeSearchUiElements.data(), m_aSettingsTeeSearchUiElements.data() + 1))
 	{
 		SkinList.ForceRefresh();
 	}
@@ -485,7 +486,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	static CButtonContainer s_SkinDatabaseButton;
 	if(DoButton_Menu(&s_SkinDatabaseButton, Localize("Skin Database"), 0, &DatabaseButton))
 	{
-		Client()->ViewLink("https://ddnet.org/skins/");
+		ClientFrontend()->ViewLink("https://ddnet.org/skins/");
 	}
 
 	static CButtonContainer s_DirectoryButton;
@@ -493,7 +494,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	{
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "skins", aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("skins", IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 	Ui()->DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Open the directory to add custom skins"));
 

@@ -12,6 +12,7 @@
 #include <engine/shared/localization.h>
 #include <engine/textrender.h>
 
+#include <game/client/components/frontend.h>
 #include <game/client/components/touch_controls.h>
 #include <game/client/gameclient.h>
 #include <game/client/lineinput.h>
@@ -56,7 +57,7 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	bool Changed = false;
 	CUIRect Functional, LeftButton, MiddleButton, RightButton, EditBox, Block;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	Frontend()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.VMargin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(MAINMARGIN, nullptr, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
@@ -69,15 +70,15 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	EditBox.VSplitLeft(EditBox.w / 3.0f, &RightButton, &EditBox);
 	EditBox.VSplitMid(&LeftButton, &MiddleButton);
 
-	if(GameClient()->m_Menus.DoButton_MenuTab(m_aEditElementIds.data(), Localize("Layout"), m_EditElement == EElementType::LAYOUT, &RightButton, IGraphics::CORNER_TL, nullptr, nullptr, nullptr, nullptr, 5.0f))
+	if(Frontend()->m_Menus.DoButton_MenuTab(m_aEditElementIds.data(), Localize("Layout"), m_EditElement == EElementType::LAYOUT, &RightButton, IGraphics::CORNER_TL, nullptr, nullptr, nullptr, nullptr, 5.0f))
 	{
 		m_EditElement = EElementType::LAYOUT;
 	}
-	if(GameClient()->m_Menus.DoButton_MenuTab(&m_aEditElementIds[1], Localize("Visibility"), m_EditElement == EElementType::VISIBILITY, &LeftButton, IGraphics::CORNER_NONE, nullptr, nullptr, nullptr, nullptr, 5.0f))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&m_aEditElementIds[1], Localize("Visibility"), m_EditElement == EElementType::VISIBILITY, &LeftButton, IGraphics::CORNER_NONE, nullptr, nullptr, nullptr, nullptr, 5.0f))
 	{
 		m_EditElement = EElementType::VISIBILITY;
 	}
-	if(GameClient()->m_Menus.DoButton_MenuTab(&m_aEditElementIds[2], Localize("Behavior"), m_EditElement == EElementType::BEHAVIOR, &MiddleButton, IGraphics::CORNER_TR, nullptr, nullptr, nullptr, nullptr, 5.0f))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&m_aEditElementIds[2], Localize("Behavior"), m_EditElement == EElementType::BEHAVIOR, &MiddleButton, IGraphics::CORNER_TR, nullptr, nullptr, nullptr, nullptr, 5.0f))
 	{
 		m_EditElement = EElementType::BEHAVIOR;
 	}
@@ -101,7 +102,7 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	EditBox.VSplitLeft(SUBMARGIN, nullptr, &EditBox);
 	static CButtonContainer s_ConfirmButton;
 	// After touching this button, the button is then added into the button vector. Or it is still virtual.
-	if(GameClient()->m_Menus.DoButton_Menu(&s_ConfirmButton, Localize("Save changes"), UnsavedChanges() ? 0 : 1, &LeftButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_ConfirmButton, Localize("Save changes"), UnsavedChanges() ? 0 : 1, &LeftButton))
 	{
 		if(UnsavedChanges())
 		{
@@ -125,7 +126,7 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	}
 
 	static CButtonContainer s_CancelButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_CancelButton, Localize("Discard changes"), UnsavedChanges() ? 0 : 1, &MiddleButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_CancelButton, Localize("Discard changes"), UnsavedChanges() ? 0 : 1, &MiddleButton))
 	{
 		// Since the settings are canceled, reset the cached settings to m_pSelectedButton though selected button didn't change.
 		// Reset changes to default if the button is still virtual.
@@ -144,9 +145,9 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	EditBox.VSplitLeft(ButtonWidth, &LeftButton, &EditBox);
 	EditBox.VSplitLeft(SUBMARGIN, nullptr, &EditBox);
 	static CButtonContainer s_RemoveButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_RemoveButton, Localize("Delete"), 0, &LeftButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_RemoveButton, Localize("Delete"), 0, &LeftButton))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Delete button"), Localize("Are you sure that you want to delete this button?"), Localize("Delete"), Localize("Cancel"), &CMenus::PopupConfirmDeleteButton);
+		Frontend()->m_Menus.PopupConfirm(Localize("Delete button"), Localize("Are you sure that you want to delete this button?"), Localize("Delete"), Localize("Cancel"), &CMenus::PopupConfirmDeleteButton);
 	}
 
 	EditBox.VSplitLeft(ButtonWidth, &LeftButton, &EditBox);
@@ -154,11 +155,11 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 	// Create a new button with current cached settings. New button will be automatically moved to nearest empty space.
 	static CButtonContainer s_DuplicateButton;
 	bool Checked = UnsavedChanges();
-	if(GameClient()->m_Menus.DoButton_Menu(&s_DuplicateButton, Localize("Duplicate"), UnsavedChanges() || Checked ? 1 : 0, &LeftButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_DuplicateButton, Localize("Duplicate"), UnsavedChanges() || Checked ? 1 : 0, &LeftButton))
 	{
 		if(Checked)
 		{
-			GameClient()->m_Menus.PopupMessage(Localize("Unsaved changes"), Localize("Please save your changes before duplicating a button."), Localize("Ok"));
+			Frontend()->m_Menus.PopupMessage(Localize("Unsaved changes"), Localize("Please save your changes before duplicating a button."), Localize("Ok"));
 		}
 		else if(NewButton(GameClient()->m_TouchControls.ShownRect().value(), m_CachedShape))
 		{
@@ -171,17 +172,17 @@ void CMenusIngameTouchControls::RenderTouchButtonEditor(CUIRect MainView)
 
 	// Deselect a button.
 	static CButtonContainer s_DeselectButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_DeselectButton, Localize("Deselect"), 0, &MiddleButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_DeselectButton, Localize("Deselect"), 0, &MiddleButton))
 	{
 		m_pOldSelectedButton = GameClient()->m_TouchControls.SelectedButton();
 		m_pNewSelectedButton = nullptr;
 		if(UnsavedChanges())
 		{
-			GameClient()->m_Menus.PopupConfirm(Localize("Unsaved changes"), Localize("You'll lose unsaved changes after deselecting."), Localize("Deselect"), Localize("Cancel"), &CMenus::PopupCancelDeselectButton);
+			Frontend()->m_Menus.PopupConfirm(Localize("Unsaved changes"), Localize("You'll lose unsaved changes after deselecting."), Localize("Deselect"), Localize("Cancel"), &CMenus::PopupCancelDeselectButton);
 		}
 		else
 		{
-			GameClient()->m_Menus.PopupCancelDeselectButton();
+			Frontend()->m_Menus.PopupCancelDeselectButton();
 		}
 	}
 
@@ -306,7 +307,7 @@ bool CMenusIngameTouchControls::RenderBehaviorSettingBlock(CUIRect Block)
 	if(Ui()->DoButton_FontIcon(&s_OpenBehaviorHelpButton, FontIcon::QUESTION, 0, &RightButton, BUTTONFLAG_LEFT))
 	{
 		const char *pHelpMessage = HelpMessageForBehaviorType(m_EditBehaviorType);
-		GameClient()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
+		Frontend()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
 	}
 	switch(m_EditBehaviorType)
 	{
@@ -344,11 +345,11 @@ bool CMenusIngameTouchControls::RenderBehaviorSettingBlock(CUIRect Block)
 		CTouchControls::CButtonLabel::EType NewButtonLabelType = m_vBehaviorElements[0]->m_CachedCommands.m_LabelType;
 		MiddleButton.VSplitLeft(MiddleButton.w / 3.0f, &LeftButton, &MiddleButton);
 		MiddleButton.VSplitMid(&MiddleButton, &RightButton);
-		if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[0], apLabelTypes[0], NewButtonLabelType == CTouchControls::CButtonLabel::EType::PLAIN ? 1 : 0, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
+		if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[0], apLabelTypes[0], NewButtonLabelType == CTouchControls::CButtonLabel::EType::PLAIN ? 1 : 0, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
 			NewButtonLabelType = CTouchControls::CButtonLabel::EType::PLAIN;
-		if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[1], apLabelTypes[1], NewButtonLabelType == CTouchControls::CButtonLabel::EType::LOCALIZED ? 1 : 0, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
+		if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[1], apLabelTypes[1], NewButtonLabelType == CTouchControls::CButtonLabel::EType::LOCALIZED ? 1 : 0, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
 			NewButtonLabelType = CTouchControls::CButtonLabel::EType::LOCALIZED;
-		if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[2], apLabelTypes[2], NewButtonLabelType == CTouchControls::CButtonLabel::EType::ICON ? 1 : 0, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
+		if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[0]->m_aLabelTypeRadios[2], apLabelTypes[2], NewButtonLabelType == CTouchControls::CButtonLabel::EType::ICON ? 1 : 0, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
 			NewButtonLabelType = CTouchControls::CButtonLabel::EType::ICON;
 		if(NewButtonLabelType != m_vBehaviorElements[0]->m_CachedCommands.m_LabelType)
 		{
@@ -382,7 +383,7 @@ bool CMenusIngameTouchControls::RenderBehaviorSettingBlock(CUIRect Block)
 		if(Ui()->DoButton_FontIcon(&s_OpenPredefinedBehaviorHelpButton, FontIcon::QUESTION, 0, &RightButton, BUTTONFLAG_LEFT))
 		{
 			const char *pHelpMessage = HelpMessageForPredefinedType(m_PredefinedBehaviorType);
-			GameClient()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
+			Frontend()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
 		}
 
 		if(m_PredefinedBehaviorType != EPredefinedType::EXTRA_MENU)
@@ -518,11 +519,11 @@ bool CMenusIngameTouchControls::RenderBehaviorSettingBlock(CUIRect Block)
 				CTouchControls::CButtonLabel::EType NewButtonLabelType = m_vBehaviorElements[CommandIndex]->m_CachedCommands.m_LabelType;
 				MiddleButton.VSplitLeft(MiddleButton.w / 3.0f, &LeftButton, &MiddleButton);
 				MiddleButton.VSplitMid(&MiddleButton, &RightButton);
-				if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[0], apLabelTypes[0], NewButtonLabelType == CTouchControls::CButtonLabel::EType::PLAIN ? 1 : 0, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
+				if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[0], apLabelTypes[0], NewButtonLabelType == CTouchControls::CButtonLabel::EType::PLAIN ? 1 : 0, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
 					NewButtonLabelType = CTouchControls::CButtonLabel::EType::PLAIN;
-				if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[1], apLabelTypes[1], NewButtonLabelType == CTouchControls::CButtonLabel::EType::LOCALIZED ? 1 : 0, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
+				if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[1], apLabelTypes[1], NewButtonLabelType == CTouchControls::CButtonLabel::EType::LOCALIZED ? 1 : 0, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
 					NewButtonLabelType = CTouchControls::CButtonLabel::EType::LOCALIZED;
-				if(GameClient()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[2], apLabelTypes[2], NewButtonLabelType == CTouchControls::CButtonLabel::EType::ICON ? 1 : 0, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
+				if(Frontend()->m_Menus.DoButton_Menu(&m_vBehaviorElements[CommandIndex]->m_aLabelTypeRadios[2], apLabelTypes[2], NewButtonLabelType == CTouchControls::CButtonLabel::EType::ICON ? 1 : 0, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
 					NewButtonLabelType = CTouchControls::CButtonLabel::EType::ICON;
 				if(NewButtonLabelType != m_vBehaviorElements[CommandIndex]->m_CachedCommands.m_LabelType)
 				{
@@ -591,7 +592,7 @@ bool CMenusIngameTouchControls::RenderVisibilitySettingBlock(CUIRect Block)
 				const char *pHelpMessage = HelpMessageForVisibilityType((CTouchControls::EButtonVisibility)Current);
 				if(Ui()->DoButton_FontIcon(&s_aHelpButtons[Current], FontIcon::QUESTION, 0, &HelpButton, BUTTONFLAG_LEFT))
 				{
-					GameClient()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
+					Frontend()->m_Menus.PopupMessage(Localize("Info"), pHelpMessage, Localize("Ok"));
 				}
 			}
 			if(Current < (unsigned)CTouchControls::EButtonVisibility::EXTRA_MENU_1)
@@ -607,19 +608,19 @@ bool CMenusIngameTouchControls::RenderVisibilitySettingBlock(CUIRect Block)
 			}
 			MiddleButton.VSplitLeft(MiddleButton.w / 3.0f, &LeftButton, &MiddleButton);
 			MiddleButton.VSplitMid(&MiddleButton, &RightButton);
-			if(GameClient()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::INCLUDE], Localize("Included", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::INCLUDE, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
+			if(Frontend()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::INCLUDE], Localize("Included", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::INCLUDE, &LeftButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_L))
 			{
 				m_aCachedVisibilities[Current] = EVisibilityType::INCLUDE;
 				SetUnsavedChanges(true);
 				Changed = true;
 			}
-			if(GameClient()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::EXCLUDE], Localize("Excluded", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::EXCLUDE, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
+			if(Frontend()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::EXCLUDE], Localize("Excluded", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::EXCLUDE, &MiddleButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_NONE))
 			{
 				m_aCachedVisibilities[Current] = EVisibilityType::EXCLUDE;
 				SetUnsavedChanges(true);
 				Changed = true;
 			}
-			if(GameClient()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::IGNORE], Localize("Ignore", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::IGNORE, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
+			if(Frontend()->m_Menus.DoButton_Menu(&s_avVisibilitySelector[Current][(int)EVisibilityType::IGNORE], Localize("Ignore", "Touch button visibility preview"), m_aCachedVisibilities[Current] == EVisibilityType::IGNORE, &RightButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_R))
 			{
 				m_aCachedVisibilities[Current] = EVisibilityType::IGNORE;
 				SetUnsavedChanges(true);
@@ -635,7 +636,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 {
 	CUIRect LeftButton, MiddleButton, RightButton, EditBox, LabelRect, CommandRect, X, Y, W, H, Row;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	Frontend()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 
 	MainView.HSplitTop(ROWSIZE, &Row, &MainView);
@@ -646,7 +647,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 	static CButtonContainer s_OpenHelpButton;
 	if(Ui()->DoButton_FontIcon(&s_OpenHelpButton, FontIcon::QUESTION, 0, &RightButton, BUTTONFLAG_LEFT))
 	{
-		GameClient()->m_Menus.PopupMessage(Localize("Info"),
+		Frontend()->m_Menus.PopupMessage(Localize("Info"),
 			Localize("You can select buttons directly in the list below, or long press on a touch button on the screen to select it. You can also move and resize buttons by touch."),
 			Localize("Ok"));
 	}
@@ -655,7 +656,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
 	EditBox.VSplitLeft((EditBox.w - SUBMARGIN) / 2.0f, &LeftButton, &EditBox);
 	static CButtonContainer s_NewButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_NewButton, Localize("New button"), 0, &LeftButton))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_NewButton, Localize("New button"), 0, &LeftButton))
 	{
 		if(NewButton({0, 0, CTouchControls::BUTTON_SIZE_MINIMUM, CTouchControls::BUTTON_SIZE_MINIMUM}, CTouchControls::EButtonShape::RECT))
 		{
@@ -670,8 +671,8 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 	}
 	EditBox.VSplitLeft(SUBMARGIN, nullptr, &MiddleButton);
 	static CButtonContainer s_SelectedButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_SelectedButton, Localize("Select button by touch"), 0, &MiddleButton))
-		GameClient()->m_Menus.SetActive(false);
+	if(Frontend()->m_Menus.DoButton_Menu(&s_SelectedButton, Localize("Select button by touch"), 0, &MiddleButton))
+		Frontend()->m_Menus.SetActive(false);
 
 	MainView.HSplitBottom(ROWSIZE, &MainView, &EditBox);
 	MainView.HSplitBottom(ROWGAP, &MainView, nullptr);
@@ -748,7 +749,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 		}};
 	for(unsigned HeaderIndex = (unsigned)ESortType::LABEL; HeaderIndex < (unsigned)ESortType::NUM_SORTS; HeaderIndex++)
 	{
-		if(GameClient()->m_Menus.DoButton_GridHeader(&m_aSortHeaderIds[HeaderIndex], "",
+		if(Frontend()->m_Menus.DoButton_GridHeader(&m_aSortHeaderIds[HeaderIndex], "",
 			   (unsigned)m_SortType == HeaderIndex, aHeaderDatas[HeaderIndex].first))
 		{
 			if(m_SortType != (ESortType)HeaderIndex)
@@ -889,7 +890,7 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 		MiddleButton.VMargin((MiddleButton.w - 200.0f) / 2.0f, &MiddleButton);
 		Ui()->DoLabel(&LeftButton, Localize("No buttons match your filter criteria"), 16.0f, TEXTALIGN_MC);
 		static CButtonContainer s_ResetButton;
-		if(GameClient()->m_Menus.DoButton_Menu(&s_ResetButton, Localize("Reset filter"), 0, &MiddleButton))
+		if(Frontend()->m_Menus.DoButton_Menu(&s_ResetButton, Localize("Reset filter"), 0, &MiddleButton))
 		{
 			m_FilterInput.Clear();
 			m_NeedUpdatePreview = true;
@@ -900,22 +901,22 @@ void CMenusIngameTouchControls::RenderTouchButtonBrowser(CUIRect MainView)
 void CMenusIngameTouchControls::RenderSelectingTab(CUIRect SelectingTab)
 {
 	CUIRect LeftButton;
-	GameClient()->m_Menus.RenderBackdropRegion(SelectingTab, IGraphics::CORNER_T, 10.0f);
+	Frontend()->m_Menus.RenderBackdropRegion(SelectingTab, IGraphics::CORNER_T, 10.0f);
 	SelectingTab.VSplitLeft(SelectingTab.w / 4.0f, &LeftButton, &SelectingTab);
 	static CButtonContainer s_FileTab;
-	if(GameClient()->m_Menus.DoButton_MenuTab(&s_FileTab, Localize("File"), m_CurrentMenu == EMenuType::MENU_FILE, &LeftButton, IGraphics::CORNER_TL))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&s_FileTab, Localize("File"), m_CurrentMenu == EMenuType::MENU_FILE, &LeftButton, IGraphics::CORNER_TL))
 		m_CurrentMenu = EMenuType::MENU_FILE;
 	SelectingTab.VSplitLeft(SelectingTab.w / 3.0f, &LeftButton, &SelectingTab);
 	static CButtonContainer s_ButtonTab;
-	if(GameClient()->m_Menus.DoButton_MenuTab(&s_ButtonTab, Localize("Buttons"), m_CurrentMenu == EMenuType::MENU_BUTTONS, &LeftButton, IGraphics::CORNER_NONE))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&s_ButtonTab, Localize("Buttons"), m_CurrentMenu == EMenuType::MENU_BUTTONS, &LeftButton, IGraphics::CORNER_NONE))
 		m_CurrentMenu = EMenuType::MENU_BUTTONS;
 	SelectingTab.VSplitLeft(SelectingTab.w / 2.0f, &LeftButton, &SelectingTab);
 	static CButtonContainer s_SettingsMenuTab;
-	if(GameClient()->m_Menus.DoButton_MenuTab(&s_SettingsMenuTab, Localize("Settings"), m_CurrentMenu == EMenuType::MENU_SETTINGS, &LeftButton, IGraphics::CORNER_NONE))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&s_SettingsMenuTab, Localize("Settings"), m_CurrentMenu == EMenuType::MENU_SETTINGS, &LeftButton, IGraphics::CORNER_NONE))
 		m_CurrentMenu = EMenuType::MENU_SETTINGS;
 	SelectingTab.VSplitLeft(SelectingTab.w / 1.0f, &LeftButton, &SelectingTab);
 	static CButtonContainer s_PreviewTab;
-	if(GameClient()->m_Menus.DoButton_MenuTab(&s_PreviewTab, Localize("Preview"), m_CurrentMenu == EMenuType::MENU_PREVIEW, &LeftButton, IGraphics::CORNER_TR))
+	if(Frontend()->m_Menus.DoButton_MenuTab(&s_PreviewTab, Localize("Preview"), m_CurrentMenu == EMenuType::MENU_PREVIEW, &LeftButton, IGraphics::CORNER_TR))
 		m_CurrentMenu = EMenuType::MENU_PREVIEW;
 }
 
@@ -923,12 +924,12 @@ void CMenusIngameTouchControls::RenderConfigSettings(CUIRect MainView)
 {
 	CUIRect EditBox, Row, Label, Button;
 	MainView.h = 2 * MAINMARGIN + 4 * ROWSIZE + 3 * ROWGAP;
-	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	Frontend()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.VMargin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(MAINMARGIN, nullptr, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
 	static CButtonContainer s_ActiveColorPicker;
-	ColorHSLA ColorTest = GameClient()->m_Menus.DoLine_ColorPicker(&s_ActiveColorPicker, ROWSIZE, FONTSIZE, 5.0f, &EditBox, Localize("Active color"), &m_ColorActive, GameClient()->m_TouchControls.DefaultBackgroundColorActive(), false, nullptr, true);
+	ColorHSLA ColorTest = Frontend()->m_Menus.DoLine_ColorPicker(&s_ActiveColorPicker, ROWSIZE, FONTSIZE, 5.0f, &EditBox, Localize("Active color"), &m_ColorActive, GameClient()->m_TouchControls.DefaultBackgroundColorActive(), false, nullptr, true);
 	GameClient()->m_TouchControls.SetBackgroundColorActive(color_cast<ColorRGBA>(ColorHSLA(m_ColorActive, true)));
 	if(color_cast<ColorRGBA>(ColorTest) != GameClient()->m_TouchControls.BackgroundColorActive())
 		GameClient()->m_TouchControls.SetEditingChanges(true);
@@ -936,7 +937,7 @@ void CMenusIngameTouchControls::RenderConfigSettings(CUIRect MainView)
 	MainView.HSplitTop(ROWGAP, nullptr, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
 	static CButtonContainer s_InactiveColorPicker;
-	ColorTest = GameClient()->m_Menus.DoLine_ColorPicker(&s_InactiveColorPicker, ROWSIZE, FONTSIZE, 5.0f, &EditBox, Localize("Inactive color"), &m_ColorInactive, GameClient()->m_TouchControls.DefaultBackgroundColorInactive(), false, nullptr, true);
+	ColorTest = Frontend()->m_Menus.DoLine_ColorPicker(&s_InactiveColorPicker, ROWSIZE, FONTSIZE, 5.0f, &EditBox, Localize("Inactive color"), &m_ColorInactive, GameClient()->m_TouchControls.DefaultBackgroundColorInactive(), false, nullptr, true);
 	GameClient()->m_TouchControls.SetBackgroundColorInactive(color_cast<ColorRGBA>(ColorHSLA(m_ColorInactive, true)));
 	if(color_cast<ColorRGBA>(ColorTest) != GameClient()->m_TouchControls.BackgroundColorInactive())
 		GameClient()->m_TouchControls.SetEditingChanges(true);
@@ -985,7 +986,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 {
 	CUIRect EditBox, Button;
 	MainView.h = 600.0f - 40.0f - MainView.y;
-	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	Frontend()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 	MainView.HSplitTop(ROWSIZE, &EditBox, &MainView);
 	MainView.HSplitTop(ROWGAP, nullptr, &MainView);
@@ -996,7 +997,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 	static CButtonContainer s_OpenHelpButton;
 	if(Ui()->DoButton_FontIcon(&s_OpenHelpButton, FontIcon::QUESTION, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		GameClient()->m_Menus.PopupMessage(Localize("Info"), Localize("Preview button visibility while the editor is active."), Localize("Ok"));
+		Frontend()->m_Menus.PopupMessage(Localize("Info"), Localize("Preview button visibility while the editor is active."), Localize("Ok"));
 	}
 
 	MainView.HSplitBottom(ROWSIZE, &MainView, &EditBox);
@@ -1004,7 +1005,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 	EditBox.VSplitLeft(MAINMARGIN, nullptr, &EditBox);
 	static CButtonContainer s_PreviewAllCheckBox;
 	bool Preview = GameClient()->m_TouchControls.PreviewAllButtons();
-	if(GameClient()->m_Menus.DoButton_CheckBox(&s_PreviewAllCheckBox, Localize("Show all buttons"), Preview ? 1 : 0, &EditBox))
+	if(Frontend()->m_Menus.DoButton_CheckBox(&s_PreviewAllCheckBox, Localize("Show all buttons"), Preview ? 1 : 0, &EditBox))
 	{
 		GameClient()->m_TouchControls.SetPreviewAllButtons(!Preview);
 	}
@@ -1025,7 +1026,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 			EditBox.HSplitTop(ROWGAP, nullptr, &EditBox);
 			if(Current < (unsigned)CTouchControls::EButtonVisibility::EXTRA_MENU_1)
 			{
-				if(GameClient()->m_Menus.DoButton_CheckBox(&m_aVisibilityIds[Current], ppVisibilities[Current], aVirtualVisibilities[Current] == 1, &EditBox))
+				if(Frontend()->m_Menus.DoButton_CheckBox(&m_aVisibilityIds[Current], ppVisibilities[Current], aVirtualVisibilities[Current] == 1, &EditBox))
 					GameClient()->m_TouchControls.ReverseVirtualVisibilities(Current);
 			}
 			else
@@ -1033,7 +1034,7 @@ void CMenusIngameTouchControls::RenderPreviewSettings(CUIRect MainView)
 				unsigned ExtraMenuNumber = Current - (unsigned)CTouchControls::EButtonVisibility::EXTRA_MENU_1 + 1;
 				char aBuf[64];
 				str_format(aBuf, sizeof(aBuf), "%s %d", ppVisibilities[(int)CTouchControls::EButtonVisibility::EXTRA_MENU_1], ExtraMenuNumber);
-				if(GameClient()->m_Menus.DoButton_CheckBox(&m_aVisibilityIds[Current], aBuf, aVirtualVisibilities[Current] == 1, &EditBox))
+				if(Frontend()->m_Menus.DoButton_CheckBox(&m_aVisibilityIds[Current], aBuf, aVirtualVisibilities[Current] == 1, &EditBox))
 					GameClient()->m_TouchControls.ReverseVirtualVisibilities(Current);
 			}
 		}
@@ -1045,7 +1046,7 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 {
 	CUIRect Label, Button, Row;
 	MainView.h = 2 * MAINMARGIN + 4 * ROWSIZE + 3 * ROWGAP;
-	GameClient()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
+	Frontend()->m_Menus.DrawSurface(MainView, CMenus::ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(MAINMARGIN, &MainView);
 
 	MainView.HSplitTop(ROWSIZE, &Row, &MainView);
@@ -1058,7 +1059,7 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 	static CButtonContainer s_OpenHelpButton;
 	if(Ui()->DoButton_FontIcon(&s_OpenHelpButton, FontIcon::QUESTION, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Info"),
+		Frontend()->m_Menus.PopupConfirm(Localize("Info"),
 			Localize("You can manage your touch controls settings on this page. Only changes that are saved will be available after restarting the client. You can share your touch controls with others by exporting them to the clipboard.\n\nYou can find more detailed information about the touch controls on the DDNet Wiki."),
 			Localize("Open DDNet Wiki"), Localize("Ok"), &CMenus::PopupConfirmOpenWiki);
 	}
@@ -1068,7 +1069,7 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 
 	Row.VSplitLeft((Row.w - SUBMARGIN) / 2.0f, &Button, &Row);
 	static CButtonContainer s_SaveConfigurationButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_SaveConfigurationButton, Localize("Save changes"), GameClient()->m_TouchControls.HasEditingChanges() ? 0 : 1, &Button))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_SaveConfigurationButton, Localize("Save changes"), GameClient()->m_TouchControls.HasEditingChanges() ? 0 : 1, &Button))
 	{
 		if(GameClient()->m_TouchControls.SaveConfigurationToFile())
 		{
@@ -1095,9 +1096,9 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 
 	Row.VSplitLeft((Row.w - SUBMARGIN) / 2.0f, &Button, &Row);
 	static CButtonContainer s_DiscardChangesButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_DiscardChangesButton, Localize("Discard changes"), GameClient()->m_TouchControls.HasEditingChanges() ? 0 : 1, &Button))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_DiscardChangesButton, Localize("Discard changes"), GameClient()->m_TouchControls.HasEditingChanges() ? 0 : 1, &Button))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Discard changes"),
+		Frontend()->m_Menus.PopupConfirm(Localize("Discard changes"),
 			Localize("Are you sure that you want to discard the current changes to the touch controls?"),
 			Localize("Yes"), Localize("No"),
 			&CMenus::PopupConfirmDiscardTouchControlsChanges);
@@ -1105,9 +1106,9 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 
 	Row.VSplitLeft(SUBMARGIN, nullptr, &Button);
 	static CButtonContainer s_ResetButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_ResetButton, Localize("Reset to defaults"), 0, &Button))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_ResetButton, Localize("Reset to defaults"), 0, &Button))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Reset to defaults"),
+		Frontend()->m_Menus.PopupConfirm(Localize("Reset to defaults"),
 			Localize("Are you sure that you want to reset the touch controls to default?"),
 			Localize("Yes"), Localize("No"),
 			&CMenus::PopupConfirmResetTouchControls);
@@ -1118,9 +1119,9 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 
 	Row.VSplitLeft((Row.w - SUBMARGIN) / 2.0f, &Button, &Row);
 	static CButtonContainer s_ClipboardImportButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_ClipboardImportButton, Localize("Import from clipboard"), 0, &Button))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_ClipboardImportButton, Localize("Import from clipboard"), 0, &Button))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Import from clipboard"),
+		Frontend()->m_Menus.PopupConfirm(Localize("Import from clipboard"),
 			Localize("Are you sure that you want to import the touch controls from the clipboard? This will overwrite your current touch controls."),
 			Localize("Yes"), Localize("No"),
 			&CMenus::PopupConfirmImportTouchControlsClipboard);
@@ -1128,7 +1129,7 @@ void CMenusIngameTouchControls::RenderTouchControlsEditor(CUIRect MainView)
 
 	Row.VSplitLeft(SUBMARGIN, nullptr, &Button);
 	static CButtonContainer s_ClipboardExportButton;
-	if(GameClient()->m_Menus.DoButton_Menu(&s_ClipboardExportButton, Localize("Export to clipboard"), 0, &Button))
+	if(Frontend()->m_Menus.DoButton_Menu(&s_ClipboardExportButton, Localize("Export to clipboard"), 0, &Button))
 	{
 		GameClient()->m_TouchControls.SaveConfigurationToClipboard();
 	}
@@ -1154,19 +1155,19 @@ void CMenusIngameTouchControls::ChangeSelectedButtonWhileHavingUnsavedChanges() 
 {
 	// Both old and new button pointer can be nullptr.
 	// Saving settings to the old selected button(nullptr = create), then switch to new selected button(new = haven't created).
-	GameClient()->m_Menus.PopupConfirm(Localize("Unsaved changes"), Localize("Save all changes before switching selected button?"), Localize("Save"), Localize("Discard"), &CMenus::PopupConfirmChangeSelectedButton, CMenus::POPUP_NONE, &CMenus::PopupCancelChangeSelectedButton);
+	Frontend()->m_Menus.PopupConfirm(Localize("Unsaved changes"), Localize("Save all changes before switching selected button?"), Localize("Save"), Localize("Discard"), &CMenus::PopupConfirmChangeSelectedButton, CMenus::POPUP_NONE, &CMenus::PopupCancelChangeSelectedButton);
 }
 
 void CMenusIngameTouchControls::NoSpaceForOverlappingButton() const
 {
-	GameClient()->m_Menus.PopupMessage(Localize("No space for button"), Localize("There is not enough space available for the button. Check its visibilities and size."), Localize("Ok"));
+	Frontend()->m_Menus.PopupMessage(Localize("No space for button"), Localize("There is not enough space available for the button. Check its visibilities and size."), Localize("Ok"));
 }
 
 void CMenusIngameTouchControls::SelectedButtonNotVisible()
 {
 	// Cancel shouldn't do anything but open ingame menu, the menu is already opened now.
 	m_CloseMenu = false;
-	GameClient()->m_Menus.PopupConfirm(Localize("Selected button not visible"), Localize("The selected button is not visible. Do you want to deselect it or edit its visibility?"), Localize("Deselect"), Localize("Edit"), &CMenus::PopupConfirmSelectedNotVisible);
+	Frontend()->m_Menus.PopupConfirm(Localize("Selected button not visible"), Localize("The selected button is not visible. Do you want to deselect it or edit its visibility?"), Localize("Deselect"), Localize("Edit"), &CMenus::PopupConfirmSelectedNotVisible);
 }
 
 bool CMenusIngameTouchControls::UnsavedChanges() const
@@ -1208,7 +1209,7 @@ bool CMenusIngameTouchControls::CheckCachedSettings() const
 				str_append(aErrorMessage, "\n");
 			str_append(aErrorMessage, pError);
 		}
-		GameClient()->m_Menus.PopupMessage(Localize("Wrong button settings"), aErrorMessage, Localize("Ok"));
+		Frontend()->m_Menus.PopupMessage(Localize("Wrong button settings"), aErrorMessage, Localize("Ok"));
 		return false;
 	}
 	else
@@ -1392,7 +1393,7 @@ bool CMenusIngameTouchControls::NewButton(CTouchControls::CUnitRect Rect, CTouch
 	auto FreeRect = GameClient()->m_TouchControls.UpdatePosition(Rect, Shape, true);
 	if(!FreeRect.has_value())
 	{
-		GameClient()->m_Menus.PopupMessage(Localize("No space for button"), Localize("There is not enough space available to place another button."), Localize("Ok"));
+		Frontend()->m_Menus.PopupMessage(Localize("No space for button"), Localize("There is not enough space available to place another button."), Localize("Ok"));
 		return false;
 	}
 	m_pNewSelectedButton = GameClient()->m_TouchControls.NewButton();

@@ -154,7 +154,7 @@ void CStatboard::RenderLiveMatch(const CRenderContext &Context, const CStoredMat
 	const float PanelHeight = LiveMatchPanelHeight(Live);
 	const float X = StatboardWidth / 2.0f - PanelWidth / 2.0f;
 	const float Y = 200.0f;
-	GameClient()->m_Menus.RenderBackdropRegion({X, Y, PanelWidth, PanelHeight}, IGraphics::CORNER_ALL, 17.0f);
+	GameClient()->m_Backdrop.RenderRegion({X, Y, PanelWidth, PanelHeight}, IGraphics::CORNER_ALL, 17.0f);
 	RenderTools()->DrawRect(X, Y, PanelWidth, PanelHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
 	RenderLiveMatchPanel(Live, X + 10.0f, Y + 10.0f, PanelWidth - 20.0f);
 }
@@ -234,7 +234,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 		Text.Render(TextRender(), vec2(X - Text.Width() * Alignment, Y), TextRender()->DefaultTextColor());
 	};
 
-	GameClient()->m_Menus.RenderBackdropRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight}, IGraphics::CORNER_ALL, 17.0f);
+	GameClient()->m_Backdrop.RenderRegion({x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight}, IGraphics::CORNER_ALL, 17.0f);
 	RenderTools()->DrawRect(x - 10.f, y - 10.f, StatboardContentWidth, StatboardContentHeight, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 17.0f);
 
 	int px = 325;
@@ -546,7 +546,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 	const CSessionId SessionId = GameClient()->SessionContext().Id();
 	const CSessionStatsState &Stats = GameClient()->SessionContext().m_Stats;
 	// server stats
-	const CServerInfo &CurrentServerInfo = Client()->ServerInfo(SessionId);
+	const CServerInfo &CurrentServerInfo = Sessions()->ServerInfo(SessionId);
 
 	char aServerStats[1024];
 	str_format(aServerStats, sizeof(aServerStats), "Servername,Game-type,Map\n%s,%s,%s", ReplaceCommata(CurrentServerInfo.m_aName).c_str(), ReplaceCommata(CurrentServerInfo.m_aGameType).c_str(), ReplaceCommata(CurrentServerInfo.m_aMap).c_str());
@@ -619,7 +619,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			pStats->m_Suicides, // Suicides
 			KillRatio, // Kill ratio
 			pStats->m_Frags - pStats->m_Deaths, // Net
-			pStats->GetFPM(Client()->GameTick(SessionId, GameClient()->ActiveConnection()), Client()->GameTickSpeed()), // FPM
+			pStats->GetFPM(Sessions()->GameTick(SessionId, GameClient()->ActiveConnection()), Sessions()->GameTickSpeed()), // FPM
 			pStats->m_CurrentSpree, // CurSpree
 			pStats->m_BestSpree, // BestSpree
 			aWeaponFD, // WeaponFD

@@ -12,6 +12,7 @@ class CKeyBinder : public CComponent
 {
 public:
 	int Sizeof() const override { return sizeof(*this); }
+	void OnInit() override;
 	bool OnInput(const IInput::CEvent &Event) override;
 
 	class CKeyReaderResult
@@ -29,6 +30,8 @@ private:
 	const CButtonContainer *m_pKeyReaderId = nullptr;
 	bool m_TakeKey = false;
 	std::optional<CBindSlot> m_Key;
+	// Set while the back button aborted a key reader, until the key is let go.
+	bool m_BackButtonHandled = false;
 };
 
 #endif

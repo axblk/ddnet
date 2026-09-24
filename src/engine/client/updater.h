@@ -47,6 +47,7 @@ class CUpdater : public IUpdater
 
 	class IClient *m_pClient;
 	class IClientNetwork *m_pClientNetwork;
+	class IClientFrontend *m_pClientFrontend;
 	class IStorage *m_pStorage;
 	class IEngine *m_pEngine;
 	class IHttp *m_pHttp;

@@ -9,6 +9,7 @@
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui_listbox.h>
 #include <game/localization.h>
@@ -656,7 +657,7 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 	MainView.HSplitBottom(ms_ButtonHeight, &MainView, &QuickSearch);
 	QuickSearch.VSplitLeft(220.0f, &QuickSearch, &DirectoryButton);
 	QuickSearch.HSplitTop(5.0f, nullptr, &QuickSearch);
-	if(Ui()->DoEditBox_SearchCached(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aSettingsAssetsSearchUiElements.data(), m_aSettingsAssetsSearchUiElements.data() + 1))
+	if(Ui()->DoEditBox_SearchCached(&s_aFilterInputs[s_CurCustomTab], &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_aSettingsAssetsSearchUiElements.data(), m_aSettingsAssetsSearchUiElements.data() + 1))
 	{
 		gs_aInitCustomList[s_CurCustomTab] = true;
 	}
@@ -685,7 +686,7 @@ void CMenus::RenderSettingsAssets(CUIRect MainView)
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, aBufFull, aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("assets", IStorage::TYPE_SAVE);
 		Storage()->CreateFolder(aBufFull, IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 	Ui()->DoToolTip(&s_AssetsDirId, &DirectoryButton, Localize("Open the directory to add custom assets"));
 

@@ -19,7 +19,9 @@
 #include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
+#include <engine/demo.h>
 #include <engine/graphics.h>
+#include <engine/sessions.h>
 #include <engine/shared/config.h>
 #include <engine/shared/snapshot.h>
 
@@ -36,13 +38,13 @@
 #include <game/teamscore.h>
 
 // components
+#include "components/backdrop.h"
 #include "components/background.h"
 #include "components/binds.h"
 #include "components/broadcast.h"
 #include "components/camera.h"
 #include "components/censor.h"
 #include "components/chat.h"
-#include "components/console.h"
 #include "components/controls.h"
 #include "components/countryflags.h"
 #include "components/damageind.h"
@@ -55,12 +57,8 @@
 #include "components/important_alert.h"
 #include "components/infomessages.h"
 #include "components/items.h"
-#include "components/key_binder.h"
-#include "components/local_server.h"
 #include "components/mapimages.h"
 #include "components/maplayers.h"
-#include "components/menu_background.h"
-#include "components/menus.h"
 #include "components/motd.h"
 #include "components/nameplates.h"
 #include "components/particles.h"
@@ -87,7 +85,7 @@ class IMap;
 class CSnapEntities
 {
 public:
-	IClient::CSnapItem m_Item;
+	ISessions::CSnapItem m_Item;
 	const CNetObj_EntityEx *m_pDataEx;
 };
 
@@ -108,11 +106,8 @@ public:
 	CCensor m_Censor;
 	CMotd m_Motd;
 	CBroadcast m_Broadcast;
-	CGameConsole m_GameConsole;
 	CBinds m_Binds;
-	CKeyBinder m_KeyBinder;
 	CParticles m_Particles;
-	CMenus m_Menus;
 	CSkins m_Skins;
 	CSkins7 m_Skins7;
 	CCountryFlags m_CountryFlags;
@@ -137,11 +132,10 @@ public:
 	CMapImages m_MapImages;
 	CSessionPresentationManager m_SessionPresentations{m_MapImages};
 	CBackground m_Background;
-	CMenuBackground m_MenuBackground;
+	CBackdrop m_Backdrop;
 
 	CRaceDemo m_RaceDemo;
 	CGhost m_Ghost;
-	CLocalServer m_LocalServer;
 
 private:
 	std::vector<class CComponent *> m_vpAll;
@@ -170,6 +164,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class ISessions *m_pSessions;
 	class IClientNetwork *m_pClientNetwork = nullptr;
 	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
@@ -188,8 +183,8 @@ private:
 	class IUpdater *m_pUpdater;
 #endif
 	class IHttp *m_pHttp;
+	class IGameFrontend *m_pFrontend = nullptr;
 
-	CMatchJournal m_MatchJournal;
 	std::vector<std::unique_ptr<CGameSessionContext>> m_vpSessionContexts;
 	// The view that takes input, and two more for a split screen.
 	CGameView m_LegacyView;
@@ -262,8 +257,6 @@ private:
 	static void ConTuneZone(IConsole::IResult *pResult, void *pUserData);
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
 
-	static void ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
-
 public:
 	/**
 	 * Whether the sounds of a session are heard, and in which mixer: the live
@@ -278,17 +271,17 @@ public:
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
+	class ISessions *Sessions() const { return m_pSessions; }
 	class IClientNetwork *ClientNetwork() const { return m_pClientNetwork; }
 	/**
 	 * Whether the dummy is connected, `false` in a program without a
 	 * connection.
 	 */
 	bool DummyConnected() const { return m_pClientNetwork != nullptr && m_pClientNetwork->DummyConnected(); }
-	int ActiveConnection() const { return Client()->ActiveConnection(Client()->FocusedSessionId()); }
+	int ActiveConnection() const { return Client()->ActiveConnection(Sessions()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
-	CGameSessionContext &SessionContext() const { return SessionContext(Client()->FocusedSessionId()); }
+	CGameSessionContext &SessionContext() const { return SessionContext(Sessions()->FocusedSessionId()); }
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return FindSessionEntry(m_vpSessionContexts, SessionId); }
-	CMatchJournal &MatchJournal() { return m_MatchJournal; }
 	const CStoredMatch *LiveStats(CSessionId SessionId) const;
 	CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	void StopMapSounds();
@@ -329,6 +322,23 @@ public:
 	{
 		return m_pHttp;
 	}
+	/**
+	 * The front end the client puts on top of the game, `nullptr` in a
+	 * program that only shows the game.
+	 */
+	class IGameFrontend *Frontend() const { return m_pFrontend; }
+	// What the game asks the front end, answered for a program without one.
+	bool MenuActive() const;
+	bool ConsoleActive() const;
+	void SetMenuActive(bool Active);
+	void RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap = true);
+
+	void OnInput(const IInput::CEvent &Event);
+	/**
+	 * Seeks the demo by a tick without the events of the ticks skipped, and
+	 * pauses it there.
+	 */
+	void DemoSeekTick(IDemoPlayer::ETickOffset TickOffset);
 
 	int NetobjNumCorrections()
 	{
@@ -414,8 +424,6 @@ public:
 
 	CRenderTools m_RenderTools;
 	CRenderMap m_RenderMap;
-
-	bool m_BackButtonHandledKeyBind = false;
 
 	size_t ComponentCount() const { return m_vpAll.size(); }
 
@@ -817,7 +825,15 @@ private:
 	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);
 	void HandlePredictedEvents(int Tick);
 
-	void OnInput(const IInput::CEvent &Event);
+	/**
+	 * Whether anything over the scene wants it blurred behind it. The console
+	 * does not: it blurs the menu and the boards along with it, later.
+	 */
+	bool SceneBackdropWanted() const;
+	// Whether anything over the scene wants the backdrop this frame.
+	bool BackdropWanted() const;
+	// Whether all components are initialized.
+	bool m_InitComplete = false;
 
 	void DetectStrongHook(CGameState::CRuntimeState &Runtime) const;
 

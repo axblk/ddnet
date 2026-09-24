@@ -11,6 +11,7 @@
 #include <engine/textrender.h>
 
 #include <game/client/components/binds.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/key_binder.h>
 #include <game/client/components/menus.h>
 #include <game/client/gameclient.h>
@@ -130,7 +131,7 @@ void CMenusSettingsControls::Render(CUIRect MainView)
 	MainView.HSplitBottom(MARGIN, &MainView, nullptr);
 
 	// Quick search
-	if(Ui()->DoEditBox_SearchCached(&m_FilterInput, &QuickSearch, FONT_SIZE, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_KeyBinder.IsActive(), m_aSearchUiElements.data(), m_aSearchUiElements.data() + 1))
+	if(Ui()->DoEditBox_SearchCached(&m_FilterInput, &QuickSearch, FONT_SIZE, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive() && !Frontend()->m_KeyBinder.IsActive(), m_aSearchUiElements.data(), m_aSearchUiElements.data() + 1))
 	{
 		m_CurrentSearchMatch = 0;
 		UpdateSearchMatches();
@@ -166,9 +167,9 @@ void CMenusSettingsControls::Render(CUIRect MainView)
 	}
 
 	// Reset to default button
-	if(GameClient()->m_Menus.DoButton_Menu(&m_ResetToDefaultButton, Localize("Reset to defaults"), 0, &ResetToDefault))
+	if(Frontend()->m_Menus.DoButton_Menu(&m_ResetToDefaultButton, Localize("Reset to defaults"), 0, &ResetToDefault))
 	{
-		GameClient()->m_Menus.PopupConfirm(Localize("Reset controls"), Localize("Are you sure that you want to reset the controls to their defaults?"),
+		Frontend()->m_Menus.PopupConfirm(Localize("Reset controls"), Localize("Are you sure that you want to reset the controls to their defaults?"),
 			Localize("Reset"), Localize("Cancel"), &CMenus::ResetSettingsControls);
 	}
 
@@ -526,7 +527,7 @@ void CMenusSettingsControls::RenderSettingsBinds(EBindOptionGroup Group, CUIRect
 			KeyReaders.HSplitTop(BUTTON_HEIGHT, &KeyReader, &KeyReaders);
 			KeyReaders.HSplitTop(BUTTON_SPACING, nullptr, &KeyReaders);
 			const bool ActivateKeyReader = BindOption.m_AddNewBindActivate && CurrentBind.m_Bind == EMPTY_BIND_SLOT;
-			const CKeyBinder::CKeyReaderResult KeyReaderResult = GameClient()->m_KeyBinder.DoKeyReader(
+			const CKeyBinder::CKeyReaderResult KeyReaderResult = Frontend()->m_KeyBinder.DoKeyReader(
 				&CurrentBind.m_KeyReaderButton, &CurrentBind.m_KeyResetButton,
 				CurrentBind.m_pKeyReaderLabelUiElement, &KeyReader, CurrentBind.m_Bind, ActivateKeyReader);
 			if(ActivateKeyReader)
@@ -609,7 +610,7 @@ void CMenusSettingsControls::RenderSettingsJoystick(CUIRect View)
 	View.HSplitTop(BUTTON_SPACING, nullptr, &View);
 	View.HSplitTop(BUTTON_HEIGHT, &Button, &View);
 	const bool WasJoystickEnabled = g_Config.m_InpControllerEnable;
-	if(GameClient()->m_Menus.DoButton_CheckBox(&g_Config.m_InpControllerEnable, Localize("Enable controller"), g_Config.m_InpControllerEnable, &Button))
+	if(Frontend()->m_Menus.DoButton_CheckBox(&g_Config.m_InpControllerEnable, Localize("Enable controller"), g_Config.m_InpControllerEnable, &Button))
 	{
 		g_Config.m_InpControllerEnable ^= 1;
 	}
@@ -657,7 +658,7 @@ void CMenusSettingsControls::RenderSettingsJoystick(CUIRect View)
 		}
 
 		const bool WasAbsolute = g_Config.m_InpControllerAbsolute;
-		GameClient()->m_Menus.DoLine_RadioMenu(View, Localize("Ingame controller mode"),
+		Frontend()->m_Menus.DoLine_RadioMenu(View, Localize("Ingame controller mode"),
 			m_vJoystickIngameModeButtonContainers,
 			{Localize("Relative", "Ingame controller mode"), Localize("Absolute", "Ingame controller mode")},
 			{0, 1},
@@ -750,13 +751,13 @@ void CMenusSettingsControls::RenderJoystickAxisPicker(CUIRect View)
 		// Bind to X/Y
 		CUIRect AimBindX, AimBindY;
 		AimBind.VSplitMid(&AimBindX, &AimBindY);
-		if(GameClient()->m_Menus.DoButton_CheckBox(&m_aaJoystickAxisCheckboxIds[i][0], "X", g_Config.m_InpControllerX == i, &AimBindX))
+		if(Frontend()->m_Menus.DoButton_CheckBox(&m_aaJoystickAxisCheckboxIds[i][0], "X", g_Config.m_InpControllerX == i, &AimBindX))
 		{
 			if(g_Config.m_InpControllerY == i)
 				g_Config.m_InpControllerY = g_Config.m_InpControllerX;
 			g_Config.m_InpControllerX = i;
 		}
-		if(GameClient()->m_Menus.DoButton_CheckBox(&m_aaJoystickAxisCheckboxIds[i][1], "Y", g_Config.m_InpControllerY == i, &AimBindY))
+		if(Frontend()->m_Menus.DoButton_CheckBox(&m_aaJoystickAxisCheckboxIds[i][1], "Y", g_Config.m_InpControllerY == i, &AimBindY))
 		{
 			if(g_Config.m_InpControllerX == i)
 				g_Config.m_InpControllerX = g_Config.m_InpControllerY;

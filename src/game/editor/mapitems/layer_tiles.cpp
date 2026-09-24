@@ -767,7 +767,7 @@ void CLayerTiles::Shift(EShiftDirection Direction)
 void CLayerTiles::ShowInfo()
 {
 	CScreenRect ScreenRect = Graphics()->GetScreen();
-	Graphics()->TextureSet(Editor()->Client()->GetDebugFont());
+	Graphics()->TextureSet(Editor()->ClientFrontend()->GetDebugFont());
 	Graphics()->QuadsBegin();
 
 	int StartY = std::max(0, (int)(ScreenRect.m_TopLeft.y / 32.0f) - 1);

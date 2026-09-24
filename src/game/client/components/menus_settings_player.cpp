@@ -9,6 +9,7 @@
 
 #include <game/client/components/console.h>
 #include <game/client/components/countryflags.h>
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
@@ -37,10 +38,10 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	}
 
 	if(Client()->State() == IClient::STATE_ONLINE &&
-		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Client()->GameTick(Client()->NetworkSessionId(), m_Dummy))
+		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy))
 	{
 		char aChangeInfo[128], aTimeLeft[32];
-		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Client()->GameTick(Client()->NetworkSessionId(), m_Dummy) + Client()->GameTickSpeed() - 1) / Client()->GameTickSpeed());
+		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
 		Ui()->DoLabel(&ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}
@@ -197,5 +198,5 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 		m_apSettingsPlayerSearchUiElements[0] = Ui()->GetNewUIElement(1);
 	if(m_apSettingsPlayerSearchUiElements[1] == nullptr)
 		m_apSettingsPlayerSearchUiElements[1] = Ui()->GetNewUIElement(2);
-	Ui()->DoEditBox_SearchCached(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_apSettingsPlayerSearchUiElements[0], m_apSettingsPlayerSearchUiElements[1]);
+	Ui()->DoEditBox_SearchCached(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_apSettingsPlayerSearchUiElements[0], m_apSettingsPlayerSearchUiElements[1]);
 }

@@ -25,9 +25,25 @@ protected:
 	class CGameClient *GameClient() const { return m_pClient; }
 
 	/**
+	 * Get the front end the game runs under. Only for the components of the
+	 * front end: it is defined with them, and a program without one has none.
+	 */
+	class CGameFrontend *Frontend() const;
+	/**
+	 * Get what only the front end asks of the client. Defined with the front
+	 * end, like `Frontend`.
+	 */
+	class IClientFrontend *ClientFrontend() const;
+
+	/**
 	 * Get the client interface.
 	 */
 	class IClient *Client() const;
+
+	/**
+	 * Get the game sessions: their time and their snapshots.
+	 */
+	class ISessions *Sessions() const;
 
 	/**
 	 * Get the interface of the client's connection to a server.

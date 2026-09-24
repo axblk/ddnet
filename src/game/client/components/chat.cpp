@@ -573,7 +573,7 @@ void CChat::EnableMode(int Team)
 	if(m_Mode == MODE_NONE)
 	{
 		const CGameView &View = GameClient()->LegacyGameView();
-		if(View.SessionId() != Client()->NetworkSessionId())
+		if(View.SessionId() != Sessions()->NetworkSessionId())
 			return;
 		m_InputBinding = View.Binding();
 		if(Team)
@@ -1165,7 +1165,7 @@ void CChat::UpdateController(const CRenderContext &Context)
 		DisableMode();
 	if(!Context.m_Time.m_IsGameActive)
 		return;
-	CGameSessionContext *pSession = GameClient()->FindSessionContext(Client()->NetworkSessionId());
+	CGameSessionContext *pSession = GameClient()->FindSessionContext(Sessions()->NetworkSessionId());
 	const int64_t Now = time();
 	if(pSession == nullptr || !pSession->m_Chat.HasPending() || pSession->m_Chat.LastSend() + time_freq() >= Now)
 		return;
@@ -1329,7 +1329,7 @@ void CChat::EnsureCoherentWidth() const
 
 void CChat::SendChat(int Team, const char *pLine)
 {
-	if(Client()->FocusedSessionId() == Client()->NetworkSessionId())
+	if(Sessions()->FocusedSessionId() == Sessions()->NetworkSessionId())
 		SendChat(Team, pLine, g_Config.m_ClDummy);
 }
 
@@ -1338,7 +1338,7 @@ void CChat::SendChat(int Team, const char *pLine, int Conn)
 	if(*str_utf8_skip_whitespaces(pLine) == '\0')
 		return;
 
-	CGameSessionContext &Session = GameClient()->SessionContext(Client()->NetworkSessionId());
+	CGameSessionContext &Session = GameClient()->SessionContext(Sessions()->NetworkSessionId());
 	Session.m_Chat.SetLastSend(time());
 
 	if(Session.Protocol() == EGameProtocol::SIXUP)

@@ -1,8 +1,11 @@
 #ifndef ENGINE_SHARED_VIDEO_H
 #define ENGINE_SHARED_VIDEO_H
 
+#include <base/types.h>
+
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 typedef std::function<void(short *pFinalOut, unsigned Frames)> ISoundMixFunc;
@@ -82,6 +85,60 @@ public:
 	bool m_ShowImportantAlerts = true;
 };
 
+/**
+ * Takes over the interrupt and termination signals while an export runs.
+ *
+ * An export writes its file as it goes, so whoever runs the export loop asks
+ * `VideoExportInterrupted()` and cancels the encoder, which removes the
+ * unfinished file. A second signal is not caught.
+ */
+void CatchVideoExportInterrupt();
+
+/**
+ * Whether a signal arrived since the last call. Reading it clears it.
+ */
+bool VideoExportInterrupted();
+
+/**
+ * The video export arguments of a command line: the demo, the output file,
+ * `--list-codecs` and `--help`. Everything else about the video comes from the
+ * `cl_video_*` settings, which the rest of the command line can set.
+ */
+class CCommandLineVideoExport
+{
+public:
+	/**
+	 * Whether a demo to export was named.
+	 */
+	bool m_Export = false;
+	bool m_Help = false;
+	bool m_ListCodecs = false;
+	char m_aDemoPath[IO_MAX_PATH_LENGTH] = {};
+	char m_aVideoPath[IO_MAX_PATH_LENGTH] = {};
+
+	/**
+	 * Takes the video export arguments off the command line and leaves the
+	 * rest, in order, for the console.
+	 *
+	 * @param ArgumentCount Number of arguments, set to the number that is left.
+	 * @param ppArguments The arguments, set to the ones that are left.
+	 * @param vArguments Storage for the arguments that are left, which has to
+	 * outlive the command line.
+	 * @param pUsageName Name of the program in the usage message.
+	 * @param AcceptPositional Whether the demo and the output file may be named
+	 * without a flag.
+	 *
+	 * @return `false` when the arguments are invalid, which has been logged.
+	 */
+	bool ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments, const char *pUsageName, bool AcceptPositional = false);
+
+	/**
+	 * The settings of the export, read from the configuration. Call after the
+	 * configuration and the command line were executed.
+	 */
+	static CVideoExportSettings Settings();
+};
+
 class CVideoExportStatus
 {
 public:
@@ -133,5 +190,30 @@ public:
 protected:
 	static IVideo *ms_pCurrentVideo;
 };
+
+/**
+ * Prepares the linked video export before the first one is created.
+ */
+void InitVideoBackend();
+
+/**
+ * Creates the video export this build was linked with.
+ *
+ * @param pGraphics Graphics the frames are read back from.
+ * @param pSound Sound the audio track is mixed from.
+ * @param pStorage Storage the output file is created in.
+ * @param Settings Resolution, rate and quality of the export.
+ * @param LocalStartTime Time the exported timeline starts at.
+ * @param pName Output file, in the given storage.
+ * @param OutputStorageType Storage type the output path is relative to.
+ * @param AllowOverwrite Whether an existing file may be replaced.
+ * @param PauseLiveAudio Whether the sound device is silenced while the export
+ * runs.
+ *
+ * @return The export, which still has to be started.
+ */
+std::unique_ptr<IVideo> CreateVideo(class IGraphics *pGraphics, class ISound *pSound, class IStorage *pStorage,
+	CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType,
+	bool AllowOverwrite, bool PauseLiveAudio);
 
 #endif

@@ -3,6 +3,7 @@
 #ifndef ENGINE_CLIENT_CLIENT_H
 #define ENGINE_CLIENT_CLIENT_H
 
+#include "client_core.h"
 #include "graph.h"
 #include "render_trace.h"
 #include "session_sources.h"
@@ -40,9 +41,6 @@ class CDemoEdit;
 class IDemoRecorder;
 class CMsgPacker;
 class CUnpacker;
-#if defined(CONF_VIDEORECORDER)
-class CVideo;
-#endif
 class IConfigManager;
 class IDiscord;
 class IEngine;
@@ -55,33 +53,16 @@ class INotifications;
 class IStorage;
 class IUpdater;
 
-class CClient : public IClient, public IClientNetwork
+class CClient : public CClientCore, public IClientNetwork
 {
-	// Hands what the demo player of one session reads to the client, together
-	// with the session it belongs to.
-	class CDemoListener : public CDemoPlayer::IListener
-	{
-		CClient *m_pClient = nullptr;
-		CSessionId m_SessionId;
-
-	public:
-		CDemoListener() = default;
-		CDemoListener(CClient *pClient, CSessionId SessionId) :
-			m_pClient(pClient), m_SessionId(SessionId) {}
-		void OnDemoPlayerSnapshot(void *pData, int Size) override { m_pClient->OnDemoSnapshot(m_SessionId, pData, Size); }
-		void OnDemoPlayerMessage(void *pData, int Size) override { m_pClient->OnDemoMessage(m_SessionId, pData, Size); }
-	};
-
 	// needed interfaces
-	IKernel *Kernel() { return IClient::Kernel(); }
+	IKernel *Kernel() { return CClientCore::Kernel(); }
 	IConfigManager *m_pConfigManager = nullptr;
 	CConfig *m_pConfig = nullptr;
-	IConsole *m_pConsole = nullptr;
 	IDiscord *m_pDiscord = nullptr;
 	IEditor *m_pEditor = nullptr;
 	IEngine *m_pEngine = nullptr;
 	IFavorites *m_pFavorites = nullptr;
-	IGameClient *m_pGameClient = nullptr;
 	IEngineGraphicsWindow *m_pWindow = nullptr;
 	IEngineGraphics *m_pGraphics = nullptr;
 	IEngineHttp *m_pHttp = nullptr;
@@ -89,16 +70,10 @@ class CClient : public IClient, public IClientNetwork
 	IEngineSound *m_pSound = nullptr;
 	ISteam *m_pSteam = nullptr;
 	INotifications *m_pNotifications = nullptr;
-	IStorage *m_pStorage = nullptr;
 	IEngineTextRender *m_pTextRender = nullptr;
 	IUpdater *m_pUpdater = nullptr;
 
-	CSessionManager m_SessionManager;
-	CSessionId m_NetworkSessionId;
-	CSessionId m_DemoSessionId;
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
-	CDemoSessionSource *m_pDemoSessionSource = nullptr;
-	CDemoListener m_DemoListener;
 #if defined(CONF_VIDEORECORDER)
 	// A second demo session that renders queued exports in the background,
 	// so that watching a demo and exporting one do not share a player.
@@ -106,7 +81,7 @@ class CClient : public IClient, public IClientNetwork
 	CDemoSessionSource *m_pVideoExportSessionSource = nullptr;
 	CDemoListener m_VideoExportDemoListener;
 #endif
-	CNetClient m_ContactNetClient;
+	CNetClient m_aNetClient[NUM_CONNS];
 	CQuicTransport m_QuicTransport;
 	CQuicSessionId m_QuicSession;
 	NETADDR m_QuicServerAddress = {};
@@ -129,9 +104,6 @@ class CClient : public IClient, public IClientNetwork
 
 	bool m_HaveGlobalTcpAddr = false;
 	NETADDR m_GlobalTcpAddr = NETADDR_ZEROED;
-
-	int64_t m_LocalStartTime = 0;
-	int64_t m_GlobalStartTime = 0;
 
 	IGraphics::CTextureHandle m_DebugFont;
 
@@ -189,7 +161,7 @@ class CClient : public IClient, public IClientNetwork
 		bool m_ExactVideoPath = false;
 	};
 
-	std::unique_ptr<CVideo> m_pVideo;
+	std::unique_ptr<IVideo> m_pVideo;
 	CSessionId m_VideoSessionId;
 	bool m_VideoOfflineAudio = false;
 	std::deque<CVideoExportJob> m_VideoExportQueue;
@@ -213,16 +185,6 @@ class CClient : public IClient, public IClientNetwork
 #endif
 
 	CSnapshotDelta *SnapshotDelta();
-	CSessionSourceBase &SessionSource(CSessionId SessionId)
-	{
-		CSessionSource *pSource = m_SessionManager.Find(SessionId);
-		dbg_assert(pSource != nullptr, "invalid game session");
-		return static_cast<CSessionSourceBase &>(*pSource);
-	}
-	const CSessionSourceBase &SessionSource(CSessionId SessionId) const
-	{
-		return const_cast<CClient *>(this)->SessionSource(SessionId);
-	}
 	CNetworkSessionSource &NetworkSource(CSessionId SessionId)
 	{
 		dbg_assert(SessionId == m_NetworkSessionId, "game session is not the network session");
@@ -232,33 +194,9 @@ class CClient : public IClient, public IClientNetwork
 	{
 		return const_cast<CClient *>(this)->NetworkSource(SessionId);
 	}
-	CDemoSessionSource &DemoSource(CSessionId SessionId)
-	{
-		CSessionSourceBase &Source = SessionSource(SessionId);
-		dbg_assert(Source.Type() == ESessionSourceType::DEMO, "game session is not a demo");
-		return static_cast<CDemoSessionSource &>(Source);
-	}
-	const CDemoSessionSource &DemoSource(CSessionId SessionId) const
-	{
-		return const_cast<CClient *>(this)->DemoSource(SessionId);
-	}
 	CConnection &Connection(int Conn) { return m_pNetworkSessionSource->m_aConnections[Conn]; }
 	const CConnection &Connection(int Conn) const { return m_pNetworkSessionSource->m_aConnections[Conn]; }
-	CConnection &Connection(CSessionId SessionId, int Conn)
-	{
-		if(SessionSource(SessionId).Type() == ESessionSourceType::NETWORK)
-			return NetworkSource(SessionId).m_aConnections[Conn];
-		dbg_assert(Conn == CONN_MAIN, "a demo has only one connection");
-		return DemoSource(SessionId).m_Connection;
-	}
-	const CConnection &Connection(CSessionId SessionId, int Conn) const
-	{
-		return const_cast<CClient *>(this)->Connection(SessionId, Conn);
-	}
-	CDemoPlayer &DemoPlayer() { return m_pDemoSessionSource->m_DemoPlayer; }
-	const CDemoPlayer &DemoPlayer() const { return m_pDemoSessionSource->m_DemoPlayer; }
-	CNetClient &NetClient(int Conn) { return Conn == CONN_CONTACT ? m_ContactNetClient : Connection(Conn).m_NetClient; }
-	const CNetClient &NetClient(int Conn) const { return Conn == CONN_CONTACT ? m_ContactNetClient : Connection(Conn).m_NetClient; }
+	using CClientCore::Connection;
 
 	std::deque<std::shared_ptr<CDemoEdit>> m_EditJobs;
 
@@ -280,10 +218,6 @@ class CClient : public IClient, public IClientNetwork
 		int m_State = STATE_INIT;
 	} m_VersionInfo;
 
-	std::mutex m_WarningsMutex;
-	std::vector<SWarning> m_vWarnings;
-	std::vector<SWarning> m_vQuittingWarnings;
-
 	CFifo m_Fifo;
 
 	IOHANDLE m_BenchmarkFile = nullptr;
@@ -303,7 +237,6 @@ class CClient : public IClient, public IClientNetwork
 	int m_FavoritesGroupNum = 0;
 	NETADDR m_aFavoritesGroupAddresses[MAX_SERVER_ADDRESSES];
 
-	void UpdateDemoIntraTimers(CSessionId SessionId);
 	// The session being updated. A stop requested from within its update is
 	// carried out once the update returns.
 	CSessionId m_UpdatingSessionId;
@@ -316,9 +249,6 @@ class CClient : public IClient, public IClientNetwork
 	int MaxLatencyTicks() const;
 	int PredictionMargin() const;
 
-	std::shared_ptr<ILogger> m_pFileLogger = nullptr;
-	std::shared_ptr<ILogger> m_pStdoutLogger = nullptr;
-
 	// For RenderDebug function
 	NETSTATS m_NetstatsPrev = {};
 	NETSTATS m_NetstatsCurrent = {};
@@ -328,39 +258,19 @@ class CClient : public IClient, public IClientNetwork
 	char m_aAutomaticDummyName[MAX_NAME_LENGTH];
 
 public:
-	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
-	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
-	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
 #if defined(CONF_VIDEORECORDER)
 	CSessionId VideoExportSessionId() const override { return m_VideoExportSessionId; }
 #endif
-	ESessionSourceType SessionType(CSessionId SessionId) const override { return SessionSource(SessionId).Type(); }
-	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
-	bool DemoPlaybackPaused(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Paused; }
-	float DemoPlaybackSpeed(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Speed; }
-	int64_t DemoPlaybackTime(CSessionId SessionId) const override;
-	float DemoPlaybackLocalTime(CSessionId SessionId) const override;
-	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
-	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
-	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
-	float IntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTick; }
-	float PredIntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredIntraTick; }
-	float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTickSincePrev; }
-	float GameTickTime(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameTickTime; }
-
 	IConfigManager *ConfigManager() { return m_pConfigManager; }
 	CConfig *Config() { return m_pConfig; }
 	IDiscord *Discord() { return m_pDiscord; }
 	IEngine *Engine() { return m_pEngine; }
-	IGameClient *GameClient() { return m_pGameClient; }
-	const IGameClient *GameClient() const { return m_pGameClient; }
 	IEngineGraphicsWindow *Window() { return m_pWindow; }
 	IEngineGraphics *Graphics() { return m_pGraphics; }
 	IEngineInput *Input() { return m_pInput; }
 	IEngineSound *Sound() { return m_pSound; }
 	ISteam *Steam() { return m_pSteam; }
 	INotifications *Notifications() { return m_pNotifications; }
-	IStorage *Storage() { return m_pStorage; }
 	IEngineTextRender *TextRender() { return m_pTextRender; }
 	IUpdater *Updater() { return m_pUpdater; }
 	IHttp *Http() { return m_pHttp; }
@@ -394,19 +304,12 @@ public:
 
 	void SendInput();
 
-	// TODO: OPT: do this a lot smarter!
-	int *GetInput(CSessionId SessionId, int Conn, int Tick) const override;
-
 	const char *LatestVersion() const override;
 	int64_t ReconnectTime() const override { return m_pNetworkSessionSource->m_ReconnectTime; }
 	void CancelReconnect() override { m_pNetworkSessionSource->CancelReconnect(); }
 
-	// ------ state handling -----
-	void SetState(EClientState State);
-	void SetFocusedState(EClientState State, bool ResetSession);
-	void FocusSession(CSessionId SessionId);
-	bool IsOnline() const override;
-	bool IsDemoPlayback() const override;
+	void OnStateChanged(EClientState State, EClientState OldState) override;
+	void StopDemoRecorders();
 
 	// called when the map is loaded and we should init for a new round
 	void OnEnterGame(int Conn);
@@ -427,19 +330,10 @@ public:
 	bool DummyConnectingDelayed() const override;
 	bool DummyAllowed() const override;
 
-	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).m_ServerInfo; }
 	void ServerInfoRequest();
 	void SetCurrentServerInfo(const CServerInfo &ServerInfo);
 
 	// ---
-
-	int GetPredictionTime(CSessionId SessionId, int Conn) override;
-	CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const override;
-	int GetPredictionTick(CSessionId SessionId, int Conn) override;
-	const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const override;
-	int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const override;
-	void SnapSetStaticsize(int ItemType, int Size) override;
-	void SnapSetStaticsize7(int ItemType, int Size) override;
 
 	void Render();
 	void RenderScreen();
@@ -457,9 +351,6 @@ public:
 	const char *DummyName() override;
 	const char *ErrorString() const override;
 
-	const char *LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc);
-	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
-
 	int TranslateSysMsg(int *pMsgId, bool System, CUnpacker *pUnpacker, CPacker *pPacker, const NETADDR *pPeerAddress, bool *pIsExMsg);
 
 	bool PreprocessConnlessPacket7(CNetChunk *pPacket);
@@ -469,8 +360,6 @@ public:
 	bool TryStartModernTransport(const CConnectTarget &Target);
 	void StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Sixup);
 
-	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);
-
 	void ResetMapDownload(bool ResetActive);
 	void FinishMapDownload();
 
@@ -479,11 +368,7 @@ public:
 	void ResetDDNetInfoTask();
 	void LoadDDNetInfo();
 
-	bool IsSixup(CSessionId SessionId) const override { return SessionSource(SessionId).m_Sixup; }
-	CTranslationContext &TranslationContext(CSessionId SessionId) override { return SessionSource(SessionId).m_TranslationContext; }
-	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return SessionSource(SessionId).m_TranslationContext; }
-
-	const NETADDR &ServerAddress() const override { return m_UseQuic ? m_QuicServerAddress : *NetClient(CONN_MAIN).ServerAddress(); }
+	const NETADDR &ServerAddress() const override { return m_UseQuic ? m_QuicServerAddress : *m_aNetClient[CONN_MAIN].ServerAddress(); }
 	int ConnectNetTypes() const override;
 	const char *ConnectAddressString() const override { return m_pNetworkSessionSource->m_ConnectAddress.c_str(); }
 	const char *MapDownloadName() const override { return m_pNetworkSessionSource->m_aMapdownloadName; }
@@ -491,9 +376,6 @@ public:
 	int MapDownloadTotalsize() const override { return !m_pNetworkSessionSource->m_pMapdownloadTask ? m_pNetworkSessionSource->m_MapdownloadTotalsize : (int)m_pNetworkSessionSource->m_pMapdownloadTask->Size(); }
 
 	void PumpNetwork();
-
-	void OnDemoSnapshot(CSessionId SessionId, void *pData, int Size);
-	void OnDemoMessage(CSessionId SessionId, void *pData, int Size);
 
 	void Update();
 
@@ -666,12 +548,6 @@ public:
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
-
-	void AddWarning(const SWarning &Warning) override;
-	std::optional<SWarning> CurrentWarning() override;
-	std::vector<SWarning> &&QuittingWarnings() { return std::move(m_vQuittingWarnings); }
-
 	CChecksumData *ChecksumData() override { return &m_Checksum.m_Data; }
 	int UdpConnectivity(int NetType) override;
 
@@ -685,7 +561,6 @@ public:
 
 	std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) override;
 	void GetGpuInfoString(char (&aGpuInfo)[512]) override;
-	void SetLoggers(std::shared_ptr<ILogger> &&pFileLogger, std::shared_ptr<ILogger> &&pStdoutLogger);
 };
 
 #endif

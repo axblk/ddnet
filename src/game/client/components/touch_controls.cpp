@@ -1044,7 +1044,7 @@ void CTouchControls::InitVisibilityFunctions()
 	};
 	m_aVisibilityFunctions[(int)EButtonVisibility::DUMMY_CONNECTED].m_pId = "dummy-connected";
 	m_aVisibilityFunctions[(int)EButtonVisibility::DUMMY_CONNECTED].m_Function = [&]() {
-		return ClientNetwork()->DummyConnected();
+		return GameClient()->DummyConnected();
 	};
 	m_aVisibilityFunctions[(int)EButtonVisibility::RCON_AUTHED].m_pId = "rcon-authed";
 	m_aVisibilityFunctions[(int)EButtonVisibility::RCON_AUTHED].m_Function = [&]() {

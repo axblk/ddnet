@@ -2695,10 +2695,16 @@ if(CLIENT)
     checksum.h
     client.cpp
     client.h
+    client_core.cpp
+    client_core.h
     command_buffer.h
     connect_target.cpp
     connect_target.h
     connection.h
+    demo_client_base.cpp
+    demo_client_base.h
+    demo_render_client.cpp
+    demo_render_client.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2827,6 +2833,7 @@ if(CLIENT)
     components/menus_ingame.cpp
     components/menus_ingame_touch_controls.cpp
     components/menus_ingame_touch_controls.h
+    components/menus_null.cpp
     components/menus_settings.cpp
     components/menus_settings_appearance.cpp
     components/menus_settings_assets.cpp
@@ -3115,6 +3122,10 @@ if(CLIENT)
     list(APPEND ENGINE_CLIENT_GRAPHICS "${PROJECT_SOURCE_DIR}/src/engine/client/${file}")
   endforeach()
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
+  # The programs that only show a demo are built on these instead of client.cpp.
+  set(ENGINE_CLIENT_DEMO ${ENGINE_CLIENT})
+  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|render_client)\\.(cpp|h)$")
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
@@ -3166,6 +3177,7 @@ if(CLIENT)
   set_source_files_properties("${EMBEDDED_SHADERS_SRC}" PROPERTIES GENERATED TRUE)
 
   set(CLIENT_SRC ${ENGINE_CLIENT} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+  list(FILTER CLIENT_SRC EXCLUDE REGEX "src/game/client/components/menus_null\\.cpp$")
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP})
 
@@ -3370,17 +3382,17 @@ if(CLIENT)
   )
 
   if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
-    # The client without its window: the graphics come from the object
-    # library that is compiled without SDL (see ENGINE_CLIENT_GRAPHICS_FILES),
-    # the SDL window and the SDL input stay out, and the null input and the
-    # window-less surface take their place.
-    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/window_sdl\\.(cpp|h)$")
-    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/input\\.(cpp|h)$")
-    # A developer tool, not part of the game. It compiles a second copy of the
-    # client, so building it by default would roughly double the build time,
-    # and it is not shipped with the release either. Build it explicitly with
-    # `cmake --build . --target demo-renderer`.
+    # The game without the connection: CDemoRenderClient instead of CClient,
+    # the graphics without SDL and the null input, and none of the network,
+    # the server browser, the editor or the platform integrations.
+    set(DEMO_RENDERER_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demoedit|discord|favorites|input|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|steam|updater|window_sdl)\\.(cpp|h)$")
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
+    # The menus are the stand-in, see menus_null.cpp.
+    list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/game/client/components/(community_icons|menus(_[a-z0-9_]*)?)\\.cpp$")
+    list(APPEND DEMO_RENDERER_SRC src/game/client/components/menus_null.cpp)
+    # A developer tool, not part of the game, and not shipped with the release.
+    # Build it explicitly with `cmake --build . --target demo-renderer`.
     add_executable(demo-renderer EXCLUDE_FROM_ALL
       ${DEMO_RENDERER_SRC}
       ${DEPS}
@@ -3388,11 +3400,8 @@ if(CLIENT)
       # tidy-alphabetical-start
       $<TARGET_OBJECTS:engine-client-graphics-headless>
       $<TARGET_OBJECTS:engine-gfx>
-      $<TARGET_OBJECTS:engine-net>
-      $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
-      $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-end
     )
     add_dependencies(demo-renderer generate_content_types)
@@ -3421,8 +3430,10 @@ if(CLIENT)
       ${OPUS_LIBRARIES}
       ${OGG_LIBRARIES}
       ${PLATFORM_HEADLESS_CLIENT_LIBS}
-      rust_engine_shared
-      ${LIBS}
+      ${CRYPTO_LIBRARIES}
+      ${ZLIB_LIBRARIES}
+      ${PLATFORM_LIBS}
+      ${CMAKE_THREAD_LIBS_INIT}
     )
     if(WEBGPU_NATIVE_BACKEND)
       target_link_libraries(demo-renderer WGPU::Native)
@@ -4907,14 +4918,14 @@ foreach(target ${TARGETS_OWN})
     target_compile_definitions(${target} PRIVATE CONF_OPENSSL)
     target_include_directories(${target} SYSTEM PRIVATE ${CRYPTO_INCLUDE_DIRS})
   endif()
-  if(QUIC AND NOT "${target}" STREQUAL "demo-renderer")
+  if(QUIC)
     target_compile_definitions(${target} PRIVATE CONF_QUIC)
   endif()
-  if(WEBSOCKETS AND NOT "${target}" STREQUAL "demo-renderer")
+  if(WEBSOCKETS)
     target_compile_definitions(${target} PRIVATE CONF_WEBSOCKETS)
     target_include_directories(${target} SYSTEM PRIVATE ${WEBSOCKETS_INCLUDE_DIRS})
   endif()
-  if(UPNP AND NOT "${target}" STREQUAL "demo-renderer")
+  if(UPNP)
     target_compile_definitions(${target} PRIVATE CONF_UPNP)
     target_include_directories(${target} SYSTEM PRIVATE ${MINIUPNPC_INCLUDE_DIRS})
   endif()

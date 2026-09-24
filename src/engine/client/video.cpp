@@ -274,6 +274,18 @@ void CVideo::Init()
 	av_log_set_callback(AvLogCallback);
 }
 
+void InitVideoBackend()
+{
+	CVideo::Init();
+}
+
+std::unique_ptr<IVideo> CreateVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage,
+	CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType,
+	bool AllowOverwrite, bool PauseLiveAudio)
+{
+	return std::make_unique<CVideo>(pGraphics, pSound, pStorage, Settings, LocalStartTime, pName, OutputStorageType, AllowOverwrite, PauseLiveAudio);
+}
+
 CVideo::CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoExportSettings Settings, int64_t LocalStartTime, const char *pName, int OutputStorageType, bool AllowOverwrite, bool PauseLiveAudio) :
 	m_pGraphics(pGraphics),
 	m_pStorage(pStorage),

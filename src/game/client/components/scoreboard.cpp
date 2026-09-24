@@ -1032,10 +1032,11 @@ void CScoreboard::RenderRecordingNotification(float x)
 	char aBuf[512] = "";
 
 	const auto &&AppendRecorderInfo = [&](int Recorder, const char *pName) {
-		if(GameClient()->DemoRecorder(Recorder)->IsRecording())
+		const IDemoRecorder *pRecorder = GameClient()->DemoRecorder(Recorder);
+		if(pRecorder != nullptr && pRecorder->IsRecording())
 		{
 			char aTime[32];
-			str_time((int64_t)GameClient()->DemoRecorder(Recorder)->Length() * 100, ETimeFormat::HOURS, aTime, sizeof(aTime));
+			str_time((int64_t)pRecorder->Length() * 100, ETimeFormat::HOURS, aTime, sizeof(aTime));
 			str_append(aBuf, pName);
 			str_append(aBuf, " ");
 			str_append(aBuf, aTime);

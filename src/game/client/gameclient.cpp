@@ -193,18 +193,35 @@ CGameView &CGameClient::LegacyGameView()
 	return m_LegacyView;
 }
 
+// The programs that only show a demo register none of these, and everything
+// that uses one copes with its absence. The game registers all of them, so
+// there a missing one is an assert at startup.
+template<class TInterface>
+static TInterface *ToolOptionalInterface(IKernel *pKernel)
+{
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
+	return pKernel->TryGetInterface<TInterface>();
+#else
+	return pKernel->RequestInterface<TInterface>();
+#endif
+}
+
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
-	m_pClientNetwork = Kernel()->RequestInterface<IClientNetwork>();
+	m_pClientNetwork = ToolOptionalInterface<IClientNetwork>(Kernel());
 	m_pRenderTrace = m_pClient->RenderTrace();
-	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->NetworkSessionId(), NUM_DUMMIES));
+	// A program without a connection has no network session, and one that
+	// renders a demo has no second one to export from in the background.
+	if(Client()->NetworkSessionId().IsValid())
+		m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->NetworkSessionId(), NUM_DUMMIES));
 	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->DemoSessionId(), 1));
 #if defined(CONF_VIDEORECORDER)
-	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->VideoExportSessionId(), 1));
+	if(Client()->VideoExportSessionId().IsValid())
+		m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->VideoExportSessionId(), 1));
 #endif
 	m_LegacyView.SetTarget(Client()->NetworkSessionId(), IClient::CONN_MAIN);
 	m_SecondaryView.SetTarget(Client()->NetworkSessionId(), IClient::CONN_DUMMY);
@@ -218,16 +235,16 @@ void CGameClient::OnConsoleInit()
 	m_pConsole = Kernel()->RequestInterface<IConsole>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pDemoPlayer = Kernel()->RequestInterface<IDemoPlayer>();
-	m_pServerBrowser = Kernel()->RequestInterface<IServerBrowser>();
-	m_pEditor = Kernel()->RequestInterface<IEditor>();
-	m_pFavorites = Kernel()->RequestInterface<IFavorites>();
+	m_pServerBrowser = ToolOptionalInterface<IServerBrowser>(Kernel());
+	m_pEditor = ToolOptionalInterface<IEditor>(Kernel());
+	m_pFavorites = ToolOptionalInterface<IFavorites>(Kernel());
 	m_pFriends = Kernel()->RequestInterface<IFriends>();
 	m_pFoes = Client()->Foes();
-	m_pDiscord = Kernel()->RequestInterface<IDiscord>();
+	m_pDiscord = ToolOptionalInterface<IDiscord>(Kernel());
 #if defined(CONF_AUTOUPDATE)
-	m_pUpdater = Kernel()->RequestInterface<IUpdater>();
+	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
-	m_pHttp = Kernel()->RequestInterface<IHttp>();
+	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	for(const auto &pContext : m_vpSessionContexts)
 		pContext->m_MapContext.Init();
 
@@ -575,17 +592,21 @@ void CGameClient::OnInit()
 	// window not being focused after starting client.
 	Window()->SetWindowGrab(true);
 
-	CChecksumData *pChecksum = ClientNetwork()->ChecksumData();
-	pChecksum->m_SizeofGameClient = sizeof(*this);
-	pChecksum->m_NumComponents = m_vpAll.size();
-	for(size_t i = 0; i < m_vpAll.size(); i++)
+	// Only a server asks for the checksum.
+	if(ClientNetwork() != nullptr)
 	{
-		if(i >= std::size(pChecksum->m_aComponentsChecksum))
+		CChecksumData *pChecksum = ClientNetwork()->ChecksumData();
+		pChecksum->m_SizeofGameClient = sizeof(*this);
+		pChecksum->m_NumComponents = m_vpAll.size();
+		for(size_t i = 0; i < m_vpAll.size(); i++)
 		{
-			break;
+			if(i >= std::size(pChecksum->m_aComponentsChecksum))
+			{
+				break;
+			}
+			int Size = m_vpAll[i]->Sizeof();
+			pChecksum->m_aComponentsChecksum[i] = Size;
 		}
-		int Size = m_vpAll[i]->Sizeof();
-		pChecksum->m_aComponentsChecksum[i] = Size;
 	}
 
 	log_trace("gameclient", "initialization finished after %.2fms", (time_get() - OnInitStart) * 1000.0f / (float)time_freq());
@@ -1006,8 +1027,11 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
 
-	Editor()->ResetMentions();
-	Editor()->ResetIngameMoved();
+	if(Editor() != nullptr)
+	{
+		Editor()->ResetMentions();
+		Editor()->ResetIngameMoved();
+	}
 }
 
 void CGameClient::PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session)
@@ -1455,7 +1479,7 @@ void CGameClient::FillPreparedRenderEntry(CPreparedRenderEntry &Entry, int64_t P
 	Time.m_IsGameActive = Client()->SessionState(SessionId) == ESessionState::READY;
 	Time.m_IsDemoPlayback = DemoPlayback;
 	Time.m_IsDemoPlaybackPaused = DemoPaused;
-	Time.m_ConnectionProblems = ClientNetwork()->ConnectionProblems(SessionId, Entry.m_Conn);
+	Time.m_ConnectionProblems = ClientNetwork() != nullptr && ClientNetwork()->ConnectionProblems(SessionId, Entry.m_Conn);
 	Entry.m_Playback = Time.m_AnimationPlaybackSpeed > 0.0f ? EPresentationPlayback::PLAYING : EPresentationPlayback::PAUSED;
 }
 
@@ -1488,7 +1512,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	auto AddNetworkEntries = [&](CGameView &MainView, CGameView &DummyView) {
 		CGameSessionContext &NetworkSession = SessionContext(Client()->NetworkSessionId());
 		AddEntry(NetworkSession, IClient::CONN_MAIN, MainView);
-		if(ClientNetwork()->DummyConnected())
+		if(DummyConnected())
 			AddEntry(NetworkSession, IClient::CONN_DUMMY, DummyView);
 	};
 
@@ -1762,7 +1786,7 @@ bool CGameClient::Predict() const
 
 bool CGameClient::PredictDummy(const CGameState &OtherState) const
 {
-	if(!g_Config.m_ClPredictDummy || !ClientNetwork()->DummyConnected() || Snap().m_LocalClientId < 0)
+	if(!g_Config.m_ClPredictDummy || !DummyConnected() || Snap().m_LocalClientId < 0)
 		return false;
 	const int OtherLocalClientId = OtherState.LocalClientId();
 	if(OtherLocalClientId < 0)
@@ -2026,7 +2050,9 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	}
 	else if(MsgId == NETMSGTYPE_SV_READYTOENTER)
 	{
-		ClientNetwork()->EnterGame(Conn);
+		// A demo can carry the message too, but only a server waits for the answer.
+		if(Client()->SessionType(SessionId) == ESessionSourceType::NETWORK)
+			ClientNetwork()->EnterGame(Conn);
 		return;
 	}
 	else if(MsgId == NETMSGTYPE_SV_MAPSOUNDGLOBAL)
@@ -2623,7 +2649,7 @@ void CGameClient::ProcessAirJumpEffects(CSessionId SessionId, int Conn)
 			continue;
 
 		const CGameState *pOtherState = NetworkSource ? &Session.GameState(Conn == IClient::CONN_MAIN ? IClient::CONN_DUMMY : IClient::CONN_MAIN) : nullptr;
-		const bool IsDummy = pOtherState != nullptr && ClientNetwork()->DummyConnected() && i == pOtherState->LocalClientId();
+		const bool IsDummy = pOtherState != nullptr && DummyConnected() && i == pOtherState->LocalClientId();
 		const bool IsLocalPlayer = i == Snap.m_LocalClientId;
 		if(Predict() && (IsLocalPlayer || AntiPingPlayers()) && (IsLocalPlayer || IsDummy))
 			continue;
@@ -3157,7 +3183,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		{
 			if(SessionState.m_Runtime.m_DDRaceMsgSent || !Snap.m_pLocalInfo)
 				continue;
-			if(SessionState.m_Conn == IClient::CONN_DUMMY && !ClientNetwork()->DummyConnected())
+			if(SessionState.m_Conn == IClient::CONN_DUMMY && !DummyConnected())
 				continue;
 			CMsgPacker Msg(NETMSGTYPE_CL_ISDDNETLEGACY, false);
 			Msg.AddInt(DDNetVersion());
@@ -3197,7 +3223,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			MainRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
 		}
 		CGameState::CRuntimeState &DummyRuntime = pDummyState->m_Runtime;
-		if(ClientNetwork()->DummyConnected() && (DummyRuntime.m_EnableSpectatorCount == -1 || DummyRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount))
+		if(DummyConnected() && (DummyRuntime.m_EnableSpectatorCount == -1 || DummyRuntime.m_EnableSpectatorCount != g_Config.m_ClShowhudSpectatorCount))
 		{
 			CNetMsg_Cl_EnableSpectatorCount Msg;
 			Msg.m_Enable = g_Config.m_ClShowhudSpectatorCount;
@@ -3229,7 +3255,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		}
 
 		// initialize dummy vital when first connected
-		if(ClientNetwork()->DummyConnected() && !m_LastDummyConnected)
+		if(DummyConnected() && !m_LastDummyConnected)
 		{
 			{
 				CNetMsg_Cl_ShowDistance Msg;
@@ -3268,7 +3294,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			Msg.Pack(&Packer);
 
 			ClientNetwork()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(ClientNetwork()->DummyConnected() && m_LastDummyConnected)
+			if(DummyConnected() && m_LastDummyConnected)
 				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
 		}
 
@@ -3283,7 +3309,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 			Msg.Pack(&Packer);
 
 			ClientNetwork()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(ClientNetwork()->DummyConnected() && m_LastDummyConnected)
+			if(DummyConnected() && m_LastDummyConnected)
 				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
 		}
 
@@ -3292,7 +3318,7 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId, int Conn)
 		m_LastZoom = Zoom;
 		m_LastDeadzone = Deadzone;
 		m_LastFollowFactor = FollowFactor;
-		m_LastDummyConnected = ClientNetwork()->DummyConnected();
+		m_LastDummyConnected = DummyConnected();
 	}
 
 	for(auto &pComponent : m_vpAll)
@@ -3404,7 +3430,7 @@ void CGameClient::UpdateEditorIngameMoved()
 	{
 		--m_EditorMovementDelay;
 	}
-	if(m_EditorMovementDelay == 0 && LocalCharacterMoved)
+	if(m_EditorMovementDelay == 0 && LocalCharacterMoved && Editor() != nullptr)
 	{
 		Editor()->OnIngameMoved();
 	}
@@ -3419,7 +3445,7 @@ void CGameClient::ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld)
 	{
 		if(CCharacter *pChar = GameWorld.GetCharacterById(ClientId))
 		{
-			if(ClientId == GameState(IClient::CONN_MAIN).LocalClientId() || (ClientNetwork()->DummyConnected() && ClientId == GameState(IClient::CONN_DUMMY).LocalClientId()))
+			if(ClientId == GameState(IClient::CONN_MAIN).LocalClientId() || (DummyConnected() && ClientId == GameState(IClient::CONN_DUMMY).LocalClientId()))
 				continue;
 
 			const CNetMsg_Sv_PreInput PreInput = m_aClients[ClientId].m_aPreInputs[Tick % 200];
@@ -4141,7 +4167,7 @@ void CGameClient::ConchainSpecialDummy(IConsole::IResult *pResult, void *pUserDa
 	if(pResult->NumArguments())
 	{
 		auto *pSelf = static_cast<CGameClient *>(pUserData);
-		if(g_Config.m_ClDummy && !pSelf->ClientNetwork()->DummyConnected())
+		if(g_Config.m_ClDummy && !pSelf->DummyConnected())
 			g_Config.m_ClDummy = 0;
 		pSelf->Client()->SetActiveConnection(g_Config.m_ClDummy);
 	}
@@ -4987,7 +5013,7 @@ void CGameClient::ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, I
 
 void CGameClient::DummyResetInput()
 {
-	if(!ClientNetwork()->DummyConnected())
+	if(!DummyConnected())
 		return;
 
 	CGameSessionContext &Session = SessionContext(Client()->NetworkSessionId());

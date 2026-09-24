@@ -132,6 +132,10 @@ void CRaceDemo::OnShutdown()
 
 void CRaceDemo::OnMessage(int MsgType, void *pRawMsg)
 {
+	// Only a client that plays on a server records its races.
+	if(ClientNetwork() == nullptr)
+		return;
+
 	// check for messages from server
 	if(MsgType == NETMSGTYPE_SV_KILLMSG)
 	{
@@ -182,6 +186,9 @@ void CRaceDemo::OnMapLoad()
 
 void CRaceDemo::StopRecord(int Time)
 {
+	if(ClientNetwork() == nullptr)
+		return;
+
 	if(ClientNetwork()->RaceRecord_IsRecording())
 		ClientNetwork()->RaceRecord_Stop();
 

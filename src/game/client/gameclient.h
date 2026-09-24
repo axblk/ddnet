@@ -283,6 +283,11 @@ public:
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
 	class IClientNetwork *ClientNetwork() const { return m_pClientNetwork; }
+	/**
+	 * Whether the dummy is connected, `false` in a program without a
+	 * connection.
+	 */
+	bool DummyConnected() const { return m_pClientNetwork != nullptr && m_pClientNetwork->DummyConnected(); }
 	int ActiveConnection() const { return Client()->ActiveConnection(Client()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
 	CGameSessionContext &SessionContext() const { return SessionContext(Client()->FocusedSessionId()); }
@@ -305,7 +310,8 @@ public:
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
-	class IDemoRecorder *DemoRecorder(int Recorder) const { return ClientNetwork()->DemoRecorder(Recorder); }
+	// Null in the programs that only show a demo, which record nothing.
+	class IDemoRecorder *DemoRecorder(int Recorder) const { return ClientNetwork() != nullptr ? ClientNetwork()->DemoRecorder(Recorder) : nullptr; }
 	class IFavorites *Favorites() const { return m_pFavorites; }
 	class IServerBrowser *ServerBrowser() const { return m_pServerBrowser; }
 	class CRenderTools *RenderTools() { return &m_RenderTools; }

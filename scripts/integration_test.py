@@ -1116,8 +1116,16 @@ def dump_sessions(client):
 	for _ in range(count):
 		line = client.wait_for_log_prefix("client/session: session=", timeout=5).line
 		fields = dict(field.split("=", 1) for field in line.removeprefix("client/session: ").split())
-		result[int(fields["seat"])] = fields
+		# Seats by their number, what is not played on the server by its
+		# negated session id.
+		seat = int(fields["seat"])
+		result[seat if seat >= 0 else -int(fields["session"])] = fields
 	return result
+
+
+def demo_session(sessions):
+	# The demo that is watched, rather than one that is exported.
+	return max((fields for key, fields in sessions.items() if key < 0 and fields["type"] == "1"), key=lambda fields: -int(fields["session"]))
 
 
 def wait_for_sessions(client, condition, description):
@@ -1168,6 +1176,51 @@ def client_dummy_plays_in_its_own_session(test_env):
 @test
 def client_dummy_plays_in_its_own_session_7(test_env):
 	client_dummy_plays_in_its_own_session_impl(test_env, lambda server: f"tw-0.7+udp://127.0.0.1:{server.port}")
+
+
+@test
+def client_demo_plays_beside_the_server(test_env):
+	client = test_env.client(["cl_auto_demo_record 0"])
+	server = test_env.server()
+	wait_for_startup([client, server])
+	server.command("record beside")
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	wait_for_sessions(client, lambda s: int(s[0]["tick"]) > 50 and s[0]["input"] == "1", "the server session did not get the input")
+	server.command("stoprecord")
+
+	# The demo takes the focus, the server keeps running beside it.
+	client.command("play demos/beside.demo")
+	sessions = wait_for_sessions(client, lambda s: demo_session(s)["state"] == "3" and demo_session(s)["input"] == "1" and s[0]["state"] == "3" and s[0]["input"] == "0", "the demo did not start beside the server")
+	server_tick = int(sessions[0]["tick"])
+	wait_for_sessions(client, lambda s: int(s[0]["tick"]) > server_tick, "the server stopped while the demo has the focus")
+
+	client.command("toggle_session_focus")
+	wait_for_sessions(client, lambda s: s[0]["input"] == "1" and demo_session(s)["input"] == "0" and demo_session(s)["state"] == "3", "the focus did not move back to the server")
+	client.command("toggle_session_focus")
+	wait_for_sessions(client, lambda s: s[0]["input"] == "0" and demo_session(s)["input"] == "1", "the focus did not move to the demo again")
+
+	# Closing the demo hands the focus back to the server.
+	client.command("disconnect")
+	wait_for_sessions(client, lambda s: demo_session(s)["state"] == "0" and s[0]["state"] == "3" and s[0]["input"] == "1", "closing the demo did not return to the server")
+
+	# A demo moved aside keeps playing when the server goes, and is brought
+	# back from the menu that is left.
+	client.command("play demos/beside.demo")
+	wait_for_sessions(client, lambda s: demo_session(s)["state"] == "3" and demo_session(s)["input"] == "1", "the demo did not start again")
+	client.command("toggle_session_focus")
+	wait_for_sessions(client, lambda s: s[0]["input"] == "1", "the demo was not moved aside")
+	client.command("disconnect")
+	wait_for_sessions(client, lambda s: s[0]["state"] == "0" and demo_session(s)["state"] == "3" and demo_session(s)["input"] == "0", "the demo aside did not keep playing without the server")
+	client.command("toggle_session_focus")
+	wait_for_sessions(client, lambda s: demo_session(s)["input"] == "1", "the demo aside was not brought back without a server")
+	client.command("disconnect")
+	wait_for_sessions(client, lambda s: demo_session(s)["state"] == "0" and s[0]["state"] == "0", "the demo was not closed")
+
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
 
 
 def vanilla_dm_client_can_connect_impl(test_env, address, expected_sixup):

@@ -871,12 +871,64 @@ void CClient::StopDemoSession(CSessionId SessionId, const char *pReason)
 	Source.m_Connection.ResetSnapshots();
 	Source.ResetMetadata();
 	if(Focused && State() < IClient::STATE_QUITTING)
+		FocusSessionWithSnapshot(m_NetworkSessionId);
+}
+
+void CClient::CloseDemo()
+{
+	if(SessionSource(DemoSessionId()).State() != ESessionState::OFFLINE)
+		StopSession(DemoSessionId(), nullptr);
+}
+
+void CClient::SwitchSessionFocus()
+{
+	// A demo moved aside while there is no server leaves only the menu, and
+	// from there the only other thing to look at is the demo.
+	if(FocusedSessionId() == m_NetworkSessionId && m_pNetworkSessionSource->State() == ESessionState::OFFLINE)
 	{
-		FocusSession(m_NetworkSessionId);
-		const CConnection &NetworkConnection = Connection(g_Config.m_ClDummy);
-		if(m_pNetworkSessionSource->State() == ESessionState::READY && NetworkConnection.m_apSnapshots[SNAP_PREV] && NetworkConnection.m_apSnapshots[SNAP_CURRENT])
-			GameClient()->OnNewSnapshot(SeatSessionId(g_Config.m_ClDummy));
+		FocusDemo(true);
+		return;
 	}
+	if(SessionSource(FocusedSessionId()).State() != ESessionState::READY)
+		return;
+	// The dummy is looked at through its server, and switched to with
+	// cl_dummy.
+	std::vector<CSessionId> vIds;
+	for(const auto &pSource : m_SessionManager.Sessions())
+	{
+		if(pSource->Id() != m_DummySessionId)
+			vIds.push_back(pSource->Id());
+	}
+	const size_t Focused = std::find(vIds.begin(), vIds.end(), FocusedSessionId()) - vIds.begin();
+	for(size_t i = 1; i < vIds.size(); i++)
+	{
+		const CSessionId Target = vIds[(Focused + i) % vIds.size()];
+		if(IsSessionShowable(Target))
+		{
+			FocusSessionWithSnapshot(Target);
+			return;
+		}
+	}
+	FocusDemo(false);
+}
+
+void CClient::FocusDemo(bool Focus)
+{
+	if(!Focus && FocusedSessionId() == DemoSessionId())
+		FocusSessionWithSnapshot(m_NetworkSessionId);
+	else if(Focus && FocusedSessionId() != DemoSessionId() && IsSessionShowable(DemoSessionId()))
+		FocusSessionWithSnapshot(DemoSessionId());
+}
+
+void CClient::FocusSessionWithSnapshot(CSessionId SessionId)
+{
+	FocusSession(SessionId);
+	// On the server that is the seat that gets the input.
+	const CSessionId InputId = InputSessionId();
+	const CSessionSourceBase &Source = SessionSource(InputId);
+	const CConnection &Conn = Source.m_Connection;
+	if(Source.State() == ESessionState::READY && Conn.m_apSnapshots[SNAP_PREV] && Conn.m_apSnapshots[SNAP_CURRENT])
+		GameClient()->OnNewSnapshot(InputId);
 }
 
 void CClient::Disconnect()
@@ -4668,6 +4720,11 @@ void CClient::Con_Play(IConsole::IResult *pResult, void *pUserData)
 	pSelf->HandleDemoPath(pResult->GetString(0));
 }
 
+void CClient::Con_ToggleSessionFocus(IConsole::IResult *pResult, void *pUserData)
+{
+	static_cast<CClient *>(pUserData)->SwitchSessionFocus();
+}
+
 void CClient::Con_DemoPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CClient *pSelf = (CClient *)pUserData;
@@ -5217,6 +5274,7 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("demo_slice_start", "", CFGFLAG_CLIENT, Con_DemoSliceBegin, this, "Mark the beginning of a demo cut");
 	m_pConsole->Register("demo_slice_end", "", CFGFLAG_CLIENT, Con_DemoSliceEnd, this, "Mark the end of a demo cut");
 	m_pConsole->Register("demo_play", "", CFGFLAG_CLIENT, Con_DemoPlay, this, "Play/pause the current demo");
+	m_pConsole->Register("toggle_session_focus", "", CFGFLAG_CLIENT, Con_ToggleSessionFocus, this, "Move the focus to the next session there is something to look at in");
 	m_pConsole->Register("demo_speed", "f[speed]", CFGFLAG_CLIENT, Con_DemoSpeed, this, "Set current demo speed");
 	m_pConsole->Register("demo_seek", "f[seconds]", CFGFLAG_CLIENT, Con_DemoSeek, this, "Seek the current demo to a time in seconds; with demo_speed 0 that is a fixed picture, which a comparison of renderers needs");
 

@@ -609,6 +609,16 @@ public:
 	 * for when something outside the page changed what is stored.
 	 */
 	void InvalidateStats() { m_StatsInitialized = false; }
+	/**
+	 * Where the demo browser shows a demo that plays out of sight, in
+	 * interface units, and empty from then on until the page is drawn again.
+	 */
+	CUIRect TakeDemoPreview()
+	{
+		const CUIRect Preview = m_DemoPreview;
+		m_DemoPreview = {0.0f, 0.0f, 0.0f, 0.0f};
+		return Preview;
+	}
 
 private:
 	// found in menus_demo.cpp
@@ -626,6 +636,9 @@ private:
 	void RenderDemoPlayer(CUIRect MainView);
 	void RenderDemoPlayerSliceSavePopup(CUIRect MainView);
 	bool m_DemoBrowserListInitialized = false;
+	// Where the demo browser shows a demo that plays out of sight, set while
+	// the page is drawn and taken when the next frame is laid out.
+	CUIRect m_DemoPreview = {0.0f, 0.0f, 0.0f, 0.0f};
 	void RenderDemoBrowser(CUIRect MainView);
 	void RenderDemoBrowserList(CUIRect ListView, bool &WasListboxItemActivated);
 	void RenderDemoBrowserDetails(CUIRect DetailsView);

@@ -65,6 +65,7 @@ public:
 	void RenderLoadingDirect(const char *pCaption, const char *pContent, std::optional<float> Progress, bool UpdateAndSwap) override;
 	void FinishLoading() override { m_Menus.FinishLoading(); }
 	void RenderSceneBackground() override { m_Menus.RenderSceneBackground(); }
+	CUIRect TakeDemoPreview() override { return m_Menus.TakeDemoPreview(); }
 #if defined(CONF_VIDEORECORDER)
 	bool RenderVideoProgress(bool Overlay) override
 	{

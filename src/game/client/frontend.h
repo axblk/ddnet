@@ -6,6 +6,8 @@
 #include <engine/client/session.h>
 #include <engine/kernel.h>
 
+#include <game/client/ui_rect.h>
+
 #include <chrono>
 #include <optional>
 #include <vector>
@@ -84,6 +86,11 @@ public:
 	 * gets blurred behind the menus like the game would.
 	 */
 	virtual void RenderSceneBackground() = 0;
+	/**
+	 * Where the menus want a demo that plays out of sight drawn over them, in
+	 * interface units. Empty when they do not; taken once per frame.
+	 */
+	virtual CUIRect TakeDemoPreview() = 0;
 #if defined(CONF_VIDEORECORDER)
 	virtual bool RenderVideoProgress(bool Overlay) = 0;
 #endif

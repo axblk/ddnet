@@ -211,13 +211,18 @@ private:
 		CGameSessionContext *m_pSession = nullptr;
 		CGameState *m_pState = nullptr;
 		CGameView *m_pView = nullptr;
+		// Whether the view takes input.
+		bool m_Active = false;
 		bool m_Audible = false;
+		// Whether the view is a small picture over the others.
+		bool m_Inset = false;
 		CGameTickInfo m_Time;
 		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
 		CVisibleWorldRect m_VisibleWorldRect{vec2(), vec2()};
 	};
 	std::vector<CPreparedRenderEntry> m_vPreparedRenderEntries;
-	const CPreparedRenderEntry &AudibleRenderEntry() const;
+	const CPreparedRenderEntry &InputRenderEntry() const;
+	const CPreparedRenderEntry *FindAudibleRenderEntry() const;
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
@@ -240,6 +245,13 @@ private:
 	CVideoExportSettings m_PreparedVideoSettings;
 	bool m_PreparedIsolatedVideoOutput = false;
 	bool m_PreparedOfflineVideoAudio = false;
+	// The picture in picture is where the demo browser shows a demo that plays
+	// out of sight, and is drawn over the menu there.
+	bool m_PreparedMenuPreview = false;
+	CUIRect m_PreparedInset = {0.0f, 0.0f, 0.0f, 0.0f};
+	// Counts focus changes and closed sessions, so that a frame can tell one
+	// happened while it was drawn.
+	int m_SessionChanges = 0;
 	void UpdateNetworkPlayerInfo();
 	void AddChatLine(CSessionId SessionId, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
@@ -277,6 +289,17 @@ public:
 	 * long as it is the seat that is played.
 	 */
 	bool AudioForState(const CGameState &State, bool &Offline) const;
+	/**
+	 * The first session besides the focused one that there is something to
+	 * look at in, in the order the sessions were opened. It is shown beside
+	 * the focused one or in a corner of it.
+	 */
+	CSessionId OtherShownSessionId() const;
+	/**
+	 * Where the picture in picture is on the screen, in interface units, empty
+	 * when there is none.
+	 */
+	const CUIRect &InsetRect() const { return m_PreparedInset; }
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
 	IKernel *Kernel() { return IInterface::Kernel(); }

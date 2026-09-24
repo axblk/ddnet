@@ -313,6 +313,21 @@ public:
 	virtual void Restart() = 0;
 	virtual void Quit() = 0;
 	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
+	/**
+	 * Stops the demo, whether it has focus or plays beside the server.
+	 */
+	virtual void CloseDemo() = 0;
+	/**
+	 * Moves the focus to the next session there is something to look at in,
+	 * in the order the sessions were opened. With nothing else to look at, a
+	 * demo in focus is moved aside, and a demo aside is brought back.
+	 */
+	virtual void SwitchSessionFocus() = 0;
+	/**
+	 * Puts the demo in front, or moves it aside for the server or the menu
+	 * while it keeps playing.
+	 */
+	virtual void FocusDemo(bool Focus) = 0;
 #if defined(CONF_VIDEORECORDER)
 	/**
 	 * The export settings as the configuration has them, for every caller that

@@ -211,7 +211,26 @@ bool CGameClient::AudioForSession(CSessionId SessionId, bool &Offline) const
 			return false;
 	}
 #endif
-	return Sessions()->FocusedSessionId() == SessionId;
+	// The server and a demo beside it are never heard both at once, but
+	// either of them can be the one that is heard.
+	CSessionId Heard = Sessions()->FocusedSessionId();
+	if(g_Config.m_ClPictureInPictureSound && (g_Config.m_ClPictureInPicture || g_Config.m_ClDummySplitScreen))
+	{
+		const CSessionId Other = OtherShownSessionId();
+		if(Other.IsValid())
+			Heard = Other;
+	}
+	return Heard == SessionId;
+}
+
+CSessionId CGameClient::OtherShownSessionId() const
+{
+	for(const auto &pContext : m_vpSessionContexts)
+	{
+		if(pContext->Id() != Sessions()->FocusedSessionId() && Sessions()->IsSessionShowable(pContext->Id()))
+			return pContext->Id();
+	}
+	return CSessionId();
 }
 
 CGameView &CGameClient::GameView(CSessionId SessionId)
@@ -1019,6 +1038,7 @@ void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContex
 
 void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
+	++m_SessionChanges;
 	CGameSessionContext &Session = SessionContext(SessionId);
 	if(Sessions()->SessionType(SessionId) == ESessionSourceType::NETWORK)
 	{
@@ -1200,6 +1220,7 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 		}
 	}
 	InvalidateSnapshot(SessionId);
+	++m_SessionChanges;
 	InputView();
 	m_SessionPresentations.SetAudible(SessionId);
 	if(!Session.m_MapContext.Map()->IsLoaded())
@@ -1273,11 +1294,17 @@ CVisibleWorldRect CGameClient::VisibleWorldRectFor(const CGameView &View) const
 	return CVisibleWorldRect(ScreenRect.m_TopLeft, ScreenRect.m_BottomRight);
 }
 
-const CGameClient::CPreparedRenderEntry &CGameClient::AudibleRenderEntry() const
+const CGameClient::CPreparedRenderEntry &CGameClient::InputRenderEntry() const
+{
+	const auto It = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Active; });
+	dbg_assert(It != m_vPreparedRenderEntries.end(), "missing render entry that takes input");
+	return *It;
+}
+
+const CGameClient::CPreparedRenderEntry *CGameClient::FindAudibleRenderEntry() const
 {
 	const auto It = std::find_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return Entry.m_Audible; });
-	dbg_assert(It != m_vPreparedRenderEntries.end(), "missing audible render entry");
-	return *It;
+	return It == m_vPreparedRenderEntries.end() ? nullptr : &*It;
 }
 
 CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CComponent *pComponent)
@@ -1362,7 +1389,10 @@ void CGameClient::OnRender()
 	}
 	// A video export that is not the session on the screen has no view that
 	// takes input: its one entry is the whole frame.
-	const CPreparedRenderEntry &PrimaryEntry = m_PreparedIsolatedVideoOutput ? m_vPreparedRenderEntries.front() : AudibleRenderEntry();
+	const CPreparedRenderEntry &PrimaryEntry = m_PreparedIsolatedVideoOutput ? m_vPreparedRenderEntries.front() : InputRenderEntry();
+	// What is heard need not be what takes input: the demo in the corner can
+	// be heard instead of the server.
+	const CPreparedRenderEntry *pAudibleEntry = m_PreparedIsolatedVideoOutput ? &PrimaryEntry : FindAudibleRenderEntry();
 	const bool IsVideoOutput = m_PreparedVideoOutput;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	const bool NoGame = Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK;
@@ -1388,19 +1418,19 @@ void CGameClient::OnRender()
 	{
 		// The export records into the offline mixer on the demo's clock; the
 		// live mixer is left to whatever is on the screen.
-		if(PrimaryEntry.m_Audible && PrimaryEntry.m_Time.m_IsGameActive)
+		if(pAudibleEntry != nullptr && pAudibleEntry->m_Audible && pAudibleEntry->m_Time.m_IsGameActive)
 		{
-			m_Sounds.Update(PrimaryEntry.m_pView->CameraPosition(), PrimaryEntry.m_Time.m_PresentationTime, true);
-			SessionPresentation(PrimaryEntry.m_pSession->Id()).UpdateMapSounds(*PrimaryEntry.m_pState, PrimaryEntry.m_Time, PrimaryEntry.m_pView->CameraPosition(), UsePredictedEnvelopeTime(PrimaryEntry.m_Time, *PrimaryEntry.m_pView), true);
+			m_Sounds.Update(pAudibleEntry->m_pView->CameraPosition(), pAudibleEntry->m_Time.m_PresentationTime, true);
+			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, pAudibleEntry->m_pView->CameraPosition(), UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView), true);
 		}
 	}
 	else
 	{
-		const bool Audible = PrimaryEntry.m_Audible && PrimaryEntry.m_Time.m_IsGameActive;
-		m_Sounds.Update(Audible ? std::optional(PrimaryEntry.m_pView->CameraPosition()) : std::nullopt, time_get());
-		m_SessionPresentations.SetAudible(Audible ? PrimaryEntry.m_pSession->Id() : CSessionId());
+		const bool Audible = pAudibleEntry != nullptr && pAudibleEntry->m_Audible && pAudibleEntry->m_Time.m_IsGameActive;
+		m_Sounds.Update(Audible ? std::optional(pAudibleEntry->m_pView->CameraPosition()) : std::nullopt, time_get());
+		m_SessionPresentations.SetAudible(Audible ? pAudibleEntry->m_pSession->Id() : CSessionId());
 		if(Audible)
-			SessionPresentation(PrimaryEntry.m_pSession->Id()).UpdateMapSounds(*PrimaryEntry.m_pState, PrimaryEntry.m_Time, PrimaryEntry.m_pView->CameraPosition(), UsePredictedEnvelopeTime(PrimaryEntry.m_Time, *PrimaryEntry.m_pView));
+			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, pAudibleEntry->m_pView->CameraPosition(), UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView));
 	}
 
 	std::vector<CRenderContext> vContexts;
@@ -1418,9 +1448,7 @@ void CGameClient::OnRender()
 		vContexts.emplace_back(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView, Entry.m_Time, Entry.m_VisibleWorldRect, IsVideoOutput, m_PreparedVideoSettings);
 	}
 
-	Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
-	for(const CRenderContext &Context : vContexts)
-	{
+	auto RenderWorld = [&](const CRenderContext &Context) {
 		const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
 		CSessionPresentation &Presentation = SessionPresentation(Context.m_Session.Id());
 		if(Context.m_Time.m_IsGameActive)
@@ -1443,6 +1471,18 @@ void CGameClient::OnRender()
 			{&m_DamageInd, &RenderInfo(&m_DamageInd)},
 		}};
 		RenderInView(Context.m_View.Viewport(), [&]() {
+			if(Context.m_View.IsInset())
+			{
+				// The screen was cleared once, before the views under this one
+				// were drawn, so an inset clears its own rectangle.
+				Graphics()->MapScreenToSize(1.0f, 1.0f);
+				Graphics()->TextureClear();
+				Graphics()->QuadsBegin();
+				Graphics()->SetColor(ClearColor);
+				const IGraphics::CQuadItem Quad(0.0f, 0.0f, 1.0f, 1.0f);
+				Graphics()->QuadsDrawTL(&Quad, 1);
+				Graphics()->QuadsEnd();
+			}
 			if(g_Config.m_ClOverlayEntities == 100)
 			{
 				RenderTraced(RenderInfo(&m_Background), [&]() {
@@ -1454,15 +1494,55 @@ void CGameClient::OnRender()
 			}
 			for(const auto &Component : aWorldComponents)
 				RenderTraced(*Component.second, [&]() { Component.first->OnRender(Context); });
+			if(Context.m_View.IsInset())
+			{
+				// A frame, so that the picture does not run into what it covers.
+				const vec2 Size = Graphics()->ViewportSize();
+				const float Border = std::max(1.0f, std::round(Size.y / 150.0f));
+				Graphics()->MapScreenToSize(Size.x, Size.y);
+				Graphics()->TextureClear();
+				Graphics()->QuadsBegin();
+				Graphics()->SetColor(1.0f, 1.0f, 1.0f, 0.5f);
+				const IGraphics::CQuadItem aFrame[] = {
+					{0.0f, 0.0f, Size.x, Border},
+					{0.0f, Size.y - Border, Size.x, Border},
+					{0.0f, Border, Border, Size.y - 2 * Border},
+					{Size.x - Border, Border, Border, Size.y - 2 * Border}};
+				Graphics()->QuadsDrawTL(aFrame, std::size(aFrame));
+				Graphics()->QuadsEnd();
+			}
 		});
+	};
+	// An inset is drawn later, over the views below it.
+	auto RenderInsets = [&]() {
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneInterface);
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
+		for(const CRenderContext &Context : vContexts)
+		{
+			if(Context.m_View.IsInset())
+				RenderWorld(Context);
+		}
+		Graphics()->GpuRenderZoneEnd(m_GpuZoneWorld);
+		Graphics()->GpuRenderZoneBegin(m_GpuZoneInterface);
+	};
+	const int SessionChangesAtStart = m_SessionChanges;
+	Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
+	for(const CRenderContext &Context : vContexts)
+	{
+		if(!Context.m_View.IsInset())
+			RenderWorld(Context);
 	}
 	// The HUD is the first thing drawn over the world.
 	Graphics()->GpuRenderZoneEnd(m_GpuZoneWorld);
 	Graphics()->GpuRenderZoneBegin(m_GpuZoneInterface);
 
+	// An inset shows the world alone, without the HUD and boards that belong
+	// to the view it sits on.
 	auto RenderComponents = [&](std::initializer_list<CComponent *> vpComponents) {
 		for(const CRenderContext &Context : vContexts)
 		{
+			if(Context.m_View.IsInset())
+				continue;
 			RenderInView(Context.m_View.Viewport(), [&]() {
 				for(CComponent *pComponent : vpComponents)
 					RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRender(Context); });
@@ -1487,6 +1567,10 @@ void CGameClient::OnRender()
 	}
 	RenderComponents({&m_Chat});
 	RenderComponents({&m_Broadcast, &m_DebugHud});
+	// Over the HUD and chat of the views below, but still part of the scene
+	// the menu blurs and the boards cover.
+	if(!m_PreparedMenuPreview)
+		RenderInsets();
 	if(Interactive)
 	{
 		RenderInView(InputViewport, [&]() {
@@ -1528,7 +1612,10 @@ void CGameClient::OnRender()
 	// it is aimed through. The menu and the console still cover it: they
 	// take the mouse over and bring their own pointer.
 	for(const CRenderContext &Context : vContexts)
-		RenderInView(Context.m_View.Viewport(), [&]() { m_Hud.RenderCursor(Context); });
+	{
+		if(!Context.m_View.IsInset())
+			RenderInView(Context.m_View.Viewport(), [&]() { m_Hud.RenderCursor(Context); });
+	}
 	auto RenderOverlays = [&](IGameFrontend::ESlot Slot) {
 		if(m_pFrontend == nullptr)
 			return;
@@ -1536,6 +1623,11 @@ void CGameClient::OnRender()
 			RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRenderApplicationOverlay(); });
 	};
 	RenderOverlays(IGameFrontend::ESlot::OVERLAY_BELOW_TOOLTIPS);
+	// The demo browser's picture goes over the menu. A click in the menu may
+	// have moved the focus or closed the demo since the frame was prepared,
+	// and the views no longer show what they were prepared for then.
+	if(m_PreparedMenuPreview && SessionChangesAtStart == m_SessionChanges)
+		RenderInsets();
 	RenderTraced(RenderInfo(&m_Tooltips), [&]() { m_Tooltips.OnRenderApplicationOverlay(); });
 	RenderOverlays(IGameFrontend::ESlot::OVERLAY_ABOVE_TOOLTIPS);
 
@@ -1597,43 +1689,91 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	for(const auto &pContext : m_vpSessionContexts)
 		for(CGameState &State : pContext->GameStates())
 			State.SetShown(false);
-	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State) {
+	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State, bool Inset) {
 		State.SetShown(true);
 		CPreparedRenderEntry Entry;
 		Entry.m_pSession = &Session;
 		Entry.m_pState = &State;
 		Entry.m_pView = &GameView(State.m_SessionId);
-		Entry.m_Audible = Entry.m_pView == &View;
+		Entry.m_Active = Entry.m_pView == &View;
+		bool OfflineAudio;
+		Entry.m_Audible = AudioForState(State, OfflineAudio);
+		Entry.m_Inset = Inset;
 		m_vPreparedRenderEntries.push_back(Entry);
 	};
-	// The split screen shows the dummy beside the player, and a demo beside the
-	// server. Servers and demos keep the order they were opened in, so that
-	// moving the focus between them does not move them around.
+	// The split screen shows the dummy beside the player. An inset only ever
+	// shows the seat that is played.
 	const bool SplitScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
-	for(const auto &pContext : m_vpSessionContexts)
-	{
-		CGameSessionContext &Session = *pContext;
-		if(&Session != &ActiveSession && (!SplitScreen || !Sessions()->IsSessionShowable(Session.Id())))
-			continue;
-		if(SplitScreen && Session.Id() == NetworkSessionId() && DummyConnected())
+	auto AddSession = [&](CGameSessionContext &Session, bool Inset) {
+		if(!Inset && SplitScreen && Session.Id() == NetworkSessionId() && DummyConnected())
 		{
-			AddEntry(Session, Session.SeatState(IClient::CONN_MAIN));
-			AddEntry(Session, Session.SeatState(IClient::CONN_DUMMY));
+			AddEntry(Session, Session.SeatState(IClient::CONN_MAIN), false);
+			AddEntry(Session, Session.SeatState(IClient::CONN_DUMMY), false);
 		}
 		else
 		{
-			AddEntry(Session, Session.GameState(PlayedSessionId(Session.Id())));
+			AddEntry(Session, Session.GameState(PlayedSessionId(Session.Id())), Inset);
 		}
+	};
+
+	// The demo browser shows a demo that plays out of sight in a picture of
+	// its own, drawn over the menu.
+	const CSessionId DemoId = Sessions()->DemoSessionId();
+	const CUIRect MenuPreview = m_pFrontend != nullptr ? m_pFrontend->TakeDemoPreview() : CUIRect{0.0f, 0.0f, 0.0f, 0.0f};
+	m_PreparedMenuPreview = !VideoOutput && MenuActive() && MenuPreview.w > 0.0f && ActiveSession.Id() != DemoId && Sessions()->IsSessionShowable(DemoId);
+	// The next session with something to show is shown too: beside the
+	// focused one on the split screen, or in a corner of it. Sessions keep the
+	// order they were opened in, so moving the focus between them does not
+	// move them around.
+	const bool PictureInPicture = (g_Config.m_ClPictureInPicture != 0 || m_PreparedMenuPreview) && !VideoOutput;
+	CGameSessionContext *pOther = m_PreparedMenuPreview ? &SessionContext(DemoId) : nullptr;
+	if(pOther == nullptr && (SplitScreen || PictureInPicture))
+		pOther = FindSessionContext(OtherShownSessionId());
+	const bool OtherBeside = pOther != nullptr && !PictureInPicture;
+	for(const auto &pContext : m_vpSessionContexts)
+	{
+		if(pContext.get() == &ActiveSession || (OtherBeside && pContext.get() == pOther))
+			AddSession(*pContext, false);
 	}
+	if(pOther != nullptr && PictureInPicture)
+		AddSession(*pOther, true);
 
 	const int ScreenWidth = Graphics()->ScreenWidth();
 	const int ScreenHeight = Graphics()->ScreenHeight();
-	const int NumColumns = m_vPreparedRenderEntries.size();
-	for(int Column = 0; Column < NumColumns; ++Column)
+	const int NumColumns = std::count_if(m_vPreparedRenderEntries.begin(), m_vPreparedRenderEntries.end(), [](const CPreparedRenderEntry &Entry) { return !Entry.m_Inset; });
+	const CUIRect &UiScreen = *Ui()->Screen();
+	m_PreparedInset = {0.0f, 0.0f, 0.0f, 0.0f};
+	int Column = 0;
+	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
-		const int Left = ScreenWidth * Column / NumColumns;
-		const int Right = ScreenWidth * (Column + 1) / NumColumns;
-		m_vPreparedRenderEntries[Column].m_pView->SetViewport(NumColumns > 1 ? CViewport{Left, 0, Right - Left, ScreenHeight} : CViewport{});
+		if(Entry.m_Inset)
+		{
+			CViewport Inset;
+			if(m_PreparedMenuPreview)
+			{
+				Inset = {(int)((MenuPreview.x - UiScreen.x) * ScreenWidth / UiScreen.w), (int)((MenuPreview.y - UiScreen.y) * ScreenHeight / UiScreen.h),
+					(int)(MenuPreview.w * ScreenWidth / UiScreen.w), (int)(MenuPreview.h * ScreenHeight / UiScreen.h)};
+			}
+			else
+			{
+				// In the shape of the screen, in the corner furthest from the
+				// chat, the HUD and the kill messages.
+				const int Width = ScreenWidth * g_Config.m_ClPictureInPictureSize / 100;
+				const int Height = Width * ScreenHeight / std::max(ScreenWidth, 1);
+				const int Margin = ScreenHeight / 50;
+				Inset = {ScreenWidth - Width - Margin, ScreenHeight - Height - Margin, Width, Height};
+			}
+			Entry.m_pView->SetViewport(Inset, true);
+			m_PreparedInset = {UiScreen.x + Inset.m_X * UiScreen.w / ScreenWidth, UiScreen.y + Inset.m_Y * UiScreen.h / ScreenHeight,
+				Inset.m_Width * UiScreen.w / ScreenWidth, Inset.m_Height * UiScreen.h / ScreenHeight};
+		}
+		else
+		{
+			const int Left = ScreenWidth * Column / NumColumns;
+			const int Right = ScreenWidth * (Column + 1) / NumColumns;
+			Entry.m_pView->SetViewport(NumColumns > 1 ? CViewport{Left, 0, Right - Left, ScreenHeight} : CViewport{});
+			++Column;
+		}
 	}
 
 	// A recording shows the focused session on the clock of its video.
@@ -1646,7 +1786,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 		AimView(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView);
 
-	const CGameTickInfo &ActiveTime = AudibleRenderEntry().m_Time;
+	const CGameTickInfo &ActiveTime = InputRenderEntry().m_Time;
 	m_ControllerLocalTime = VideoOutput ? Sessions()->DemoPlaybackLocalTime(ActiveSession.Id()) : Client()->LocalTime();
 	const CRenderContext ControllerContext(ActiveSession, ActiveState, View, ActiveTime, CVisibleWorldRect(vec2(), vec2()));
 	m_Spectator.UpdateController(View, ControllerContext, m_ControllerLocalTime);
@@ -1673,10 +1813,10 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	// Only the view that takes input may move the mouse or run the controls.
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 	{
-		m_Camera.BindTarget(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView, Entry.m_Audible, m_ControllerLocalTime);
-		UpdatePositions(*Entry.m_pState, *Entry.m_pView, Entry.m_Time, m_ControllerLocalTime, Entry.m_Audible);
+		m_Camera.BindTarget(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView, Entry.m_Active, m_ControllerLocalTime);
+		UpdatePositions(*Entry.m_pState, *Entry.m_pView, Entry.m_Time, m_ControllerLocalTime, Entry.m_Active);
 		m_Camera.UpdateCamera();
-		if(Entry.m_Audible)
+		if(Entry.m_Active)
 			m_Controls.Update();
 		m_Camera.UpdatePosition();
 	}
@@ -1757,7 +1897,7 @@ void CGameClient::OnRenderFinalize()
 {
 	if(!m_PreparedIsolatedVideoOutput && !m_vPreparedRenderEntries.empty())
 	{
-		CGameView &View = *AudibleRenderEntry().m_pView;
+		CGameView &View = *InputRenderEntry().m_pView;
 		m_Spectator.CommitController(View, m_ControllerLocalTime);
 	}
 	m_vPreparedRenderEntries.clear();

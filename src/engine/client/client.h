@@ -341,6 +341,14 @@ public:
 	void StopSession(CSessionId SessionId, const char *pReason);
 	void DisconnectWithReason(const char *pReason) { StopSession(m_NetworkSessionId, pReason); }
 	void Disconnect() override;
+	void CloseDemo() override;
+	void SwitchSessionFocus() override;
+	void FocusDemo(bool Focus) override;
+	/**
+	 * Focuses a session and hands its latest snapshot to the game again,
+	 * which only builds what depends on focus when a snapshot arrives.
+	 */
+	void FocusSessionWithSnapshot(CSessionId SessionId);
 
 	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	CSessionId DummySessionId() const override { return m_DummySessionId; }
@@ -421,6 +429,7 @@ public:
 	static void Con_Quit(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Restart(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoPlay(IConsole::IResult *pResult, void *pUserData);
+	static void Con_ToggleSessionFocus(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoSpeed(IConsole::IResult *pResult, void *pUserData);
 	static void Con_DemoSeek(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Minimize(IConsole::IResult *pResult, void *pUserData);

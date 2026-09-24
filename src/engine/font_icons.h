@@ -90,6 +90,8 @@ namespace FontIcon
 	inline const char *const UNDO = "\uF2EA";
 	inline const char *const USER = "\uF007";
 	inline const char *const VIDEO = "\uF03D";
+	inline const char *const WINDOW_MAXIMIZE = "\uF2D0";
+	inline const char *const WINDOW_MINIMIZE = "\uF2D1";
 	inline const char *const XMARK = "\uF00D";
 }
 

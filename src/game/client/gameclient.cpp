@@ -444,7 +444,12 @@ void CGameClient::OnInit()
 		}
 		OnInput(Event);
 	});
-	m_UI.SetRenderPopupMenuBackdropCallback([this](CUIRect Rect) { m_Menus.RenderBackdropRegion(Rect); });
+	// A popup over a menu sits on the menu, not on the scene: the backdrop there
+	// would cut the scene into the menu instead of blurring what is behind it.
+	m_UI.SetRenderPopupMenuBackdropCallback([this](const CUIRect &Rect, int Corners, float Rounding) {
+		if(!m_Menus.IsActive())
+			m_Menus.RenderBackdropRegion(Rect, Corners, Rounding);
+	});
 	m_RenderTools.Init(Graphics(), TextRender());
 	m_RenderMap.Init(Graphics(), TextRender());
 

@@ -5,7 +5,19 @@
 #include <base/dbg.h>
 #include <base/math.h>
 
+#include <engine/shared/config.h>
+
 #include <algorithm>
+
+CViewRenderOptions CGameView::RenderOptions() const
+{
+	if(m_RenderOptions.has_value())
+		return m_RenderOptions.value();
+	CViewRenderOptions Options;
+	Options.m_ShowDirection = g_Config.m_ClShowDirection;
+	Options.m_HighDetail = g_Config.m_GfxHighDetail != 0;
+	return Options;
+}
 
 void CGameView::CEmoticonSelectorState::UpdateSelection(int NumEmoticons, int NumEyeEmotes, bool AllowEyeWheel)
 {

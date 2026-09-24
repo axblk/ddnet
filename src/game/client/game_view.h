@@ -8,9 +8,11 @@
 
 #include <engine/client/session.h>
 #include <engine/shared/video.h>
+#include <engine/view_control.h>
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 class CGameSessionContext;
@@ -223,6 +225,7 @@ private:
 	bool m_Spectating = false;
 	int m_SpectatorId = -1;
 	int m_SpectatorMode = SPEC_FREEVIEW;
+	std::optional<CViewRenderOptions> m_RenderOptions;
 
 public:
 	CSessionId SessionId() const { return m_SessionId; }
@@ -283,6 +286,12 @@ public:
 		m_SpectatorId = Spectating ? SpectatorId : -1;
 		m_SpectatorMode = Spectating ? SpectatorId : SPEC_FREEVIEW;
 	}
+	/**
+	 * How the view draws: what a program set for it with `SetRenderOptions`,
+	 * or else what the configuration says. Kept when the view is retargeted.
+	 */
+	CViewRenderOptions RenderOptions() const;
+	void SetRenderOptions(const CViewRenderOptions &Options) { m_RenderOptions = Options; }
 };
 
 enum class EPresentationPlayback

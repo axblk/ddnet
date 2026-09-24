@@ -250,6 +250,24 @@ CGameView &CGameClient::GameView(CSessionId SessionId)
 	return View;
 }
 
+CGameView &CGameClient::ViewOf(CSessionId SessionId)
+{
+#if defined(CONF_VIDEORECORDER)
+	if(SessionId == Client()->VideoSessionId() && (SessionId != Sessions()->FocusedSessionId() || Client()->VideoUsesOfflineAudio()))
+		return m_VideoView;
+#endif
+	return GameView(SessionId);
+}
+
+float CGameClient::ViewLocalTime(CSessionId SessionId) const
+{
+#if defined(CONF_VIDEORECORDER)
+	if(SessionId == Client()->VideoSessionId() && (SessionId != Sessions()->FocusedSessionId() || Client()->VideoUsesOfflineAudio()))
+		return Sessions()->DemoPlaybackLocalTime(SessionId);
+#endif
+	return Client()->LocalTime();
+}
+
 void CGameClient::TargetView(CGameView &View, CSessionId SessionId) const
 {
 	const CGameSessionContext *pShown = FindSessionContext(View.SessionId());
@@ -1081,6 +1099,7 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	Session.m_LastLiveStatsRequest = 0;
 	for(CInputRoute &Route : Session.m_aInputRoutes)
 		Route.Reset();
+	Session.m_DemoSpecId = SPEC_FOLLOW;
 	m_SessionPresentations.Unload(SessionId);
 #if defined(CONF_VIDEORECORDER)
 	if(SessionId == Client()->VideoSessionId() && Client()->VideoUsesOfflineAudio())
@@ -1109,7 +1128,6 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	m_NewTick = false;
 	m_NewPredictedTick = false;
 
-	m_DemoSpecId = SPEC_FOLLOW;
 	m_LocalCharacterPos = vec2(0.0f, 0.0f);
 
 	m_PredictedPrevChar.Reset();
@@ -1261,9 +1279,9 @@ void CGameClient::AimView(const CGameSessionContext &Session, const CGameState &
 	{
 		// A demo is watched the way whoever opened it chose to watch it. A demo
 		// being rendered to video in the background is watched the way it was
-		// recorded, which is what carries the zoom the server sent into the
-		// exported frames.
-		View.SetSpectatorMode(Session.Id() == Sessions()->DemoSessionId() ? m_DemoSpecId : SPEC_FOLLOW);
+		// recorded unless the export was told whom to follow, which is what
+		// carries the zoom the server sent into the exported frames.
+		View.SetSpectatorMode(Session.m_DemoSpecId);
 	}
 }
 
@@ -1444,7 +1462,7 @@ void CGameClient::OnRender()
 		if(pAudibleEntry != nullptr && pAudibleEntry->m_Audible && pAudibleEntry->m_Time.m_IsGameActive)
 		{
 			m_Sounds.Update(pAudibleEntry->m_pView->CameraPosition(), pAudibleEntry->m_Time.m_PresentationTime, true);
-			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, pAudibleEntry->m_pView->CameraPosition(), UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView), true);
+			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, *pAudibleEntry->m_pView, UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView), true);
 		}
 	}
 	else
@@ -1453,7 +1471,7 @@ void CGameClient::OnRender()
 		m_Sounds.Update(Audible ? std::optional(pAudibleEntry->m_pView->CameraPosition()) : std::nullopt, time_get());
 		m_SessionPresentations.SetAudible(Audible ? pAudibleEntry->m_pSession->Id() : CSessionId());
 		if(Audible)
-			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, pAudibleEntry->m_pView->CameraPosition(), UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView));
+			SessionPresentation(pAudibleEntry->m_pSession->Id()).UpdateMapSounds(*pAudibleEntry->m_pState, pAudibleEntry->m_Time, *pAudibleEntry->m_pView, UsePredictedEnvelopeTime(pAudibleEntry->m_Time, *pAudibleEntry->m_pView));
 	}
 
 	std::vector<CRenderContext> vContexts;
@@ -3216,19 +3234,23 @@ void CGameClient::BuildSnapState(CSessionId SessionId)
 			ActiveState.Input().m_aAmmoCount.fill(0);
 		}
 	}
-	if(SessionId == Sessions()->DemoSessionId())
+	if(Sessions()->SessionType(SessionId) == ESessionSourceType::DEMO)
 	{
-		if(Snap.m_LocalClientId == -1 && m_DemoSpecId == SPEC_FOLLOW)
+		int &DemoSpecId = Session.m_DemoSpecId;
+		// A server demo has nobody to follow, so the demo being watched goes
+		// to the free view once. Snapshots without players, as while seeking,
+		// say nothing about that.
+		if(SessionId == Sessions()->DemoSessionId() && Snap.m_NumPlayers > 0 && Snap.m_LocalClientId == -1 && DemoSpecId == SPEC_FOLLOW)
 		{
 			// TODO: can this be done in the translation layer?
 			if(!Sessions()->IsSixup(SessionId))
-				m_DemoSpecId = SPEC_FREEVIEW;
+				DemoSpecId = SPEC_FREEVIEW;
 		}
-		if(m_DemoSpecId != SPEC_FOLLOW)
+		if(DemoSpecId != SPEC_FOLLOW)
 		{
 			Snap.m_SpecInfo.m_Active = true;
-			if(m_DemoSpecId > SPEC_FREEVIEW && Snap.m_aCharacters[m_DemoSpecId].m_Active)
-				Snap.m_SpecInfo.m_SpectatorId = m_DemoSpecId;
+			if(DemoSpecId > SPEC_FREEVIEW && Snap.m_aCharacters[DemoSpecId].m_Active)
+				Snap.m_SpecInfo.m_SpectatorId = DemoSpecId;
 			else
 				Snap.m_SpecInfo.m_SpectatorId = SPEC_FREEVIEW;
 		}

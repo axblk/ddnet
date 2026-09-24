@@ -432,11 +432,11 @@ void CSessionPresentation::PrepareRender(const CRenderContext &Context, bool Use
 	m_pMap->m_LayersBackgroundForce.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
 }
 
-void CSessionPresentation::UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline)
+void CSessionPresentation::UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, const CGameView &View, bool UsePredictedTime, bool Offline)
 {
 	dbg_assert(IsLoaded(), "session presentation must be loaded before updating map sounds");
 	m_pMap->m_LayersBackground.EnvEvaluator().SetOnlineTime(State, Time, UsePredictedTime);
-	m_MapSounds.Update(State, Time, ListenerPosition, Time.m_IsDemoPlaybackPaused, m_pMap->m_LayersBackground.EnvEvaluator(), Offline);
+	m_MapSounds.Update(State, Time, View.CameraPosition(), Time.m_IsDemoPlaybackPaused, View.RenderOptions().m_HighDetail, m_pMap->m_LayersBackground.EnvEvaluator(), Offline);
 }
 
 CSessionPresentationManager::CSessionPresentationManager(CMapImages &SharedMapImages) :

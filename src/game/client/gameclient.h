@@ -10,6 +10,7 @@
 #include "render.h"
 #include "session_context.h"
 #include "session_presentation.h"
+#include "view_control.h"
 
 #include <base/color.h>
 #include <base/types.h>
@@ -386,6 +387,16 @@ public:
 	// The view of the session that gets the input.
 	CGameView &InputView() { return GameView(InputSessionId()); }
 	/**
+	 * The view a session is drawn through, which for a video export that is
+	 * not the session on the screen is a view of its own.
+	 */
+	CGameView &ViewOf(CSessionId SessionId);
+	/**
+	 * The clock the camera of `ViewOf` eases on: the demo's for an export in
+	 * a view of its own, the client's otherwise.
+	 */
+	float ViewLocalTime(CSessionId SessionId) const;
+	/**
 	 * The session of a server or demo that is played rather than only
 	 * watched: the seat cl_dummy selects on the server, the demo itself.
 	 */
@@ -448,8 +459,6 @@ public:
 	bool m_SuppressEvents;
 	bool m_NewTick;
 	bool m_NewPredictedTick;
-
-	int m_DemoSpecId;
 
 	vec2 m_LocalCharacterPos;
 
@@ -577,6 +586,7 @@ public:
 	void HandleLanguageChanged();
 
 	void ForceUpdateConsoleRemoteCompletionSuggestions() override;
+	IViewControl *ViewControl() override { return &m_ViewControl; }
 
 	void RefreshSkin(const std::shared_ptr<CManagedTeeRenderInfo> &pManagedTeeRenderInfo);
 	void RefreshSkins(int SkinDescriptorFlags);
@@ -853,6 +863,8 @@ public:
 	bool StartupAssetsPending() const { return m_StartupAssetsPending; }
 
 private:
+	CGameViewControl m_ViewControl{*this};
+
 	// The prediction's own part, see game_prediction.cpp.
 	friend class CGamePrediction;
 	void UpdatePrediction();

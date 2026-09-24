@@ -38,7 +38,14 @@ public:
 	CEnvelopeState &EnvEvaluator() { return m_EnvEvaluator; }
 
 protected:
-	void Render(vec2 Center, float Zoom);
+	/**
+	 * Draws the map's layers of this component's type.
+	 *
+	 * @param Center Center of the view, in world coordinates.
+	 * @param Zoom Zoom of the view.
+	 * @param HighDetail Whether the layers marked as detail are drawn.
+	 */
+	void Render(vec2 Center, float Zoom, bool HighDetail);
 
 private:
 	CRenderLayerParams m_Params;

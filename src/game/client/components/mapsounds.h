@@ -62,11 +62,12 @@ public:
 	 * @param Time The ticks of the moment shown.
 	 * @param ListenerPosition Where the sources are heard from.
 	 * @param DemoPlayerPaused Whether a paused demo keeps new sources from starting.
+	 * @param HighDetail Whether the sources of detail layers play.
 	 * @param EnvEvaluator What evaluates the envelopes the sources move and fade by.
 	 * @param Offline Whether the sources play into the offline mix of a video
 	 * export, which is always audible while it runs.
 	 */
-	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline = false);
+	void Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, bool HighDetail, const CEnvelopeState &EnvEvaluator, bool Offline = false);
 };
 
 #endif // GAME_CLIENT_COMPONENTS_MAPSOUNDS_H

@@ -2443,6 +2443,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   textrender.h
   updater.h
   uuid.h
+  view_control.h
   warning.h
   # tidy-alphabetical-end
 )
@@ -2992,6 +2993,8 @@ if(CLIENT)
     ui_rect.h
     ui_scrollregion.cpp
     ui_scrollregion.h
+    view_control.cpp
+    view_control.h
     # tidy-alphabetical-end
   )
   # The front end of the client on top of the game (see

@@ -34,6 +34,7 @@ class CSnapshot;
 class CSnapshotBuffer;
 class CRenderTrace;
 class IMap;
+class IViewControl;
 struct SWarning;
 
 enum
@@ -484,6 +485,12 @@ public:
 	virtual void InitializeLanguage() = 0;
 
 	virtual void ForceUpdateConsoleRemoteCompletionSuggestions() = 0;
+
+	/**
+	 * What a program that shows a demo may steer of the views of its
+	 * sessions, see `IViewControl`.
+	 */
+	virtual IViewControl *ViewControl() = 0;
 };
 
 extern IGameClient *CreateGameClient();

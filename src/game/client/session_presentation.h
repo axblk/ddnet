@@ -16,6 +16,7 @@
 
 class CGameSessionContext;
 class CGameState;
+class CGameView;
 class CMapData;
 class CPresentationContext;
 
@@ -107,7 +108,11 @@ public:
 	void Unload();
 	bool UpdateMapImages() { return m_pMap->m_Images.Update(); }
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
-	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline = false);
+	/**
+	 * Plays the map's sounds as heard from a view, and leaves out those of
+	 * detail layers where the view draws no detail.
+	 */
+	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, const CGameView &View, bool UsePredictedTime, bool Offline = false);
 	void UpdateClients(const CPresentationContext &Context);
 	std::shared_ptr<CManagedTeeRenderInfo> CreateClientTee(const CGameState &State, int ClientId) const;
 	const CClientPresentation *Client(int Seat, int ClientId) const;

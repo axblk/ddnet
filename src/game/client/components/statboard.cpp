@@ -497,7 +497,7 @@ void CStatboard::RenderLiveMatchPanel(const CStoredMatch &Live, float X, float Y
 void CStatboard::AutoStatScreenshot()
 {
 	if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
-		Client()->AutoStatScreenshot_Start();
+		ClientNetwork()->AutoStatScreenshot_Start();
 }
 
 void CStatboard::AutoStatCSV()
@@ -517,7 +517,7 @@ void CStatboard::AutoStatCSV()
 			io_close(File);
 		}
 
-		Client()->AutoCSV_Start();
+		ClientNetwork()->AutoCSV_Start();
 	}
 }
 

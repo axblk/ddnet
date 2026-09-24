@@ -1347,7 +1347,7 @@ void CChat::SendChat(int Team, const char *pLine, int Conn)
 		Msg7.m_Mode = Team == 1 ? protocol7::CHAT_TEAM : protocol7::CHAT_ALL;
 		Msg7.m_Target = -1;
 		Msg7.m_pMessage = pLine;
-		Client()->SendPackMsg(Conn, &Msg7, MSGFLAG_VITAL, true);
+		ClientNetwork()->SendPackMsg(Conn, &Msg7, MSGFLAG_VITAL, true);
 		return;
 	}
 
@@ -1355,7 +1355,7 @@ void CChat::SendChat(int Team, const char *pLine, int Conn)
 	CNetMsg_Cl_Say Msg;
 	Msg.m_Team = Team;
 	Msg.m_pMessage = pLine;
-	Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
 }
 
 void CChat::SendChatQueued(const char *pLine)

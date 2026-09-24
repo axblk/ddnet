@@ -563,7 +563,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 
 #if defined(CONF_AUTOUPDATE)
 		int State = Updater()->GetCurrentState();
-		bool NeedUpdate = str_comp(Client()->LatestVersion(), "0");
+		bool NeedUpdate = str_comp(ClientNetwork()->LatestVersion(), "0");
 		if(State == IUpdater::CLEAN && NeedUpdate)
 		{
 			GotNewsOrUpdate = true;
@@ -1231,7 +1231,7 @@ void CMenus::Render()
 		const char *pAddr = ServerBrowser()->GetTutorialServer();
 		if(pAddr)
 		{
-			Client()->Connect(pAddr);
+			ClientNetwork()->Connect(pAddr);
 		}
 		else
 		{
@@ -1426,9 +1426,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		pTitle = Localize("Disconnected");
 		pExtraText = Client()->ErrorString();
 		pButtonText = Localize("Ok");
-		if(Client()->ReconnectTime() > 0)
+		if(ClientNetwork()->ReconnectTime() > 0)
 		{
-			str_format(aBuf, sizeof(aBuf), Localize("Reconnect in %d sec"), (int)((Client()->ReconnectTime() - time_get()) / time_freq()) + 1);
+			str_format(aBuf, sizeof(aBuf), Localize("Reconnect in %d sec"), (int)((ClientNetwork()->ReconnectTime() - time_get()) / time_freq()) + 1);
 			pTitle = Client()->ErrorString();
 			pExtraText = aBuf;
 			pButtonText = Localize("Abort");
@@ -1487,7 +1487,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	else if(m_Popup == POPUP_POINTS)
 	{
 		pTitle = Localize("Existing Player");
-		if(Client()->InfoState() == IClient::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
 		{
 			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), Client()->Points());
 			pExtraText = aBuf;
@@ -1655,13 +1655,13 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		}
 
 		char aAddr[NETADDR_MAXSTRSIZE];
-		net_addr_str(&Client()->ServerAddress(), aAddr, sizeof(aAddr), true);
+		net_addr_str(&ClientNetwork()->ServerAddress(), aAddr, sizeof(aAddr), true);
 
 		static CButtonContainer s_ButtonTryAgain;
 		if(DoButton_Menu(&s_ButtonTryAgain, Localize("Try again"), 0, &TryAgain) ||
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			Client()->Connect(aAddr, g_Config.m_Password);
+			ClientNetwork()->Connect(aAddr, g_Config.m_Password);
 		}
 
 		Box.VMargin(60.0f, &Box);
@@ -1683,7 +1683,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		Ui()->DoLabel(&Label, Localize("Address"), 18.0f, TEXTALIGN_ML);
 		Ui()->DoLabel(&Address, aAddr, 18.0f, TEXTALIGN_ML);
 
-		const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(Client()->ServerAddress());
+		const CServerBrowser::CServerEntry *pEntry = ServerBrowser()->Find(ClientNetwork()->ServerAddress());
 		if(pEntry != nullptr && pEntry->m_GotInfo)
 		{
 			const CCommunity *pCommunity = ServerBrowser()->Community(pEntry->m_Info.m_aCommunityId);
@@ -2247,7 +2247,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_JoinTutorialButton;
 		if(DoButton_Menu(&s_JoinTutorialButton, Localize("Join Tutorial Server"), 0, &Join) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			Client()->RequestDDNetInfo();
+			ClientNetwork()->RequestDDNetInfo();
 			m_Popup = g_Config.m_BrIndicateFinished ? POPUP_POINTS : POPUP_NONE;
 			JoinTutorial();
 		}
@@ -2255,7 +2255,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_SkipTutorialButton;
 		if(DoButton_Menu(&s_SkipTutorialButton, Localize("Skip Tutorial"), 0, &Skip) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE))
 		{
-			Client()->RequestDDNetInfo();
+			ClientNetwork()->RequestDDNetInfo();
 			m_JoinTutorial.m_Queued = false;
 			m_Popup = g_Config.m_BrIndicateFinished ? POPUP_POINTS : POPUP_NONE;
 		}
@@ -2297,12 +2297,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		if(m_JoinTutorial.m_Status == CJoinTutorial::EStatus::REFRESHING)
 		{
 			if(ServerBrowser()->IsGettingServerlist() ||
-				Client()->InfoState() == IClient::EInfoState::LOADING)
+				ClientNetwork()->InfoState() == IClientNetwork::EInfoState::LOADING)
 			{
 				// Still refreshing
 			}
 			else if(ServerBrowser()->IsServerlistError() ||
-				Client()->InfoState() == IClient::EInfoState::ERROR)
+				ClientNetwork()->InfoState() == IClientNetwork::EInfoState::ERROR)
 			{
 				m_JoinTutorial.m_Status = CJoinTutorial::EStatus::SERVER_LIST_ERROR;
 			}
@@ -2311,7 +2311,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 				const char *pAddr = ServerBrowser()->GetTutorialServer();
 				if(pAddr)
 				{
-					Client()->Connect(pAddr);
+					ClientNetwork()->Connect(pAddr);
 				}
 				else
 				{
@@ -2477,7 +2477,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		Box.HSplitBottom(24.0f, &Box, &Part);
 		Part.VMargin(120.0f, &Part);
 
-		if(Client()->InfoState() == IClient::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
 		{
 			CUIRect Yes, No;
 			Part.VSplitMid(&No, &Yes, 40.0f);
@@ -2501,11 +2501,11 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			if(DoButton_Menu(&s_Button, Localize("Cancel"), 0, &Part) ||
 				Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) ||
 				Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER) ||
-				Client()->InfoState() == IClient::EInfoState::SUCCESS)
+				ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS)
 			{
 				m_Popup = POPUP_NONE;
 			}
-			if(Client()->InfoState() == IClient::EInfoState::ERROR)
+			if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::ERROR)
 			{
 				PopupMessage(Localize("Error checking player name"), Localize("Could not check for existing player with your name. Check your internet connection."), Localize("Ok"));
 			}
@@ -2581,8 +2581,8 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_Button;
 		if(DoButton_Menu(&s_Button, pButtonText, 0, &Part) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			if(m_Popup == POPUP_DISCONNECTED && Client()->ReconnectTime() > 0)
-				Client()->CancelReconnect();
+			if(m_Popup == POPUP_DISCONNECTED && ClientNetwork()->ReconnectTime() > 0)
+				ClientNetwork()->CancelReconnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2608,25 +2608,25 @@ void CMenus::RenderPopupConnecting(CUIRect Screen)
 	SLabelProperties Props;
 	Props.m_MaxWidth = Label.w;
 	Props.m_EllipsisAtEnd = true;
-	Ui()->DoLabel(&Label, Client()->ConnectAddressString(), FontSize, TEXTALIGN_MC, Props);
+	Ui()->DoLabel(&Label, ClientNetwork()->ConnectAddressString(), FontSize, TEXTALIGN_MC, Props);
 
 	if(time_get() - Client()->StateStartTime() > time_freq())
 	{
 		const char *pConnectivityLabel = "";
-		switch(Client()->UdpConnectivity(Client()->ConnectNetTypes()))
+		switch(ClientNetwork()->UdpConnectivity(ClientNetwork()->ConnectNetTypes()))
 		{
-		case IClient::CONNECTIVITY_UNKNOWN:
+		case IClientNetwork::CONNECTIVITY_UNKNOWN:
 			break;
-		case IClient::CONNECTIVITY_CHECKING:
+		case IClientNetwork::CONNECTIVITY_CHECKING:
 			pConnectivityLabel = Localize("Trying to determine UDP connectivity…");
 			break;
-		case IClient::CONNECTIVITY_UNREACHABLE:
+		case IClientNetwork::CONNECTIVITY_UNREACHABLE:
 			pConnectivityLabel = Localize("UDP seems to be filtered.");
 			break;
-		case IClient::CONNECTIVITY_DIFFERING_UDP_TCP_IP_ADDRESSES:
+		case IClientNetwork::CONNECTIVITY_DIFFERING_UDP_TCP_IP_ADDRESSES:
 			pConnectivityLabel = Localize("UDP and TCP IP addresses seem to be different. Try disabling VPN, proxy or network accelerators.");
 			break;
-		case IClient::CONNECTIVITY_REACHABLE:
+		case IClientNetwork::CONNECTIVITY_REACHABLE:
 			pConnectivityLabel = Localize("No answer from server yet.");
 			break;
 		}
@@ -2650,7 +2650,7 @@ void CMenus::RenderPopupConnecting(CUIRect Screen)
 	static CButtonContainer s_Button;
 	if(DoButton_Menu(&s_Button, Localize("Abort"), 0, &Button) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE))
 	{
-		Client()->Disconnect();
+		ClientNetwork()->Disconnect();
 		Ui()->SetActiveItem(nullptr);
 		RefreshBrowserTab(true);
 	}
@@ -2661,33 +2661,33 @@ void CMenus::RenderPopupLoading(CUIRect Screen)
 	char aTitle[256];
 	char aLabel1[128];
 	char aLabel2[128];
-	if(Client()->MapDownloadTotalsize() > 0)
+	if(ClientNetwork()->MapDownloadTotalsize() > 0)
 	{
 		const int64_t Now = time_get();
 		if(Now - m_DownloadLastCheckTime >= time_freq())
 		{
-			if(m_DownloadLastCheckSize > Client()->MapDownloadAmount())
+			if(m_DownloadLastCheckSize > ClientNetwork()->MapDownloadAmount())
 			{
 				// map downloaded restarted
 				m_DownloadLastCheckSize = 0;
 			}
 
 			// update download speed
-			const float Diff = (Client()->MapDownloadAmount() - m_DownloadLastCheckSize) / ((int)((Now - m_DownloadLastCheckTime) / time_freq()));
+			const float Diff = (ClientNetwork()->MapDownloadAmount() - m_DownloadLastCheckSize) / ((int)((Now - m_DownloadLastCheckTime) / time_freq()));
 			const float StartDiff = m_DownloadLastCheckSize - 0.0f;
 			if(StartDiff + Diff > 0.0f)
 				m_DownloadSpeed = (Diff / (StartDiff + Diff)) * (Diff / 1.0f) + (StartDiff / (Diff + StartDiff)) * m_DownloadSpeed;
 			else
 				m_DownloadSpeed = 0.0f;
 			m_DownloadLastCheckTime = Now;
-			m_DownloadLastCheckSize = Client()->MapDownloadAmount();
+			m_DownloadLastCheckSize = ClientNetwork()->MapDownloadAmount();
 		}
 
-		str_format(aTitle, sizeof(aTitle), "%s: %s", Localize("Downloading map"), Client()->MapDownloadName());
+		str_format(aTitle, sizeof(aTitle), "%s: %s", Localize("Downloading map"), ClientNetwork()->MapDownloadName());
 
-		str_format(aLabel1, sizeof(aLabel1), Localize("%d/%d KiB (%.1f KiB/s)"), Client()->MapDownloadAmount() / 1024, Client()->MapDownloadTotalsize() / 1024, m_DownloadSpeed / 1024.0f);
+		str_format(aLabel1, sizeof(aLabel1), Localize("%d/%d KiB (%.1f KiB/s)"), ClientNetwork()->MapDownloadAmount() / 1024, ClientNetwork()->MapDownloadTotalsize() / 1024, m_DownloadSpeed / 1024.0f);
 
-		const int SecondsLeft = std::max(1, m_DownloadSpeed > 0.0f ? static_cast<int>((Client()->MapDownloadTotalsize() - Client()->MapDownloadAmount()) / m_DownloadSpeed) : 1);
+		const int SecondsLeft = std::max(1, m_DownloadSpeed > 0.0f ? static_cast<int>((ClientNetwork()->MapDownloadTotalsize() - ClientNetwork()->MapDownloadAmount()) / m_DownloadSpeed) : 1);
 		const int MinutesLeft = SecondsLeft / 60;
 		if(MinutesLeft > 0)
 		{
@@ -2750,13 +2750,13 @@ void CMenus::RenderPopupLoading(CUIRect Screen)
 			Ui()->DoLabel(&Label, aLabel2, FontSize, TEXTALIGN_MC);
 	}
 
-	if(Client()->MapDownloadTotalsize() > 0)
+	if(ClientNetwork()->MapDownloadTotalsize() > 0)
 	{
 		CUIRect ProgressBar;
 		Box.HSplitTop(20.0f, nullptr, &Box);
 		Box.HSplitTop(24.0f, &ProgressBar, &Box);
 		ProgressBar.VMargin(20.0f, &ProgressBar);
-		Ui()->RenderProgressBar(ProgressBar, Client()->MapDownloadAmount() / (float)Client()->MapDownloadTotalsize());
+		Ui()->RenderProgressBar(ProgressBar, ClientNetwork()->MapDownloadAmount() / (float)ClientNetwork()->MapDownloadTotalsize());
 	}
 
 	CUIRect Button;
@@ -2766,7 +2766,7 @@ void CMenus::RenderPopupLoading(CUIRect Screen)
 	static CButtonContainer s_Button;
 	if(DoButton_Menu(&s_Button, Localize("Abort"), 0, &Button) || Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE))
 	{
-		Client()->Disconnect();
+		ClientNetwork()->Disconnect();
 		Ui()->SetActiveItem(nullptr);
 		RefreshBrowserTab(true);
 	}
@@ -3192,7 +3192,7 @@ void CMenus::OnRenderApplicationOverlay()
 
 	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->GameState(GameClient()->ActiveConnection()).m_Runtime.m_ServerMode == CGameState::SERVERMODE_PUREMOD)
 	{
-		Client()->Disconnect();
+		ClientNetwork()->Disconnect();
 		SetActive(true);
 		PopupMessage(Localize("Disconnected"), Localize("The server is running a non-standard tuning on a pure game type."), Localize("Ok"));
 	}
@@ -3432,7 +3432,7 @@ void CMenus::RefreshBrowserTab(bool Force)
 		{
 			if(Force || ServerBrowser()->GetCurrentType() == IServerBrowser::TYPE_LAN)
 			{
-				Client()->RequestDDNetInfo();
+				ClientNetwork()->RequestDDNetInfo();
 			}
 			ServerBrowser()->Refresh(IServerBrowser::TYPE_INTERNET);
 			UpdateCommunityCache(true);
@@ -3452,7 +3452,7 @@ void CMenus::RefreshBrowserTab(bool Force)
 		{
 			if(Force || ServerBrowser()->GetCurrentType() == IServerBrowser::TYPE_LAN)
 			{
-				Client()->RequestDDNetInfo();
+				ClientNetwork()->RequestDDNetInfo();
 			}
 			ServerBrowser()->Refresh(IServerBrowser::TYPE_FAVORITES);
 			UpdateCommunityCache(true);
@@ -3465,7 +3465,7 @@ void CMenus::RefreshBrowserTab(bool Force)
 		{
 			if(Force || ServerBrowser()->GetCurrentType() == IServerBrowser::TYPE_LAN)
 			{
-				Client()->RequestDDNetInfo();
+				ClientNetwork()->RequestDDNetInfo();
 			}
 			ServerBrowser()->Refresh(BrowserType);
 			UpdateCommunityCache(true);

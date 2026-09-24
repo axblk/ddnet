@@ -82,11 +82,11 @@ void CRaceDemo::OnNewSnapshot()
 		if(ForceStart || (!ServerControl && GameClient()->RaceHelper()->IsStart(PrevPos, Pos)))
 		{
 			if(m_RaceState == RACE_STARTED)
-				Client()->RaceRecord_Stop();
+				ClientNetwork()->RaceRecord_Stop();
 			if(m_RaceState != RACE_PREPARE) // start recording again
 			{
 				GetPath(m_aTmpFilename, sizeof(m_aTmpFilename));
-				Client()->RaceRecord_Start(m_aTmpFilename);
+				ClientNetwork()->RaceRecord_Start(m_aTmpFilename);
 			}
 			m_RaceStartTick = Client()->GameTick(Client()->NetworkSessionId(), GameClient()->ActiveConnection());
 			m_RaceState = RACE_STARTED;
@@ -97,7 +97,7 @@ void CRaceDemo::OnNewSnapshot()
 	if(m_RaceState == RACE_NONE)
 	{
 		GetPath(m_aTmpFilename, sizeof(m_aTmpFilename));
-		Client()->RaceRecord_Start(m_aTmpFilename);
+		ClientNetwork()->RaceRecord_Start(m_aTmpFilename);
 		m_RaceStartTick = Client()->GameTick(Client()->NetworkSessionId(), GameClient()->ActiveConnection());
 		m_RaceState = RACE_PREPARE;
 	}
@@ -136,7 +136,7 @@ void CRaceDemo::OnMessage(int MsgType, void *pRawMsg)
 	if(MsgType == NETMSGTYPE_SV_KILLMSG)
 	{
 		CNetMsg_Sv_KillMsg *pMsg = (CNetMsg_Sv_KillMsg *)pRawMsg;
-		if(pMsg->m_Victim == GameClient()->Snap().m_LocalClientId && Client()->RaceRecord_IsRecording())
+		if(pMsg->m_Victim == GameClient()->Snap().m_LocalClientId && ClientNetwork()->RaceRecord_IsRecording())
 			StopRecord(m_Time);
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
@@ -144,7 +144,7 @@ void CRaceDemo::OnMessage(int MsgType, void *pRawMsg)
 		CNetMsg_Sv_KillMsgTeam *pMsg = (CNetMsg_Sv_KillMsgTeam *)pRawMsg;
 		for(int i = 0; i < MAX_CLIENTS; i++)
 		{
-			if(GameClient()->FocusedTeams().Team(i) == pMsg->m_Team && i == GameClient()->Snap().m_LocalClientId && Client()->RaceRecord_IsRecording())
+			if(GameClient()->FocusedTeams().Team(i) == pMsg->m_Team && i == GameClient()->Snap().m_LocalClientId && ClientNetwork()->RaceRecord_IsRecording())
 				StopRecord(m_Time);
 		}
 	}
@@ -182,8 +182,8 @@ void CRaceDemo::OnMapLoad()
 
 void CRaceDemo::StopRecord(int Time)
 {
-	if(Client()->RaceRecord_IsRecording())
-		Client()->RaceRecord_Stop();
+	if(ClientNetwork()->RaceRecord_IsRecording())
+		ClientNetwork()->RaceRecord_Stop();
 
 	if(m_aTmpFilename[0] != '\0')
 	{

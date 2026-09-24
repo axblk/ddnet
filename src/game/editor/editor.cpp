@@ -4662,6 +4662,7 @@ void CEditor::Init()
 {
 	m_pInput = Kernel()->RequestInterface<IInput>();
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pClientNetwork = Kernel()->RequestInterface<IClientNetwork>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 	m_pConfig = m_pConfigManager->Values();
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
@@ -4839,15 +4840,15 @@ void CEditor::HandleWriterFinishJobs()
 	}
 
 	// send rcon.. if we can
-	if(Client()->RconAuthed() && g_Config.m_EdAutoMapReload)
+	if(ClientNetwork()->RconAuthed() && g_Config.m_EdAutoMapReload)
 	{
 		const CServerInfo &CurrentServerInfo = Client()->ServerInfo(Client()->NetworkSessionId());
-		if(net_addr_is_local(&Client()->ServerAddress()))
+		if(net_addr_is_local(&ClientNetwork()->ServerAddress()))
 		{
 			char aMapName[MAX_MAP_LENGTH];
 			fs_split_file_extension(fs_filename(pJob->RealFilename()), aMapName, sizeof(aMapName));
 			if(!str_comp(aMapName, CurrentServerInfo.m_aMap))
-				Client()->Rcon("hot_reload");
+				ClientNetwork()->Rcon("hot_reload");
 		}
 	}
 }

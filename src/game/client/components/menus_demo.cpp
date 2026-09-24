@@ -687,7 +687,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	const int SliceBeginButtonResult = Ui()->DoButton_FontIcon(&s_SliceBeginButton, FontIcon::RIGHT_FROM_BRACKET, 0, &Button, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT);
 	if(SliceBeginButtonResult == 1)
 	{
-		Client()->DemoSliceBegin();
+		ClientNetwork()->DemoSliceBegin();
 		if(CurrentTick > (g_Config.m_ClDemoSliceEnd - pInfo->m_FirstTick))
 			g_Config.m_ClDemoSliceEnd = -1;
 	}
@@ -704,7 +704,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	const int SliceEndButtonResult = Ui()->DoButton_FontIcon(&s_SliceEndButton, FontIcon::RIGHT_TO_BRACKET, 0, &Button, BUTTONFLAG_LEFT | BUTTONFLAG_RIGHT);
 	if(SliceEndButtonResult == 1)
 	{
-		Client()->DemoSliceEnd();
+		ClientNetwork()->DemoSliceEnd();
 		if(CurrentTick < (g_Config.m_ClDemoSliceBegin - pInfo->m_FirstTick))
 			g_Config.m_ClDemoSliceBegin = -1;
 	}
@@ -738,7 +738,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static CButtonContainer s_ExitButton;
 	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
 	{
-		Client()->Disconnect();
+		ClientNetwork()->Disconnect();
 		SetMenuPage(PAGE_DEMOS);
 		DemolistOnUpdate(false);
 	}
@@ -926,7 +926,7 @@ void CMenus::RenderDemoPlayerSliceSavePopup(CUIRect MainView)
 		if(str_endswith(m_aCurrentDemoSelectionName, ".demo"))
 			m_aCurrentDemoSelectionName[str_length(m_aCurrentDemoSelectionName) - str_length(".demo")] = '\0';
 
-		Client()->DemoSlice(aPath, CMenus::DemoFilterChat, &s_RemoveChat);
+		ClientNetwork()->DemoSlice(aPath, CMenus::DemoFilterChat, &s_RemoveChat);
 		DemolistPopulate();
 		DemolistOnUpdate(false);
 		m_DemoPlayerState = DEMOPLAYER_NONE;

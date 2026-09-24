@@ -62,7 +62,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 		g_Config.m_ClReplays ^= 1;
 		if(Client()->State() == IClient::STATE_ONLINE)
 		{
-			Client()->DemoRecorder_UpdateReplayRecorder();
+			ClientNetwork()->DemoRecorder_UpdateReplayRecorder();
 		}
 	}
 
@@ -291,7 +291,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	Miscellaneous.HSplitTop(20.0f, &Button, &Miscellaneous);
 	if(DoButton_Menu(&s_ButtonTimeout, Localize("New random timeout code"), 0, &Button))
 	{
-		Client()->GenerateTimeoutSeed();
+		ClientNetwork()->GenerateTimeoutSeed();
 	}
 
 	Miscellaneous.HSplitTop(5.0f, nullptr, &Miscellaneous);
@@ -309,21 +309,21 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 	Miscellaneous.HSplitTop(20.0f, &Button, &Miscellaneous);
 	if(DoButton_Menu(&s_ButtonUnregisterShell, Localize("Unregister protocol and file extensions"), 0, &Button))
 	{
-		Client()->ShellUnregister();
+		ClientNetwork()->ShellUnregister();
 	}
 #endif
 
 	// Updater
 #if defined(CONF_AUTOUPDATE)
 	{
-		bool NeedUpdate = str_comp(Client()->LatestVersion(), "0");
+		bool NeedUpdate = str_comp(ClientNetwork()->LatestVersion(), "0");
 		IUpdater::EUpdaterState State = Updater()->GetCurrentState();
 
 		// Update Button
 		char aBuf[256];
 		if(NeedUpdate && State <= IUpdater::CLEAN)
 		{
-			str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is available:"), Client()->LatestVersion());
+			str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is available:"), ClientNetwork()->LatestVersion());
 			m_SettingsDdnetUpdaterText.Update(TextRender(), aBuf, 14.0f);
 			UpdaterRect.VSplitLeft(m_SettingsDdnetUpdaterText.Width() + 10.0f, &UpdaterRect, &Button);
 			Button.VSplitLeft(100.0f, &Button, nullptr);
@@ -349,7 +349,7 @@ void CMenus::RenderSettingsDDNet(CUIRect MainView)
 			static CButtonContainer s_ButtonUpdate;
 			if(DoButton_Menu(&s_ButtonUpdate, Localize("Check now"), 0, &Button))
 			{
-				Client()->RequestDDNetInfo();
+				ClientNetwork()->RequestDDNetInfo();
 			}
 		}
 		m_SettingsDdnetUpdaterText.Update(TextRender(), aBuf, 14.0f);

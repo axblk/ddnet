@@ -111,6 +111,7 @@ class CEditor : public IEditor
 {
 	class IInput *m_pInput = nullptr;
 	class IClient *m_pClient = nullptr;
+	class IClientNetwork *m_pClientNetwork = nullptr;
 	class IConfigManager *m_pConfigManager = nullptr;
 	class CConfig *m_pConfig = nullptr;
 	class IEngine *m_pEngine = nullptr;
@@ -160,6 +161,7 @@ class CEditor : public IEditor
 public:
 	class IInput *Input() const { return m_pInput; }
 	class IClient *Client() const { return m_pClient; }
+	class IClientNetwork *ClientNetwork() const { return m_pClientNetwork; }
 	class IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	class CConfig *Config() const { return m_pConfig; }
 	class IEngine *Engine() const { return m_pEngine; }

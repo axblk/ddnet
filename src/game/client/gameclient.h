@@ -174,6 +174,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class IClientNetwork *m_pClientNetwork = nullptr;
 	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
 	class IConfigManager *m_pConfigManager;
@@ -281,6 +282,7 @@ public:
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
+	class IClientNetwork *ClientNetwork() const { return m_pClientNetwork; }
 	int ActiveConnection() const { return Client()->ActiveConnection(Client()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
 	CGameSessionContext &SessionContext() const { return SessionContext(Client()->FocusedSessionId()); }
@@ -303,7 +305,7 @@ public:
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
-	class IDemoRecorder *DemoRecorder(int Recorder) const { return Client()->DemoRecorder(Recorder); }
+	class IDemoRecorder *DemoRecorder(int Recorder) const { return ClientNetwork()->DemoRecorder(Recorder); }
 	class IFavorites *Favorites() const { return m_pFavorites; }
 	class IServerBrowser *ServerBrowser() const { return m_pServerBrowser; }
 	class CRenderTools *RenderTools() { return &m_RenderTools; }

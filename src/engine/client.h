@@ -156,17 +156,6 @@ public:
 	virtual int64_t DemoPlaybackTime(CSessionId SessionId) const = 0;
 	virtual float DemoPlaybackLocalTime(CSessionId SessionId) const = 0;
 
-	enum
-	{
-		CONNECTIVITY_UNKNOWN,
-		CONNECTIVITY_CHECKING,
-		CONNECTIVITY_UNREACHABLE,
-		CONNECTIVITY_REACHABLE,
-		// Different global IP address has been detected for UDP and
-		// TCP connections.
-		CONNECTIVITY_DIFFERING_UDP_TCP_IP_ADDRESSES,
-	};
-
 	//
 	EClientState State() const { return m_State; }
 	virtual bool IsOnline() const = 0;
@@ -243,18 +232,6 @@ public:
 	float FrameTimeAverage() const { return m_FrameTimeAverage; }
 	virtual CRenderTrace *RenderTrace() = 0;
 
-	// actions
-	virtual void Connect(const char *pAddress, const char *pPassword = nullptr) = 0;
-	virtual void Disconnect() = 0;
-
-	// dummy
-	virtual void DummyDisconnect(const char *pReason) = 0;
-	virtual void DummyConnect() = 0;
-	virtual bool DummyConnected() const = 0;
-	virtual bool DummyConnecting() const = 0;
-	virtual bool DummyConnectingDelayed() const = 0;
-	virtual bool DummyAllowed() const = 0;
-
 	virtual void Restart() = 0;
 	virtual void Quit() = 0;
 	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
@@ -306,50 +283,17 @@ public:
 	virtual CSessionId VideoSessionId() const = 0;
 	virtual bool VideoUsesOfflineAudio() const = 0;
 #endif
-	virtual void DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder) = 0;
-	virtual void DemoRecorder_HandleAutoStart() = 0;
-	virtual void DemoRecorder_UpdateReplayRecorder() = 0;
-	virtual class IDemoRecorder *DemoRecorder(int Recorder) = 0;
-	virtual void AutoScreenshot_Start() = 0;
-	virtual void AutoStatScreenshot_Start() = 0;
-	virtual void AutoCSV_Start() = 0;
-	virtual void ServerBrowserUpdate() = 0;
-
 	// gfx
 	virtual void Notify(const char *pTitle, const char *pMessage) = 0;
 	virtual void OnWindowResize() = 0;
 
 	virtual void UpdateAndSwap() = 0;
 
-	// networking
-	virtual void EnterGame(int Conn) = 0;
-
-	//
-	virtual const NETADDR &ServerAddress() const = 0;
-	virtual int ConnectNetTypes() const = 0;
-	virtual const char *ConnectAddressString() const = 0;
-	virtual const char *MapDownloadName() const = 0;
-	virtual int MapDownloadAmount() const = 0;
-	virtual int MapDownloadTotalsize() const = 0;
-
 	// input
 	virtual int *GetInput(CSessionId SessionId, int Conn, int Tick) const = 0;
 
-	// remote console
-	virtual void RconAuth(const char *pUsername, const char *pPassword, bool Dummy) = 0;
-	virtual bool RconAuthed() const = 0;
-	virtual bool UseTempRconCommands() const = 0;
-	virtual void Rcon(const char *pLine) = 0;
-	virtual bool ReceivingRconCommands() const = 0;
-	virtual float GotRconCommandsPercentage() const = 0;
-	virtual bool ReceivingMaplist() const = 0;
-	virtual float GotMaplistPercentage() const = 0;
-	virtual const std::vector<std::string> &MaplistEntries() const = 0;
-
 	// server info
 	virtual const class CServerInfo &ServerInfo(CSessionId SessionId) const = 0;
-	bool ServerCapAnyPlayerFlag() const { return ServerCapAnyPlayerFlag(NetworkSessionId()); }
-	virtual bool ServerCapAnyPlayerFlag(CSessionId SessionId) const = 0;
 
 	virtual int GetPredictionTime(CSessionId SessionId, int Conn) = 0;
 	virtual int GetPredictionTick(CSessionId SessionId, int Conn) = 0;
@@ -371,33 +315,10 @@ public:
 	virtual void SnapSetStaticsize(int ItemType, int Size) = 0;
 	virtual void SnapSetStaticsize7(int ItemType, int Size) = 0;
 
-	virtual int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) = 0;
-	virtual int SendMsgActive(CMsgPacker *pMsg, int Flags) = 0;
-
-	template<class T>
-	int SendPackMsgActive(T *pMsg, int Flags, bool NoTranslate = false)
-	{
-		CMsgPacker Packer(T::ms_MsgId, false, NoTranslate);
-		if(pMsg->Pack(&Packer))
-			return -1;
-		return SendMsgActive(&Packer, Flags);
-	}
-
-	template<class T>
-	int SendPackMsg(int Conn, T *pMsg, int Flags, bool NoTranslate = false)
-	{
-		CMsgPacker Packer(T::ms_MsgId, false, NoTranslate);
-		if(pMsg->Pack(&Packer))
-			return -1;
-		return SendMsg(Conn, &Packer, Flags);
-	}
-
 	//
 	virtual const char *PlayerName() const = 0;
 	virtual const char *DummyName() = 0;
 	virtual const char *ErrorString() const = 0;
-	virtual const char *LatestVersion() const = 0;
-	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
 
 	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
 
@@ -405,42 +326,17 @@ public:
 
 	const char *News() const { return m_aNews; }
 	int Points() const { return m_Points; }
-	virtual int64_t ReconnectTime() const = 0;
-	virtual void CancelReconnect() = 0;
 
 	virtual bool IsSixup(CSessionId SessionId) const = 0;
 	virtual CTranslationContext &TranslationContext(CSessionId SessionId) = 0;
 	virtual const CTranslationContext &TranslationContext(CSessionId SessionId) const = 0;
-
-	virtual void RaceRecord_Start(const char *pFilename) = 0;
-	virtual void RaceRecord_Stop() = 0;
-	virtual bool RaceRecord_IsRecording() = 0;
-
-	virtual void DemoSliceBegin() = 0;
-	virtual void DemoSliceEnd() = 0;
-	virtual void DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void *pUser) = 0;
-
-	enum class EInfoState
-	{
-		LOADING,
-		SUCCESS,
-		ERROR,
-	};
-	virtual EInfoState InfoState() const = 0;
-	virtual void RequestDDNetInfo() = 0;
-	virtual bool EditorHasUnsavedData() const = 0;
-
-	virtual void GenerateTimeoutSeed() = 0;
-
-	virtual IFriends *Foes() = 0;
 
 	virtual void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) = 0;
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
-	virtual CChecksumData *ChecksumData() = 0;
-	virtual int UdpConnectivity(int NetType) = 0;
+	virtual IFriends *Foes() = 0;
 
 	/**
 	 * Opens a link in the browser.
@@ -465,13 +361,131 @@ public:
 	 */
 	virtual bool ViewFile(const char *pFilename) = 0;
 
+	virtual std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) = 0;
+	virtual void GetGpuInfoString(char (&aGpuInfo)[512]) = 0;
+};
+
+/**
+ * What only a client that connects to servers does: the connection and the
+ * dummy, the remote console, recording what is played and the server browser.
+ */
+class IClientNetwork : public IInterface
+{
+	MACRO_INTERFACE("clientnetwork")
+public:
+	enum
+	{
+		CONNECTIVITY_UNKNOWN,
+		CONNECTIVITY_CHECKING,
+		CONNECTIVITY_UNREACHABLE,
+		CONNECTIVITY_REACHABLE,
+		// Different global IP address has been detected for UDP and
+		// TCP connections.
+		CONNECTIVITY_DIFFERING_UDP_TCP_IP_ADDRESSES,
+	};
+
+	// actions
+	virtual void Connect(const char *pAddress, const char *pPassword = nullptr) = 0;
+	virtual void Disconnect() = 0;
+
+	// dummy
+	virtual void DummyDisconnect(const char *pReason) = 0;
+	virtual void DummyConnect() = 0;
+	virtual bool DummyConnected() const = 0;
+	virtual bool DummyConnecting() const = 0;
+	virtual bool DummyConnectingDelayed() const = 0;
+	virtual bool DummyAllowed() const = 0;
+
+	virtual void DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int Recorder) = 0;
+	virtual void DemoRecorder_HandleAutoStart() = 0;
+	virtual void DemoRecorder_UpdateReplayRecorder() = 0;
+	virtual class IDemoRecorder *DemoRecorder(int Recorder) = 0;
+	virtual void AutoScreenshot_Start() = 0;
+	virtual void AutoStatScreenshot_Start() = 0;
+	virtual void AutoCSV_Start() = 0;
+	virtual void ServerBrowserUpdate() = 0;
+
+	// networking
+	virtual void EnterGame(int Conn) = 0;
+
+	//
+	virtual const NETADDR &ServerAddress() const = 0;
+	virtual int ConnectNetTypes() const = 0;
+	virtual const char *ConnectAddressString() const = 0;
+	virtual const char *MapDownloadName() const = 0;
+	virtual int MapDownloadAmount() const = 0;
+	virtual int MapDownloadTotalsize() const = 0;
+
+	// remote console
+	virtual void RconAuth(const char *pUsername, const char *pPassword, bool Dummy) = 0;
+	virtual bool RconAuthed() const = 0;
+	virtual bool UseTempRconCommands() const = 0;
+	virtual void Rcon(const char *pLine) = 0;
+	virtual bool ReceivingRconCommands() const = 0;
+	virtual float GotRconCommandsPercentage() const = 0;
+	virtual bool ReceivingMaplist() const = 0;
+	virtual float GotMaplistPercentage() const = 0;
+	virtual const std::vector<std::string> &MaplistEntries() const = 0;
+
+	// server info
+	virtual bool ServerCapAnyPlayerFlag(CSessionId SessionId) const = 0;
+
+	virtual int SendMsg(int Conn, CMsgPacker *pMsg, int Flags) = 0;
+	virtual int SendMsgActive(CMsgPacker *pMsg, int Flags) = 0;
+
+	template<class T>
+	int SendPackMsgActive(T *pMsg, int Flags, bool NoTranslate = false)
+	{
+		CMsgPacker Packer(T::ms_MsgId, false, NoTranslate);
+		if(pMsg->Pack(&Packer))
+			return -1;
+		return SendMsgActive(&Packer, Flags);
+	}
+
+	template<class T>
+	int SendPackMsg(int Conn, T *pMsg, int Flags, bool NoTranslate = false)
+	{
+		CMsgPacker Packer(T::ms_MsgId, false, NoTranslate);
+		if(pMsg->Pack(&Packer))
+			return -1;
+		return SendMsg(Conn, &Packer, Flags);
+	}
+
+	virtual const char *LatestVersion() const = 0;
+	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
+
+	// DDRace
+
+	virtual int64_t ReconnectTime() const = 0;
+	virtual void CancelReconnect() = 0;
+
+	virtual void RaceRecord_Start(const char *pFilename) = 0;
+	virtual void RaceRecord_Stop() = 0;
+	virtual bool RaceRecord_IsRecording() = 0;
+
+	virtual void DemoSliceBegin() = 0;
+	virtual void DemoSliceEnd() = 0;
+	virtual void DemoSlice(const char *pDstPath, CLIENTFUNC_FILTER pfnFilter, void *pUser) = 0;
+
+	enum class EInfoState
+	{
+		LOADING,
+		SUCCESS,
+		ERROR,
+	};
+	virtual EInfoState InfoState() const = 0;
+	virtual void RequestDDNetInfo() = 0;
+	virtual bool EditorHasUnsavedData() const = 0;
+
+	virtual void GenerateTimeoutSeed() = 0;
+
+	virtual CChecksumData *ChecksumData() = 0;
+	virtual int UdpConnectivity(int NetType) = 0;
+
 #if defined(CONF_FAMILY_WINDOWS)
 	virtual void ShellRegister() = 0;
 	virtual void ShellUnregister() = 0;
 #endif
-
-	virtual std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) = 0;
-	virtual void GetGpuInfoString(char (&aGpuInfo)[512]) = 0;
 };
 
 class IGameClient : public IInterface

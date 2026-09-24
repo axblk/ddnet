@@ -187,8 +187,8 @@ public:
 	static void DISCORD_CALLBACK OnActivityJoin(void *pEventData, const char *pSecret)
 	{
 		CDiscord *pSelf = static_cast<CDiscord *>(pEventData);
-		IClient *pClient = pSelf->Kernel()->RequestInterface<IClient>();
-		pClient->Connect(pSecret);
+		IClientNetwork *pClientNetwork = pSelf->Kernel()->RequestInterface<IClientNetwork>();
+		pClientNetwork->Connect(pSecret);
 	}
 };
 

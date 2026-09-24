@@ -83,7 +83,7 @@ void CMenus::RenderGame(CUIRect MainView)
 		}
 		else
 		{
-			Client()->Disconnect();
+			ClientNetwork()->Disconnect();
 			RefreshBrowserTab(true);
 		}
 	}
@@ -92,25 +92,25 @@ void CMenus::RenderGame(CUIRect MainView)
 	ButtonBar.VSplitRight(170.0f, &ButtonBar, &Button);
 
 	static CButtonContainer s_DummyButton;
-	if(!Client()->DummyAllowed())
+	if(!ClientNetwork()->DummyAllowed())
 	{
 		DoButton_Menu(&s_DummyButton, Localize("Connect Dummy"), 1, &Button);
 		GameClient()->m_Tooltips.DoToolTip(&s_DummyButton, &Button, Localize("Dummy is not allowed on this server"));
 	}
-	else if(Client()->DummyConnectingDelayed())
+	else if(ClientNetwork()->DummyConnectingDelayed())
 	{
 		DoButton_Menu(&s_DummyButton, Localize("Connect Dummy"), 1, &Button);
 		GameClient()->m_Tooltips.DoToolTip(&s_DummyButton, &Button, Localize("Please wait…"));
 	}
-	else if(Client()->DummyConnecting())
+	else if(ClientNetwork()->DummyConnecting())
 	{
 		DoButton_Menu(&s_DummyButton, Localize("Connecting dummy"), 1, &Button);
 	}
-	else if(DoButton_Menu(&s_DummyButton, Client()->DummyConnected() ? Localize("Disconnect Dummy") : Localize("Connect Dummy"), 0, &Button))
+	else if(DoButton_Menu(&s_DummyButton, ClientNetwork()->DummyConnected() ? Localize("Disconnect Dummy") : Localize("Connect Dummy"), 0, &Button))
 	{
-		if(!Client()->DummyConnected())
+		if(!ClientNetwork()->DummyConnected())
 		{
-			Client()->DummyConnect();
+			ClientNetwork()->DummyConnect();
 		}
 		else
 		{
@@ -120,7 +120,7 @@ void CMenus::RenderGame(CUIRect MainView)
 			}
 			else
 			{
-				Client()->DummyDisconnect(nullptr);
+				ClientNetwork()->DummyDisconnect(nullptr);
 				SetActive(false);
 			}
 		}
@@ -133,9 +133,9 @@ void CMenus::RenderGame(CUIRect MainView)
 	if(DoButton_Menu(&s_DemoButton, Recording ? Localize("Stop record") : Localize("Record demo"), 0, &Button))
 	{
 		if(!Recording)
-			Client()->DemoRecorder_Start(GameClient()->Map()->BaseName(), true, RECORDER_MANUAL);
+			ClientNetwork()->DemoRecorder_Start(GameClient()->Map()->BaseName(), true, RECORDER_MANUAL);
 		else
-			Client()->DemoRecorder(RECORDER_MANUAL)->Stop(IDemoRecorder::EStopMode::KEEP_FILE);
+			ClientNetwork()->DemoRecorder(RECORDER_MANUAL)->Stop(IDemoRecorder::EStopMode::KEEP_FILE);
 	}
 
 	bool Paused = false;
@@ -158,9 +158,9 @@ void CMenus::RenderGame(CUIRect MainView)
 			ButtonBar.VSplitLeft(120.0f, &Button, &ButtonBar);
 			ButtonBar.VSplitLeft(5.0f, nullptr, &ButtonBar);
 			static CButtonContainer s_SpectateButton;
-			if(!Client()->DummyConnecting() && DoButton_Menu(&s_SpectateButton, Localize("Spectate"), 0, &Button))
+			if(!ClientNetwork()->DummyConnecting() && DoButton_Menu(&s_SpectateButton, Localize("Spectate"), 0, &Button))
 			{
-				if(GameClient()->ActiveConnection() == 0 || Client()->DummyConnected())
+				if(GameClient()->ActiveConnection() == 0 || ClientNetwork()->DummyConnected())
 				{
 					GameClient()->SendSwitchTeam(TEAM_SPECTATORS);
 					SetActive(false);
@@ -175,7 +175,7 @@ void CMenus::RenderGame(CUIRect MainView)
 				ButtonBar.VSplitLeft(100.0f, &Button, &ButtonBar);
 				ButtonBar.VSplitLeft(5.0f, nullptr, &ButtonBar);
 				static CButtonContainer s_JoinRedButton;
-				if(!Client()->DummyConnecting() && DoButton_Menu(&s_JoinRedButton, Localize("Join red"), 0, &Button))
+				if(!ClientNetwork()->DummyConnecting() && DoButton_Menu(&s_JoinRedButton, Localize("Join red"), 0, &Button))
 				{
 					GameClient()->SendSwitchTeam(TEAM_RED);
 					SetActive(false);
@@ -187,7 +187,7 @@ void CMenus::RenderGame(CUIRect MainView)
 				ButtonBar.VSplitLeft(100.0f, &Button, &ButtonBar);
 				ButtonBar.VSplitLeft(5.0f, nullptr, &ButtonBar);
 				static CButtonContainer s_JoinBlueButton;
-				if(!Client()->DummyConnecting() && DoButton_Menu(&s_JoinBlueButton, Localize("Join blue"), 0, &Button))
+				if(!ClientNetwork()->DummyConnecting() && DoButton_Menu(&s_JoinBlueButton, Localize("Join blue"), 0, &Button))
 				{
 					GameClient()->SendSwitchTeam(TEAM_BLUE);
 					SetActive(false);
@@ -201,7 +201,7 @@ void CMenus::RenderGame(CUIRect MainView)
 				ButtonBar.VSplitLeft(120.0f, &Button, &ButtonBar);
 				ButtonBar.VSplitLeft(5.0f, nullptr, &ButtonBar);
 				static CButtonContainer s_JoinGameButton;
-				if(!Client()->DummyConnecting() && DoButton_Menu(&s_JoinGameButton, Localize("Join game"), 0, &Button))
+				if(!ClientNetwork()->DummyConnecting() && DoButton_Menu(&s_JoinGameButton, Localize("Join game"), 0, &Button))
 				{
 					GameClient()->SendSwitchTeam(TEAM_GAME);
 					SetActive(false);
@@ -351,12 +351,12 @@ void CMenus::RenderGame(CUIRect MainView)
 
 void CMenus::PopupConfirmDisconnect()
 {
-	Client()->Disconnect();
+	ClientNetwork()->Disconnect();
 }
 
 void CMenus::PopupConfirmDisconnectDummy()
 {
-	Client()->DummyDisconnect(nullptr);
+	ClientNetwork()->DummyDisconnect(nullptr);
 	SetActive(false);
 }
 
@@ -622,7 +622,7 @@ void CMenus::RenderPlayers(CUIRect MainView)
 			else
 				GameClient()->Friends()->AddFriend(CurrentClient.m_aName, CurrentClient.m_aClan);
 
-			GameClient()->Client()->ServerBrowserUpdate();
+			GameClient()->ClientNetwork()->ServerBrowserUpdate();
 		}
 	}
 
@@ -981,7 +981,7 @@ void CMenus::RenderServerControl(CUIRect MainView)
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
 	MainView.Margin(10.0f, &MainView);
 
-	if(Client()->RconAuthed())
+	if(ClientNetwork()->RconAuthed())
 		MainView.HSplitBottom(90.0f, &MainView, &RconExtension);
 
 	// tab bar
@@ -1090,7 +1090,7 @@ void CMenus::RenderServerControl(CUIRect MainView)
 	}
 
 	// extended features (only available when authed in rcon)
-	if(Client()->RconAuthed())
+	if(ClientNetwork()->RconAuthed())
 	{
 		// background
 		RconExtension.HSplitTop(10.0f, nullptr, &RconExtension);

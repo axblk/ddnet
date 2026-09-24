@@ -148,6 +148,7 @@ void CUpdaterFetchTask::OnCompletion(EHttpState State)
 CUpdater::CUpdater()
 {
 	m_pClient = nullptr;
+	m_pClientNetwork = nullptr;
 	m_pStorage = nullptr;
 	m_pEngine = nullptr;
 	m_pHttp = nullptr;
@@ -164,6 +165,7 @@ CUpdater::CUpdater()
 void CUpdater::Init()
 {
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pClientNetwork = Kernel()->RequestInterface<IClientNetwork>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pHttp = Kernel()->RequestInterface<IHttp>();
@@ -479,7 +481,7 @@ void CUpdater::CommitUpdate()
 
 	if(!Success)
 		SetCurrentState(IUpdater::FAIL);
-	else if(m_pClient->State() == IClient::STATE_ONLINE || m_pClient->EditorHasUnsavedData())
+	else if(m_pClient->State() == IClient::STATE_ONLINE || m_pClientNetwork->EditorHasUnsavedData())
 		SetCurrentState(IUpdater::NEED_RESTART);
 	else
 	{

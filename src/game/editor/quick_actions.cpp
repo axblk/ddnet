@@ -233,15 +233,15 @@ void CEditor::TestMapLocally()
 	char aFilenameNoExt[IO_MAX_PATH_LENGTH];
 	fs_split_file_extension(pFilenameNoMaps, aFilenameNoExt, sizeof(aFilenameNoExt));
 
-	if(Client()->RconAuthed())
+	if(ClientNetwork()->RconAuthed())
 	{
-		if(net_addr_is_local(&Client()->ServerAddress()))
+		if(net_addr_is_local(&ClientNetwork()->ServerAddress()))
 		{
 			OnClose();
 			g_Config.m_ClEditor = 0;
 			char aMapChange[IO_MAX_PATH_LENGTH + 64];
 			str_format(aMapChange, sizeof(aMapChange), "change_map %s", aFilenameNoExt);
-			Client()->Rcon(aMapChange);
+			ClientNetwork()->Rcon(aMapChange);
 			return;
 		}
 	}

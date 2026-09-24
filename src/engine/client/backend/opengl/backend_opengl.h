@@ -31,6 +31,9 @@ protected:
 		size_t m_VertexCount = 0;
 		// Tiles become position, colour and layered texture coordinate.
 		bool Layered() const { return m_Layout == IGraphics::EVertexLayout::TILE_TEXTURED; }
+		// Whether a tile quad repeats its tile over more than one cell, see
+		// AppendTileCells.
+		bool m_CoversCells = false;
 	};
 	std::vector<SConvertedBuffer> m_vConvertedBuffers;
 
@@ -92,7 +95,7 @@ protected:
 	// Geometry and texture matrices and one colour for the whole draw.
 	void SetDrawTransform(const vec2 &Offset, const vec2 &Scale, const vec2 &RotationCenter, float Rotation);
 	void SetTextureTransform(const CCommandBuffer::SState &State, const vec2 &TexScale, bool LayerCoordinates);
-	void SetLayeredWrap(const CCommandBuffer::SState &State, bool Repeat);
+	bool AppendTileCells(const CCommandBuffer::SVertexTex3DStream *pQuad);
 	void ResetTransforms();
 	void DrawPrimitives(EPrimitiveType PrimitiveType, uint32_t VertexCount);
 

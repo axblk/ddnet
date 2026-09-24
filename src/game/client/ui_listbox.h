@@ -31,6 +31,7 @@ private:
 	bool m_ScrollbarShown;
 	float m_AutoSpacing;
 	CScrollRegion m_ScrollRegion;
+	CUIElement m_HeaderUiElement;
 	int m_BackgroundCorners;
 	float m_ScrollbarWidth;
 	float m_ScrollbarMargin;

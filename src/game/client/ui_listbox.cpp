@@ -38,7 +38,9 @@ void CListBox::DoHeader(const CUIRect *pRect, const char *pTitle, float HeaderHe
 
 	// draw header
 	View.HSplitTop(HeaderHeight, &Header, &View);
-	Ui()->DoLabel(&Header, pTitle, Header.h * CUi::ms_FontmodHeight * 0.8f, TEXTALIGN_MC);
+	if(!m_HeaderUiElement.AreRectsInit())
+		m_HeaderUiElement.Init(Ui(), 1);
+	Ui()->DoLabelStreamed(*m_HeaderUiElement.Rect(0), &Header, pTitle, Header.h * CUi::ms_FontmodHeight * 0.8f, TEXTALIGN_MC);
 
 	View.HSplitTop(Spacing, &Header, &View);
 

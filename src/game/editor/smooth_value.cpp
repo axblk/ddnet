@@ -85,6 +85,17 @@ void CSmoothValue::SetValueRange(float MinValue, float MaxValue)
 {
 	m_MinValue = MinValue;
 	m_MaxValue = MaxValue;
+	// A range that does not contain the value it limits is no limit at all:
+	// nothing else clamps until the next SetValue, so a value left outside
+	// stays outside. The editor narrows the zoom range at runtime, which is
+	// exactly how one gets there.
+	m_Value = std::clamp(m_Value, m_MinValue, m_MaxValue);
+	// The smoothing target only holds a value while a transition is running;
+	// outside one it is stale and must not be read.
+	if(m_Smoothing)
+	{
+		m_ValueSmoothingTarget = std::clamp(m_ValueSmoothingTarget, m_MinValue, m_MaxValue);
+	}
 }
 
 float CSmoothValue::GetMinValue() const

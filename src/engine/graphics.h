@@ -278,6 +278,12 @@ protected:
 	int m_ViewportX = 0;
 	int m_DrawableWidth = 0;
 	int m_DrawableHeight = 0;
+	// The part of the screen UpdateViewport points drawing at, empty while
+	// drawing goes to all of it.
+	int m_DrawViewportX = 0;
+	int m_DrawViewportY = 0;
+	int m_DrawViewportWidth = 0;
+	int m_DrawViewportHeight = 0;
 	int m_ScreenRefreshRate;
 	float m_ScreenHiDPIScale;
 	bool m_PresentWaitsForDisplay = true;
@@ -366,6 +372,9 @@ public:
 	int ScreenHeight() const { return m_RenderHeight > 0 ? m_RenderHeight : m_ScreenHeight; }
 	vec2 ScreenSize() const { return vec2(ScreenWidth(), ScreenHeight()); }
 	float ScreenAspect() const { return (float)ScreenWidth() / (float)ScreenHeight(); }
+	// The size in pixels of what drawing currently lands on: the viewport a view
+	// was given, or else the whole screen.
+	vec2 ViewportSize() const { return m_DrawViewportWidth > 0 ? vec2(m_DrawViewportWidth, m_DrawViewportHeight) : ScreenSize(); }
 	float ScreenHiDPIScale() const { return m_ScreenHiDPIScale; }
 	int WindowWidth() const { return m_ScreenWidth / m_ScreenHiDPIScale; }
 	int WindowHeight() const { return m_ScreenHeight / m_ScreenHiDPIScale; }
@@ -545,8 +554,10 @@ public:
 		COUNT,
 	};
 
-	virtual void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount) = 0;
-	virtual void RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, uint32_t FirstIndex, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) = 0;
+	// Draws index ranges of a tile layer's quads. Offset and Scale place them:
+	// a stretched quad repeats its tile across the area, which is how the
+	// layer's border and the kill border are drawn.
+	virtual void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount, const vec2 &Offset = vec2(0.0f, 0.0f), const vec2 &Scale = vec2(1.0f, 1.0f)) = 0;
 	virtual void RenderQuadLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) = 0;
 	virtual void RenderText(CBufferHandle VertexBuffer, int TextQuadNum, int TextureSize, CTextureHandle Texture, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) = 0;
 

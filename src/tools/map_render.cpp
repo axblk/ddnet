@@ -391,6 +391,9 @@ int main(int argc, const char **argv)
 	RenderParams.m_Center = AutoPosition ? vec2(MapWorldWidth / 2.0f, MapWorldHeight / 2.0f) : Position * 32.0f;
 	RenderParams.m_Zoom = Zoom;
 	RenderParams.m_RenderText = false;
+	// A picture of the whole design shows its detail layers, as upstream's
+	// tool always did for RENDERTYPE_FULL_DESIGN.
+	RenderParams.m_HighDetail = true;
 	RenderParams.m_RenderInvalidTiles = false;
 	RenderParams.m_RenderTileBorder = true;
 	RenderParams.m_DebugRenderGroupClips = false;
@@ -409,6 +412,17 @@ int main(int argc, const char **argv)
 	std::unique_ptr<IGraphics::ITextureReadback> pReadback = Graphics.PresentAndReadbackAsync();
 	if(pReadback != nullptr)
 		(void)pReadback->Wait(Image);
+
+	// A window's picture is read back opaque, while the virtual screen keeps
+	// the alpha the layers were blended with. The picture stands for the
+	// screen, so it is saved opaque, as upstream's tool and the client's
+	// screenshots are.
+	if(Image.m_pData != nullptr && Image.m_Format == CImageInfo::FORMAT_RGBA)
+	{
+		const size_t PixelCount = Image.m_Width * Image.m_Height;
+		for(size_t Index = 0; Index < PixelCount; ++Index)
+			Image.m_pData[Index * 4 + 3] = 255;
+	}
 
 	int ReturnCode = 1;
 	if(Image.m_pData)
@@ -439,6 +453,10 @@ int main(int argc, const char **argv)
 		log_error_color(ErrorLogColor, TOOL_NAME, "The backend returned no image data");
 	}
 
+	// The layers hold buffers on the graphics card and give them back through
+	// the command buffer that Shutdown() frees, so they go first - the same
+	// order the client keeps by clearing its map layers in OnShutdown().
+	MapRenderer.Clear();
 	Graphics.Shutdown();
 	pEngine->ShutdownJobs();
 	pKernel->Shutdown();

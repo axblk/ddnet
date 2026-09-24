@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <memory>
+#include <vector>
 
 class CEnvelopeState : public CComponent, public IEnvelopeEval
 {
@@ -44,10 +45,20 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 private:
+	struct SCacheEntry
+	{
+		int m_TimeOffsetMillis;
+		int m_EnvelopeIndex;
+		size_t m_RequestedChannels;
+		size_t m_ResultChannels;
+		ColorRGBA m_Result;
+	};
+
 	std::shared_ptr<CMapBasedEnvelopePointAccess> m_pEnvelopePoints;
 	IMap *m_pMap;
 	bool m_OnlineOnly;
 	std::chrono::nanoseconds m_Time;
+	mutable std::vector<SCacheEntry> m_vCache;
 };
 
 #endif

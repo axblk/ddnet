@@ -1586,7 +1586,7 @@ public:
 
 		STextContainer &TextContainer = GetTextContainer(TextContainerIndex);
 		TextContainer.m_SingleTimeUse = (m_RenderFlags & TEXT_RENDER_FLAG_ONE_TIME_USE) != 0;
-		const vec2 FakeToScreen = Graphics()->ScreenSize() / ScreenRect.Size();
+		const vec2 FakeToScreen = Graphics()->ViewportSize() / ScreenRect.Size();
 		TextContainer.m_AlignedStartX = round_to_int(pCursor->m_X * FakeToScreen.x) / FakeToScreen.x;
 		TextContainer.m_AlignedStartY = round_to_int(pCursor->m_Y * FakeToScreen.y) / FakeToScreen.y;
 		TextContainer.m_X = pCursor->m_X;
@@ -1639,7 +1639,7 @@ public:
 
 		CScreenRect ScreenRect = Graphics()->GetScreen();
 
-		const vec2 FakeToScreen = Graphics()->ScreenSize() / ScreenRect.Size();
+		const vec2 FakeToScreen = Graphics()->ViewportSize() / ScreenRect.Size();
 		const float CursorX = round_to_int(pCursor->m_X * FakeToScreen.x) / FakeToScreen.x;
 		const float CursorY = round_to_int(pCursor->m_Y * FakeToScreen.y) / FakeToScreen.y;
 		const int ActualSize = round_truncate(pCursor->m_FontSize * FakeToScreen.y);
@@ -1681,7 +1681,7 @@ public:
 
 		const bool IsRendered = (pCursor->m_Flags & TEXTFLAG_RENDER) != 0;
 
-		const float CursorInnerWidth = (ScreenRect.Width() / Graphics()->ScreenWidth()) * 2;
+		const float CursorInnerWidth = (ScreenRect.Width() / Graphics()->ViewportSize().x) * 2;
 		const float CursorOuterWidth = CursorInnerWidth * 2;
 		const float CursorOuterInnerDiff = (CursorOuterWidth - CursorInnerWidth) / 2;
 
@@ -2345,7 +2345,7 @@ public:
 
 		if((TextContainer.m_RenderFlags & TEXT_RENDER_FLAG_NO_PIXEL_ALIGNMENT) == 0)
 		{
-			const vec2 FakeToScreen = Graphics()->ScreenSize() / ScreenRect.Size();
+			const vec2 FakeToScreen = Graphics()->ViewportSize() / ScreenRect.Size();
 			const float AlignedX = round_to_int((TextContainer.m_X + X) * FakeToScreen.x) / FakeToScreen.x;
 			const float AlignedY = round_to_int((TextContainer.m_Y + Y) * FakeToScreen.y) / FakeToScreen.y;
 			X = AlignedX - TextContainer.m_AlignedStartX;

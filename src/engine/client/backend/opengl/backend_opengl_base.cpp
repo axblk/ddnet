@@ -41,6 +41,17 @@
 // ------------ CCommandProcessorFragment_OpenGLBase
 void CCommandProcessorFragment_OpenGLBase::Cmd_Update_Viewport(const CCommandBuffer::SCommand_Update_Viewport *pCommand)
 {
+	if(m_RenderingToTexture && !pCommand->m_ByResize)
+	{
+		// The projection is flipped inside a render target, so the top of the
+		// rectangle is the framebuffer's bottom and it needs no flip here.
+		const bool Whole = pCommand->m_X == 0 && pCommand->m_Y == 0 && pCommand->m_Width == pCommand->m_SurfaceWidth && pCommand->m_Height == pCommand->m_SurfaceHeight;
+		if(Whole)
+			glViewport(0, 0, m_RenderTargetWidth, m_RenderTargetHeight);
+		else
+			glViewport(pCommand->m_X, pCommand->m_Y, pCommand->m_Width, pCommand->m_Height);
+		return;
+	}
 	// The viewport is given relative to the top left of the surface, whereas
 	// OpenGL places it relative to the bottom left.
 	m_PresentationViewportX = pCommand->m_X;
@@ -628,6 +639,7 @@ ERunCommandReturnTypes CCommandProcessorFragment_OpenGLBase::RunCommand(const CC
 		Cmd_PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
 		break;
 	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
+	case CCommandBuffer::CMD_DRAW_VIEWPORT:
 		Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand));
 		break;
 

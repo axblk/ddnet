@@ -115,12 +115,6 @@ generate_shader_file("" "" "tile.vert" "tile.vert.spv")
 generate_shader_file("-DTW_TILE_TEXTURED" "" "tile.frag" "tile_textured.frag.spv")
 generate_shader_file("-DTW_TILE_TEXTURED" "" "tile.vert" "tile_textured.vert.spv")
 
-generate_shader_file("" "" "tile_border.frag" "tile_border.frag.spv")
-generate_shader_file("" "" "tile_border.vert" "tile_border.vert.spv")
-
-generate_shader_file("" "-DTW_TILE_TEXTURED" "tile_border.frag" "tile_border_textured.frag.spv")
-generate_shader_file("" "-DTW_TILE_TEXTURED" "tile_border.vert" "tile_border_textured.vert.spv")
-
 # Quad layer
 generate_shader_file("" "" "quad.frag" "quad.frag.spv")
 generate_shader_file("" "" "quad.vert" "quad.vert.spv")

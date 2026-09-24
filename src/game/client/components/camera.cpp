@@ -56,7 +56,7 @@ CGameSessionContext &CCamera::Session() const
 
 CGameState &CCamera::GameState() const
 {
-	return m_pGameState != nullptr ? *m_pGameState : GameClient()->GameState(GameClient()->ActiveConnection());
+	return m_pGameState != nullptr ? *m_pGameState : GameClient()->InputState();
 }
 
 CGameView &CCamera::View() const

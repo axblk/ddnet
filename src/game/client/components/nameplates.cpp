@@ -788,7 +788,7 @@ void CNamePlates::RenderNamePlatePreview(vec2 Position, int Dummy)
 	Data.m_Color.a = 1.0f;
 
 	Data.m_ShowName = g_Config.m_ClNamePlates || g_Config.m_ClNamePlatesOwn;
-	const char *pName = Dummy == 0 ? Client()->PlayerName() : Client()->DummyName();
+	const char *pName = Dummy == 0 ? GameClient()->PlayerName() : GameClient()->DummyName();
 	str_copy(Data.m_aName, str_utf8_skip_whitespaces(pName));
 	str_utf8_trim_right(Data.m_aName);
 	Data.m_FontSize = FontSize;
@@ -815,7 +815,7 @@ void CNamePlates::RenderNamePlatePreview(vec2 Position, int Dummy)
 	Data.m_FontSizeHookStrongWeak = FontSizeHookStrongWeak;
 	Data.m_HookStrongWeakId = Data.m_ClientId;
 	Data.m_ShowHookStrongWeakId = g_Config.m_ClNamePlatesStrong == 2;
-	if(Dummy == GameClient()->ActiveConnection())
+	if(Dummy == GameClient()->InputSeat())
 	{
 		Data.m_HookStrongWeakState = EHookStrongWeakState::NEUTRAL;
 		Data.m_ShowHookStrongWeak = Data.m_ShowHookStrongWeakId;
@@ -878,7 +878,7 @@ void CNamePlates::OnRender(const CRenderContext &Context)
 		const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(i);
 		if(!SnapshotClient.m_HasPlayerInfo)
 			continue;
-		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Conn, i);
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Seat, i);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 

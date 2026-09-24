@@ -30,7 +30,7 @@ public:
 	void Update();
 	void ClampMousePos();
 	void ClampMousePos(CGameState::CInputState &Input) const;
-	void ResetInput(int Conn);
+	void ResetInput(int Seat);
 
 	CGameState::CInputState &ActiveInput();
 
@@ -42,6 +42,6 @@ private:
 	static void ConTpToCursor(IConsole::IResult *pResult, void *pUserData);
 	static void ConTpDummyToCursor(IConsole::IResult *pResult, void *pUserData);
 	vec2 CursorWorldPos();
-	void SendPracticeTeleportToCursor(int Conn);
+	void SendPracticeTeleportToCursor(int Seat);
 };
 #endif

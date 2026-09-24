@@ -175,7 +175,7 @@ void CGhost::CheckStart()
 	int RaceTick = -GameClient()->Snap().m_pGameInfoObj->m_WarmupTimer;
 	int RenderTick = m_NewRenderTick;
 
-	if(GameClient()->LastRaceTick() != RaceTick && Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection()) - RaceTick < Sessions()->GameTickSpeed())
+	if(GameClient()->LastRaceTick() != RaceTick && Sessions()->GameTick(GameClient()->InputSessionId()) - RaceTick < Sessions()->GameTickSpeed())
 	{
 		if(m_Rendering && m_RenderingStartedByServer) // race restarted: stop rendering
 			StopRender();
@@ -208,7 +208,7 @@ void CGhost::CheckStartLocal(bool Predicted)
 		{
 			if(m_Rendering && !m_RenderingStartedByServer) // race restarted: stop rendering
 				StopRender();
-			RenderTick = Sessions()->PredGameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
+			RenderTick = Sessions()->PredGameTick(GameClient()->InputSessionId());
 		}
 
 		TryRenderStart(RenderTick, false);
@@ -390,7 +390,7 @@ void CGhost::StartRecord(int Tick)
 	m_CurGhost.m_StartTick = Tick;
 
 	const CGameClient::CClientData *pData = &GameClient()->m_aClients[GameClient()->Snap().m_LocalClientId];
-	str_copy(m_CurGhost.m_aPlayer, Client()->PlayerName());
+	str_copy(m_CurGhost.m_aPlayer, GameClient()->PlayerName());
 	SetGhostSkinData(&m_CurGhost.m_Skin, pData->m_aSkinName, pData->m_UseCustomColor, pData->m_ColorBody, pData->m_ColorFeet);
 	UpdateTeeRenderInfo(m_CurGhost);
 }
@@ -710,7 +710,7 @@ void CGhost::UpdateGhostlistScan()
 	for(auto &Ghost : m_vGhosts)
 	{
 		Ghost.m_Failed = false;
-		if(str_comp(Ghost.m_aPlayer, Client()->PlayerName()) == 0 && (!pOwnGhost || Ghost < *pOwnGhost))
+		if(str_comp(Ghost.m_aPlayer, GameClient()->PlayerName()) == 0 && (!pOwnGhost || Ghost < *pOwnGhost))
 			pOwnGhost = &Ghost;
 	}
 
@@ -801,7 +801,7 @@ void CGhost::SortGhostlist()
 void CGhost::ConGPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CGhost *pGhost = (CGhost *)pUserData;
-	pGhost->StartRender(pGhost->Sessions()->PredGameTick(pGhost->Sessions()->FocusedSessionId(), pGhost->GameClient()->ActiveConnection()));
+	pGhost->StartRender(pGhost->Sessions()->PredGameTick(pGhost->GameClient()->InputSessionId()));
 }
 
 void CGhost::OnConsoleInit()
@@ -823,7 +823,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 			if(m_Recording)
 				StopRecord();
 			StopRender();
-			m_LastDeathTick = Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
+			m_LastDeathTick = Sessions()->GameTick(GameClient()->InputSessionId());
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
@@ -836,7 +836,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 				if(m_Recording)
 					StopRecord();
 				StopRender();
-				m_LastDeathTick = Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
+				m_LastDeathTick = Sessions()->GameTick(GameClient()->InputSessionId());
 			}
 		}
 	}

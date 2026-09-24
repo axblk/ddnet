@@ -2741,6 +2741,7 @@ if(CLIENT)
     keyboard.h
     keynames.cpp
     keynames.h
+    local_seats.h
     notifications.cpp
     notifications.h
     presentation_surface.h
@@ -4175,6 +4176,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/ghost.cpp
     src/engine/client/ghost.h
     src/engine/client/graph.cpp
+    src/engine/client/local_seats.h
     src/engine/client/render_trace.cpp
     src/engine/client/render_trace.h
     src/engine/client/serverbrowser.cpp

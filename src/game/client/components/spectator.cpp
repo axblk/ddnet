@@ -179,8 +179,7 @@ void CSpectator::ConKeySpectator(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	Selector.m_OriginSessionId = Session.Id();
-	Selector.m_OriginConnection = View.Conn();
+	Selector.m_OriginSessionId = View.SessionId();
 	Selector.m_OriginSixup = Session.Protocol() == EGameProtocol::SIXUP;
 	Selector.m_OriginDemo = Demo;
 	Selector.m_Active = true;
@@ -366,7 +365,7 @@ void CSpectator::UpdateController(CGameView &View, const CRenderContext &Context
 		State.m_WasActive = false;
 		return;
 	}
-	if(State.m_OriginSessionId != Context.m_Session.Id() || State.m_OriginConnection != Context.m_State.m_Conn)
+	if(State.m_OriginSessionId != Context.m_State.m_SessionId)
 	{
 		State.Reset();
 		m_TouchState = {};
@@ -381,7 +380,7 @@ void CSpectator::UpdateController(CGameView &View, const CRenderContext &Context
 
 	int TotalPlayers;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> aClients = SpectatorClients(Context.m_State, Presentation.ClientsByDDTeamName(Context.m_State.m_Conn), TotalPlayers);
+	const std::array<int, MAX_CLIENTS> aClients = SpectatorClients(Context.m_State, Presentation.ClientsByDDTeamName(Context.m_State.m_Seat), TotalPlayers);
 	const CSpectatorMenuLayout Layout(Context.AspectRatio(Graphics()->ScreenAspect()), TotalPlayers);
 	const vec2 ScreenSize(Layout.m_Width, Layout.m_Height);
 	const vec2 ScreenCenter = ScreenSize / 2.0f;
@@ -424,7 +423,7 @@ void CSpectator::UpdateController(CGameView &View, const CRenderContext &Context
 void CSpectator::CommitController(CGameView &View, float LocalTime)
 {
 	CGameView::CSpectatorSelectorState &State = View.m_SpectatorSelector;
-	if(State.m_OriginSessionId != View.SessionId() || State.m_OriginConnection != View.Conn())
+	if(State.m_OriginSessionId != View.SessionId())
 	{
 		State.Reset();
 		return;
@@ -440,12 +439,12 @@ void CSpectator::CommitController(CGameView &View, float LocalTime)
 void CSpectator::OnRender(const CRenderContext &Context)
 {
 	const CGameView::CSpectatorSelectorState &State = Context.m_View.m_SpectatorSelector;
-	if(!Context.m_Time.m_IsGameActive || !State.m_Active || State.m_OriginSessionId != Context.m_Session.Id() || State.m_OriginConnection != Context.m_State.m_Conn)
+	if(!Context.m_Time.m_IsGameActive || !State.m_Active || State.m_OriginSessionId != Context.m_State.m_SessionId)
 		return;
 
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
 	int TotalPlayers;
-	const std::array<int, MAX_CLIENTS> aClients = SpectatorClients(Context.m_State, Presentation.ClientsByDDTeamName(Context.m_State.m_Conn), TotalPlayers);
+	const std::array<int, MAX_CLIENTS> aClients = SpectatorClients(Context.m_State, Presentation.ClientsByDDTeamName(Context.m_State.m_Seat), TotalPlayers);
 	const CSpectatorMenuLayout Layout(Context.AspectRatio(Graphics()->ScreenAspect()), TotalPlayers);
 	const float Width = Layout.m_Width;
 	const float Height = Layout.m_Height;
@@ -521,7 +520,7 @@ void CSpectator::OnRender(const CRenderContext &Context)
 
 		const int ClientId = aClients[Index];
 		const CGameState::CClientSnapshot &SnapshotClient = Context.m_State.Client(ClientId);
-		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Seat, ClientId);
 		if(!pClient)
 			continue;
 		const int DDTeam = Context.m_State.Teams().Team(ClientId);
@@ -671,8 +670,9 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 		return;
 	}
 
-	if(Selector.m_OriginSessionId != Sessions()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
+	if(!GameClient()->IsNetworkSeat(Selector.m_OriginSessionId) || View.SpectatorMode() == SpectatorId)
 		return;
+	const int Seat = GameClient()->SeatOf(Selector.m_OriginSessionId);
 
 	if(Selector.m_OriginSixup)
 	{
@@ -687,20 +687,19 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 			Msg.m_SpecMode = protocol7::SPEC_PLAYER;
 			Msg.m_SpectatorId = SpectatorId;
 		}
-		ClientNetwork()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL, true);
+		ClientNetwork()->SendPackMsg(Seat, &Msg, MSGFLAG_VITAL, true);
 		return;
 	}
 	CNetMsg_Cl_SetSpectatorMode Msg;
 	Msg.m_SpectatorId = SpectatorId;
-	ClientNetwork()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Seat, &Msg, MSGFLAG_VITAL);
 }
 
 void CSpectator::Spectate(int SpectatorId)
 {
 	CGameView::CSpectatorSelectorState Target;
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	Target.m_OriginSessionId = Target.m_OriginDemo ? Sessions()->DemoSessionId() : Sessions()->NetworkSessionId();
-	Target.m_OriginConnection = Client()->ActiveConnection();
+	Target.m_OriginSessionId = Target.m_OriginDemo ? Sessions()->DemoSessionId() : GameClient()->SeatSessionId(g_Config.m_ClDummy);
 	Target.m_OriginSixup = Sessions()->IsSixup(Target.m_OriginSessionId);
 	Spectate(GameClient()->LegacyGameView(), Target, SpectatorId);
 }

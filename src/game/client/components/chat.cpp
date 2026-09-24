@@ -170,11 +170,11 @@ void CChat::ResetSession(CSessionId SessionId)
 	if(Client()->VideoSessionId() == SessionId && Client()->VideoUsesOfflineAudio())
 		mem_zero(m_aaLastSoundPlayed[1], sizeof(m_aaLastSoundPlayed[1]));
 #endif
-	if(m_InputBinding.m_SessionId == SessionId)
+	if(m_InputBinding.m_SessionId.IsValid() && GameClient()->ContextSessionId(m_InputBinding.m_SessionId) == SessionId)
 	{
 		DisableMode();
 	}
-	if(m_ShowBinding.m_SessionId == SessionId)
+	if(m_ShowBinding.m_SessionId.IsValid() && GameClient()->ContextSessionId(m_ShowBinding.m_SessionId) == SessionId)
 	{
 		m_Show = false;
 		m_ShowBinding = {};
@@ -272,7 +272,7 @@ void CChat::ConchainChatWidth(IConsole::IResult *pResult, void *pUserData, ICons
 void CChat::Echo(const char *pString)
 {
 	CGameSessionContext &Session = GameClient()->SessionContext();
-	AddLine(Session, GameClient()->GameState(GameClient()->ActiveConnection()), time(), Client()->IsDemoPlayback(), true, CLIENT_MSG, 0, pString);
+	AddLine(Session, GameClient()->InputState(), time(), Client()->IsDemoPlayback(), true, CLIENT_MSG, 0, pString);
 }
 
 void CChat::OnConsoleInit()
@@ -344,14 +344,14 @@ bool CChat::OnInput(const IInput::CEvent &Event)
 			// Create the completion list of player names through which the player can iterate
 			const char *PlayerName, *FoundInput;
 			m_PlayerCompletionListLength = 0;
-			const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(m_InputBinding.m_Conn);
+			const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(GameClient()->SeatOf(m_InputBinding.m_SessionId));
 			if(pClientsByName != nullptr)
 			{
 				for(int ClientId : *pClientsByName)
 				{
 					if(ClientId < 0)
 						break;
-					const CClientPresentation *pClient = Presentation.Client(m_InputBinding.m_Conn, ClientId);
+					const CClientPresentation *pClient = Presentation.Client(GameClient()->SeatOf(m_InputBinding.m_SessionId), ClientId);
 					if(pClient == nullptr || !pClient->m_Active)
 						continue;
 					PlayerName = pClient->m_aName;
@@ -459,7 +459,7 @@ bool CChat::OnInput(const IInput::CEvent &Event)
 					m_CompletionChosen %= m_PlayerCompletionListLength;
 					m_CompletionUsed = true;
 
-					const CClientPresentation *pCompletionClient = Presentation.Client(m_InputBinding.m_Conn, m_aPlayerCompletionList[m_CompletionChosen].m_ClientId);
+					const CClientPresentation *pCompletionClient = Presentation.Client(GameClient()->SeatOf(m_InputBinding.m_SessionId), m_aPlayerCompletionList[m_CompletionChosen].m_ClientId);
 					if(pCompletionClient == nullptr || !pCompletionClient->m_Active)
 					{
 						continue;
@@ -573,7 +573,7 @@ void CChat::EnableMode(int Team)
 	if(m_Mode == MODE_NONE)
 	{
 		const CGameView &View = GameClient()->LegacyGameView();
-		if(View.SessionId() != Sessions()->NetworkSessionId())
+		if(!GameClient()->IsNetworkSeat(View.SessionId()))
 			return;
 		m_InputBinding = View.Binding();
 		if(Team)
@@ -1165,12 +1165,12 @@ void CChat::UpdateController(const CRenderContext &Context)
 		DisableMode();
 	if(!Context.m_Time.m_IsGameActive)
 		return;
-	CGameSessionContext *pSession = GameClient()->FindSessionContext(Sessions()->NetworkSessionId());
+	CGameSessionContext *pSession = GameClient()->FindSessionContext(GameClient()->NetworkSessionId());
 	const int64_t Now = time();
 	if(pSession == nullptr || !pSession->m_Chat.HasPending() || pSession->m_Chat.LastSend() + time_freq() >= Now)
 		return;
 	const CSessionChatState::CPendingMessage Pending = pSession->m_Chat.Pending();
-	SendChat(Pending.m_Team, Pending.m_Text.c_str(), Pending.m_Conn);
+	SendChat(Pending.m_Team, Pending.m_Text.c_str(), Pending.m_SessionId);
 	pSession->m_Chat.PopPending();
 }
 
@@ -1329,16 +1329,17 @@ void CChat::EnsureCoherentWidth() const
 
 void CChat::SendChat(int Team, const char *pLine)
 {
-	if(Sessions()->FocusedSessionId() == Sessions()->NetworkSessionId())
-		SendChat(Team, pLine, g_Config.m_ClDummy);
+	if(Sessions()->FocusedSessionId() == GameClient()->NetworkSessionId())
+		SendChat(Team, pLine, GameClient()->InputSessionId());
 }
 
-void CChat::SendChat(int Team, const char *pLine, int Conn)
+void CChat::SendChat(int Team, const char *pLine, CSessionId SessionId)
 {
+	const int Seat = GameClient()->SeatOf(SessionId);
 	if(*str_utf8_skip_whitespaces(pLine) == '\0')
 		return;
 
-	CGameSessionContext &Session = GameClient()->SessionContext(Sessions()->NetworkSessionId());
+	CGameSessionContext &Session = GameClient()->SessionContext(GameClient()->NetworkSessionId());
 	Session.m_Chat.SetLastSend(time());
 
 	if(Session.Protocol() == EGameProtocol::SIXUP)
@@ -1347,7 +1348,7 @@ void CChat::SendChat(int Team, const char *pLine, int Conn)
 		Msg7.m_Mode = Team == 1 ? protocol7::CHAT_TEAM : protocol7::CHAT_ALL;
 		Msg7.m_Target = -1;
 		Msg7.m_pMessage = pLine;
-		ClientNetwork()->SendPackMsg(Conn, &Msg7, MSGFLAG_VITAL, true);
+		ClientNetwork()->SendPackMsg(Seat, &Msg7, MSGFLAG_VITAL, true);
 		return;
 	}
 
@@ -1355,7 +1356,7 @@ void CChat::SendChat(int Team, const char *pLine, int Conn)
 	CNetMsg_Cl_Say Msg;
 	Msg.m_Team = Team;
 	Msg.m_pMessage = pLine;
-	ClientNetwork()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Seat, &Msg, MSGFLAG_VITAL);
 }
 
 void CChat::SendChatQueued(const char *pLine)
@@ -1369,12 +1370,12 @@ void CChat::SendChatQueued(const char *pLine)
 		return;
 	if(!pSession->m_Chat.HasPending() && pSession->m_Chat.LastSend() + time_freq() < time())
 	{
-		SendChat(m_Mode == MODE_ALL ? 0 : 1, pLine, m_InputBinding.m_Conn);
+		SendChat(m_Mode == MODE_ALL ? 0 : 1, pLine, m_InputBinding.m_SessionId);
 		AddEntry = true;
 	}
 	else
 	{
-		AddEntry = pSession->m_Chat.Enqueue(m_InputBinding.m_Conn, m_Mode == MODE_ALL ? 0 : 1, pLine);
+		AddEntry = pSession->m_Chat.Enqueue(m_InputBinding.m_SessionId, m_Mode == MODE_ALL ? 0 : 1, pLine);
 	}
 
 	if(AddEntry)

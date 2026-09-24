@@ -25,10 +25,10 @@ int64_t CSessionRuntime::DemoPlaybackTime(CSessionId SessionId) const
 }
 
 // TODO: OPT: do this a lot smarter!
-int *CSessionRuntime::GetInput(CSessionId SessionId, int Conn, int Tick) const
+int *CSessionRuntime::GetInput(CSessionId SessionId, int Tick) const
 {
 	int Best = -1;
-	const CConnection &GameConnection = Connection(SessionId, Conn);
+	const CConnection &GameConnection = Connection(SessionId);
 	for(int i = 0; i < 200; i++)
 	{
 		if(GameConnection.m_aInputs[i].m_Tick != -1 && GameConnection.m_aInputs[i].m_Tick <= Tick && (Best == -1 || GameConnection.m_aInputs[Best].m_Tick < GameConnection.m_aInputs[i].m_Tick))
@@ -40,15 +40,15 @@ int *CSessionRuntime::GetInput(CSessionId SessionId, int Conn, int Tick) const
 	return nullptr;
 }
 
-int CSessionRuntime::GetPredictionTime(CSessionId SessionId, int Conn)
+int CSessionRuntime::GetPredictionTime(CSessionId SessionId)
 {
 	int64_t Now = time_get();
-	return (int)((Connection(SessionId, Conn).m_PredictedTime.Get(Now) - Connection(SessionId, Conn).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
+	return (int)((Connection(SessionId).m_PredictedTime.Get(Now) - Connection(SessionId).m_GameTime.Get(Now)) * 1000 / (float)time_freq());
 }
 
-int CSessionRuntime::GetPredictionTick(CSessionId SessionId, int Conn)
+int CSessionRuntime::GetPredictionTick(CSessionId SessionId)
 {
-	int PredictionTick = GetPredictionTime(SessionId, Conn) * GameTickSpeed() / 1000.0f;
+	int PredictionTick = GetPredictionTime(SessionId) * GameTickSpeed() / 1000.0f;
 
 	int PredictionMin = g_Config.m_ClAntiPingLimit * GameTickSpeed() / 1000.0f;
 
@@ -64,31 +64,31 @@ int CSessionRuntime::GetPredictionTick(CSessionId SessionId, int Conn)
 	}
 
 	if(PredictionMin <= 0)
-		return PredGameTick(SessionId, Conn);
+		return PredGameTick(SessionId);
 
-	PredictionTick = PredGameTick(SessionId, Conn) - PredictionMin;
+	PredictionTick = PredGameTick(SessionId) - PredictionMin;
 
-	if(PredictionTick < GameTick(SessionId, Conn) + 1)
+	if(PredictionTick < GameTick(SessionId) + 1)
 	{
-		PredictionTick = GameTick(SessionId, Conn) + 1;
+		PredictionTick = GameTick(SessionId) + 1;
 	}
 	return PredictionTick;
 }
 
-void CSessionRuntime::GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
+void CSessionRuntime::GetSmoothTick(CSessionId SessionId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount)
 {
-	int64_t GameTime = Connection(SessionId, Conn).m_GameTime.Get(Now);
-	int64_t PredTime = Connection(SessionId, Conn).m_PredictedTime.Get(Now);
+	int64_t GameTime = Connection(SessionId).m_GameTime.Get(Now);
+	int64_t PredTime = Connection(SessionId).m_PredictedTime.Get(Now);
 	int64_t SmoothTime = std::clamp(GameTime + (int64_t)(MixAmount * (PredTime - GameTime)), GameTime, PredTime);
 
 	*pSmoothTick = (int)(SmoothTime * GameTickSpeed() / time_freq()) + 1;
 	*pSmoothIntraTick = (SmoothTime - (*pSmoothTick - 1) * time_freq() / GameTickSpeed()) / (float)(time_freq() / GameTickSpeed());
 }
 
-ISessions::CSnapItem CSessionRuntime::SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const
+ISessions::CSnapItem CSessionRuntime::SnapGetItem(CSessionId SessionId, int SnapId, int Index) const
 {
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	const CSnapshot *pSnapshot = Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap;
+	const CSnapshot *pSnapshot = Connection(SessionId).m_apSnapshots[SnapId]->m_pAltSnap;
 	const CSnapshotItem *pSnapshotItem = pSnapshot->GetItem(Index);
 	CSnapItem Item;
 	Item.m_Type = pSnapshot->GetItemType(Index);
@@ -98,20 +98,20 @@ ISessions::CSnapItem CSessionRuntime::SnapGetItem(CSessionId SessionId, int Conn
 	return Item;
 }
 
-const void *CSessionRuntime::SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const
+const void *CSessionRuntime::SnapFindItem(CSessionId SessionId, int SnapId, int Type, int Id) const
 {
-	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
+	if(!Connection(SessionId).m_apSnapshots[SnapId])
 		return nullptr;
 
-	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->FindItem(Type, Id);
+	return Connection(SessionId).m_apSnapshots[SnapId]->m_pAltSnap->FindItem(Type, Id);
 }
 
-int CSessionRuntime::SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const
+int CSessionRuntime::SnapNumItems(CSessionId SessionId, int SnapId) const
 {
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
-	if(!Connection(SessionId, Conn).m_apSnapshots[SnapId])
+	if(!Connection(SessionId).m_apSnapshots[SnapId])
 		return 0;
-	return Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap->NumItems();
+	return Connection(SessionId).m_apSnapshots[SnapId]->m_pAltSnap->NumItems();
 }
 
 void CSessionRuntime::SnapSetStaticsize(int ItemType, int Size)
@@ -196,7 +196,7 @@ void CSessionRuntime::OnDemoSnapshot(CSessionId SessionId, void *pData, int Size
 
 	if(Source.m_Sixup)
 	{
-		AltSnapSize = GameClient()->TranslateSnap(SessionId, &AltSnapBuffer, (CSnapshot *)pData, IClient::CONN_MAIN);
+		AltSnapSize = GameClient()->TranslateSnap(SessionId, &AltSnapBuffer, (CSnapshot *)pData);
 		if(AltSnapSize < 0)
 		{
 			dbg_msg("sixup", "failed to translate snapshot. error=%d", AltSnapSize);
@@ -218,7 +218,7 @@ void CSessionRuntime::OnDemoSnapshot(CSessionId SessionId, void *pData, int Size
 	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pSnap, pData, Size);
 	mem_copy(DemoConnection.m_apSnapshots[SNAP_CURRENT]->m_pAltSnap, &AltSnapBuffer, AltSnapSize);
 
-	GameClient()->OnNewSnapshot(SessionId, IClient::CONN_MAIN);
+	GameClient()->OnNewSnapshot(SessionId);
 }
 
 void CSessionRuntime::OnDemoMessage(CSessionId SessionId, void *pData, int Size)
@@ -239,7 +239,7 @@ void CSessionRuntime::OnDemoMessage(CSessionId SessionId, void *pData, int Size)
 	}
 
 	if(!Sys)
-		GameClient()->OnMessage(SessionId, Msg, &Unpacker, IClient::CONN_MAIN);
+		GameClient()->OnMessage(SessionId, Msg, &Unpacker);
 }
 
 void CSessionRuntime::UpdateDemoIntraTimers(CSessionId SessionId)

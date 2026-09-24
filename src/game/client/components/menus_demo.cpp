@@ -58,7 +58,7 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 		const CSessionId DemoSessionId = Sessions()->DemoSessionId();
 		CGameSessionContext *pDemoSession = GameClient()->FindSessionContext(DemoSessionId);
 		dbg_assert(pDemoSession != nullptr, "missing Demo session context");
-		CGameState &DemoState = pDemoSession->GameState(IClient::CONN_MAIN);
+		CGameState &DemoState = pDemoSession->SeatState(IClient::CONN_MAIN);
 		GameClient()->ResetChat(DemoSessionId);
 		DemoState.m_DamageIndicators.Reset();
 		GameClient()->ResetInfoMessages(DemoSessionId);

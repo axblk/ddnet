@@ -179,7 +179,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 	if(GameInfo.m_GameStateFlags & GAMESTATEFLAG_GAMEOVER)
 		return;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.m_Seat);
 	if(pClientsByScore == nullptr)
 		return;
 	const CNetObj_GameData *pGameData = State.GameData();
@@ -287,7 +287,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 					{
 						// draw name of the flag holder
 						int Id = aFlagCarrier[t] % MAX_CLIENTS;
-						const CClientPresentation *pClient = Presentation.Client(State.m_Conn, Id);
+						const CClientPresentation *pClient = Presentation.Client(State.m_Seat, Id);
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
 						if(str_comp(pName, m_aScoreInfo[t].m_aPlayerNameText) != 0 || RecreateRect)
 						{
@@ -420,7 +420,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 					int Id = apPlayerInfo[t]->m_ClientId;
 					if(Id >= 0 && Id < MAX_CLIENTS)
 					{
-						const CClientPresentation *pClient = Presentation.Client(State.m_Conn, Id);
+						const CClientPresentation *pClient = Presentation.Client(State.m_Seat, Id);
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
 						if(str_comp(pName, m_aScoreInfo[t].m_aPlayerNameText) != 0)
 							RecreateRect = true;
@@ -481,7 +481,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 					int Id = apPlayerInfo[t]->m_ClientId;
 					if(Id >= 0 && Id < MAX_CLIENTS)
 					{
-						const CClientPresentation *pClient = Presentation.Client(State.m_Conn, Id);
+						const CClientPresentation *pClient = Presentation.Client(State.m_Seat, Id);
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
 						if(RecreateRect)
 						{
@@ -684,7 +684,7 @@ void CHud::RenderTeambalanceWarning(const CRenderContext &Context)
 	if(Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS)
 	{
 		const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-		const int TeamDiff = Presentation.TeamSize(Context.m_State.m_Conn, TEAM_RED) - Presentation.TeamSize(Context.m_State.m_Conn, TEAM_BLUE);
+		const int TeamDiff = Presentation.TeamSize(Context.m_State.m_Seat, TEAM_RED) - Presentation.TeamSize(Context.m_State.m_Seat, TEAM_BLUE);
 		if(g_Config.m_ClWarningTeambalance && (TeamDiff >= 2 || TeamDiff <= -2))
 		{
 			const char *pText = Localize("Please balance teams!");
@@ -1357,7 +1357,7 @@ void CHud::RenderSpectatorCount(const CRenderContext &Context)
 
 	int Count;
 	int LastZeroTick;
-	if(!GameClient()->SessionPresentation(Context.m_Session.Id()).GetSpectatorCount(Context.m_State.m_Conn, Count, LastZeroTick) || Count == 0)
+	if(!GameClient()->SessionPresentation(Context.m_Session.Id()).GetSpectatorCount(Context.m_State.m_Seat, Count, LastZeroTick) || Count == 0)
 		return;
 
 	// 1 second delay
@@ -1384,7 +1384,7 @@ void CHud::RenderSpectatorCount(const CRenderContext &Context)
 		StartY -= 56;
 	}
 
-	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().begin(), Context.m_Session.GameStates().end(), [&Context](const CGameState &OtherState) { return OtherState.m_Conn != Context.m_State.m_Conn && OtherState.LocalClientId() >= 0; });
+	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().begin(), Context.m_Session.GameStates().end(), [&Context](const CGameState &OtherState) { return OtherState.m_Seat != Context.m_State.m_Seat && OtherState.LocalClientId() >= 0; });
 	if(g_Config.m_ClShowhudDummyActions && Context.m_State.HasGameInfo() && !(Context.m_State.GameInfo().m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) && HasOtherLocalPlayer)
 	{
 		StartY = StartY - 29.0f - 4; // dummy actions height and padding
@@ -1403,7 +1403,7 @@ void CHud::RenderSpectatorCount(const CRenderContext &Context)
 
 void CHud::RenderDummyActions(const CRenderContext &Context)
 {
-	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().begin(), Context.m_Session.GameStates().end(), [&Context](const CGameState &OtherState) { return OtherState.m_Conn != Context.m_State.m_Conn && OtherState.LocalClientId() >= 0; });
+	const bool HasOtherLocalPlayer = std::any_of(Context.m_Session.GameStates().begin(), Context.m_Session.GameStates().end(), [&Context](const CGameState &OtherState) { return OtherState.m_Seat != Context.m_State.m_Seat && OtherState.LocalClientId() >= 0; });
 	if(!g_Config.m_ClShowhudDummyActions || (Context.m_State.GameInfo().m_GameStateFlags & GAMESTATEFLAG_GAMEOVER) || !HasOtherLocalPlayer)
 	{
 		return;
@@ -1595,7 +1595,7 @@ void CHud::RenderMovementInformation(const CRenderContext &Context)
 		y += MOVEMENT_INFORMATION_LINE_HEIGHT;
 
 		const char aaCoordinates[][4] = {"X:", "Y:"};
-		const CClientPresentation *pClientPresentation = GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.m_Conn, ClientId);
+		const CClientPresentation *pClientPresentation = GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.m_Seat, ClientId);
 		for(int i = 0; i < 2; i++)
 		{
 			ColorRGBA Color(1.0f, 1.0f, 1.0f, 1.0f);
@@ -1638,7 +1638,7 @@ void CHud::RenderSpectatorHud(const CRenderContext &Context)
 	else if(Context.m_View.SpectatorId() != SPEC_FREEVIEW)
 	{
 		const int SpectatorId = Context.m_View.SpectatorId();
-		const CClientPresentation *pPlayer = GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.m_Conn, SpectatorId);
+		const CClientPresentation *pPlayer = GameClient()->SessionPresentation(Context.m_Session.Id()).Client(Context.m_State.m_Seat, SpectatorId);
 		const char *pName = pPlayer != nullptr ? pPlayer->m_aName : "";
 		if(g_Config.m_ClShowIds)
 			str_format(aBuf, sizeof(aBuf), Localize("Following %d: %s", "Spectating"), SpectatorId, pName);

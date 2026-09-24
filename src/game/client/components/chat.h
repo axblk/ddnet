@@ -177,7 +177,7 @@ public:
 	// @param Team MODE_ALL=0 MODE_TEAM=1
 	// @param pLine the chat message
 	void SendChat(int Team, const char *pLine);
-	void SendChat(int Team, const char *pLine, int Conn);
+	void SendChat(int Team, const char *pLine, CSessionId SessionId);
 
 	// Sends a chat message to the server.
 	//

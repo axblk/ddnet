@@ -7,7 +7,6 @@
 #include <base/hash.h>
 #include <base/types.h>
 
-#include <engine/client/enums.h>
 #include <engine/serverbrowser.h>
 #include <engine/sessions.h>
 #include <engine/shared/demo.h>
@@ -33,6 +32,10 @@ public:
 class CSessionSourceBase : public CSessionSource
 {
 public:
+	CConnection m_Connection;
+	// Set for a session that plays on the server of another one, the dummy:
+	// the server info, the protocol and the translation are kept there.
+	CSessionSourceBase *m_pServerSource = nullptr;
 	CServerInfo m_ServerInfo = {};
 	bool m_Sixup = false;
 	CTranslationContext m_TranslationContext;
@@ -57,9 +60,6 @@ public:
 		SHA256_DIGEST m_Sha256 = {};
 		char m_aUrl[256] = "";
 	};
-
-	CConnection m_aConnections[NUM_DUMMIES];
-	int m_LastActiveConn = 0;
 
 	std::string m_ConnectAddress;
 	CUuid m_ConnectionId = UUID_ZEROED;
@@ -134,7 +134,6 @@ class CDemoSessionSource : public CSessionSourceBase
 
 public:
 	CDemoPlayer m_DemoPlayer;
-	CConnection m_Connection;
 
 	CDemoSessionSource(bool UseVideo, TUpdateIntraTimesFunc &&UpdateIntraTimesFunc);
 	ESessionSourceType Type() const override { return ESessionSourceType::DEMO; }

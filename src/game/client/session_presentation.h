@@ -89,13 +89,13 @@ public:
 	void UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline = false);
 	void UpdateClients(const CPresentationContext &Context);
 	std::shared_ptr<CManagedTeeRenderInfo> CreateClientTee(const CGameState &State, int ClientId) const;
-	const CClientPresentation *Client(int Conn, int ClientId) const;
-	const std::array<int, MAX_CLIENTS> *ClientsByName(int Conn) const { return &m_aStates[Conn].m_aClientsByName; }
-	const std::array<int, MAX_CLIENTS> *ClientsByScore(int Conn) const { return &m_aStates[Conn].m_aClientsByScore; }
-	const std::array<int, MAX_CLIENTS> *ClientsByDDTeamName(int Conn) const { return &m_aStates[Conn].m_aClientsByDDTeamName; }
-	const std::array<int, MAX_CLIENTS> *ClientsByDDTeamScore(int Conn) const { return &m_aStates[Conn].m_aClientsByDDTeamScore; }
-	int TeamSize(int Conn, int Team) const;
-	bool GetSpectatorCount(int Conn, int &Count, int &LastZeroTick) const;
+	const CClientPresentation *Client(int Seat, int ClientId) const;
+	const std::array<int, MAX_CLIENTS> *ClientsByName(int Seat) const { return &m_aStates[Seat].m_aClientsByName; }
+	const std::array<int, MAX_CLIENTS> *ClientsByScore(int Seat) const { return &m_aStates[Seat].m_aClientsByScore; }
+	const std::array<int, MAX_CLIENTS> *ClientsByDDTeamName(int Seat) const { return &m_aStates[Seat].m_aClientsByDDTeamName; }
+	const std::array<int, MAX_CLIENTS> *ClientsByDDTeamScore(int Seat) const { return &m_aStates[Seat].m_aClientsByDDTeamScore; }
+	int TeamSize(int Seat, int Team) const;
+	bool GetSpectatorCount(int Seat, int &Count, int &LastZeroTick) const;
 	bool EmoticonIgnored(int ClientId) const { return m_aEmoticonIgnored[ClientId]; }
 	void ToggleEmoticonIgnored(int ClientId) { m_aEmoticonIgnored[ClientId] = !m_aEmoticonIgnored[ClientId]; }
 	bool ChatIgnored(int ClientId) const { return m_aChatIgnored[ClientId]; }

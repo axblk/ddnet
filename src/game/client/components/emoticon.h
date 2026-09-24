@@ -16,8 +16,8 @@ class CEmoticon : public CComponent
 	CGameView::CEmoticonSelectorState &Selector();
 	const CGameView::CEmoticonSelectorState &Selector() const;
 	bool EyeWheelAvailable(const CRenderContext &Context) const;
-	void Emote(int Emoticon, int Conn);
-	void EyeEmote(int EyeEmote, int Conn);
+	void Emote(int Emoticon, CSessionId SessionId);
+	void EyeEmote(int EyeEmote, CSessionId SessionId);
 
 	static void ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData);
 	static void ConEmote(IConsole::IResult *pResult, void *pUserData);

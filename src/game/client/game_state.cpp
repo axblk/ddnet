@@ -373,9 +373,10 @@ void CGameState::EvolveCharacter(CNetObj_Character &Character, int Tick)
 	TempCore.Write(&Character);
 }
 
-void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, int Conn)
+void CGameState::ApplySnapshot(const ISessions &Sessions)
 {
-	const int NumItems = Sessions.SnapNumItems(SessionId, Conn, ISessions::SNAP_CURRENT);
+	const CSessionId SessionId = m_SessionId;
+	const int NumItems = Sessions.SnapNumItems(SessionId, ISessions::SNAP_CURRENT);
 	std::array<CClientSnapshot, MAX_CLIENTS> aClients = {};
 	std::vector<CEntitySnapshot> vEntities;
 	CNetObj_GameInfo GameInfo = {};
@@ -389,7 +390,7 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 	bool HasDDNetSpectatorInfo = false;
 	for(int i = 0; i < NumItems; i++)
 	{
-		const ISessions::CSnapItem Item = Sessions.SnapGetItem(SessionId, Conn, ISessions::SNAP_CURRENT, i);
+		const ISessions::CSnapItem Item = Sessions.SnapGetItem(SessionId, ISessions::SNAP_CURRENT, i);
 		if(Item.m_Type == NETOBJTYPE_GAMEINFO)
 		{
 			HasGameInfo = true;
@@ -426,7 +427,7 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 			Entity.m_Type = Item.m_Type;
 			const auto *pData = static_cast<const unsigned char *>(Item.m_pData);
 			Entity.m_vData.assign(pData, pData + Item.m_DataSize);
-			if(const auto *pPrevData = static_cast<const unsigned char *>(Sessions.SnapFindItem(SessionId, Conn, ISessions::SNAP_PREV, Item.m_Type, Item.m_Id)))
+			if(const auto *pPrevData = static_cast<const unsigned char *>(Sessions.SnapFindItem(SessionId, ISessions::SNAP_PREV, Item.m_Type, Item.m_Id)))
 				Entity.m_vPrevData.assign(pPrevData, pPrevData + Item.m_DataSize);
 			vEntities.push_back(std::move(Entity));
 		}
@@ -439,7 +440,7 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 				SnapshotClient.m_Active = true;
 				SnapshotClient.m_HasPlayerInfo = true;
 				SnapshotClient.m_PlayerInfo = *static_cast<const CNetObj_PlayerInfo *>(Item.m_pData);
-				if(Sessions.SnapFindItem(SessionId, Conn, ISessions::SNAP_PREV, NETOBJTYPE_PLAYERINFO, Item.m_Id))
+				if(Sessions.SnapFindItem(SessionId, ISessions::SNAP_PREV, NETOBJTYPE_PLAYERINFO, Item.m_Id))
 				{
 					SnapshotClient.m_HasPrevPlayerInfo = true;
 				}
@@ -453,13 +454,13 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 				SnapshotClient.m_Active = true;
 				SnapshotClient.m_HasCharacter = true;
 				SnapshotClient.m_Character = *static_cast<const CNetObj_Character *>(Item.m_pData);
-				if(const auto *pPrev = static_cast<const CNetObj_Character *>(Sessions.SnapFindItem(SessionId, Conn, ISessions::SNAP_PREV, NETOBJTYPE_CHARACTER, Item.m_Id)))
+				if(const auto *pPrev = static_cast<const CNetObj_Character *>(Sessions.SnapFindItem(SessionId, ISessions::SNAP_PREV, NETOBJTYPE_CHARACTER, Item.m_Id)))
 				{
 					SnapshotClient.m_HasPrevCharacter = true;
 					SnapshotClient.m_PrevCharacter = *pPrev;
-					const bool EvolvePrev = Sessions.PrevGameTick(SessionId, Conn) - SnapshotClient.m_PrevCharacter.m_Tick <= 3 * Sessions.GameTickSpeed();
-					const bool EvolveCur = Sessions.GameTick(SessionId, Conn) - SnapshotClient.m_Character.m_Tick <= 3 * Sessions.GameTickSpeed();
-					if(EvolveCur && m_vEvolvedCharacters[Item.m_Id].m_Tick == Sessions.PrevGameTick(SessionId, Conn))
+					const bool EvolvePrev = Sessions.PrevGameTick(SessionId) - SnapshotClient.m_PrevCharacter.m_Tick <= 3 * Sessions.GameTickSpeed();
+					const bool EvolveCur = Sessions.GameTick(SessionId) - SnapshotClient.m_Character.m_Tick <= 3 * Sessions.GameTickSpeed();
+					if(EvolveCur && m_vEvolvedCharacters[Item.m_Id].m_Tick == Sessions.PrevGameTick(SessionId))
 					{
 						if(mem_comp(&SnapshotClient.m_PrevCharacter, &m_vSnappedCharacters[Item.m_Id], sizeof(CNetObj_Character)) == 0)
 							SnapshotClient.m_PrevCharacter = m_vEvolvedCharacters[Item.m_Id];
@@ -467,9 +468,9 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 							SnapshotClient.m_Character = m_vEvolvedCharacters[Item.m_Id];
 					}
 					if(m_PredictionInitialized && EvolvePrev && SnapshotClient.m_PrevCharacter.m_Tick)
-						EvolveCharacter(SnapshotClient.m_PrevCharacter, Sessions.PrevGameTick(SessionId, Conn));
+						EvolveCharacter(SnapshotClient.m_PrevCharacter, Sessions.PrevGameTick(SessionId));
 					if(m_PredictionInitialized && EvolveCur && SnapshotClient.m_Character.m_Tick)
-						EvolveCharacter(SnapshotClient.m_Character, Sessions.GameTick(SessionId, Conn));
+						EvolveCharacter(SnapshotClient.m_Character, Sessions.GameTick(SessionId));
 					m_vSnappedCharacters[Item.m_Id] = *static_cast<const CNetObj_Character *>(Item.m_pData);
 					m_vEvolvedCharacters[Item.m_Id] = SnapshotClient.m_Character;
 				}
@@ -479,7 +480,7 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 			case NETOBJTYPE_DDNETCHARACTER:
 				SnapshotClient.m_HasExtendedCharacter = true;
 				SnapshotClient.m_ExtendedCharacter = *static_cast<const CNetObj_DDNetCharacter *>(Item.m_pData);
-				if(const auto *pPrev = static_cast<const CNetObj_DDNetCharacter *>(Sessions.SnapFindItem(SessionId, Conn, ISessions::SNAP_PREV, NETOBJTYPE_DDNETCHARACTER, Item.m_Id)))
+				if(const auto *pPrev = static_cast<const CNetObj_DDNetCharacter *>(Sessions.SnapFindItem(SessionId, ISessions::SNAP_PREV, NETOBJTYPE_DDNETCHARACTER, Item.m_Id)))
 				{
 					SnapshotClient.m_HasPrevExtendedCharacter = true;
 					SnapshotClient.m_PrevExtendedTargetX = pPrev->m_TargetX;
@@ -508,7 +509,7 @@ void CGameState::ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, 
 			Entity.m_EntityEx = Found->m_EntityEx;
 		}
 	}
-	ApplySnapshotData(Sessions.GameTick(SessionId, Conn), aClients, HasGameInfo ? &GameInfo : nullptr, std::move(vEntities));
+	ApplySnapshotData(Sessions.GameTick(SessionId), aClients, HasGameInfo ? &GameInfo : nullptr, std::move(vEntities));
 	if(HasSpectatorInfo)
 		ApplySpectatorInfo(SpectatorInfo);
 	if(HasSpectatorCount)
@@ -669,16 +670,22 @@ void CGameState::RebuildGameWorld()
 	m_GameWorld.NetObjEnd();
 }
 
-void CGameState::Predict(const ISessions &Sessions, CSessionId SessionId, int Conn)
+void CGameState::Predict(const ISessions &Sessions)
 {
-	PredictTo(Sessions.PredGameTick(SessionId, Conn), [&Sessions, SessionId, Conn](int Tick) {
-		return reinterpret_cast<const CNetObj_PlayerInput *>(Sessions.GetInput(SessionId, Conn, Tick));
+	const CSessionId SessionId = m_SessionId;
+	PredictTo(Sessions.PredGameTick(SessionId), [&Sessions, SessionId](int Tick) {
+		return reinterpret_cast<const CNetObj_PlayerInput *>(Sessions.GetInput(SessionId, Tick));
 	});
+}
+
+void CGameState::ClearPrediction()
+{
+	m_aPredictedClients = {};
 }
 
 void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt)
 {
-	m_aPredictedClients = {};
+	ClearPrediction();
 	if(m_FullyPredicted)
 		return;
 	if(!m_PredictionInitialized || m_LocalClientId < 0 || m_LocalClientId >= MAX_CLIENTS || !m_aClients[m_LocalClientId].m_HasCharacter)

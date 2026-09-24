@@ -82,8 +82,6 @@ public:
 
 	// A demo that is not exported runs on the clock of the client.
 	float DemoPlaybackLocalTime(CSessionId SessionId) const override;
-	using IClient::ActiveConnection;
-	int ActiveConnection(CSessionId SessionId) const override { return SessionType(SessionId) == ESessionSourceType::DEMO ? CONN_MAIN : m_ActiveConnection; }
 
 	EClientState State() const override;
 	bool IsOnline() const override;

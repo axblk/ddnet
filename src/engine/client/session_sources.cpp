@@ -37,8 +37,7 @@ void CNetworkSessionSource::ResetNetworkMetadata()
 	m_GotRconCommands = 0;
 	m_ExpectedMaplistEntries = -1;
 	m_vMaplistEntries.clear();
-	for(CConnection &Connection : m_aConnections)
-		Connection.m_RconAuthed = 0;
+	m_Connection.m_RconAuthed = 0;
 	m_MapDetails.reset();
 	m_PingInfoType = -1;
 	m_PingBasicToken = -1;
@@ -47,7 +46,6 @@ void CNetworkSessionSource::ResetNetworkMetadata()
 	m_CurrentPingTime = -1;
 	m_NextPingTime = -1;
 	m_ReconnectTime = 0;
-	m_LastActiveConn = 0;
 }
 
 void CNetworkSessionSource::ResetAfterDisconnect(const char *pError, int ReconnectFull, int ReconnectTimeout, int64_t Now, int64_t Frequency)

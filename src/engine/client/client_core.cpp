@@ -207,14 +207,7 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 	// Unload the current map and reset all snapshots before loading a new map,
 	// because the snapshots are only valid for the old map.
 	IMap *pMap = GameClient()->Map(SessionId);
-	CSessionSourceBase &Source = SessionSource(SessionId);
-	if(Source.Type() == ESessionSourceType::NETWORK)
-	{
-		for(CConnection &Connection : static_cast<CNetworkSessionSource &>(Source).m_aConnections)
-			Connection.ResetSnapshots();
-	}
-	else
-		static_cast<CDemoSessionSource &>(Source).m_Connection.ResetSnapshots();
+	SessionSource(SessionId).m_Connection.ResetSnapshots();
 	GameClient()->InvalidateSnapshot(SessionId);
 
 	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))

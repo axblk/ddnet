@@ -87,7 +87,7 @@ CRenderContext::CRenderContext(const CGameSessionContext &Session, const CGameSt
 	m_IsVideoOutput(IsVideoOutput),
 	m_VideoSettings(VideoSettings)
 {
-	dbg_assert(Session.Id() == View.SessionId() && State.m_Conn == View.Conn(), "render context state does not match view");
+	dbg_assert(State.m_SessionId == View.SessionId() && Session.Contains(View.SessionId()), "render context state does not match view");
 }
 
 float CRenderContext::AspectRatio(float DefaultAspectRatio) const

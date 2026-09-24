@@ -38,10 +38,10 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	}
 
 	if(Client()->State() == IClient::STATE_ONLINE &&
-		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy))
+		GameClient()->GameState(GameClient()->SeatSessionId(m_Dummy)).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(GameClient()->SeatSessionId(m_Dummy)))
 	{
 		char aChangeInfo[128], aTimeLeft[32];
-		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
+		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(GameClient()->SeatSessionId(m_Dummy)).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(GameClient()->SeatSessionId(m_Dummy)) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
 		Ui()->DoLabel(&ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}
@@ -54,14 +54,14 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	{
 		pCountry = &g_Config.m_PlayerCountry;
 		s_NameInput.SetBuffer(g_Config.m_PlayerName, sizeof(g_Config.m_PlayerName));
-		s_NameInput.SetEmptyText(Client()->PlayerName());
+		s_NameInput.SetEmptyText(GameClient()->PlayerName());
 		s_ClanInput.SetBuffer(g_Config.m_PlayerClan, sizeof(g_Config.m_PlayerClan));
 	}
 	else
 	{
 		pCountry = &g_Config.m_ClDummyCountry;
 		s_NameInput.SetBuffer(g_Config.m_ClDummyName, sizeof(g_Config.m_ClDummyName));
-		s_NameInput.SetEmptyText(Client()->DummyName());
+		s_NameInput.SetEmptyText(GameClient()->DummyName());
 		s_ClanInput.SetBuffer(g_Config.m_ClDummyClan, sizeof(g_Config.m_ClDummyClan));
 	}
 

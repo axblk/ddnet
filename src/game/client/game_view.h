@@ -42,16 +42,15 @@ public:
 class CGameView;
 
 /**
- * A view together with the game state it showed at some point.
+ * A view together with the session it showed at some point.
  */
 class CViewBinding
 {
 public:
 	const CGameView *m_pView = nullptr;
 	CSessionId m_SessionId;
-	int m_Conn = -1;
 
-	bool operator==(const CViewBinding &Other) const { return m_pView == Other.m_pView && m_SessionId == Other.m_SessionId && m_Conn == Other.m_Conn; }
+	bool operator==(const CViewBinding &Other) const { return m_pView == Other.m_pView && m_SessionId == Other.m_SessionId; }
 	bool operator!=(const CViewBinding &Other) const { return !(*this == Other); }
 };
 
@@ -88,7 +87,6 @@ public:
 		int m_SelectedEyeEmote = -1;
 		bool m_TouchPressedOutside = false;
 		CSessionId m_OriginSessionId;
-		int m_OriginConnection = -1;
 
 		void UpdateSelection(int NumEmoticons, int NumEyeEmotes, bool AllowEyeWheel);
 		void Reset() { *this = {}; }
@@ -107,7 +105,6 @@ public:
 		vec2 m_SelectorMouse = vec2(0.0f, 0.0f);
 		float m_MultiViewActivateTime = 0.0f;
 		CSessionId m_OriginSessionId;
-		int m_OriginConnection = -1;
 		bool m_OriginSixup = false;
 		bool m_OriginDemo = false;
 		int m_PendingSpectatorId = NO_SELECTION;
@@ -216,8 +213,8 @@ public:
 	CMultiViewState m_MultiView;
 
 private:
+	// The session shown: a server, the dummy on it, or a demo.
 	CSessionId m_SessionId;
-	int m_Conn = 0;
 	CViewport m_Viewport;
 	vec2 m_CursorPosition = vec2(0.0f, 0.0f);
 	bool m_Spectating = false;
@@ -226,19 +223,25 @@ private:
 
 public:
 	CSessionId SessionId() const { return m_SessionId; }
-	int Conn() const { return m_Conn; }
-	CViewBinding Binding() const { return {this, m_SessionId, m_Conn}; }
-	void SetTarget(CSessionId SessionId, int Conn)
+	CViewBinding Binding() const { return {this, m_SessionId}; }
+	void SetTarget(CSessionId SessionId)
 	{
-		if(m_SessionId != SessionId || m_Conn != Conn)
+		if(m_SessionId != SessionId)
+			m_MultiView.Reset();
+		SwitchSeat(SessionId);
+	}
+	/**
+	 * Shows the other seat on the same server; what the view follows on the
+	 * server is kept.
+	 */
+	void SwitchSeat(CSessionId SessionId)
+	{
+		if(m_SessionId != SessionId)
 		{
 			m_SpectatorCursor.Reset();
 			m_SpectatorSelector.Reset();
 		}
-		if(m_SessionId != SessionId)
-			m_MultiView.Reset();
 		m_SessionId = SessionId;
-		m_Conn = Conn;
 	}
 	const CViewport &Viewport() const { return m_Viewport; }
 	void SetViewport(CViewport Viewport) { m_Viewport = Viewport; }

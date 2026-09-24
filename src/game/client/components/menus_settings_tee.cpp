@@ -55,10 +55,10 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	}
 
 	if(Client()->State() == IClient::STATE_ONLINE &&
-		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy))
+		GameClient()->GameState(GameClient()->SeatSessionId(m_Dummy)).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(GameClient()->SeatSessionId(m_Dummy)))
 	{
 		char aChangeInfo[128], aTimeLeft[32];
-		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
+		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(GameClient()->SeatSessionId(m_Dummy)).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(GameClient()->SeatSessionId(m_Dummy)) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
 		DoLabel(ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}
@@ -324,7 +324,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 			if(DoButton_Menu(&s_aEyeButtons[CurrentEyeEmote], "", 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, EyeButtonColor))
 			{
 				*pEmote = CurrentEyeEmote;
-				if((int)m_Dummy == GameClient()->ActiveConnection())
+				if((int)m_Dummy == GameClient()->InputSeat())
 					GameClient()->m_Emoticon.EyeEmote(CurrentEyeEmote);
 			}
 			GameClient()->m_Tooltips.DoToolTip(&s_aEyeButtons[CurrentEyeEmote], &Button, Localize("Choose default eyes when joining a server"));

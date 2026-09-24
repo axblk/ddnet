@@ -423,7 +423,7 @@ void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Specta
 {
 	const CGameState &GameState = Context.m_State;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(GameState.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(GameState.m_Seat);
 	if(pClientsByName == nullptr)
 		return;
 	GameClient()->m_Backdrop.DrawSurface(Spectators, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
@@ -460,7 +460,7 @@ void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Specta
 			break;
 		if(GameState.Client(ClientId).m_PlayerInfo.m_Team != TEAM_SPECTATORS)
 			continue;
-		const CClientPresentation *pClient = Presentation.Client(GameState.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(GameState.m_Seat, ClientId);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 
@@ -497,7 +497,7 @@ void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Specta
 				const char *pClanName = pClient->m_aClan;
 				if(pClanName[0] != '\0')
 				{
-					const CClientPresentation *pLocalClient = Presentation.Client(GameState.m_Conn, GameState.LocalClientId());
+					const CClientPresentation *pLocalClient = Presentation.Client(GameState.m_Seat, GameState.LocalClientId());
 					if(pLocalClient != nullptr && str_comp(pClanName, pLocalClient->m_aClan) == 0)
 					{
 						TextRender()->TextColor(color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor)));
@@ -581,7 +581,7 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 
 	const CGameState &GameState = Context.m_State;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByDDTeamScore = Presentation.ClientsByDDTeamScore(GameState.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByDDTeamScore = Presentation.ClientsByDDTeamScore(GameState.m_Seat);
 	if(pClientsByDDTeamScore == nullptr)
 		return;
 	const CNetObj_GameInfo *pGameInfoObj = GameState.HasGameInfo() ? &GameState.GameInfo() : nullptr;
@@ -719,7 +719,7 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 			const CNetObj_PlayerInfo &Info = SnapshotClient.m_PlayerInfo;
 			if(Info.m_Team != Team)
 				continue;
-			const CClientPresentation *pClient = Presentation.Client(GameState.m_Conn, ClientId);
+			const CClientPresentation *pClient = Presentation.Client(GameState.m_Seat, ClientId);
 			if(pClient == nullptr || !pClient->m_Active)
 				continue;
 			const bool IsDead = Context.m_Session.Protocol() == EGameProtocol::SIXUP && (GameState.Protocol7Client(ClientId).m_PlayerFlags & protocol7::PLAYERFLAG_DEAD) != 0;
@@ -938,7 +938,7 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 			// clan
 			{
 				ColorRGBA ClanColor = TextColor;
-				const CClientPresentation *pLocalClient = Presentation.Client(GameState.m_Conn, GameState.LocalClientId());
+				const CClientPresentation *pLocalClient = Presentation.Client(GameState.m_Seat, GameState.LocalClientId());
 				if(pLocalClient != nullptr && str_comp(pClient->m_aClan, pLocalClient->m_aClan) == 0)
 				{
 					ClanColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClSameClanColor));
@@ -1276,7 +1276,7 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 		return;
 	}
 	const bool Teams = pGameInfoObj != nullptr && (pGameInfoObj->m_GameFlags & GAMEFLAG_TEAMS) != 0;
-	const int NumPlayers = Teams ? std::max(Presentation.TeamSize(GameState.m_Conn, TEAM_RED), Presentation.TeamSize(GameState.m_Conn, TEAM_BLUE)) : Presentation.TeamSize(GameState.m_Conn, TEAM_RED);
+	const int NumPlayers = Teams ? std::max(Presentation.TeamSize(GameState.m_Seat, TEAM_RED), Presentation.TeamSize(GameState.m_Seat, TEAM_BLUE)) : Presentation.TeamSize(GameState.m_Seat, TEAM_RED);
 
 	const float ScoreboardWidth = !Teams && NumPlayers <= 16 ? ScoreboardSmallWidth : 750.0f;
 
@@ -1362,8 +1362,8 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 			}
 		};
 
-		RenderTeamScoreboard(RedScoreboard, TEAM_RED, Presentation.TeamSize(GameState.m_Conn, TEAM_RED));
-		RenderTeamScoreboard(BlueScoreboard, TEAM_BLUE, Presentation.TeamSize(GameState.m_Conn, TEAM_BLUE));
+		RenderTeamScoreboard(RedScoreboard, TEAM_RED, Presentation.TeamSize(GameState.m_Seat, TEAM_RED));
+		RenderTeamScoreboard(BlueScoreboard, TEAM_BLUE, Presentation.TeamSize(GameState.m_Seat, TEAM_BLUE));
 	}
 	else
 	{
@@ -1485,7 +1485,7 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 		CPlayerInteraction &Interaction = pLayout->m_aPlayers[ClientId];
 		if(!Interaction.m_Active)
 			continue;
-		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Seat, ClientId);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 
@@ -1558,7 +1558,7 @@ void CScoreboard::RenderApplicationOverlay(const CRenderContext &Context)
 bool CScoreboard::IsActive() const
 {
 	const CGameView &View = GameClient()->LegacyGameView();
-	return IsActive(GameClient()->SessionContext(View.SessionId()).GameState(View.Conn()), View);
+	return IsActive(GameClient()->GameState(View.SessionId()), View);
 }
 
 bool CScoreboard::IsActive(const CGameState &State, const CGameView &View) const
@@ -1588,7 +1588,7 @@ const char *CScoreboard::GetTeamName(const CRenderContext &Context, int Team) co
 	dbg_assert(Team == TEAM_RED || Team == TEAM_BLUE, "Team invalid");
 
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.m_Seat);
 	if(pClientsByScore == nullptr)
 		return nullptr;
 	int ClanPlayers = 0;
@@ -1599,7 +1599,7 @@ const char *CScoreboard::GetTeamName(const CRenderContext &Context, int Team) co
 			break;
 		if(Context.m_State.Client(ClientId).m_PlayerInfo.m_Team != Team)
 			continue;
-		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Seat, ClientId);
 		if(pClient == nullptr)
 			continue;
 
@@ -1634,7 +1634,7 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 	if(OriginView.Binding() != pPopupContext->m_Binding)
 		return CUi::POPUP_CLOSE_CURRENT;
 	CSessionPresentation &Presentation = pGameClient->SessionPresentation(pPopupContext->m_Binding.m_SessionId);
-	const CClientPresentation *pClient = Presentation.Client(pPopupContext->m_Binding.m_Conn, pPopupContext->m_ClientId);
+	const CClientPresentation *pClient = Presentation.Client(pGameClient->SeatOf(pPopupContext->m_Binding.m_SessionId), pPopupContext->m_ClientId);
 	if(!pClient->m_Active || str_comp(pClient->m_aName, pPopupContext->m_aName) != 0 || str_comp(pClient->m_aClan, pPopupContext->m_aClan) != 0)
 		return CUi::POPUP_CLOSE_CURRENT;
 

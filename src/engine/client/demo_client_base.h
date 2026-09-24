@@ -144,8 +144,6 @@ public:
 	 * Ends the program after the current frame.
 	 */
 	void Quit();
-	const char *PlayerName() const override { return ""; }
-	const char *DummyName() override { return ""; }
 
 #if defined(CONF_VIDEORECORDER)
 	CSessionId VideoExportSessionId() const override { return {}; }

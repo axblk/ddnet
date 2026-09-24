@@ -1490,7 +1490,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		pTitle = Localize("Existing Player");
 		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && ClientFrontend()->Points() > 50)
 		{
-			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), ClientFrontend()->Points());
+			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), GameClient()->PlayerName(), ClientFrontend()->Points());
 			pExtraText = aBuf;
 			TopAlign = true;
 		}
@@ -2281,7 +2281,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		TextBox.VSplitRight(60.0f, &TextBox, nullptr);
 		Ui()->DoLabel(&Label, Localize("Nickname"), 16.0f, TEXTALIGN_ML);
 		static CLineInput s_PlayerNameInput(g_Config.m_PlayerName, sizeof(g_Config.m_PlayerName));
-		s_PlayerNameInput.SetEmptyText(Client()->PlayerName());
+		s_PlayerNameInput.SetEmptyText(GameClient()->PlayerName());
 		Ui()->DoEditBox(&s_PlayerNameInput, &TextBox, 12.0f);
 	}
 	else if(m_Popup == POPUP_JOIN_TUTORIAL)
@@ -2981,7 +2981,7 @@ void CMenus::OnRenderApplicationOverlay()
 	if(Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		SetActive(true);
 
-	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->GameState(GameClient()->ActiveConnection()).m_Runtime.m_ServerMode == CGameState::SERVERMODE_PUREMOD)
+	if(Client()->State() == IClient::STATE_ONLINE && GameClient()->InputState().m_Runtime.m_ServerMode == CGameState::SERVERMODE_PUREMOD)
 	{
 		ClientNetwork()->Disconnect();
 		SetActive(true);

@@ -67,18 +67,17 @@ protected:
 	{
 		return const_cast<CSessionRuntime *>(this)->DemoSource(SessionId);
 	}
-	CConnection &Connection(CSessionId SessionId, int Conn)
+	CSessionSourceBase &ServerSource(CSessionId SessionId)
 	{
 		CSessionSourceBase &Source = SessionSource(SessionId);
-		if(Source.Type() == ESessionSourceType::NETWORK)
-			return static_cast<CNetworkSessionSource &>(Source).m_aConnections[Conn];
-		dbg_assert(Conn == IClient::CONN_MAIN, "a demo has only one connection");
-		return static_cast<CDemoSessionSource &>(Source).m_Connection;
+		return Source.m_pServerSource ? *Source.m_pServerSource : Source;
 	}
-	const CConnection &Connection(CSessionId SessionId, int Conn) const
+	const CSessionSourceBase &ServerSource(CSessionId SessionId) const
 	{
-		return const_cast<CSessionRuntime *>(this)->Connection(SessionId, Conn);
+		return const_cast<CSessionRuntime *>(this)->ServerSource(SessionId);
 	}
+	CConnection &Connection(CSessionId SessionId) { return SessionSource(SessionId).m_Connection; }
+	const CConnection &Connection(CSessionId SessionId) const { return SessionSource(SessionId).m_Connection; }
 	CDemoPlayer &DemoPlayer() { return m_pDemoSessionSource->m_DemoPlayer; }
 	const CDemoPlayer &DemoPlayer() const { return m_pDemoSessionSource->m_DemoPlayer; }
 
@@ -97,34 +96,33 @@ public:
 	IStorage *Storage() { return m_pStorage; }
 
 	CSessionId FocusedSessionId() const override { return m_SessionManager.FocusedId(); }
-	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
 	ESessionSourceType SessionType(CSessionId SessionId) const override { return SessionSource(SessionId).Type(); }
 	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
 	bool DemoPlaybackPaused(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Paused; }
 	float DemoPlaybackSpeed(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Speed; }
 	int64_t DemoPlaybackTime(CSessionId SessionId) const override;
-	int PrevGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PrevGameTick; }
-	int GameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_CurGameTick; }
-	int PredGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredTick; }
-	float IntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTick; }
-	float PredIntraGameTick(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_PredIntraTick; }
-	float IntraGameTickSincePrev(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameIntraTickSincePrev; }
-	float GameTickTime(CSessionId SessionId, int Conn) const override { return Connection(SessionId, Conn).m_GameTickTime; }
+	int PrevGameTick(CSessionId SessionId) const override { return Connection(SessionId).m_PrevGameTick; }
+	int GameTick(CSessionId SessionId) const override { return Connection(SessionId).m_CurGameTick; }
+	int PredGameTick(CSessionId SessionId) const override { return Connection(SessionId).m_PredTick; }
+	float IntraGameTick(CSessionId SessionId) const override { return Connection(SessionId).m_GameIntraTick; }
+	float PredIntraGameTick(CSessionId SessionId) const override { return Connection(SessionId).m_PredIntraTick; }
+	float IntraGameTickSincePrev(CSessionId SessionId) const override { return Connection(SessionId).m_GameIntraTickSincePrev; }
+	float GameTickTime(CSessionId SessionId) const override { return Connection(SessionId).m_GameTickTime; }
 
-	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return SessionSource(SessionId).m_ServerInfo; }
-	bool IsSixup(CSessionId SessionId) const override { return SessionSource(SessionId).m_Sixup; }
-	CTranslationContext &TranslationContext(CSessionId SessionId) override { return SessionSource(SessionId).m_TranslationContext; }
-	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return SessionSource(SessionId).m_TranslationContext; }
+	const CServerInfo &ServerInfo(CSessionId SessionId) const override { return ServerSource(SessionId).m_ServerInfo; }
+	bool IsSixup(CSessionId SessionId) const override { return ServerSource(SessionId).m_Sixup; }
+	CTranslationContext &TranslationContext(CSessionId SessionId) override { return ServerSource(SessionId).m_TranslationContext; }
+	const CTranslationContext &TranslationContext(CSessionId SessionId) const override { return ServerSource(SessionId).m_TranslationContext; }
 
-	int *GetInput(CSessionId SessionId, int Conn, int Tick) const override;
-	int GetPredictionTime(CSessionId SessionId, int Conn) override;
-	int GetPredictionTick(CSessionId SessionId, int Conn) override;
-	void GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
+	int *GetInput(CSessionId SessionId, int Tick) const override;
+	int GetPredictionTime(CSessionId SessionId) override;
+	int GetPredictionTick(CSessionId SessionId) override;
+	void GetSmoothTick(CSessionId SessionId, int64_t Now, int *pSmoothTick, float *pSmoothIntraTick, float MixAmount) override;
 
-	CSnapItem SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const override;
-	const void *SnapFindItem(CSessionId SessionId, int Conn, int SnapId, int Type, int Id) const override;
-	int SnapNumItems(CSessionId SessionId, int Conn, int SnapId) const override;
+	CSnapItem SnapGetItem(CSessionId SessionId, int SnapId, int Index) const override;
+	const void *SnapFindItem(CSessionId SessionId, int SnapId, int Type, int Id) const override;
+	int SnapNumItems(CSessionId SessionId, int SnapId) const override;
 	void SnapSetStaticsize(int ItemType, int Size) override;
 	void SnapSetStaticsize7(int ItemType, int Size) override;
 

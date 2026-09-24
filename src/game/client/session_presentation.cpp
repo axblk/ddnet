@@ -150,7 +150,7 @@ std::shared_ptr<CManagedTeeRenderInfo> CSessionPresentation::CreateClientTee(con
 void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 {
 	dbg_assert(Context.m_Session.Id() == m_SessionId, "presentation context does not match session presentation");
-	CStateClientPresentation *pStatePresentation = &m_aStates[Context.m_State.m_Conn];
+	CStateClientPresentation *pStatePresentation = &m_aStates[Context.m_State.m_Seat];
 
 	const CGameState &State = Context.m_State;
 	const bool NewMovementSnapshot = pStatePresentation->m_LastMovementSnapshotTick != State.SnapshotTick();
@@ -386,21 +386,21 @@ void CSessionPresentation::UpdateClients(const CPresentationContext &Context)
 	}
 }
 
-const CClientPresentation *CSessionPresentation::Client(int Conn, int ClientId) const
+const CClientPresentation *CSessionPresentation::Client(int Seat, int ClientId) const
 {
-	return in_range(ClientId, MAX_CLIENTS - 1) ? &m_aStates[Conn].m_aClients[ClientId] : nullptr;
+	return in_range(ClientId, MAX_CLIENTS - 1) ? &m_aStates[Seat].m_aClients[ClientId] : nullptr;
 }
 
-bool CSessionPresentation::GetSpectatorCount(int Conn, int &Count, int &LastZeroTick) const
+bool CSessionPresentation::GetSpectatorCount(int Seat, int &Count, int &LastZeroTick) const
 {
-	Count = m_aStates[Conn].m_SpectatorCount;
-	LastZeroTick = m_aStates[Conn].m_LastZeroSpectatorCountTick;
+	Count = m_aStates[Seat].m_SpectatorCount;
+	LastZeroTick = m_aStates[Seat].m_LastZeroSpectatorCountTick;
 	return true;
 }
 
-int CSessionPresentation::TeamSize(int Conn, int Team) const
+int CSessionPresentation::TeamSize(int Seat, int Team) const
 {
-	return Team >= TEAM_RED && Team <= TEAM_BLUE ? m_aStates[Conn].m_aTeamSize[Team] : 0;
+	return Team >= TEAM_RED && Team <= TEAM_BLUE ? m_aStates[Seat].m_aTeamSize[Team] : 0;
 }
 
 void CSessionPresentation::PrepareRender(const CRenderContext &Context, bool UsePredictedTime)

@@ -9,16 +9,17 @@
 
 #include <game/client/gameclient.h>
 
-int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn)
+int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven)
 {
+	const int Seat = SeatOf(SessionId);
 	CSnapshotBuilder Builder;
 	Builder.Init();
 
 	float LocalTime = Client()->LocalTime();
-	int GameTick = Sessions()->GameTick(SessionId, Conn);
+	int GameTick = Sessions()->GameTick(SessionId);
 	CTranslationContext &TranslationContext = Sessions()->TranslationContext(SessionId);
 	CGameSessionContext &SourceSession = SessionContext(SessionId);
-	CGameState &SourceState = SourceSession.GameState(Conn);
+	CGameState &SourceState = SourceSession.GameState(SessionId);
 
 	std::fill(std::begin(TranslationContext.m_apPlayerInfosRace), std::end(TranslationContext.m_apPlayerInfosRace), nullptr);
 
@@ -122,7 +123,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 			Info6.m_WarmupTimer = TranslationContext.m_GameStateEndTick7 - GameTick;
 
 		// hack to port 0.7 race timer to ddnet warmup gametimer hack
-		int TimerClientId = TranslationContext.m_aLocalClientId[Conn];
+		int TimerClientId = TranslationContext.m_aLocalClientId[Seat];
 		if(SpectatorId >= 0)
 			TimerClientId = SpectatorId;
 		const protocol7::CNetObj_PlayerInfoRace *pRaceInfo = TimerClientId == -1 ? nullptr : TranslationContext.m_apPlayerInfosRace[TimerClientId];
@@ -242,7 +243,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 				Builder.NewItem(NETEVENTTYPE_SOUNDWORLD, pItem7->Id(), &Sound, sizeof(Sound));
 			}
 
-			if(TranslationContext.m_aLocalClientId[Conn] != pItem7->Id())
+			if(TranslationContext.m_aLocalClientId[Seat] != pItem7->Id())
 			{
 				if(pChar7->m_TriggeredEvents & protocol7::COREEVENTFLAG_GROUND_JUMP)
 				{
@@ -274,7 +275,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 		{
 			const protocol7::CNetObj_PlayerInfo *pInfo7 = (const protocol7::CNetObj_PlayerInfo *)pItem7->Data();
 			CNetObj_PlayerInfo Info6 = {};
-			Info6.m_Local = TranslationContext.m_aLocalClientId[Conn] == pItem7->Id();
+			Info6.m_Local = TranslationContext.m_aLocalClientId[Seat] == pItem7->Id();
 			Info6.m_ClientId = pItem7->Id();
 			Info6.m_Team = 0;
 			if(pItem7->Id() >= 0 && pItem7->Id() < MAX_CLIENTS)
@@ -398,7 +399,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 
 			if(pInfo->m_Local)
 			{
-				TranslationContext.m_aLocalClientId[Conn] = ClientId;
+				TranslationContext.m_aLocalClientId[Seat] = ClientId;
 			}
 			CTranslationContext::CClientData &Client = TranslationContext.m_aClients[ClientId];
 			Client.m_Active = true;
@@ -411,7 +412,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 				Client.m_Country = CountryCode::DEFAULT;
 			}
 
-			ApplySkin7InfoFromSnapObj(SessionId, pInfo, ClientId, Conn);
+			ApplySkin7InfoFromSnapObj(SessionId, pInfo, ClientId);
 		}
 		else if(ItemType == protocol7::NETOBJTYPE_DE_GAMEINFO)
 		{
@@ -439,11 +440,12 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 	return Builder.FinishIfNoDroppedItems(pSnapDstSix);
 }
 
-int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn)
+int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo)
 {
+	const int Seat = SeatOf(SessionId);
 	CTranslationContext &TranslationContext = Sessions()->TranslationContext(SessionId);
 	CGameSessionContext &NetworkSession = SessionContext(SessionId);
-	CGameState &State = NetworkSession.GameState(Conn);
+	CGameState &State = NetworkSession.GameState(SessionId);
 	CSnapshotBuilder Builder;
 	Builder.Init7(pFrom);
 
@@ -456,7 +458,7 @@ int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapsho
 		const CGameState::CProtocol7ClientState &Protocol7Client = State.Protocol7Client(i);
 
 		protocol7::CNetObj_De_ClientInfo ClientInfoObj;
-		ClientInfoObj.m_Local = i == TranslationContext.m_aLocalClientId[Conn];
+		ClientInfoObj.m_Local = i == TranslationContext.m_aLocalClientId[Seat];
 		ClientInfoObj.m_Team = ClientData.m_Team;
 		StrToInts(ClientInfoObj.m_aName, std::size(ClientInfoObj.m_aName), ClientData.m_aName);
 		StrToInts(ClientInfoObj.m_aClan, std::size(ClientInfoObj.m_aClan), ClientData.m_aClan);

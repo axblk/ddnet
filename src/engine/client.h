@@ -6,7 +6,6 @@
 #include "kernel.h"
 #include "message.h"
 
-#include <base/dbg.h>
 #include <base/hash.h>
 
 #include <engine/client/enums.h>
@@ -104,8 +103,6 @@ protected:
 
 	TLoadingCallback m_LoadingCallback = nullptr;
 
-	int m_ActiveConnection = 0;
-
 public:
 	enum
 	{
@@ -114,18 +111,6 @@ public:
 		CONN_CONTACT,
 		NUM_CONNS,
 	};
-
-	int ActiveConnection() const { return m_ActiveConnection; }
-	virtual void SetActiveConnection(int Conn)
-	{
-		dbg_assert(Conn == CONN_MAIN || Conn == CONN_DUMMY, "invalid active game connection");
-		m_ActiveConnection = Conn;
-	}
-	/**
-	 * The connection of a session that takes input: the active one of a
-	 * network session, the only one of a demo.
-	 */
-	virtual int ActiveConnection(CSessionId SessionId) const = 0;
 
 	//
 	/**
@@ -175,10 +160,6 @@ public:
 
 	virtual void UpdateAndSwap() = 0;
 
-	//
-	virtual const char *PlayerName() const = 0;
-	virtual const char *DummyName() = 0;
-
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
@@ -207,6 +188,17 @@ public:
 	// actions
 	virtual void Connect(const char *pAddress, const char *pPassword = nullptr) = 0;
 	virtual void Disconnect() = 0;
+
+	/**
+	 * The session the server is played in.
+	 */
+	virtual CSessionId NetworkSessionId() const = 0;
+	/**
+	 * The session the dummy plays in, on the server of the network session.
+	 */
+	virtual CSessionId DummySessionId() const = 0;
+	virtual const char *PlayerName() const = 0;
+	virtual const char *DummyName() = 0;
 
 	// dummy
 	virtual void DummyDisconnect(const char *pReason) = 0;
@@ -272,7 +264,7 @@ public:
 	}
 
 	virtual const char *LatestVersion() const = 0;
-	virtual bool ConnectionProblems(CSessionId SessionId, int Conn) const = 0;
+	virtual bool ConnectionProblems(CSessionId SessionId) const = 0;
 
 	// DDRace
 
@@ -412,7 +404,7 @@ public:
 	virtual void OnRconLine(const char *pLine) = 0;
 	virtual void OnInit() = 0;
 	virtual void InvalidateSnapshot(CSessionId SessionId) = 0;
-	virtual void OnNewSnapshot(CSessionId SessionId, int Conn) = 0;
+	virtual void OnNewSnapshot(CSessionId SessionId) = 0;
 	virtual void OnEnterGame(CSessionId SessionId) = 0;
 	virtual void OnShutdown() = 0;
 	virtual void OnRenderPrepare() = 0;
@@ -429,13 +421,13 @@ public:
 	virtual void OnConnected(CSessionId SessionId) = 0;
 	virtual void OnSessionClosed(CSessionId SessionId) = 0;
 	virtual void OnSessionFocused(CSessionId SessionId) = 0;
-	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn) = 0;
-	virtual void OnPredict(CSessionId SessionId, int Conn) = 0;
+	virtual void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker) = 0;
+	virtual void OnPredict(CSessionId SessionId) = 0;
 	virtual void OnActivateEditor() = 0;
 	virtual void OnWindowResize() = 0;
 	virtual bool IsSoundReady() = 0;
 
-	virtual int OnSnapInput(int *pData, int Conn, bool Force) = 0;
+	virtual int OnSnapInput(CSessionId SessionId, int *pData, bool Force) = 0;
 	virtual void OnDummySwap() = 0;
 	virtual void SendDummyInfo(bool Start) = 0;
 
@@ -462,9 +454,9 @@ public:
 
 	virtual int ClientVersion7() const = 0;
 
-	virtual void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) = 0;
-	virtual int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) = 0;
-	virtual int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn) = 0;
+	virtual void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId) = 0;
+	virtual int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo) = 0;
+	virtual int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven) = 0;
 	virtual void ProcessDemoSnapshot(CSnapshot *pSnap) = 0;
 
 	virtual void InitializeLanguage() = 0;

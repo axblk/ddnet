@@ -60,14 +60,14 @@ void CControls::OnReset()
 		SessionState.Input().Reset();
 }
 
-void CControls::ResetInput(int Conn)
+void CControls::ResetInput(int Seat)
 {
-	GameClient()->GameState(Conn).Input().ReleaseGameplay();
+	GameClient()->SessionContext().SeatState(Seat).Input().ReleaseGameplay();
 }
 
 CGameState::CInputState &CControls::ActiveInput()
 {
-	return GameClient()->GameState(GameClient()->ActiveConnection()).Input();
+	return GameClient()->InputState().Input();
 }
 
 struct CInputState
@@ -218,13 +218,13 @@ vec2 CControls::CursorWorldPos()
 	return Center + (TargetPos - Center) * GameClient()->m_Camera.Zoom();
 }
 
-void CControls::SendPracticeTeleportToCursor(int Conn)
+void CControls::SendPracticeTeleportToCursor(int Seat)
 {
 	const vec2 CursorPos = CursorWorldPos();
 	CNetMsg_Cl_PracticeTeleport Msg;
 	Msg.m_X = round_to_int(CursorPos.x);
 	Msg.m_Y = round_to_int(CursorPos.y);
-	ClientNetwork()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Seat, &Msg, MSGFLAG_VITAL);
 }
 
 void CControls::OnMessage(int Msg, void *pRawMsg)
@@ -281,7 +281,7 @@ int CControls::SnapInput(int *pData)
 	if(!(Input.m_InputData.m_PlayerFlags & PLAYERFLAG_PLAYING))
 	{
 		if(!GameClient()->FocusedGameInfo().m_BugDDRaceInput)
-			ResetInput(GameClient()->ActiveConnection());
+			ResetInput(GameClient()->InputSeat());
 
 		mem_copy(pData, &Input.m_InputData, sizeof(Input.m_InputData));
 
@@ -295,7 +295,7 @@ int CControls::SnapInput(int *pData)
 	}
 	else
 	{
-		const int ActiveConn = GameClient()->ActiveConnection();
+		const int ActiveSeat = GameClient()->InputSeat();
 		Input.m_InputData.m_TargetX = (int)Input.m_MousePos.x;
 		Input.m_InputData.m_TargetY = (int)Input.m_MousePos.y;
 
@@ -322,8 +322,8 @@ int CControls::SnapInput(int *pData)
 		// dummy copy moves
 		for(CGameState &TargetState : GameClient()->SessionContext().GameStates())
 		{
-			const CInputRoute &Route = GameClient()->SessionContext().m_aInputRoutes[TargetState.m_Conn];
-			if(Route.m_Policy != EInputPolicy::COPY_MOVES || Route.m_Source != ActiveConn)
+			const CInputRoute &Route = GameClient()->SessionContext().m_aInputRoutes[TargetState.m_Seat];
+			if(Route.m_Policy != EInputPolicy::COPY_MOVES || Route.m_Source != ActiveSeat)
 				continue;
 			CNetObj_PlayerInput &TargetInput = TargetState.Input().m_InputData;
 
@@ -350,7 +350,7 @@ int CControls::SnapInput(int *pData)
 		{
 			for(CGameState &SessionState : GameClient()->SessionContext().GameStates())
 			{
-				if(SessionState.m_Conn == ActiveConn)
+				if(SessionState.m_Seat == ActiveSeat)
 					continue;
 				CNetObj_PlayerInput &OtherInput = SessionState.Input().m_InputData;
 				OtherInput.m_Jump = g_Config.m_ClDummyJump;

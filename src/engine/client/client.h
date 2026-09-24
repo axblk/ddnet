@@ -5,6 +5,7 @@
 
 #include "client_core.h"
 #include "graph.h"
+#include "local_seats.h"
 #include "render_trace.h"
 #include "session_sources.h"
 #include "smooth_time.h"
@@ -74,6 +75,12 @@ class CClient : public CClientCore, public IClientNetwork, public IClientFronten
 	IUpdater *m_pUpdater = nullptr;
 
 	CNetworkSessionSource *m_pNetworkSessionSource = nullptr;
+	// The dummy plays in a session of its own, on the server of the network
+	// session. What belongs to the server is kept in the network session.
+	CSessionId m_DummySessionId;
+	CNetworkSessionSource *m_pDummySessionSource = nullptr;
+	// The seat that played last update, to notice a dummy swap.
+	int m_LastDummy = 0;
 #if defined(CONF_VIDEORECORDER)
 	// A second demo session that renders queued exports in the background,
 	// so that watching a demo and exporting one do not share a player.
@@ -198,8 +205,14 @@ class CClient : public CClientCore, public IClientNetwork, public IClientFronten
 	{
 		return const_cast<CClient *>(this)->NetworkSource(SessionId);
 	}
-	CConnection &Connection(int Conn) { return m_pNetworkSessionSource->m_aConnections[Conn]; }
-	const CConnection &Connection(int Conn) const { return m_pNetworkSessionSource->m_aConnections[Conn]; }
+	CLocalSeats Seats() const { return CLocalSeats(m_NetworkSessionId, m_DummySessionId); }
+	// The session of a seat on the server: the player or the dummy.
+	CSessionId SeatSessionId(int Conn) const { return Seats().SessionOf(Conn); }
+	CSessionId InputSessionId() const { return Seats().InputSessionId(FocusedSessionId(), g_Config.m_ClDummy); }
+	CNetworkSessionSource &SeatSource(int Conn) { return Conn == CONN_DUMMY ? *m_pDummySessionSource : *m_pNetworkSessionSource; }
+	const CNetworkSessionSource &SeatSource(int Conn) const { return Conn == CONN_DUMMY ? *m_pDummySessionSource : *m_pNetworkSessionSource; }
+	CConnection &Connection(int Conn) { return SeatSource(Conn).m_Connection; }
+	const CConnection &Connection(int Conn) const { return SeatSource(Conn).m_Connection; }
 	using CClientCore::Connection;
 
 	std::deque<std::shared_ptr<CDemoEdit>> m_EditJobs;
@@ -292,7 +305,7 @@ public:
 	void SendReady(int Conn);
 	void SendMapRequest();
 
-	bool RconAuthed() const override { return Connection(ActiveConnection()).m_RconAuthed != 0; }
+	bool RconAuthed() const override { return Connection(g_Config.m_ClDummy).m_RconAuthed != 0; }
 	bool UseTempRconCommands() const override { return m_pNetworkSessionSource->m_UseTempRconCommands != 0; }
 	void RconAuth(const char *pName, const char *pPassword, bool Dummy = g_Config.m_ClDummy) override;
 	void Rcon(const char *pCmd) override;
@@ -302,7 +315,7 @@ public:
 	float GotMaplistPercentage() const override;
 	const std::vector<std::string> &MaplistEntries() const override { return m_pNetworkSessionSource->m_vMaplistEntries; }
 
-	bool ConnectionProblems(CSessionId SessionId, int Conn) const override;
+	bool ConnectionProblems(CSessionId SessionId) const override;
 
 	IGraphics::CTextureHandle GetDebugFont() override;
 	const char *News() const override { return m_aNews; }
@@ -328,6 +341,9 @@ public:
 	void StopSession(CSessionId SessionId, const char *pReason);
 	void DisconnectWithReason(const char *pReason) { StopSession(m_NetworkSessionId, pReason); }
 	void Disconnect() override;
+
+	CSessionId NetworkSessionId() const override { return m_NetworkSessionId; }
+	CSessionId DummySessionId() const override { return m_DummySessionId; }
 
 	void DummyDisconnect(const char *pReason) override;
 	void DummyConnect() override;

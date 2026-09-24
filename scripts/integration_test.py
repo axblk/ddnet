@@ -1109,6 +1109,67 @@ def client_can_connect_7(test_env):
 	client.wait_for_exit()
 
 
+def dump_sessions(client):
+	client.command("dbg_dump_sessions")
+	count = int(client.wait_for_log_prefix("client/session: sessions=", timeout=5).line.removeprefix("client/session: sessions="))
+	result = {}
+	for _ in range(count):
+		line = client.wait_for_log_prefix("client/session: session=", timeout=5).line
+		fields = dict(field.split("=", 1) for field in line.removeprefix("client/session: ").split())
+		result[int(fields["seat"])] = fields
+	return result
+
+
+def wait_for_sessions(client, condition, description):
+	for _ in range(50):
+		sessions = dump_sessions(client)
+		if condition(sessions):
+			return sessions
+		sleep(0.1)
+	raise AssertionError(f"{description}: {sessions}")
+
+
+def client_dummy_plays_in_its_own_session_impl(test_env, address):
+	client = test_env.client()
+	server = test_env.server()
+	wait_for_startup([client, server])
+	client.command(f"connect {address(server)}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	# Seat 0 is the player, seat 1 the dummy, -1 whatever is not played on the server.
+	sessions = wait_for_sessions(client, lambda s: int(s[0]["tick"]) > 0 and s[0]["input"] == "1" and s[1]["state"] == "0", "the server session did not get the input")
+
+	client.command("dummy_connect")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	sessions = wait_for_sessions(client, lambda s: s[1]["state"] == "3" and int(s[1]["tick"]) > 0 and s[1]["map"] == s[0]["map"], "the dummy session did not become ready beside the server session")
+	# Connecting the dummy selects it, like upstream.
+	sessions = wait_for_sessions(client, lambda s: s[1]["input"] == "1" and s[0]["input"] == "0", "the dummy did not get the input")
+
+	client.command("cl_dummy 0")
+	sessions = wait_for_sessions(client, lambda s: s[0]["input"] == "1" and s[1]["input"] == "0", "cl_dummy 0 did not give the input back to the player")
+	ticks = {seat: int(fields["tick"]) for seat, fields in sessions.items() if seat >= 0}
+
+	client.command("cl_dummy 1")
+	wait_for_sessions(client, lambda s: s[1]["input"] == "1" and s[0]["input"] == "0", "cl_dummy 1 did not give the dummy the input")
+
+	server.command("kick 1")
+	wait_for_sessions(client, lambda s: s[1]["state"] == "0" and s[0]["input"] == "1" and int(s[0]["tick"]) > ticks[0], "a kicked dummy did not hand the input back to the player")
+
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+
+
+@test
+def client_dummy_plays_in_its_own_session(test_env):
+	client_dummy_plays_in_its_own_session_impl(test_env, lambda server: f"localhost:{server.port}")
+
+
+@test
+def client_dummy_plays_in_its_own_session_7(test_env):
+	client_dummy_plays_in_its_own_session_impl(test_env, lambda server: f"tw-0.7+udp://127.0.0.1:{server.port}")
+
+
 def vanilla_dm_client_can_connect_impl(test_env, address, expected_sixup):
 	client = test_env.client()
 	# Tutorial ships in both maps/ and maps7/, unlike the classic DM maps.

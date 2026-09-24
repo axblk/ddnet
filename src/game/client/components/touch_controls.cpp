@@ -864,7 +864,7 @@ void CTouchControls::CancelController(std::span<const IInput::CTouchFingerState>
 bool CTouchControls::UpdateController(CGameView &View, std::span<const IInput::CTouchFingerState> vTouchFingerStates, bool AcceptInput)
 {
 	CGameSessionContext &Session = GameClient()->SessionContext(View.SessionId());
-	CGameState &State = Session.GameState(View.Conn());
+	CGameState &State = Session.GameState(View.SessionId());
 	if(!MatchesController(Session, State, View))
 	{
 		CancelController(vTouchFingerStates);

@@ -18,6 +18,7 @@
 #include <engine/client.h>
 #include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
+#include <engine/client/local_seats.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/graphics.h>
@@ -205,7 +206,6 @@ private:
 		CGameSessionContext *m_pSession = nullptr;
 		CGameState *m_pState = nullptr;
 		CGameView *m_pView = nullptr;
-		int m_Conn = IClient::CONN_MAIN;
 		bool m_Audible = false;
 		CGameTickInfo m_Time;
 		EPresentationPlayback m_Playback = EPresentationPlayback::PLAYING;
@@ -216,10 +216,10 @@ private:
 	CUi m_UI;
 	CRaceHelper m_RaceHelper;
 
-	void ProcessEvents(CSessionId SessionId, int Conn);
-	void ProcessAirJumpEffects(CSessionId SessionId, int Conn);
-	void BuildSnapState(CSessionId SessionId, int Conn);
-	void ProcessSnapshot(CSessionId SessionId, int Conn);
+	void ProcessEvents(CSessionId SessionId);
+	void ProcessAirJumpEffects(CSessionId SessionId);
+	void BuildSnapState(CSessionId SessionId);
+	void ProcessSnapshot(CSessionId SessionId);
 	void StoreMatch(CSessionId SessionId, const CStoredMatch &Match, const CStoredMatch *pReplacedObserved);
 	void FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, const CGameState &State, EMatchTermination Termination);
 	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
@@ -236,7 +236,7 @@ private:
 	bool m_PreparedIsolatedVideoOutput = false;
 	bool m_PreparedOfflineVideoAudio = false;
 	void UpdateNetworkPlayerInfo();
-	void AddChatLine(CSessionId SessionId, int Conn, int ClientId, int Team, const char *pText);
+	void AddChatLine(CSessionId SessionId, int ClientId, int Team, const char *pText);
 	int64_t SessionMessageTime(CSessionId SessionId) const;
 	CLocalPlayerProfile PlayerProfile(int Conn) const;
 
@@ -263,7 +263,8 @@ private:
 public:
 	/**
 	 * Whether the sounds of a session are heard, and in which mixer: the live
-	 * one, or the offline one a queued video export records.
+	 * one, or the offline one a queued video export records. The dummy is
+	 * heard with its server.
 	 */
 	bool AudioForSession(CSessionId SessionId, bool &Offline) const;
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
@@ -281,10 +282,52 @@ public:
 	 * connection.
 	 */
 	bool DummyConnected() const { return m_pClientNetwork != nullptr && m_pClientNetwork->DummyConnected(); }
-	int ActiveConnection() const { return Client()->ActiveConnection(Sessions()->FocusedSessionId()); }
+	/**
+	 * The seats of the local players on the server, both invalid in a
+	 * program without a connection.
+	 */
+	CLocalSeats Seats() const;
+	CSessionId NetworkSessionId() const { return Seats().NetworkSessionId(); }
+	CSessionId DummySessionId() const { return Seats().DummySessionId(); }
+	CSessionId SeatSessionId(int Seat) const { return Seats().SessionOf(Seat); }
+	/**
+	 * The seat a session is played in on the server, the player's for a
+	 * session that is not played there.
+	 */
+	/**
+	 * The names the local players take, empty in a program without a
+	 * connection.
+	 */
+	const char *PlayerName() const { return m_pClientNetwork != nullptr ? m_pClientNetwork->PlayerName() : ""; }
+	const char *DummyName() const { return m_pClientNetwork != nullptr ? m_pClientNetwork->DummyName() : ""; }
+	/**
+	 * Whether a session is played on the server: the player's or the
+	 * dummy's.
+	 */
+	bool IsNetworkSeat(CSessionId SessionId) const { return Seats().SeatOf(SessionId) != CLocalSeats::NO_SEAT; }
+	int SeatOf(CSessionId SessionId) const { return SessionId == DummySessionId() ? IClient::CONN_DUMMY : IClient::CONN_MAIN; }
+	/**
+	 * The session that gets the input and is predicted: the seat the dummy
+	 * switch selects while the server is in focus, the focused session
+	 * otherwise.
+	 */
+	CSessionId InputSessionId() const { return Seats().InputSessionId(Sessions()->FocusedSessionId(), g_Config.m_ClDummy); }
+	/**
+	 * The context of the server or demo a session is played on: the dummy
+	 * shares the one of its server.
+	 */
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
 	CGameSessionContext &SessionContext() const { return SessionContext(Sessions()->FocusedSessionId()); }
-	CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return FindSessionEntry(m_vpSessionContexts, SessionId); }
+	CGameSessionContext *FindSessionContext(CSessionId SessionId) const;
+	/**
+	 * The session of the server or demo a session is played on: the network
+	 * session for the dummy, the session itself otherwise.
+	 */
+	CSessionId ContextSessionId(CSessionId SessionId) const
+	{
+		const CGameSessionContext *pContext = FindSessionContext(SessionId);
+		return pContext != nullptr ? pContext->Id() : SessionId;
+	}
 	const CStoredMatch *LiveStats(CSessionId SessionId) const;
 	CSessionPresentation &SessionPresentation(CSessionId SessionId) const;
 	void StopMapSounds();
@@ -297,8 +340,16 @@ public:
 	class IStorage *Storage() const { return m_pStorage; }
 	class IConfigManager *ConfigManager() const { return m_pConfigManager; }
 	class CConfig *Config() const { return m_pConfig; }
-	CGameState &GameState(int Conn) const { return SessionContext().GameState(Conn); }
+	CGameState &GameState(CSessionId SessionId) const { return SessionContext(SessionId).GameState(SessionId); }
+	CGameState &InputState() const { return GameState(InputSessionId()); }
+	// The seat of the session that gets the input, 0 for a demo.
+	int InputSeat() const { return SeatOf(InputSessionId()); }
 	CGameView &LegacyGameView();
+	/**
+	 * Points a view at a session. The other seat on the same server keeps
+	 * what the view follows there.
+	 */
+	void TargetView(CGameView &View, CSessionId SessionId) const;
 	class IConsole *Console() { return m_pConsole; }
 	class ITextRender *TextRender() const { return m_pTextRender; }
 	class IDemoPlayer *DemoPlayer() const { return m_pDemoPlayer; }
@@ -359,17 +410,17 @@ public:
 
 	/**
 	 * Our prediction for the local character at tick
-	 * `IClient::PredGameTick(SessionId, Conn) - 1`.
+	 * `ISessions::PredGameTick(SessionId) - 1`.
 	 */
 	CCharacterCore m_PredictedPrevChar;
 	/**
 	 * Our prediction for the local character at tick
-	 * `IClient::PredGameTick(SessionId, Conn)`.
+	 * `ISessions::PredGameTick(SessionId)`.
 	 */
 	CCharacterCore m_PredictedChar;
 
-	// The snapshot of the connection the client shows.
-	CGameState::CSnapState &Snap() const { return GameState(ActiveConnection()).m_Snap; }
+	// The snapshot of the session that gets the input.
+	CGameState::CSnapState &Snap() const { return InputState().m_Snap; }
 
 	std::bitset<RECORDER_MAX> m_ActiveRecordings;
 
@@ -451,17 +502,17 @@ public:
 	void OnStateChange(int NewState, int OldState) override;
 	template<typename T>
 	void ApplySkin7InfoFromGameMsg(CSessionId SessionId, const T *pMsg, int ClientId, CGameState &State);
-	void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId, int Conn) override;
-	int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo, int Conn) override;
-	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker, int Conn);
-	int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven, int Conn) override;
-	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker, int Conn) override;
+	void ApplySkin7InfoFromSnapObj(CSessionId SessionId, const protocol7::CNetObj_De_ClientInfo *pObj, int ClientId) override;
+	int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo) override;
+	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker);
+	int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven) override;
+	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker) override;
 	void InvalidateSnapshot(CSessionId SessionId) override;
-	void OnNewSnapshot(CSessionId SessionId, int Conn) override;
-	void OnPredict(CSessionId SessionId, int Conn) override;
+	void OnNewSnapshot(CSessionId SessionId) override;
+	void OnPredict(CSessionId SessionId) override;
 	void OnActivateEditor() override;
 	void OnDummySwap() override;
-	int OnSnapInput(int *pData, int Conn, bool Force) override;
+	int OnSnapInput(CSessionId SessionId, int *pData, bool Force) override;
 	void OnShutdown() override;
 	void OnEnterGame(CSessionId SessionId) override;
 	void OnRconType(bool UsernameReq) override;
@@ -500,7 +551,7 @@ public:
 	const char *DDNetVersionStr() const override;
 	int ClientVersion7() const override;
 
-	void DoTeamChangeMessage7(CSessionId SessionId, int Conn, const CGameState &State, const char *pName, int ClientId, int Team, const char *pPrefix = "");
+	void DoTeamChangeMessage7(CSessionId SessionId, const CGameState &State, const char *pName, int ClientId, int Team, const char *pPrefix = "");
 
 	// actions
 	// TODO: move these
@@ -519,8 +570,8 @@ public:
 
 	// DDRace
 
-	const CTeamsCore &FocusedTeams() const { return GameState(ActiveConnection()).Teams(); }
-	const CGameInfo &FocusedGameInfo() const { return GameState(ActiveConnection()).CoreGameInfo(); }
+	const CTeamsCore &FocusedTeams() const { return InputState().Teams(); }
+	const CGameInfo &FocusedGameInfo() const { return InputState().CoreGameInfo(); }
 
 	int LastRaceTick() const;
 	int CurrentRaceTime() const;
@@ -547,9 +598,9 @@ public:
 	void FormatClientId(int ClientId, char (&aClientId)[16], int HighestClientId) const;
 
 	// The worlds of the connection the client shows and predicts.
-	CGameWorld &GameWorld() const { return GameState(ActiveConnection()).m_GameWorld; }
-	CGameWorld &PredictedWorld() const { return GameState(ActiveConnection()).m_PredictedWorld; }
-	CGameWorld &PrevPredictedWorld() const { return GameState(ActiveConnection()).m_PrevPredictedWorld; }
+	CGameWorld &GameWorld() const { return InputState().m_GameWorld; }
+	CGameWorld &PredictedWorld() const { return InputState().m_PredictedWorld; }
+	CGameWorld &PrevPredictedWorld() const { return InputState().m_PrevPredictedWorld; }
 
 	std::vector<SSwitchers> &Switchers() const { return GameWorld().m_Core.m_vSwitchers; }
 	std::vector<SSwitchers> &PredSwitchers() const { return PredictedWorld().m_Core.m_vSwitchers; }
@@ -759,7 +810,7 @@ public:
 
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
-	void SnapCollectEntities(CSessionId SessionId, int Conn);
+	void SnapCollectEntities(CSessionId SessionId);
 
 	class CImageAsset
 	{
@@ -811,9 +862,9 @@ private:
 	void UpdateManagedTeeRenderInfos();
 
 	void UpdateInputRoutes(CGameSessionContext &Session) const;
-	void UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State, int Conn);
+	void UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State);
 	void UpdatePrediction();
-	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int Conn, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
+	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
 	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);
 	void HandlePredictedEvents(int Tick);
 
@@ -829,9 +880,10 @@ private:
 
 	void DetectStrongHook(CGameState::CRuntimeState &Runtime) const;
 
-	vec2 GetSmoothPos(CSessionId SessionId, const CGameState &State, int Conn, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current) const;
+	vec2 GetSmoothPos(CSessionId SessionId, const CGameState &State, int ClientId, int64_t Now, const CCharacterCore &Prev, const CCharacterCore &Current) const;
 
-	int m_PreviousActiveConn = -1;
+	// The session that got the input before the last dummy swap.
+	CSessionId m_PreviousInputSessionId;
 
 	CTuningParams *TuningList() const { return MapContext().TuningList(); }
 

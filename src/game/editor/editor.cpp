@@ -4845,7 +4845,7 @@ void CEditor::HandleWriterFinishJobs()
 	// send rcon.. if we can
 	if(ClientNetwork()->RconAuthed() && g_Config.m_EdAutoMapReload)
 	{
-		const CServerInfo &CurrentServerInfo = Sessions()->ServerInfo(Sessions()->NetworkSessionId());
+		const CServerInfo &CurrentServerInfo = Sessions()->ServerInfo(ClientNetwork()->NetworkSessionId());
 		if(net_addr_is_local(&ClientNetwork()->ServerAddress()))
 		{
 			char aMapName[MAX_MAP_LENGTH];

@@ -89,7 +89,7 @@ bool CStatboard::IsRenderable(const CRenderContext &Context) const
 		return false;
 	const CSessionStatsState &Stats = Context.m_Session.m_Stats;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(Context.m_State.m_Seat);
 	if(pClientsByScore == nullptr)
 		return false;
 	const bool TeamPlay = Context.m_State.HasGameInfo() && (Context.m_State.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
@@ -98,7 +98,7 @@ bool CStatboard::IsRenderable(const CRenderContext &Context) const
 	{
 		if(ClientId < 0)
 			break;
-		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(Context.m_State.m_Seat, ClientId);
 		if(pClient == nullptr || !Stats.Client(ClientId).IsActive())
 			continue;
 		if(pClient->m_Team == TEAM_RED || (TeamPlay && pClient->m_Team == TEAM_BLUE))
@@ -164,7 +164,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 	const CSessionStatsState &Stats = Context.m_Session.m_Stats;
 	const CGameState &State = Context.m_State;
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());
-	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.m_Conn);
+	const std::array<int, MAX_CLIENTS> *pClientsByScore = Presentation.ClientsByScore(State.m_Seat);
 	if(pClientsByScore == nullptr)
 		return;
 	const float StatboardWidth = 400 * 3.0f * Context.AspectRatio(Graphics()->ScreenAspect());
@@ -182,7 +182,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 	{
 		if(ClientId < 0)
 			break;
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 		if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_RED)
 			continue;
 		aPlayers[NumPlayers++] = ClientId;
@@ -195,7 +195,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 		{
 			if(ClientId < 0)
 				break;
-			const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+			const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 			if(pClient == nullptr || !Stats.Client(ClientId).IsActive() || pClient->m_Team != TEAM_BLUE)
 				continue;
 			aPlayers[NumPlayers++] = ClientId;
@@ -308,7 +308,7 @@ void CStatboard::RenderGlobalStats(const CRenderContext &Context)
 		const int ClientId = aPlayers[j];
 		CPlayerText &PlayerText = m_aPlayerTexts[ClientId];
 		const CSessionClientStats *pStats = &Stats.Client(ClientId);
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 		dbg_assert(pClient != nullptr, "statboard client presentation missing");
 
 		if(State.LocalClientId() == ClientId || (Context.m_View.IsSpectating() && ClientId == Context.m_View.SpectatorId()))
@@ -619,7 +619,7 @@ void CStatboard::FormatStats(char *pDest, size_t DestSize)
 			pStats->m_Suicides, // Suicides
 			KillRatio, // Kill ratio
 			pStats->m_Frags - pStats->m_Deaths, // Net
-			pStats->GetFPM(Sessions()->GameTick(SessionId, GameClient()->ActiveConnection()), Sessions()->GameTickSpeed()), // FPM
+			pStats->GetFPM(Sessions()->GameTick(GameClient()->InputSessionId()), Sessions()->GameTickSpeed()), // FPM
 			pStats->m_CurrentSpree, // CurSpree
 			pStats->m_BestSpree, // BestSpree
 			aWeaponFD, // WeaponFD

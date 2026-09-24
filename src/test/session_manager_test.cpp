@@ -1,5 +1,6 @@
 #include "test.h"
 
+#include <engine/client/local_seats.h>
 #include <engine/client/session.h>
 
 #include <gtest/gtest.h>
@@ -53,4 +54,40 @@ TEST(SessionManager, StopKeepsReasonUntilTaken)
 	EXPECT_STREQ(Source.ErrorString(), "broken");
 	EXPECT_TRUE(Source.SetState(ESessionState::OFFLINE));
 	EXPECT_STREQ(Source.ErrorString(), "");
+}
+
+TEST(LocalSeats, TheDummyPlaysInASessionOfItsOwn)
+{
+	const CSessionId NetworkId(1);
+	const CSessionId DemoId(2);
+	const CSessionId DummyId(3);
+	const CLocalSeats Seats(NetworkId, DummyId);
+
+	EXPECT_EQ(Seats.SessionOf(CLocalSeats::SEAT_PLAYER), NetworkId);
+	EXPECT_EQ(Seats.SessionOf(CLocalSeats::SEAT_DUMMY), DummyId);
+	EXPECT_EQ(Seats.SeatOf(NetworkId), CLocalSeats::SEAT_PLAYER);
+	EXPECT_EQ(Seats.SeatOf(DummyId), CLocalSeats::SEAT_DUMMY);
+	EXPECT_EQ(Seats.SeatOf(DemoId), CLocalSeats::NO_SEAT);
+	EXPECT_EQ(Seats.SeatOf(CSessionId()), CLocalSeats::NO_SEAT);
+
+	// A program without a connection has no seats at all.
+	const CLocalSeats NoSeats;
+	EXPECT_EQ(NoSeats.SeatOf(CSessionId()), CLocalSeats::NO_SEAT);
+	EXPECT_EQ(NoSeats.SeatOf(DemoId), CLocalSeats::NO_SEAT);
+	EXPECT_EQ(NoSeats.InputSessionId(DemoId, CLocalSeats::SEAT_DUMMY), DemoId);
+}
+
+TEST(LocalSeats, InputGoesToTheDummySwitchOnlyWhileTheServerIsInFocus)
+{
+	const CSessionId NetworkId(1);
+	const CSessionId DemoId(2);
+	const CSessionId DummyId(3);
+	const CLocalSeats Seats(NetworkId, DummyId);
+
+	// The session that gets the input is also the only one predicted.
+	EXPECT_EQ(Seats.InputSessionId(NetworkId, CLocalSeats::SEAT_PLAYER), NetworkId);
+	EXPECT_EQ(Seats.InputSessionId(NetworkId, CLocalSeats::SEAT_DUMMY), DummyId);
+	EXPECT_EQ(Seats.InputSessionId(DemoId, CLocalSeats::SEAT_PLAYER), DemoId);
+	EXPECT_EQ(Seats.InputSessionId(DemoId, CLocalSeats::SEAT_DUMMY), DemoId);
+	EXPECT_EQ(Seats.InputSessionId(CSessionId(), CLocalSeats::SEAT_DUMMY), CSessionId());
 }

@@ -92,7 +92,7 @@ void CGameFrontend::PopupWarning(const char *pTopic, const char *pBody, const ch
 
 void CGameFrontend::OnSessionConnected(CSessionId SessionId)
 {
-	if(SessionId == Sessions()->NetworkSessionId())
+	if(SessionId == GameClient()->NetworkSessionId())
 		m_LocalServer.RconAuthIfPossible();
 }
 

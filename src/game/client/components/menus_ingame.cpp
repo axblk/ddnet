@@ -143,7 +143,7 @@ void CMenus::RenderGame(CUIRect MainView)
 	bool Spec = false;
 	if(GameClient()->Snap().m_LocalClientId >= 0)
 	{
-		const CGameState &State = GameClient()->GameState(GameClient()->ActiveConnection());
+		const CGameState &State = GameClient()->InputState();
 		const CGameState::CClientSnapshot &LocalClient = State.Client(GameClient()->Snap().m_LocalClientId);
 		if(LocalClient.m_HasDDNetPlayer)
 		{
@@ -161,7 +161,7 @@ void CMenus::RenderGame(CUIRect MainView)
 			static CButtonContainer s_SpectateButton;
 			if(!ClientNetwork()->DummyConnecting() && DoButton_Menu(&s_SpectateButton, Localize("Spectate"), 0, &Button))
 			{
-				if(GameClient()->ActiveConnection() == 0 || ClientNetwork()->DummyConnected())
+				if(GameClient()->InputSeat() == 0 || ClientNetwork()->DummyConnected())
 				{
 					GameClient()->SendSwitchTeam(TEAM_SPECTATORS);
 					SetActive(false);
@@ -711,7 +711,7 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 				"My IGN: %s\n",
 				CurrentServerInfo.m_aName,
 				CurrentServerInfo.m_aAddress,
-				Client()->PlayerName());
+				GameClient()->PlayerName());
 			Input()->SetClipboardText(aInfo);
 		}
 	}

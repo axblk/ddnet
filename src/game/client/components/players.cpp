@@ -131,7 +131,7 @@ float CPlayers::GetPlayerTargetAngle(
 	}
 	else if(LocalInput)
 	{
-		const CInputRoute &Route = Session.m_aInputRoutes[pInputState->m_Conn];
+		const CInputRoute &Route = Session.m_aInputRoutes[pInputState->m_Seat];
 		const CNetObj_PlayerInput &Input = Route.m_Policy == EInputPolicy::HAMMER ? Route.m_HammerInput : pInputState->Input().m_InputData;
 		return angle(vec2(Input.m_TargetX, Input.m_TargetY));
 	}
@@ -259,7 +259,7 @@ void CPlayers::RenderHookCollLine(
 			break;
 		}
 	}
-	const bool CopyMoves = pSessionLocalState != nullptr && Context.m_Session.m_aInputRoutes[pSessionLocalState->m_Conn].m_Policy == EInputPolicy::COPY_MOVES;
+	const bool CopyMoves = pSessionLocalState != nullptr && Context.m_Session.m_aInputRoutes[pSessionLocalState->m_Seat].m_Policy == EInputPolicy::COPY_MOVES;
 	if(CopyMoves)
 		Aim = false;
 
@@ -1073,7 +1073,7 @@ void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 	{
 		if(ClientId == RenderLastId || !IsPlayerInfoAvailable(State, ClientId))
 			continue;
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
@@ -1081,7 +1081,7 @@ void CPlayers::UpdatePresentation(const CPresentationContext &Context)
 	}
 	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, RenderLastId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, RenderLastId);
 		if(pClient != nullptr && pClient->m_Active)
 		{
 			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);
@@ -1130,7 +1130,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 		{
 			continue;
 		}
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 		const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(ClientId);
@@ -1138,7 +1138,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 	}
 	if(LocalClientId != -1 && IsPlayerInfoAvailable(State, LocalClientId))
 	{
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, LocalClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, LocalClientId);
 		if(pClient != nullptr && pClient->m_Active)
 		{
 			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(LocalClientId);
@@ -1157,7 +1157,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 		{
 			continue;
 		}
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, ClientId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, ClientId);
 		if(pClient == nullptr || !pClient->m_Active)
 			continue;
 
@@ -1167,7 +1167,7 @@ void CPlayers::OnRender(const CRenderContext &Context)
 	}
 	if(RenderLastId != -1 && IsPlayerInfoAvailable(State, RenderLastId))
 	{
-		const CClientPresentation *pClient = Presentation.Client(State.m_Conn, RenderLastId);
+		const CClientPresentation *pClient = Presentation.Client(State.m_Seat, RenderLastId);
 		if(pClient != nullptr && pClient->m_Active)
 		{
 			const CGameState::CRenderedClient &RenderedClient = State.RenderedClient(RenderLastId);

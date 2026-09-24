@@ -402,17 +402,28 @@ TEST(GameState, GeneratedDemoPlaysHeadlessly)
 	EXPECT_TRUE(pStorage->RemoveFile(pFilename, IStorage::TYPE_SAVE));
 }
 
-TEST(SessionState, GameStatesFollowConnections)
+TEST(SessionState, GameStatesFollowSeats)
 {
-	const auto pNetwork = std::make_unique<CGameSessionContext>(CSessionId(1), NUM_DUMMIES);
-	const auto pDemo = std::make_unique<CGameSessionContext>(CSessionId(2), 1);
+	const auto pNetwork = std::make_unique<CGameSessionContext>(CSessionId(1), CSessionId(3));
+	const auto pDemo = std::make_unique<CGameSessionContext>(CSessionId(2));
 	EXPECT_EQ(pNetwork->GameStates().size(), 2U);
-	EXPECT_EQ(pNetwork->GameState(1).m_Conn, 1);
+	EXPECT_EQ(pNetwork->SeatState(1).m_Seat, 1);
+	EXPECT_EQ(pNetwork->SeatState(1).m_SessionId, CSessionId(3));
+	EXPECT_EQ(&pNetwork->GameState(CSessionId(3)), &pNetwork->SeatState(1));
+	EXPECT_EQ(&pNetwork->GameState(CSessionId(1)), &pNetwork->SeatState(0));
 	EXPECT_EQ(pDemo->GameStates().size(), 1U);
-	EXPECT_EQ(pDemo->GameState(0).m_Conn, 0);
+	EXPECT_EQ(pDemo->SeatState(0).m_Seat, 0);
+	EXPECT_EQ(pDemo->SeatState(0).m_SessionId, CSessionId(2));
+
+	// The dummy shares the server's context, a demo has none.
+	EXPECT_TRUE(pNetwork->Contains(CSessionId(3)));
+	EXPECT_FALSE(pNetwork->Contains(CSessionId(2)));
+	EXPECT_FALSE(pDemo->Contains(CSessionId(3)));
+	EXPECT_EQ(pDemo->FindGameState(CSessionId()), nullptr);
+	EXPECT_EQ(pNetwork->FindGameState(CSessionId()), nullptr);
 
 	pNetwork->m_Stats.Client(4).m_Frags = 3;
-	pNetwork->GameState(0).Reset();
+	pNetwork->SeatState(0).Reset();
 	EXPECT_EQ(pNetwork->m_Stats.Client(4).m_Frags, 3);
 }
 
@@ -492,14 +503,14 @@ TEST(SessionState, ChatKeepsTheNewestAndQueuesMessages)
 	Chat.UnregisterCommand("load");
 	EXPECT_EQ(Chat.Commands().size(), 1);
 
-	EXPECT_TRUE(Chat.Enqueue(0, 0, "first"));
-	EXPECT_TRUE(Chat.Enqueue(1, 1, "second"));
-	EXPECT_TRUE(Chat.Enqueue(0, 0, "third"));
-	EXPECT_FALSE(Chat.Enqueue(1, 1, "overflow"));
-	EXPECT_EQ(Chat.Pending().m_Conn, 0);
+	EXPECT_TRUE(Chat.Enqueue(CSessionId(1), 0, "first"));
+	EXPECT_TRUE(Chat.Enqueue(CSessionId(3), 1, "second"));
+	EXPECT_TRUE(Chat.Enqueue(CSessionId(1), 0, "third"));
+	EXPECT_FALSE(Chat.Enqueue(CSessionId(3), 1, "overflow"));
+	EXPECT_EQ(Chat.Pending().m_SessionId, CSessionId(1));
 	EXPECT_EQ(Chat.Pending().m_Text, "first");
 	Chat.PopPending();
-	EXPECT_EQ(Chat.Pending().m_Conn, 1);
+	EXPECT_EQ(Chat.Pending().m_SessionId, CSessionId(3));
 	EXPECT_EQ(Chat.Pending().m_Text, "second");
 
 	Chat.Reset();
@@ -585,8 +596,8 @@ TEST(SessionState, VotesKeepOptionsAcrossVotes)
 
 TEST(GameView, PresentationContextCombinesVisibleWorldRects)
 {
-	const auto pSession = std::make_unique<CGameSessionContext>(CSessionId(4), 1);
-	CGameState &State = pSession->GameState(0);
+	const auto pSession = std::make_unique<CGameSessionContext>(CSessionId(4));
+	CGameState &State = pSession->SeatState(0);
 	auto pClients = std::make_unique<CClients>();
 	(*pClients)[1].m_HasPlayerInfo = true;
 	(*pClients)[1].m_PlayerInfo.m_Local = 1;
@@ -610,7 +621,7 @@ TEST(GameView, PresentationContextCombinesVisibleWorldRects)
 TEST(GameView, RetargetingResetsWhatBelongsToTheOldTarget)
 {
 	CGameView View;
-	View.SetTarget(CSessionId(1), 0);
+	View.SetTarget(CSessionId(1));
 	View.m_EmoticonSelector.m_Active = true;
 	View.m_EmoticonSelector.m_SelectedEmote = 3;
 	View.m_SpectatorSelector.m_Active = true;
@@ -620,12 +631,13 @@ TEST(GameView, RetargetingResetsWhatBelongsToTheOldTarget)
 	View.m_MultiView.m_Active = true;
 	View.m_MultiView.m_aSelected[7] = true;
 
-	View.SetTarget(CSessionId(1), 0);
+	View.SetTarget(CSessionId(1));
 	EXPECT_TRUE(View.m_SpectatorCursor.IsAvailable());
 	EXPECT_TRUE(View.m_SpectatorSelector.m_Active);
 
-	View.SetTarget(CSessionId(1), 1);
-	EXPECT_EQ(View.Binding(), (CViewBinding{&View, CSessionId(1), 1}));
+	// The dummy on the same server keeps what the view follows there.
+	View.SwitchSeat(CSessionId(3));
+	EXPECT_EQ(View.Binding(), (CViewBinding{&View, CSessionId(3)}));
 	EXPECT_TRUE(View.m_EmoticonSelector.m_Active);
 	EXPECT_FALSE(View.m_SpectatorSelector.m_Active);
 	EXPECT_EQ(View.m_SpectatorSelector.m_PendingSpectatorId, CGameView::CSpectatorSelectorState::NO_SELECTION);
@@ -633,7 +645,7 @@ TEST(GameView, RetargetingResetsWhatBelongsToTheOldTarget)
 	EXPECT_EQ(View.m_SpectatorCursor.m_CursorOwnerId, -1);
 	EXPECT_TRUE(View.m_MultiView.m_Active);
 
-	View.SetTarget(CSessionId(2), 1);
+	View.SetTarget(CSessionId(2));
 	EXPECT_FALSE(View.m_MultiView.m_Active);
 	EXPECT_FALSE(View.m_MultiView.m_aSelected[7]);
 }

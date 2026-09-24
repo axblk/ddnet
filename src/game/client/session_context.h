@@ -246,7 +246,8 @@ public:
 
 	struct CPendingMessage
 	{
-		int m_Conn = 0;
+		// The session of the local player that says it.
+		CSessionId m_SessionId;
 		int m_Team = 0;
 		std::string m_Text;
 	};
@@ -325,11 +326,11 @@ public:
 		return m_vCommands;
 	}
 	const std::vector<CCommand> &Commands() const { return m_vCommands; }
-	bool Enqueue(int Conn, int Team, const char *pText)
+	bool Enqueue(CSessionId SessionId, int Team, const char *pText)
 	{
 		if(m_PendingMessages.size() >= MAX_PENDING)
 			return false;
-		m_PendingMessages.push_back({Conn, Team, pText});
+		m_PendingMessages.push_back({SessionId, Team, pText});
 		return true;
 	}
 	bool HasPending() const { return !m_PendingMessages.empty(); }
@@ -483,13 +484,19 @@ public:
 	}
 };
 
+/**
+ * What the game keeps of one server or demo. The state of a server holds the
+ * game states of both seats played on it, the player and the dummy, each in
+ * its own session; what belongs to the server, like the map, the chat and the
+ * votes, is kept once for both.
+ */
 class CGameSessionContext
 {
 	CSessionId m_Id;
 	std::string m_MapName;
 	EGameProtocol m_Protocol;
 	bool m_ServerCapAnyPlayerFlag = false;
-	// One per connection: main and dummy of the network session, the only one of a demo.
+	// One per seat: player and dummy of a server, the only one of a demo.
 	std::array<CGameState, NUM_DUMMIES> m_aGameStates;
 	int m_NumGameStates;
 
@@ -504,16 +511,23 @@ public:
 	CMatchReportAssembler m_MatchReportAssembler;
 	int64_t m_LastLiveStatsRequest = 0;
 	CSessionVoteState m_Vote;
+	// Indexed by seat.
 	std::array<CInputRoute, NUM_DUMMIES> m_aInputRoutes;
 
-	CGameSessionContext(CSessionId Id, int NumGameStates) :
+	/**
+	 * @param Id The session of the server or demo, played in seat 0.
+	 * @param DummyId The session of the dummy on the server, invalid for a
+	 *                demo.
+	 */
+	explicit CGameSessionContext(CSessionId Id, CSessionId DummyId = CSessionId()) :
 		m_Id(Id),
 		m_Protocol(EGameProtocol::SIX),
-		m_NumGameStates(NumGameStates)
+		m_NumGameStates(DummyId.IsValid() ? NUM_DUMMIES : 1)
 	{
-		dbg_assert(NumGameStates >= 1 && NumGameStates <= NUM_DUMMIES, "invalid number of game states");
-		for(int Conn = 0; Conn < NUM_DUMMIES; Conn++)
-			m_aGameStates[Conn].m_Conn = Conn;
+		for(int Seat = 0; Seat < NUM_DUMMIES; Seat++)
+			m_aGameStates[Seat].m_Seat = Seat;
+		m_aGameStates[0].m_SessionId = Id;
+		m_aGameStates[1].m_SessionId = DummyId;
 	}
 
 	CSessionId Id() const { return m_Id; }
@@ -528,12 +542,40 @@ public:
 	}
 	std::span<CGameState> GameStates() { return {m_aGameStates.data(), static_cast<size_t>(m_NumGameStates)}; }
 	std::span<const CGameState> GameStates() const { return {m_aGameStates.data(), static_cast<size_t>(m_NumGameStates)}; }
-	CGameState &GameState(int Conn)
+	/**
+	 * The game state of a session played here, `nullptr` if the session is
+	 * not one of them.
+	 */
+	CGameState *FindGameState(CSessionId SessionId)
 	{
-		dbg_assert(Conn >= 0 && Conn < m_NumGameStates, "invalid game state");
-		return m_aGameStates[Conn];
+		if(!SessionId.IsValid())
+			return nullptr;
+		for(CGameState &State : GameStates())
+		{
+			if(State.m_SessionId == SessionId)
+				return &State;
+		}
+		return nullptr;
 	}
-	const CGameState &GameState(int Conn) const { return const_cast<CGameSessionContext *>(this)->GameState(Conn); }
+	const CGameState *FindGameState(CSessionId SessionId) const { return const_cast<CGameSessionContext *>(this)->FindGameState(SessionId); }
+	CGameState &GameState(CSessionId SessionId)
+	{
+		CGameState *pState = FindGameState(SessionId);
+		dbg_assert(pState != nullptr, "session is not played here");
+		return *pState;
+	}
+	const CGameState &GameState(CSessionId SessionId) const { return const_cast<CGameSessionContext *>(this)->GameState(SessionId); }
+	CGameState &SeatState(int Seat)
+	{
+		dbg_assert(Seat >= 0 && Seat < m_NumGameStates, "invalid seat");
+		return m_aGameStates[Seat];
+	}
+	const CGameState &SeatState(int Seat) const { return const_cast<CGameSessionContext *>(this)->SeatState(Seat); }
+	/**
+	 * Whether a session is played here: the server or demo, or the dummy on
+	 * the server.
+	 */
+	bool Contains(CSessionId SessionId) const { return FindGameState(SessionId) != nullptr; }
 };
 
 #endif // GAME_CLIENT_SESSION_CONTEXT_H

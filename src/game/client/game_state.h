@@ -4,6 +4,7 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/client/session.h>
 #include <engine/shared/snapshot.h>
 
 #include <generated/protocol.h>
@@ -21,7 +22,6 @@
 class ISessions;
 class CMapContext;
 class CParticles;
-class CSessionId;
 
 class CGameInfo
 {
@@ -513,8 +513,10 @@ public:
 		CNetObj_EntityEx m_EntityEx = {};
 	};
 
-	// The connection of its session the state belongs to.
-	int m_Conn = 0;
+	// The session the state is played in, and its seat on the server: 0 for
+	// the player, 1 for the dummy.
+	CSessionId m_SessionId;
+	int m_Seat = 0;
 	CSnapState m_Snap = {};
 	CGameWorld m_GameWorld;
 	CGameWorld m_PredictedWorld;
@@ -565,15 +567,17 @@ public:
 
 	void Reset();
 	void InitPrediction(CMapContext &MapContext);
-	void ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, int Conn);
+	void ApplySnapshot(const ISessions &Sessions);
 	void ApplySnapshotData(int Tick, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
 	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);
 	void ApplyTuning(const CTuningParams &Tuning, int TuneZone = 0);
 	void SetTeam(int ClientId, int Team);
 	void SetNumDDRaceTeams(int NumDDRaceTeams) { m_Teams.m_NumDDRaceTeams = NumDDRaceTeams; }
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
-	void Predict(const ISessions &Sessions, CSessionId SessionId, int Conn);
+	void Predict(const ISessions &Sessions);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
+	// Leaves the clients to be drawn from snapshots until the next prediction.
+	void ClearPrediction();
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	// The full prediction keeps its world across snapshots, the simple one here rebuilds it from each.
 	void SetFullyPredicted(bool FullyPredicted) { m_FullyPredicted = FullyPredicted; }

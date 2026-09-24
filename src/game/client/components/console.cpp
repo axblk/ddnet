@@ -373,8 +373,8 @@ void CGameConsole::CInstance::UpdateCompletionSuggestions()
 	// Command completion
 	char aSearch[IConsole::CMDLINE_LENGTH];
 	GetCommand(m_aCompletionBuffer, aSearch);
-	const bool RemoteConsoleCompletion = m_Type == CGameConsole::CONSOLETYPE_REMOTE && m_pGameConsole->Client()->RconAuthed();
-	const bool UseTempCommands = RemoteConsoleCompletion && m_pGameConsole->Client()->UseTempRconCommands();
+	const bool RemoteConsoleCompletion = m_Type == CGameConsole::CONSOLETYPE_REMOTE && m_pGameConsole->ClientNetwork()->RconAuthed();
+	const bool UseTempCommands = RemoteConsoleCompletion && m_pGameConsole->ClientNetwork()->UseTempRconCommands();
 	m_pGameConsole->m_pConsole->PossibleCommands(aSearch, m_CompletionFlagmask, UseTempCommands, CollectPossibleCommandsCallback, &m_vpCommandSuggestions);
 	SortCompletions(m_vpCommandSuggestions, aSearch);
 
@@ -426,7 +426,7 @@ void CGameConsole::CInstance::UpdateCompletionSuggestions()
 
 void CGameConsole::CInstance::ExecuteLine(const char *pLine)
 {
-	if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->Client()->RconAuthed())
+	if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->ClientNetwork()->RconAuthed())
 	{
 		const char *pPrevEntry = m_History.Last();
 		if(pPrevEntry == nullptr || str_comp(pPrevEntry, pLine) != 0)
@@ -447,9 +447,9 @@ void CGameConsole::CInstance::ExecuteLine(const char *pLine)
 	}
 	else
 	{
-		if(m_pGameConsole->Client()->RconAuthed())
+		if(m_pGameConsole->ClientNetwork()->RconAuthed())
 		{
-			m_pGameConsole->Client()->Rcon(pLine);
+			m_pGameConsole->ClientNetwork()->Rcon(pLine);
 		}
 		else
 		{
@@ -460,7 +460,7 @@ void CGameConsole::CInstance::ExecuteLine(const char *pLine)
 			}
 			else
 			{
-				m_pGameConsole->Client()->RconAuth(m_aUser, pLine, g_Config.m_ClDummy);
+				m_pGameConsole->ClientNetwork()->RconAuth(m_aUser, pLine, g_Config.m_ClDummy);
 				m_UserGot = false;
 			}
 		}
@@ -523,7 +523,7 @@ bool CGameConsole::CInstance::OnInput(const IInput::CEvent &Event)
 		{
 			if(!m_Searching)
 			{
-				if(!m_Input.IsEmpty() || (m_UsernameReq && !m_pGameConsole->Client()->RconAuthed() && !m_UserGot))
+				if(!m_Input.IsEmpty() || (m_UsernameReq && !m_pGameConsole->ClientNetwork()->RconAuthed() && !m_UserGot))
 				{
 					ExecuteLine(m_Input.GetString());
 					m_Input.Clear();
@@ -543,7 +543,7 @@ bool CGameConsole::CInstance::OnInput(const IInput::CEvent &Event)
 			{
 				SelectNextSearchMatch(-1);
 			}
-			else if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->Client()->RconAuthed())
+			else if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->ClientNetwork()->RconAuthed())
 			{
 				if(m_pHistoryEntry)
 				{
@@ -568,7 +568,7 @@ bool CGameConsole::CInstance::OnInput(const IInput::CEvent &Event)
 			{
 				SelectNextSearchMatch(1);
 			}
-			else if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->Client()->RconAuthed())
+			else if(m_Type == CONSOLETYPE_LOCAL || m_pGameConsole->ClientNetwork()->RconAuthed())
 			{
 				if(m_pHistoryEntry)
 					m_pHistoryEntry = m_History.Next(m_pHistoryEntry);
@@ -591,7 +591,7 @@ bool CGameConsole::CInstance::OnInput(const IInput::CEvent &Event)
 				// Command completion
 				int CompletionEnumerationCount = m_vpCommandSuggestions.size();
 
-				if(m_Type == CGameConsole::CONSOLETYPE_LOCAL || m_pGameConsole->Client()->RconAuthed())
+				if(m_Type == CGameConsole::CONSOLETYPE_LOCAL || m_pGameConsole->ClientNetwork()->RconAuthed())
 				{
 					if(CompletionEnumerationCount)
 					{
@@ -747,7 +747,7 @@ bool CGameConsole::CInstance::OnInput(const IInput::CEvent &Event)
 			StrCopyUntilSpace(aBuf, sizeof(aBuf), aCmd);
 
 			const IConsole::ICommandInfo *pCommand = m_pGameConsole->m_pConsole->GetCommandInfo(aBuf, m_CompletionFlagmask,
-				m_Type != CGameConsole::CONSOLETYPE_LOCAL && m_pGameConsole->Client()->RconAuthed() && m_pGameConsole->Client()->UseTempRconCommands());
+				m_Type != CGameConsole::CONSOLETYPE_LOCAL && m_pGameConsole->ClientNetwork()->RconAuthed() && m_pGameConsole->ClientNetwork()->UseTempRconCommands());
 			if(pCommand)
 			{
 				m_IsCommand = true;
@@ -891,7 +891,7 @@ bool CGameConsole::CInstance::IsInputHidden() const
 		return false;
 	if(m_pGameConsole->Client()->State() != IClient::STATE_ONLINE || m_Searching)
 		return false;
-	if(m_pGameConsole->Client()->RconAuthed())
+	if(m_pGameConsole->ClientNetwork()->RconAuthed())
 		return false;
 	return m_UserGot || !m_UsernameReq;
 }
@@ -1087,7 +1087,7 @@ void CGameConsole::OnReset()
 int CGameConsole::PossibleMaps(const char *pStr, IConsole::FPossibleCallback pfnCallback, void *pUser)
 {
 	int Index = 0;
-	for(const std::string &Entry : Client()->MaplistEntries())
+	for(const std::string &Entry : ClientNetwork()->MaplistEntries())
 	{
 		if(str_find_nocase(Entry.c_str(), pStr))
 		{
@@ -1176,7 +1176,7 @@ void CGameConsole::Prompt(char (&aPrompt)[32])
 	{
 		if(Client()->State() == IClient::STATE_LOADING || Client()->State() == IClient::STATE_ONLINE)
 		{
-			if(Client()->RconAuthed())
+			if(ClientNetwork()->RconAuthed())
 				str_copy(aPrompt, "rcon> ");
 			else if(pConsole->m_UsernameReq && !pConsole->m_UserGot)
 				str_format(aPrompt, sizeof(aPrompt), "%s> ", Localize("Enter Username"));
@@ -1429,7 +1429,7 @@ void CGameConsole::OnRenderApplicationOverlay()
 		}
 
 		// render possible commands
-		if(!pConsole->m_Searching && (m_ConsoleType == CONSOLETYPE_LOCAL || Client()->RconAuthed()) && !pConsole->m_Input.IsEmpty())
+		if(!pConsole->m_Searching && (m_ConsoleType == CONSOLETYPE_LOCAL || ClientNetwork()->RconAuthed()) && !pConsole->m_Input.IsEmpty())
 		{
 			pConsole->UpdateCompletionSuggestions();
 
@@ -1681,15 +1681,15 @@ void CGameConsole::OnRenderApplicationOverlay()
 		m_StatusText.Update(TextRender(), aBuf, FONT_SIZE);
 		m_StatusText.Render(TextRender(), vec2(10.0f, FONT_SIZE / 2.0f), TextRender()->DefaultTextColor());
 
-		if(m_ConsoleType == CONSOLETYPE_REMOTE && (Client()->ReceivingRconCommands() || Client()->ReceivingMaplist()))
+		if(m_ConsoleType == CONSOLETYPE_REMOTE && (ClientNetwork()->ReceivingRconCommands() || ClientNetwork()->ReceivingMaplist()))
 		{
-			const float Percentage = Client()->ReceivingRconCommands() ? Client()->GotRconCommandsPercentage() : Client()->GotMaplistPercentage();
+			const float Percentage = ClientNetwork()->ReceivingRconCommands() ? ClientNetwork()->GotRconCommandsPercentage() : ClientNetwork()->GotMaplistPercentage();
 			SProgressSpinnerProperties ProgressProps;
 			ProgressProps.m_Progress = Percentage;
 			Ui()->RenderProgressSpinner(vec2(Screen.w / 4.0f + FONT_SIZE / 2.f, FONT_SIZE), FONT_SIZE / 2.f, ProgressProps);
 
 			char aLoading[128];
-			str_copy(aLoading, Client()->ReceivingRconCommands() ? Localize("Loading commands…") : Localize("Loading maps…"));
+			str_copy(aLoading, ClientNetwork()->ReceivingRconCommands() ? Localize("Loading commands…") : Localize("Loading maps…"));
 			if(Percentage > 0)
 			{
 				char aPercentage[8];

@@ -55,7 +55,7 @@ class INotifications;
 class IStorage;
 class IUpdater;
 
-class CClient : public IClient
+class CClient : public IClient, public IClientNetwork
 {
 	// Hands what the demo player of one session reads to the client, together
 	// with the session it belongs to.
@@ -73,6 +73,7 @@ class CClient : public IClient
 	};
 
 	// needed interfaces
+	IKernel *Kernel() { return IClient::Kernel(); }
 	IConfigManager *m_pConfigManager = nullptr;
 	CConfig *m_pConfig = nullptr;
 	IConsole *m_pConsole = nullptr;

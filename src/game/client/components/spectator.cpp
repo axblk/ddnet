@@ -687,12 +687,12 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 			Msg.m_SpecMode = protocol7::SPEC_PLAYER;
 			Msg.m_SpectatorId = SpectatorId;
 		}
-		Client()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL, true);
+		ClientNetwork()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL, true);
 		return;
 	}
 	CNetMsg_Cl_SetSpectatorMode Msg;
 	Msg.m_SpectatorId = SpectatorId;
-	Client()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Selector.m_OriginConnection, &Msg, MSGFLAG_VITAL);
 }
 
 void CSpectator::Spectate(int SpectatorId)

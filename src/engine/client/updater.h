@@ -46,6 +46,7 @@ class CUpdater : public IUpdater
 	friend class CUpdaterFetchTask;
 
 	class IClient *m_pClient;
+	class IClientNetwork *m_pClientNetwork;
 	class IStorage *m_pStorage;
 	class IEngine *m_pEngine;
 	class IHttp *m_pHttp;

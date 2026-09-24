@@ -51,14 +51,14 @@ void CVoting::Callvote(const char *pType, const char *pValue, const char *pReaso
 		Msg.m_pValue = pValue;
 		Msg.m_pReason = pReason;
 		Msg.m_Force = false;
-		Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL, true);
+		ClientNetwork()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL, true);
 		return;
 	}
 	CNetMsg_Cl_CallVote Msg = {nullptr};
 	Msg.m_pType = pType;
 	Msg.m_pValue = pValue;
 	Msg.m_pReason = pReason;
-	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
 void CVoting::CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote)
@@ -69,7 +69,7 @@ void CVoting::CallvoteSpectate(int ClientId, const char *pReason, bool ForceVote
 	{
 		char aBuf[128];
 		str_format(aBuf, sizeof(aBuf), "set_team %d -1", ClientId);
-		Client()->Rcon(aBuf);
+		ClientNetwork()->Rcon(aBuf);
 	}
 	else
 	{
@@ -87,7 +87,7 @@ void CVoting::CallvoteKick(int ClientId, const char *pReason, bool ForceVote)
 	{
 		char aBuf[128];
 		str_format(aBuf, sizeof(aBuf), "force_vote kick %d %s", ClientId, pReason);
-		Client()->Rcon(aBuf);
+		ClientNetwork()->Rcon(aBuf);
 	}
 	else
 	{
@@ -114,7 +114,7 @@ void CVoting::CallvoteOption(int OptionId, const char *pReason, bool ForceVote)
 		pDst = aBuf + str_length(aBuf);
 		str_escape(&pDst, pReason, aBuf + sizeof(aBuf));
 		str_append(aBuf, "\"");
-		Client()->Rcon(aBuf);
+		ClientNetwork()->Rcon(aBuf);
 	}
 	else
 		Callvote("option", pOption->c_str(), pReason);
@@ -132,7 +132,7 @@ void CVoting::RemovevoteOption(int OptionId)
 	char *pDst = aBuf + str_length(aBuf);
 	str_escape(&pDst, pOption->c_str(), aBuf + sizeof(aBuf));
 	str_append(aBuf, "\"");
-	Client()->Rcon(aBuf);
+	ClientNetwork()->Rcon(aBuf);
 }
 
 void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
@@ -146,7 +146,7 @@ void CVoting::AddvoteOption(const char *pDescription, const char *pCommand)
 	pDst = aBuf + str_length(aBuf);
 	str_escape(&pDst, pCommand, aBuf + sizeof(aBuf));
 	str_append(aBuf, "\"");
-	Client()->Rcon(aBuf);
+	ClientNetwork()->Rcon(aBuf);
 }
 
 void CVoting::Vote(int v)
@@ -154,7 +154,7 @@ void CVoting::Vote(int v)
 	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
 		return;
 	CNetMsg_Cl_Vote Msg = {v};
-	Client()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Client()->ActiveConnection(), &Msg, MSGFLAG_VITAL);
 }
 
 bool CVoting::IsVoting() const

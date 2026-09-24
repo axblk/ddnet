@@ -30,6 +30,11 @@ protected:
 	class IClient *Client() const;
 
 	/**
+	 * Get the interface of the client's connection to a server.
+	 */
+	class IClientNetwork *ClientNetwork() const;
+
+	/**
 	 * Get the kernel interface.
 	 */
 	class IKernel *Kernel() const;

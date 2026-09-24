@@ -139,6 +139,11 @@ class IClient *CComponentInterfaces::Client() const
 	return m_pClient->Client();
 }
 
+class IClientNetwork *CComponentInterfaces::ClientNetwork() const
+{
+	return m_pClient->ClientNetwork();
+}
+
 class IHttp *CComponentInterfaces::Http() const
 {
 	return m_pClient->Http();

@@ -150,11 +150,11 @@ void CLocalServer::RconAuthIfPossible()
 {
 	if(!IsServerRunning() ||
 		m_aRconPassword[0] == '\0' ||
-		!net_addr_is_local(&Client()->ServerAddress()))
+		!net_addr_is_local(&ClientNetwork()->ServerAddress()))
 	{
 		return;
 	}
-	Client()->RconAuth(DEFAULT_SAVED_RCON_USER, m_aRconPassword, g_Config.m_ClDummy);
+	ClientNetwork()->RconAuth(DEFAULT_SAVED_RCON_USER, m_aRconPassword, g_Config.m_ClDummy);
 }
 
 void CLocalServer::Connect()

@@ -226,7 +226,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 
 	char aBuf[128];
 	const IUpdater::EUpdaterState State = Updater()->GetCurrentState();
-	const bool NeedUpdate = str_comp(Client()->LatestVersion(), "0");
+	const bool NeedUpdate = str_comp(ClientNetwork()->LatestVersion(), "0");
 
 	// Whatever the updater puts here -- a button or a progress bar -- sits on the
 	// background map like the buttons above it do.
@@ -256,7 +256,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 
 	if(State == IUpdater::CLEAN && NeedUpdate)
 	{
-		str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is out!"), Client()->LatestVersion());
+		str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is out!"), ClientNetwork()->LatestVersion());
 		TextRender()->TextColor(1.0f, 0.4f, 0.4f, 1.0f);
 	}
 	else if(State == IUpdater::CLEAN)
@@ -282,7 +282,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(1), &VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML);
 	TextRender()->TextColor(TextRender()->DefaultTextColor());
 #elif defined(CONF_INFORM_UPDATE)
-	if(str_comp(Client()->LatestVersion(), "0") != 0)
+	if(str_comp(ClientNetwork()->LatestVersion(), "0") != 0)
 	{
 		CUIRect DownloadButton;
 		VersionUpdate.VSplitRight(100.0f, &VersionUpdate, &DownloadButton);
@@ -295,7 +295,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		}
 
 		char aBuf[64];
-		str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is out!"), Client()->LatestVersion());
+		str_format(aBuf, sizeof(aBuf), Localize("DDNet %s is out!"), ClientNetwork()->LatestVersion());
 		SLabelProperties UpdateLabelProps;
 		UpdateLabelProps.SetColor(ColorRGBA(1.0f, 0.4f, 0.4f, 1.0f));
 		Ui()->DoLabelStreamed(*m_pVersionUiElement->Rect(1), &VersionUpdate, aBuf, 14.0f, TEXTALIGN_ML, UpdateLabelProps);

@@ -202,7 +202,7 @@ void CControls::ConTpDummyToCursor(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->Client()->State() != IClient::STATE_ONLINE)
 		return;
 
-	if(!pSelf->Client()->DummyConnected())
+	if(!pSelf->ClientNetwork()->DummyConnected())
 	{
 		pSelf->GameClient()->Echo(Localize("Dummy is not connected"));
 		return;
@@ -225,7 +225,7 @@ void CControls::SendPracticeTeleportToCursor(int Conn)
 	CNetMsg_Cl_PracticeTeleport Msg;
 	Msg.m_X = round_to_int(CursorPos.x);
 	Msg.m_Y = round_to_int(CursorPos.y);
-	Client()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
+	ClientNetwork()->SendPackMsg(Conn, &Msg, MSGFLAG_VITAL);
 }
 
 void CControls::OnMessage(int Msg, void *pRawMsg)

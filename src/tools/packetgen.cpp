@@ -3,6 +3,7 @@
 #include <base/io.h>
 #include <base/net.h>
 #include <base/os.h>
+#include <base/rust.h>
 
 enum
 {
@@ -35,6 +36,8 @@ static void Run(NETADDR Dest)
 
 int main(int argc, const char **argv)
 {
+	// A panic in the Rust half should fail the same way an assertion does.
+	rust_panic_use_dbg_assert();
 	CCmdlineFix CmdlineFix(&argc, &argv);
 	net_init();
 

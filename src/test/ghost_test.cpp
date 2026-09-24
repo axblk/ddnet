@@ -5,7 +5,6 @@
 #include <base/mem.h>
 
 #include <engine/client/ghost.h>
-#include <engine/shared/network.h>
 #include <engine/storage.h>
 
 #include <gtest/gtest.h>
@@ -64,9 +63,6 @@ namespace
 
 	void RecordGhost(IStorage *pStorage, const char *pFilename)
 	{
-		// Initializes the huffman table
-		CNetBase::Init();
-
 		CGhostRecorder Recorder;
 		Recorder.Init(pStorage);
 		ASSERT_EQ(Recorder.Start(pFilename, GHOST_MAP, TestMapSha256(), GHOST_OWNER), 0);

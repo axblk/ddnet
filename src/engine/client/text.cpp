@@ -1549,6 +1549,8 @@ public:
 
 	void SetTextRenderStatsEnabled(bool Enabled) override
 	{
+		if(m_TextRenderStatsEnabled == Enabled)
+			return;
 		m_TextRenderStatsEnabled = Enabled;
 		if(Enabled)
 			m_TextRenderStats = {};

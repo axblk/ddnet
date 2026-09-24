@@ -2658,6 +2658,7 @@ if(CLIENT)
     backend/embedded_shaders.h
     backend/glsl_shader_compiler.cpp
     backend/glsl_shader_compiler.h
+    backend/gpu_timestamp.h
     backend/null/backend_null.cpp
     backend/null/backend_null.h
     backend/opengl/backend_opengl.cpp
@@ -2713,6 +2714,8 @@ if(CLIENT)
     presentation_surface.h
     render_command_queue.cpp
     render_command_queue.h
+    render_trace.cpp
+    render_trace.h
     serverbrowser.cpp
     serverbrowser.h
     serverbrowser_http.cpp
@@ -3050,6 +3053,7 @@ if(CLIENT)
     backend/embedded_shaders.h
     backend/glsl_shader_compiler.cpp
     backend/glsl_shader_compiler.h
+    backend/gpu_timestamp.h
     backend/null/backend_null.cpp
     backend/null/backend_null.h
     backend/opengl/backend_opengl.cpp
@@ -3800,6 +3804,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     gameworld_test.cpp
     ghost_test.cpp
     git_revision_test.cpp
+    gpu_timestamp_test.cpp
     graphics_frontend_test.cpp
     graphics_threaded_test.cpp
     hash_test.cpp
@@ -3823,6 +3828,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     os_test.cpp
     packer_test.cpp
     prng_test.cpp
+    render_trace_test.cpp
     replace_words_test.cpp
     score_test.cpp
     secure_random_test.cpp
@@ -3860,6 +3866,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/ghost.cpp
     src/engine/client/ghost.h
     src/engine/client/graph.cpp
+    src/engine/client/render_trace.cpp
+    src/engine/client/render_trace.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp

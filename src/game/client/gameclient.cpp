@@ -54,6 +54,7 @@
 
 #include <engine/client/checksum.h>
 #include <engine/client/enums.h>
+#include <engine/client/render_trace.h>
 #include <engine/demo.h>
 #include <engine/discord.h>
 #include <engine/editor.h>
@@ -86,6 +87,7 @@
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 using namespace std::chrono_literals;
 
@@ -162,6 +164,7 @@ void CGameClient::OnConsoleInit()
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
 	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
+	m_pRenderTrace = m_pClient->RenderTrace();
 	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->NetworkSessionId(), NUM_DUMMIES));
 	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->DemoSessionId(), 1));
 	m_LegacyView.SetTarget(Client()->NetworkSessionId(), IClient::CONN_MAIN);
@@ -427,6 +430,16 @@ void CGameClient::OnInit()
 
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 	m_pWindow = Kernel()->RequestInterface<IGraphicsWindow>();
+
+	// The two zones everything is drawn in first, so that they come first.
+	m_GpuZoneWorld = Graphics()->RegisterGpuRenderZone("world");
+	m_GpuZoneInterface = Graphics()->RegisterGpuRenderZone("interface");
+	m_RenderComponentInfo.clear();
+	for(const CComponent *pComponent : m_vpAll)
+		m_RenderComponentInfo.emplace(pComponent, RenderComponentInfo(pComponent));
+	// The map layers belong to the session presentations, not to the components.
+	m_MapBackgroundRenderInfo = {"world/map_background", Graphics()->RegisterGpuRenderZone("map_background")};
+	m_MapForegroundRenderInfo = {"world/map_foreground", Graphics()->RegisterGpuRenderZone("map_foreground")};
 
 	// propagate pointers
 	m_UI.Init(Kernel(), &m_RenderTools);
@@ -998,6 +1011,75 @@ const CGameClient::CPreparedRenderEntry &CGameClient::AudibleRenderEntry() const
 	return *It;
 }
 
+CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CComponent *pComponent)
+{
+	// The trace name, and the GPU zone the component is timed in, if any.
+	struct SEntry
+	{
+		const CComponent *m_pComponent;
+		const char *m_pTraceName;
+		const char *m_pGpuZone;
+	};
+	const std::array<SEntry, 43> aEntries = {{
+		{&m_Skins, "game/skins", nullptr},
+		{&m_Skins7, "game/skins7", nullptr},
+		{&m_CountryFlags, "game/country_flags", nullptr},
+		{&m_MapImages, "game/map_images", nullptr},
+		{&m_Effects, "game/effects", nullptr},
+		{&m_Binds, "game/binds", nullptr},
+		{&m_Binds.m_SpecialBinds, "game/special_binds", nullptr},
+		{&m_Controls, "game/controls", nullptr},
+		{&m_Camera, "game/camera", nullptr},
+		{&m_Sounds, "game/sounds", nullptr},
+		{&m_Voting, "game/voting", nullptr},
+		{&m_Particles, "game/particles_update", nullptr},
+		{&m_RaceDemo, "game/race_demo", nullptr},
+		{&m_Censor, "game/censor", nullptr},
+		{&m_Background, "world/background", "map_background"},
+		{&m_Particles.m_RenderTrail, "world/particles_trail", "particles"},
+		{&m_Particles.m_RenderTrailExtra, "world/particles_trail_extra", "particles"},
+		{&m_Items, "world/items", "items"},
+		{&m_Ghost, "world/ghost", "ghost"},
+		{&m_Players, "world/players", "players"},
+		{&m_Particles.m_RenderExplosions, "world/particles_explosions", "particles"},
+		{&m_NamePlates, "world/nameplates", "nameplates"},
+		{&m_Particles.m_RenderExtra, "world/particles_extra", "particles"},
+		{&m_Particles.m_RenderGeneral, "world/particles_general", "particles"},
+		{&m_FreezeBars, "world/freezebars", "freezebars"},
+		{&m_DamageInd, "world/damage_indicators", "damage_indicators"},
+		{&m_Hud, "ui/hud", "hud"},
+		{&m_Spectator, "ui/spectator", "spectator"},
+		{&m_Emoticon, "ui/emoticon", "emoticon"},
+		{&m_InfoMessages, "ui/info_messages", "info_messages"},
+		{&m_Chat, "ui/chat", "chat"},
+		{&m_Broadcast, "ui/broadcast", "broadcast"},
+		{&m_ImportantAlert, "ui/important_alert", "important_alert"},
+		{&m_DebugHud, "ui/debug_hud", "debug_hud"},
+		{&m_TouchControls, "ui/touch_controls", "touch_controls"},
+		{&m_Scoreboard, "ui/scoreboard", "scoreboard"},
+		{&m_Statboard, "ui/statboard", "statboard"},
+		{&m_Motd, "ui/motd", "motd"},
+		{&m_Menus, "ui/menus", "menus"},
+		{&m_Tooltips, "ui/tooltips", "tooltips"},
+		{&m_KeyBinder, "ui/key_binder", nullptr},
+		{&m_GameConsole, "ui/console", "console"},
+		{&m_MenuBackground, "ui/menu_background", nullptr},
+	}};
+	for(const SEntry &Entry : aEntries)
+	{
+		if(Entry.m_pComponent == pComponent)
+			return {Entry.m_pTraceName, Entry.m_pGpuZone == nullptr ? IGraphics::CGpuRenderZone() : Graphics()->RegisterGpuRenderZone(Entry.m_pGpuZone)};
+	}
+	return {"game/component", IGraphics::CGpuRenderZone()};
+}
+
+const CGameClient::SRenderComponentInfo &CGameClient::RenderInfo(const CComponent *pComponent) const
+{
+	static const SRenderComponentInfo s_Unknown = {"game/component", IGraphics::CGpuRenderZone()};
+	const auto It = m_RenderComponentInfo.find(pComponent);
+	return It == m_RenderComponentInfo.end() ? s_Unknown : It->second;
+}
+
 void CGameClient::OnRender()
 {
 	if(m_CoreImagesPending)
@@ -1022,6 +1104,13 @@ void CGameClient::OnRender()
 		if(CustomViewport)
 			Graphics()->UpdateViewport(0, 0, Graphics()->ScreenWidth(), Graphics()->ScreenHeight(), false);
 	};
+	CRenderTrace *pTrace = m_pRenderTrace;
+	auto RenderTraced = [this, pTrace](const SRenderComponentInfo &Info, const auto &Render) {
+		CRenderTraceScope TraceScope(pTrace, Info.m_pTraceName, Info.m_GpuZone);
+		Graphics()->GpuRenderZoneBegin(Info.m_GpuZone);
+		Render();
+		Graphics()->GpuRenderZoneEnd(Info.m_GpuZone);
+	};
 
 	const bool Audible = AudibleEntry.m_Time.m_IsGameActive;
 	m_Sounds.Update(Audible ? std::optional(AudibleEntry.m_pView->CameraPosition()) : std::nullopt);
@@ -1044,6 +1133,7 @@ void CGameClient::OnRender()
 		vContexts.emplace_back(*Entry.m_pSession, *Entry.m_pState, *Entry.m_pView, Entry.m_Time, Entry.m_VisibleWorldRect, IsVideoOutput);
 	}
 
+	Graphics()->GpuRenderZoneBegin(m_GpuZoneWorld);
 	for(const CRenderContext &Context : vContexts)
 	{
 		const bool UsePredictedTime = UsePredictedEnvelopeTime(Context.m_Time, Context.m_View);
@@ -1052,40 +1142,45 @@ void CGameClient::OnRender()
 			Presentation.PrepareRender(Context, UsePredictedTime);
 		if(!m_Background.UsesCurrentMap())
 			m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
-		const std::array<CComponent *, 13> apWorldComponents = {
-			&Presentation.MapLayersBackground(),
-			&m_Particles.m_RenderTrail,
-			&m_Particles.m_RenderTrailExtra,
-			&m_Items,
-			&m_Ghost,
-			&m_Players,
-			&Presentation.MapLayersForeground(),
-			&m_Particles.m_RenderExplosions,
-			&m_NamePlates,
-			&m_Particles.m_RenderExtra,
-			&m_Particles.m_RenderGeneral,
-			&m_FreezeBars,
-			&m_DamageInd,
-		};
+		const std::array<std::pair<CComponent *, const SRenderComponentInfo *>, 13> aWorldComponents = {{
+			{&Presentation.MapLayersBackground(), &m_MapBackgroundRenderInfo},
+			{&m_Particles.m_RenderTrail, &RenderInfo(&m_Particles.m_RenderTrail)},
+			{&m_Particles.m_RenderTrailExtra, &RenderInfo(&m_Particles.m_RenderTrailExtra)},
+			{&m_Items, &RenderInfo(&m_Items)},
+			{&m_Ghost, &RenderInfo(&m_Ghost)},
+			{&m_Players, &RenderInfo(&m_Players)},
+			{&Presentation.MapLayersForeground(), &m_MapForegroundRenderInfo},
+			{&m_Particles.m_RenderExplosions, &RenderInfo(&m_Particles.m_RenderExplosions)},
+			{&m_NamePlates, &RenderInfo(&m_NamePlates)},
+			{&m_Particles.m_RenderExtra, &RenderInfo(&m_Particles.m_RenderExtra)},
+			{&m_Particles.m_RenderGeneral, &RenderInfo(&m_Particles.m_RenderGeneral)},
+			{&m_FreezeBars, &RenderInfo(&m_FreezeBars)},
+			{&m_DamageInd, &RenderInfo(&m_DamageInd)},
+		}};
 		RenderInView(Context.m_View.Viewport(), [&]() {
 			if(g_Config.m_ClOverlayEntities == 100)
 			{
-				if(m_Background.UsesCurrentMap())
-					Presentation.MapLayersBackgroundForce().OnRender(Context);
-				else
-					m_Background.OnRender(Context);
+				RenderTraced(RenderInfo(&m_Background), [&]() {
+					if(m_Background.UsesCurrentMap())
+						Presentation.MapLayersBackgroundForce().OnRender(Context);
+					else
+						m_Background.OnRender(Context);
+				});
 			}
-			for(CComponent *pComponent : apWorldComponents)
-				pComponent->OnRender(Context);
+			for(const auto &Component : aWorldComponents)
+				RenderTraced(*Component.second, [&]() { Component.first->OnRender(Context); });
 		});
 	}
+	// The HUD is the first thing drawn over the world.
+	Graphics()->GpuRenderZoneEnd(m_GpuZoneWorld);
+	Graphics()->GpuRenderZoneBegin(m_GpuZoneInterface);
 
 	auto RenderComponents = [&](std::initializer_list<CComponent *> vpComponents) {
 		for(const CRenderContext &Context : vContexts)
 		{
 			RenderInView(Context.m_View.Viewport(), [&]() {
 				for(CComponent *pComponent : vpComponents)
-					pComponent->OnRender(Context);
+					RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRender(Context); });
 			});
 		}
 	};
@@ -1095,22 +1190,24 @@ void CGameClient::OnRender()
 
 	RenderComponents({&m_InfoMessages, &m_Hud});
 	RenderInView(InputViewport, [&]() {
-		m_Spectator.OnRender(InputContext);
-		m_Emoticon.OnRender(InputContext);
-		m_Chat.RenderApplicationOverlay(InputContext);
+		RenderTraced(RenderInfo(&m_Spectator), [&]() { m_Spectator.OnRender(InputContext); });
+		RenderTraced(RenderInfo(&m_Emoticon), [&]() { m_Emoticon.OnRender(InputContext); });
+		RenderTraced(RenderInfo(&m_Chat), [&]() { m_Chat.RenderApplicationOverlay(InputContext); });
 	});
 	RenderComponents({&m_Chat});
 	RenderComponents({&m_Broadcast, &m_DebugHud});
 	RenderInView(InputViewport, [&]() {
-		m_ImportantAlert.OnRender(InputContext);
-		m_TouchControls.OnRender(InputContext);
-		m_TouchControls.RenderApplicationOverlay();
+		RenderTraced(RenderInfo(&m_ImportantAlert), [&]() { m_ImportantAlert.OnRender(InputContext); });
+		RenderTraced(RenderInfo(&m_TouchControls), [&]() {
+			m_TouchControls.OnRender(InputContext);
+			m_TouchControls.RenderApplicationOverlay();
+		});
 	});
 	m_Menus.FinishMenuBackdrop();
 	m_Scoreboard.BeginRenderFrame();
 	RenderComponents({&m_Scoreboard});
 	RenderInView(InputViewport, [&]() {
-		m_Scoreboard.RenderApplicationOverlay(InputContext);
+		RenderTraced(RenderInfo(&m_Scoreboard), [&]() { m_Scoreboard.RenderApplicationOverlay(InputContext); });
 	});
 	RenderComponents({&m_Statboard, &m_Motd});
 	// After the backdrop, so that opening the scoreboard does not smear the
@@ -1121,13 +1218,17 @@ void CGameClient::OnRender()
 	for(const CRenderContext &Context : vContexts)
 		RenderInView(Context.m_View.Viewport(), [&]() { m_Hud.RenderCursor(Context); });
 	for(CComponent *pComponent : {static_cast<CComponent *>(&m_Menus), static_cast<CComponent *>(&m_Tooltips), static_cast<CComponent *>(&m_GameConsole)})
-		pComponent->OnRenderApplicationOverlay();
+		RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRenderApplicationOverlay(); });
 
 	// Nothing captured what was drawn over the scene, so it goes to the screen
 	// as it is.
 	m_Menus.PresentMenuBackdrop();
 
-	CLineInput::RenderCandidates();
+	{
+		CRenderTraceScope TraceScope(pTrace, "ui/line_input");
+		CLineInput::RenderCandidates();
+	}
+	Graphics()->GpuRenderZoneEnd(m_GpuZoneInterface);
 }
 
 void CGameClient::OnRenderPrepare()

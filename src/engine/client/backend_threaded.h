@@ -35,7 +35,7 @@ public:
 	bool RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity) override;
 	SFrameMailboxStats GetFrameMailboxStats() const override { return m_CommandQueue.GetFrameMailboxStats(); }
 	SGpuTiming GpuTiming() const override { return m_GpuTiming.Snapshot(); }
-	void SetGpuTimingEnabled(bool Enabled) override { m_GpuTiming.m_Enabled.store(Enabled, std::memory_order_relaxed); }
+	void SetGpuTimingEnabled(bool Enabled) override { m_GpuTiming.SetEnabled(Enabled); }
 	bool IsIdle() const override;
 	void WaitForIdle() override;
 

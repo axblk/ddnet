@@ -19,6 +19,7 @@
 #include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
+#include <engine/graphics.h>
 #include <engine/shared/config.h>
 #include <engine/shared/snapshot.h>
 
@@ -150,6 +151,20 @@ private:
 	std::vector<class CComponent *> m_vpAll;
 	std::vector<class CComponent *> m_vpInput;
 	CAssetLoader m_AssetLoader;
+	// Render trace name and GPU zone of what the frame draws: per component,
+	// and for the map layers every session presentation draws.
+	struct SRenderComponentInfo
+	{
+		const char *m_pTraceName;
+		IGraphics::CGpuRenderZone m_GpuZone;
+	};
+	std::unordered_map<const CComponent *, SRenderComponentInfo> m_RenderComponentInfo;
+	SRenderComponentInfo m_MapBackgroundRenderInfo;
+	SRenderComponentInfo m_MapForegroundRenderInfo;
+	SRenderComponentInfo RenderComponentInfo(const CComponent *pComponent);
+	const SRenderComponentInfo &RenderInfo(const CComponent *pComponent) const;
+	IGraphics::CGpuRenderZone m_GpuZoneWorld;
+	IGraphics::CGpuRenderZone m_GpuZoneInterface;
 	CNetObjHandler m_NetObjHandler;
 	protocol7::CNetObjHandler m_NetObjHandler7;
 
@@ -159,6 +174,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
 	class IConfigManager *m_pConfigManager;
 	class CConfig *m_pConfig;

@@ -150,14 +150,23 @@ IGraphics::CFrameRenderStats CGraphics_Threaded::FrameRenderStats() const
 {
 	CFrameRenderStats Stats = m_LastFrameRenderStats;
 	const SGpuTiming GpuTiming = m_pBackend->GpuTiming();
-	Stats.m_GpuTimeNanoseconds = GpuTiming.m_TimeNanoseconds;
-	Stats.m_GpuSample = GpuTiming.m_Sample;
 	Stats.m_GpuTimingSupported = GpuTiming.m_Supported;
+	if(GpuTiming.m_Sample > m_RenderStatsGpuStartSample)
+	{
+		Stats.m_GpuTimeNanoseconds = GpuTiming.m_TimeNanoseconds;
+		Stats.m_aGpuRenderZoneNanoseconds = GpuTiming.m_aRenderZoneNanoseconds;
+		Stats.m_GpuRenderZoneMask = GpuTiming.m_RenderZoneMask;
+		Stats.m_GpuSample = GpuTiming.m_Sample;
+	}
 	return Stats;
 }
 
 void CGraphics_Threaded::SetRenderStatsEnabled(bool Enabled)
 {
+	if(m_RenderStatsEnabled == Enabled)
+		return;
+	if(Enabled)
+		m_RenderStatsGpuStartSample = m_pBackend->GpuTiming().m_Sample;
 	m_RenderStatsEnabled = Enabled;
 	m_pBackend->SetGpuTimingEnabled(Enabled);
 	if(Enabled)
@@ -165,6 +174,37 @@ void CGraphics_Threaded::SetRenderStatsEnabled(bool Enabled)
 		m_CurrentFrameRenderStats = {};
 		m_LastFrameRenderStats = {};
 	}
+}
+
+IGraphics::CGpuRenderZone CGraphics_Threaded::RegisterGpuRenderZone(const char *pName)
+{
+	const std::string *pBegin = m_aGpuRenderZoneNames.data();
+	const std::string *pEnd = pBegin + m_NumGpuRenderZones;
+	const std::string *pFound = std::find(pBegin, pEnd, pName);
+	if(pFound != pEnd)
+		return CGpuRenderZone(static_cast<int>(pFound - pBegin));
+	if(m_NumGpuRenderZones == m_aGpuRenderZoneNames.size())
+	{
+		log_warn("gfx", "No GPU render zone left for '%s', it is not timed apart", pName);
+		return CGpuRenderZone();
+	}
+	m_aGpuRenderZoneNames[m_NumGpuRenderZones] = pName;
+	return CGpuRenderZone(static_cast<int>(m_NumGpuRenderZones++));
+}
+
+std::span<const std::string> CGraphics_Threaded::GpuRenderZoneNames() const
+{
+	return {m_aGpuRenderZoneNames.data(), m_NumGpuRenderZones};
+}
+
+void CGraphics_Threaded::GpuRenderZone(CGpuRenderZone Zone, bool Begin)
+{
+	if(!Zone.IsValid() || !m_RenderStatsEnabled || !m_pBackend->GpuTiming().m_Supported)
+		return;
+	CCommandBuffer::SCommand_GpuRenderZone Cmd;
+	Cmd.m_Zone = Zone;
+	Cmd.m_Begin = Begin;
+	AddCmd(Cmd);
 }
 
 const TTwGraphicsGpuList &CGraphics_Threaded::GetGpus() const

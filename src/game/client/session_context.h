@@ -513,6 +513,12 @@ public:
 	CSessionVoteState m_Vote;
 	// Indexed by seat.
 	std::array<CInputRoute, NUM_DUMMIES> m_aInputRoutes;
+	/**
+	 * Whom a demo is watched from: a client id, `SPEC_FREEVIEW`, or
+	 * `SPEC_FOLLOW` for whoever recorded it. Each demo has its own, so an
+	 * export can follow somebody else than the demo being watched.
+	 */
+	int m_DemoSpecId = SPEC_FOLLOW;
 
 	/**
 	 * @param Id The session of the server or demo, played in seat 0.

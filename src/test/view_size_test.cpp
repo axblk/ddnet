@@ -100,3 +100,32 @@ TEST(ViewSize, AnOffsetCameraUncoversOneSideFirst)
 	EXPECT_FLOAT_EQ(Uncovered.x, 0.0f);
 	EXPECT_FLOAT_EQ(Uncovered.y, 300.0f);
 }
+
+TEST(ViewSize, AGroupThatFollowsTheWorldKeepsTheWiderView)
+{
+	// Widening the view is for the world, so the group the world is in is the
+	// one group that is left alone, whatever the screen looks like.
+	for(const float Aspect : {ASPECT_4_3, ASPECT_16_9, ASPECT_21_9, ASPECT_32_9})
+	{
+		EXPECT_FLOAT_EQ(CalcGroupViewScale(Aspect, ASPECT_16_9, 100), 1.0f);
+	}
+}
+
+TEST(ViewSize, AGroupThatStaysPutCoversTheWiderScreen)
+{
+	// A group with no parallax is the frame around the world, not the world.
+	// A screen half again as wide as the view was drawn for shows it two
+	// thirds the size, which is the same picture blown up to fill the screen.
+	EXPECT_FLOAT_EQ(CalcGroupViewScale(ASPECT_16_9 * 1.5f, ASPECT_16_9, 0), 1.0f / 1.5f);
+	EXPECT_GT(CalcGroupViewScale(ASPECT_21_9, ASPECT_16_9, 50), CalcGroupViewScale(ASPECT_21_9, ASPECT_16_9, 0));
+	EXPECT_LT(CalcGroupViewScale(ASPECT_21_9, ASPECT_16_9, 50), 1.0f);
+}
+
+TEST(ViewSize, NothingIsScaledWhereNothingIsWidened)
+{
+	// Up to the limit every group shows what it always did, and with the limit
+	// turned off there is no view any group could be drawn for.
+	EXPECT_FLOAT_EQ(CalcGroupViewScale(ASPECT_4_3, ASPECT_16_9, 0), 1.0f);
+	EXPECT_FLOAT_EQ(CalcGroupViewScale(ASPECT_16_9, ASPECT_16_9, 0), 1.0f);
+	EXPECT_FLOAT_EQ(CalcGroupViewScale(ASPECT_32_9, 0.0f, 0), 1.0f);
+}

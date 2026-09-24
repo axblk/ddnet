@@ -98,8 +98,12 @@ bool CSpectator::CanChangeSpectatorId()
 		return false;
 
 	// stop follow mode from changing SpectatorId
-	if(Client()->State() == IClient::STATE_DEMOPLAYBACK && GameClient()->m_DemoSpecId == SPEC_FOLLOW)
-		return false;
+	if(Client()->State() == IClient::STATE_DEMOPLAYBACK)
+	{
+		const CGameSessionContext *pDemo = GameClient()->FindSessionContext(Sessions()->DemoSessionId());
+		if(pDemo != nullptr && pDemo->m_DemoSpecId == SPEC_FOLLOW)
+			return false;
+	}
 
 	return true;
 }
@@ -661,8 +665,9 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 	{
 		if(Selector.m_OriginSessionId != Sessions()->DemoSessionId())
 			return;
-		GameClient()->m_DemoSpecId = std::clamp(SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
-		View.SetSpectatorMode(GameClient()->m_DemoSpecId);
+		int &DemoSpecId = GameClient()->SessionContext(Selector.m_OriginSessionId).m_DemoSpecId;
+		DemoSpecId = std::clamp(SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
+		View.SetSpectatorMode(DemoSpecId);
 		// The tick must be rendered for the spectator mode to be updated, so we do it manually when demo playback is paused
 		// TODO: https://github.com/ddnet/ddnet/issues/11681
 		if(DemoPlayer()->BaseInfo()->m_Paused)

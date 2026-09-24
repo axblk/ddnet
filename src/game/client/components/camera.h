@@ -44,7 +44,6 @@ private:
 
 	float CameraSmoothingProgress(float CurrentTime) const;
 
-	void ScaleZoom(float Factor);
 	void ChangeZoom(float Target, int Smoothness, bool IsUser);
 	float ZoomProgress(float CurrentTime) const;
 
@@ -73,6 +72,15 @@ public:
 	void OnReset() override;
 
 	void SetView(ivec2 Pos, bool Relative = false);
+	/**
+	 * The same in world units rather than in tiles, for dragging the free view.
+	 *
+	 * @param Pos Where to look, or how far to move when `Relative`.
+	 * @param Relative Whether `Pos` is measured from where the view is now.
+	 */
+	void SetViewPos(vec2 Pos, bool Relative = false);
+	/** Multiplies the zoom, as one notch of a wheel does. */
+	void ScaleZoom(float Factor);
 	void GotoSwitch(int Number, int Offset = -1);
 	void GotoTele(int Number, int Offset = -1);
 
@@ -84,6 +92,11 @@ public:
 	int CamType() const { return State().m_CamType; }
 	vec2 Center() const { return State().m_Center; }
 	float Zoom() const { return State().m_Zoom; }
+	/**
+	 * The zoom last asked for, which differs from `Zoom` while the camera follows
+	 * the one a demo brought.
+	 */
+	float UserZoomTarget() const { return State().m_UserZoomTarget; }
 	bool IsZoomSet() const { return State().m_ZoomSet; }
 	bool IsZooming() const { return State().m_Zooming; }
 	float ZoomSmoothingTarget() const { return State().m_ZoomSmoothingTarget; }

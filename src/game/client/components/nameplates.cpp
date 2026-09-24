@@ -695,7 +695,7 @@ void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Positi
 	}
 	Data.m_Color.a = Alpha;
 
-	int ShowDirectionConfig = g_Config.m_ClShowDirection;
+	int ShowDirectionConfig = Context.m_View.RenderOptions().m_ShowDirection;
 	if(Context.m_IsVideoOutput)
 		ShowDirectionConfig = Context.m_VideoSettings.m_ShowDirection;
 	Data.m_DirLeft = Data.m_DirJump = Data.m_DirRight = false;
@@ -858,7 +858,7 @@ void CNamePlates::OnRender(const CRenderContext &Context)
 	if(!Context.m_Time.m_IsGameActive)
 		return;
 
-	int ShowDirection = g_Config.m_ClShowDirection;
+	int ShowDirection = Context.m_View.RenderOptions().m_ShowDirection;
 	if(Context.m_IsVideoOutput)
 		ShowDirection = Context.m_VideoSettings.m_ShowDirection;
 	if(!g_Config.m_ClNamePlates && !g_Config.m_ClNamePlatesOwn && ShowDirection == 0)

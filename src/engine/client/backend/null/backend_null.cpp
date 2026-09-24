@@ -1,8 +1,6 @@
 #include "backend_null.h"
 
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
-#include <emscripten/emscripten.h>
-#endif
+#include <base/thread.h>
 
 ERunCommandReturnTypes CCommandProcessorFragment_Null::RunCommand(const CCommandBuffer::SCommand *pBaseCommand)
 {
@@ -34,6 +32,6 @@ void CCommandProcessorFragment_Null::Cmd_Swap(const CCommandBuffer::SCommand_Swa
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// Return control to the browser's main thread. This is normally done in SDL_GL_SwapWindow,
 	// but with headless graphics we do not have a GL context to call this function.
-	emscripten_sleep(0);
+	web_yield(0);
 #endif
 }

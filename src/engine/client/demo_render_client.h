@@ -27,6 +27,9 @@ class CDemoRenderClient : public CDemoClientBase
 
 	std::vector<SJob> m_vJobs;
 	std::chrono::nanoseconds m_LastProgressLog{0};
+	// Who the command line asked to follow, as it was written: a client id or
+	// a name. Which of the two is settled once the demo is open.
+	char m_aFollow[MAX_NAME_LENGTH] = "";
 	// Set by an interrupt, which ends the demo being rendered and the rest.
 	bool m_Interrupted = false;
 

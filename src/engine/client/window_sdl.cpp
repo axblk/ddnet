@@ -28,6 +28,9 @@
 #include <SDL.h>
 #include <SDL_messagebox.h>
 #include <SDL_video.h>
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten.h>
+#endif
 #if defined(CONF_PLATFORM_IOS)
 #include <ios/ios_main.h>
 #endif
@@ -1067,6 +1070,27 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 #endif
 	}
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL finds its canvas by the selector `#canvas`, which does not reach into a
+	// shadow root, so the canvas we were handed is registered under that name. In
+	// a try, because the table is Emscripten's own and not part of its API.
+	EM_ASM({
+		try
+		{
+			if(Module.canvas)
+			{
+				specialHTMLTargets["#canvas"] = Module.canvas;
+			}
+		}
+		catch(error)
+		{
+			console.warn("DDNet: this canvas could not be named for SDL:", error);
+		}
+	});
+	// Keys go to the canvas while it has the focus, not to the whole page.
+	SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
+#endif
+
 	if(!SDL_WasInit(SDL_INIT_VIDEO))
 	{
 		if(SDL_InitSubSystem(SDL_INIT_VIDEO) < 0)
@@ -1180,6 +1204,12 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 	if(IsOpenGLFamilyBackend)
 		SetGlAttributes();
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// SDL writes the window title into `document.title`, which belongs to the
+	// page: put back what the page says.
+	MAIN_THREAD_EM_ASM({ globalThis.__ddnetPageTitle = document.title; });
+#endif
+
 	m_pWindow = SDL_CreateWindow(
 		"DDNet Client",
 		SDL_WINDOWPOS_CENTERED_DISPLAY(g_Config.m_GfxScreen),
@@ -1188,6 +1218,16 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 		g_Config.m_GfxScreenHeight,
 		SdlFlags);
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	MAIN_THREAD_EM_ASM({
+		const PageTitle = globalThis.__ddnetPageTitle;
+		delete globalThis.__ddnetPageTitle;
+		if(PageTitle != null)
+		{
+			document.title = PageTitle;
+		}
+	});
+#endif
 	if(m_pWindow == nullptr)
 	{
 		log_error("gfx", "Unable to create window: %s", SDL_GetError());

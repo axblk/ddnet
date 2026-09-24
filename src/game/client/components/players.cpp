@@ -55,11 +55,14 @@ void CPlayers::RenderHand(const CTeeRenderInfo *pInfo, vec2 CenterPos, vec2 Dir,
 {
 	const vec2 HandPos = CalculateHandPosition(CenterPos, Dir, PostRotOffset);
 	const float HandAngle = CalculateHandAngle(Dir, AngleOffset);
-	if(pInfo->m_Sixup.PartTexture(protocol7::SKINPART_HANDS).IsValid())
+	// The hand is drawn when the tee is, see `CRenderTools::RenderTee`: a hand
+	// without its skin would be two white squares next to the weapon.
+	if(pInfo->m_Sixup.PartTexture(protocol7::SKINPART_BODY).IsValid())
 	{
-		RenderHand7(pInfo, HandPos, HandAngle, Alpha);
+		if(pInfo->m_Sixup.Valid())
+			RenderHand7(pInfo, HandPos, HandAngle, Alpha);
 	}
-	else
+	else if(pInfo->Valid())
 	{
 		RenderHand6(pInfo, HandPos, HandAngle, Alpha);
 	}

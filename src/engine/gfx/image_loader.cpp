@@ -578,11 +578,12 @@ bool CImageLoader::SavePng(IOHANDLE File, const char *pFilename, const CImageInf
 		return false;
 	}
 
-	const bool WriteSuccess = io_write(File, Writer.Data(), Writer.Size()) == Writer.Size();
+	// What is still buffered is written on closing, so that can fail too.
+	bool WriteSuccess = io_write(File, Writer.Data(), Writer.Size()) == Writer.Size();
+	WriteSuccess = io_close(File) == 0 && WriteSuccess;
 	if(!WriteSuccess)
 	{
 		log_error("png", "failed to write PNG data to file. filename='%s'", pFilename);
 	}
-	io_close(File);
 	return WriteSuccess;
 }

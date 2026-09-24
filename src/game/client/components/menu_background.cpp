@@ -368,7 +368,7 @@ bool CMenuBackground::Render()
 
 	m_pBackgroundImages->Update();
 	m_pBackgroundImages->SetGameInfo(GameClient()->FocusedGameInfo());
-	CMapLayers::Render(m_Camera.Center(), m_Camera.Zoom());
+	CMapLayers::Render(m_Camera.Center(), m_Camera.Zoom(), g_Config.m_GfxHighDetail != 0);
 
 	m_CurrentPosition = -1;
 

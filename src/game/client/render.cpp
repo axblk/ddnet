@@ -249,10 +249,25 @@ void CRenderTools::GetRenderTeeOffsetToRenderedTee(const CAnimState *pAnim, cons
 
 void CRenderTools::RenderTee(const CAnimState *pAnim, const CTeeRenderInfo *pInfo, int Emote, vec2 Dir, vec2 Pos, float Alpha) const
 {
+	// A tee can be drawn before its skin is there: skins are fetched rather
+	// than read before anything is shown, and the parts of a 0.7 skin arrive
+	// one at a time. Until then it holds the placeholder or parts without
+	// textures, and drawing with those draws blocks and white squares, so
+	// nothing is the better placeholder for the frames it takes.
 	if(pInfo->m_Sixup.PartTexture(protocol7::SKINPART_BODY).IsValid())
+	{
+		if(!pInfo->m_Sixup.Valid())
+			return;
 		RenderTee7(pAnim, pInfo, Emote, Dir, Pos, Alpha);
-	else
+	}
+	else if(pInfo->Valid())
+	{
 		RenderTee6(pAnim, pInfo, Emote, Dir, Pos, Alpha);
+	}
+	else
+	{
+		return;
+	}
 
 	Graphics()->SetColor(1.f, 1.f, 1.f, 1.f);
 	Graphics()->QuadsSetRotation(0);

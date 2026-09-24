@@ -1,0 +1,38 @@
+{
+	"name": "@ddnet/base",
+	"version": "1.0.0",
+	"description": "What the DDNet web packages share: starting a program on a canvas, its files, and the viewer element.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./ddnet-base.d.ts",
+			"default": "./ddnet-base.js"
+		},
+		"./viewer.css": "./ddnet-viewer.css",
+		"./coi-serviceworker.js": "./coi-serviceworker.js",
+		"./package.json": "./package.json"
+	},
+	"types": "./ddnet-base.d.ts",
+	"files": [
+		"README.md",
+		"coi-serviceworker.js",
+		"ddnet-base.d.ts",
+		"ddnet-base.js",
+		"ddnet-viewer.css"
+	],
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"demo",
+		"map",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten"
+	},
+	"homepage": "https://ddnet.org/"
+}

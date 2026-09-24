@@ -167,6 +167,7 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 #include <base/lock.h>
 #include <base/log.h>
 #include <base/str.h>
+#include <base/thread.h>
 
 #include <emscripten/emscripten.h>
 #include <emscripten/fetch.h>
@@ -179,11 +180,12 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 
 namespace
 {
-	// Where the page is. Read once on the main thread, so that a worker builds
-	// the same URLs.
+	// Where the data directory is: where the page says, beside it otherwise.
+	// Read once on the main thread, so that a worker builds the same URLs.
 	// clang-format off
 EM_JS(char *, WebFsPageBase, (), {
-	return stringToNewUTF8(new URL(".", location.href).href);
+	const base = Module["ddnetDataBase"];
+	return stringToNewUTF8(new URL(base === undefined ? "." : base, location.href).href);
 });
 
 EM_JS(double, WebFsNow, (), {
@@ -224,7 +226,7 @@ EM_JS(double, WebFsNow, (), {
 		// The main thread has to give the browser its turn to finish the request.
 		while(pFetch->readyState != FETCH_STATE_DONE)
 		{
-			emscripten_sleep(1);
+			web_yield(1);
 		}
 		const bool Success = pFetch->status == 200;
 		if(Success)

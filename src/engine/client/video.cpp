@@ -320,6 +320,11 @@ CVideo::CVideo(IGraphics *pGraphics, ISound *pSound, IStorage *pStorage, CVideoE
 	ms_pCurrentVideo = this;
 }
 
+bool VideoEncodingSupported()
+{
+	return true;
+}
+
 CVideo::~CVideo()
 {
 	dbg_assert(m_Stopped, "Video must be stopped before it is destroyed");

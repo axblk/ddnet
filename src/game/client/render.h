@@ -173,6 +173,19 @@ public:
 		{
 			return (m_aUseCustomColors[Part] ? m_aColorableTextures : m_aOriginalTextures)[Part];
 		}
+
+		/**
+		 * Whether the parts that every 0.7 tee has are there. Marking and
+		 * decoration may be missing by design; the others are loaded one at a
+		 * time and can be missing for a while.
+		 */
+		bool Valid() const
+		{
+			return PartTexture(protocol7::SKINPART_BODY).IsValid() &&
+			       PartTexture(protocol7::SKINPART_FEET).IsValid() &&
+			       PartTexture(protocol7::SKINPART_EYES).IsValid() &&
+			       PartTexture(protocol7::SKINPART_HANDS).IsValid();
+		}
 	};
 
 	CSixup m_Sixup;

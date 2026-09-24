@@ -74,6 +74,7 @@
 #include <generated/protocolglue.h>
 
 #include <game/client/frontend.h>
+#include <game/client/game_prediction.h>
 #include <game/localization.h>
 #include <game/version.h>
 
@@ -5945,6 +5946,7 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(CreateFavorites().release());
 	pKernel->RegisterInterface(CreateGameClient());
 	pKernel->RegisterInterface(CreateGameFrontend());
+	pKernel->RegisterInterface(CreateGamePrediction());
 
 	pEngine->Init();
 	pConsole->Init();

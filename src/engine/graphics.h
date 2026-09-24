@@ -245,6 +245,22 @@ void CalcViewSize(float Aspect, float Zoom, float MaxAspect, float *pWidth, floa
  */
 vec2 CalcUncoveredViewSides(float ViewWidth, float ViewCenterX, float FilledCenterX, float FilledHalfWidth);
 
+/**
+ * How much of the widened view a group of a map is given. On a screen wider
+ * than MaxAspect the world reaches further to the sides, but a group that
+ * does not move with the world is a frame around it and is scaled up instead.
+ * Its parallax decides between the two.
+ *
+ * @param Aspect Width over height of the screen.
+ * @param MaxAspect Aspect the view is drawn for, 0 if the view is never
+ * widened and every group therefore keeps what it has.
+ * @param Parallax How far the group moves with the world, in percent.
+ *
+ * @return What to multiply the width and the height of the group's view by,
+ * 1 wherever nothing was widened.
+ */
+float CalcGroupViewScale(float Aspect, float MaxAspect, int Parallax);
+
 // The surface the graphics draw into, from the window or the surface-less
 // client.
 struct SGraphicsSurfaceInfo
@@ -471,6 +487,13 @@ public:
 	void CalcScreenParams(float Aspect, float Zoom, float *pWidth, float *pHeight) const;
 	CScreenRect MapScreenToWorld(float CenterX, float CenterY, float ParallaxX, float ParallaxY,
 		float ParallaxZoom, float OffsetX, float OffsetY, float Aspect, float Zoom) const;
+
+	/**
+	 * The same as @link MapScreenToWorld @endlink for a view whose size, zoom
+	 * included, was decided elsewhere, as by the map viewer.
+	 */
+	CScreenRect MapViewToWorld(vec2 ViewSize, float CenterX, float CenterY, float ParallaxX, float ParallaxY,
+		float ParallaxZoom, float OffsetX, float OffsetY, float Zoom) const;
 	void MapScreenToInterface(float CenterX, float CenterY, float Zoom = 1.0f);
 	void MapScreenToSize(float Width, float Height);
 

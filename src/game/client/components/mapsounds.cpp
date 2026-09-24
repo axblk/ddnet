@@ -206,7 +206,7 @@ void CMapSounds::FinishSoundLoads()
 	}
 }
 
-void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, const CEnvelopeState &EnvEvaluator, bool Offline)
+void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool DemoPlayerPaused, bool HighDetail, const CEnvelopeState &EnvEvaluator, bool Offline)
 {
 	FinishSoundLoads();
 	if(Offline)
@@ -227,7 +227,7 @@ void CMapSounds::Update(const CGameState &State, const CGameTickInfo &Time, vec2
 		if(m_aSounds[Source.m_Sound] < 0)
 			continue;
 		float Offset = m_Time - Source.m_pSource->m_TimeDelay;
-		if(!DemoPlayerPaused && Offset >= 0.0f && g_Config.m_SndEnable && (g_Config.m_GfxHighDetail || !Source.m_HighDetail))
+		if(!DemoPlayerPaused && Offset >= 0.0f && g_Config.m_SndEnable && (HighDetail || !Source.m_HighDetail))
 		{
 			if(Source.m_Voice.IsValid())
 			{

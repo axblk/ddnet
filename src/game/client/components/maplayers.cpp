@@ -73,10 +73,10 @@ void CMapLayers::OnRender(const CRenderContext &Context)
 	if(m_OnlineOnly && !Context.m_Time.m_IsGameActive)
 		return;
 
-	Render(Context.m_View.CameraPosition(), Context.m_View.Zoom());
+	Render(Context.m_View.CameraPosition(), Context.m_View.Zoom(), Context.m_View.RenderOptions().m_HighDetail);
 }
 
-void CMapLayers::Render(vec2 Center, float Zoom)
+void CMapLayers::Render(vec2 Center, float Zoom, bool HighDetail)
 {
 	// dynamic parameters for ingame rendering
 	m_Params.m_EntityOverlayVal = m_Type == RENDERTYPE_FULL_DESIGN ? 0 : g_Config.m_ClOverlayEntities;
@@ -85,7 +85,7 @@ void CMapLayers::Render(vec2 Center, float Zoom)
 	m_Params.m_RenderText = g_Config.m_ClTextEntities;
 	// The design render is the one the menu background is drawn with, and a
 	// background that leaves out half of what the map has is not the map.
-	m_Params.m_HighDetail = g_Config.m_GfxHighDetail || m_Type == RENDERTYPE_FULL_DESIGN;
+	m_Params.m_HighDetail = HighDetail || m_Type == RENDERTYPE_FULL_DESIGN;
 	m_Params.m_DebugRenderGroupClips = g_Config.m_DbgRenderGroupClips;
 	m_Params.m_DebugRenderQuadClips = g_Config.m_DbgRenderQuadClips;
 	m_Params.m_DebugRenderClusterClips = g_Config.m_DbgRenderClusterClips;

@@ -502,6 +502,13 @@ function(set_own_rpath TARGET)
   endif()
 endfunction()
 
+# The name a browser build exports its factory under, one per program.
+function(set_web_export_name target name)
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(${target} PRIVATE "-sEXPORT_NAME=${name}")
+  endif()
+endfunction()
+
 ########################################################################
 # INITIALIZE TARGET LISTS
 ########################################################################
@@ -949,7 +956,9 @@ elseif(TARGET_OS STREQUAL "emscripten")
   find_package(OpenGL)
   set(PLATFORM_CLIENT_LIBS GL)
   set(PLATFORM_CLIENT_INCLUDE_DIRS "")
-  set(CMAKE_EXECUTABLE_SUFFIX ".html")
+  # Programs are scripts loaded by pages of their own, so emscripten's shell is
+  # not used.
+  set(CMAKE_EXECUTABLE_SUFFIX ".js")
   set(PLATFORM_CLIENT)
   set(PLATFORM_LIBS)
   list(APPEND PLATFORM_LIBS rt) # clock_gettime for glibc < 2.17
@@ -2205,12 +2214,50 @@ if(WEBGPU_NATIVE_BACKEND)
   list(APPEND COPY_FILES ${WGPU_NATIVE_RUNTIME_RELATIVE})
 endif()
 if(TARGET_OS STREQUAL "emscripten")
-  list(APPEND COPY_FILES other/emscripten/background.png)
-  list(APPEND COPY_FILES other/emscripten/coi-serviceworker.js)
-  list(APPEND COPY_FILES other/emscripten/index.html)
-  list(APPEND COPY_FILES other/icons/DDNet.ico)
+  # The client's page and what it loads. The other pages belong to the site,
+  # see the `web-site` target.
+  set(WEB_CLIENT_PAGE_FILES
+    # tidy-alphabetical-start
+    other/emscripten/coi-serviceworker.js
+    other/emscripten/ddnet-base.js
+    other/emscripten/ddnet-page.css
+    other/emscripten/index.html
+    other/icons/DDNet.ico
+    # tidy-alphabetical-end
+  )
+  set(WEB_SITE_PAGE_FILES
+    # tidy-alphabetical-start
+    other/emscripten/ddnet-render.css
+    other/emscripten/ddnet-viewer.css
+    other/emscripten/demo.html
+    other/emscripten/map.html
+    other/emscripten/packages/demo-player/demo-player.js
+    other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-viewer/map-viewer.js
+    other/emscripten/render.html
+    # tidy-alphabetical-end
+  )
+  set(WEB_PAGE_FILES ${WEB_CLIENT_PAGE_FILES} ${WEB_SITE_PAGE_FILES})
+  list(APPEND COPY_FILES ${WEB_PAGE_FILES})
 endif()
 file(COPY ${COPY_FILES} DESTINATION .)
+
+if(TARGET_OS STREQUAL "emscripten")
+  # Build rules as well, so that an edited page does not need a reconfigure.
+  set(WEB_PAGE_COPY_OUTPUTS)
+  set(WEB_PAGE_NAMES)
+  foreach(pagefile ${WEB_PAGE_FILES})
+    get_filename_component(PAGE_NAME ${pagefile} NAME)
+    list(APPEND WEB_PAGE_NAMES ${PAGE_NAME})
+    add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/${pagefile} ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      DEPENDS ${PROJECT_SOURCE_DIR}/${pagefile}
+      COMMENT ""
+      VERBATIM)
+    list(APPEND WEB_PAGE_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/${PAGE_NAME})
+  endforeach()
+  add_custom_target(copy_web_page_files ALL DEPENDS ${WEB_PAGE_COPY_OUTPUTS})
+endif()
 
 set(COPY_DIRS ${SDL2_COPY_DIRS})
 file(COPY ${COPY_DIRS} DESTINATION .)
@@ -2445,6 +2492,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   textrender.h
   updater.h
   uuid.h
+  view_control.h
   warning.h
   # tidy-alphabetical-end
 )
@@ -2738,10 +2786,10 @@ if(CLIENT)
     connection.h
     demo_client_base.cpp
     demo_client_base.h
+    demo_player_client.cpp
+    demo_player_client.h
     demo_render_client.cpp
     demo_render_client.h
-    demo_viewer_client.cpp
-    demo_viewer_client.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2799,6 +2847,10 @@ if(CLIENT)
     video.cpp
     video.h
     video_webcodecs.cpp
+    viewer_controls.cpp
+    viewer_controls.h
+    viewer_fullscreen.cpp
+    viewer_fullscreen.h
     warning.cpp
     window_offscreen.cpp
     window_sdl.cpp
@@ -2921,6 +2973,8 @@ if(CLIENT)
     components/voting.cpp
     components/voting.h
     frontend.h
+    game_prediction.cpp
+    game_prediction.h
     game_state.cpp
     game_state.h
     game_view.cpp
@@ -2992,12 +3046,17 @@ if(CLIENT)
     ui_rect.h
     ui_scrollregion.cpp
     ui_scrollregion.h
+    view_control.cpp
+    view_control.h
     # tidy-alphabetical-end
   )
   # The front end of the client on top of the game (see
   # game/client/frontend.h): the menus, the consoles, the key binder, the theme
   # behind the menus and the local server.
   set(GAME_FRONTEND_REGEX "src/game/client/(match_journal|match_stats_export|components/(community_icons|console|frontend|key_binder|local_server|menu_background|menus(_[a-z0-9_]*)?))\\.(cpp|h)$")
+  # What a game that is played predicts beyond the last snapshot (see
+  # game/client/game_prediction.h). Programs that only show a demo leave it out.
+  set(GAME_PREDICTION_REGEX "src/game/client/game_prediction\\.(cpp|h)$")
   set_src(GAME_EDITOR GLOB_RECURSE src/game/editor
     # tidy-alphabetical-start
     auto_map.cpp
@@ -3180,8 +3239,12 @@ if(CLIENT)
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
   # The programs that only show a demo are built on these instead of client.cpp.
   set(ENGINE_CLIENT_DEMO ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|render_client|viewer_client)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|player_client|render_client)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
+  # The controls the demo player and the map viewer draw over what they show.
+  set(ENGINE_CLIENT_VIEWER ${ENGINE_CLIENT})
+  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen)\\.(cpp|h)$")
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_VIEWER})
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
@@ -3413,6 +3476,11 @@ if(CLIENT)
   set_property(TARGET game-client
       PROPERTY OUTPUT_NAME ${CLIENT_EXECUTABLE}
   )
+  set_web_export_name(game-client DDNetClient)
+  # Only the client keeps files, so only it mounts IndexedDB over its home.
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(game-client PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS")
+  endif()
   target_link_libraries(game-client ${LIBS_CLIENT})
 
   if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
@@ -3468,19 +3536,22 @@ if(CLIENT)
   # game/client/frontend.h), and none of the network, the server browser, the
   # editor or the platform integrations.
   set(DEMO_CLIENT_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_player_client|demo_render_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_PREDICTION_REGEX}")
   if(TARGET_OS STREQUAL "emscripten")
     # The browser's own fetch, which the assets are fetched with.
     list(APPEND DEMO_CLIENT_SRC src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
   endif()
   # These and the map viewer leave the updater and the platform integrations
   # out.
-  set(STANDALONE_CLIENT_TARGETS demo-renderer demo-viewer map-viewer)
+  set(STANDALONE_CLIENT_TARGETS demo-player demo-renderer map-viewer)
 
-  if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
-    # Draws into a surface without a window, so no SDL and the null input.
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android")
+    # Draws into a surface without a window, so no SDL and the null input. In
+    # the browser, WebGPU draws into render targets without a canvas and the
+    # encoder behind `IVideo` is WebCodecs instead of FFmpeg.
     set(DEMO_RENDERER_SRC ${DEMO_CLIENT_SRC} src/engine/client/demo_render_client.cpp src/engine/client/demo_render_client.h)
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(input|window_sdl)\\.(cpp|h)$")
     # A developer tool, not part of the game, and not shipped with the release.
@@ -3498,6 +3569,7 @@ if(CLIENT)
     )
     ddnet_graphics_program(demo-renderer)
     set_property(TARGET demo-renderer PROPERTY OUTPUT_NAME ddnet-demo-render)
+    set_web_export_name(demo-renderer DDNetDemoRenderer)
     target_compile_definitions(demo-renderer PRIVATE CONF_DEMO_RENDER_TOOL)
     target_link_libraries(demo-renderer
       # tidy-alphabetical-start
@@ -3530,15 +3602,16 @@ if(CLIENT)
     )
   endif()
 
-  # Shows one demo in a window. Not shipped either:
-  # `cmake --build . --target demo-viewer`. Not on Android and iOS, where the
-  # client is an app of its own (and Xcode builds the generated client sources
-  # for one target only).
+  # Shows one demo in a window, with the controls of a video player. Not shipped
+  # either: `cmake --build . --target demo-player`. Not on Android and iOS, where
+  # the client is an app of its own (and Xcode builds the generated client
+  # sources for one target only).
   if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
-    add_executable(demo-viewer EXCLUDE_FROM_ALL
+    add_executable(demo-player EXCLUDE_FROM_ALL
       ${DEMO_CLIENT_SRC}
-      src/engine/client/demo_viewer_client.cpp
-      src/engine/client/demo_viewer_client.h
+      ${ENGINE_CLIENT_VIEWER}
+      src/engine/client/demo_player_client.cpp
+      src/engine/client/demo_player_client.h
       ${DEPS_CLIENT}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
@@ -3548,10 +3621,11 @@ if(CLIENT)
       $<TARGET_OBJECTS:game-shared>
       # tidy-alphabetical-end
     )
-    ddnet_graphics_program(demo-viewer)
-    set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
-    target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
-    target_link_libraries(demo-viewer
+    ddnet_graphics_program(demo-player)
+    set_property(TARGET demo-player PROPERTY OUTPUT_NAME ddnet-demo-player)
+    set_web_export_name(demo-player DDNetDemoPlayer)
+    target_compile_definitions(demo-player PRIVATE CONF_DEMO_PLAYER_TOOL)
+    target_link_libraries(demo-player
       # tidy-alphabetical-start
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
@@ -3570,7 +3644,7 @@ if(CLIENT)
       ${PLATFORM_LIBS}
       ${CMAKE_THREAD_LIBS_INIT}
     )
-    target_include_directories(demo-viewer SYSTEM PRIVATE
+    target_include_directories(demo-player SYSTEM PRIVATE
       # tidy-alphabetical-start
       ${FFMPEG_INCLUDE_DIRS}
       ${FREETYPE_INCLUDE_DIRS}
@@ -3587,13 +3661,14 @@ if(CLIENT)
     )
   endif()
 
-  # A program that shows one map in a window. Where the demo viewer brings a
+  # A program that shows one map in a window. Where the demo player brings a
   # whole client, this brings none at all: a map, the renderer that draws it, a
   # window and a pointer. It is the same view the map render tool draws with,
   # with somebody looking at it instead of a file to write.
   if(CLIENT AND SDL2_FOUND)
     add_executable(map-viewer EXCLUDE_FROM_ALL
       ${DEPS_CLIENT}
+      ${ENGINE_CLIENT_VIEWER}
       ${GAME_MAP}
       ${GAME_MAP_STANDALONE}
       # The window and the keyboard, and nothing else out of the client - and
@@ -3621,6 +3696,12 @@ if(CLIENT)
     )
     ddnet_graphics_program(map-viewer)
     set_property(TARGET map-viewer PROPERTY OUTPUT_NAME ddnet-map-viewer)
+    set_web_export_name(map-viewer DDNetMapViewer)
+    if(TARGET_OS STREQUAL "emscripten")
+      # The browser's own fetch, so that the map's images are fetched beside
+      # each other.
+      target_sources(map-viewer PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+    endif()
     # No `${LIBS}` and no FreeType: nothing here talks to the network, and
     # nothing here draws a letter.
     target_link_libraries(map-viewer
@@ -3646,6 +3727,30 @@ if(CLIENT)
       ${PLATFORM_CLIENT_INCLUDE_DIRS}
       ${VULKAN_INCLUDE_DIRS}
     )
+  endif()
+
+  if(TARGET_OS STREQUAL "emscripten")
+    # Four programs, three pages and one data directory. The render tool has no
+    # page of its own. The build says what a server needs.
+    add_custom_target(web-site
+      COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
+        -DSITE_DIR=${PROJECT_BINARY_DIR}/site
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
+        "-DPAGE_FILES=$<JOIN:${WEB_PAGE_NAMES},$<SEMICOLON>>"
+        -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
+      DEPENDS
+        # tidy-alphabetical-start
+        copy_data
+        copy_web_page_files
+        demo-player
+        demo-renderer
+        game-client
+        map-viewer
+        web_data_index
+        # tidy-alphabetical-end
+      COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
+      VERBATIM)
   endif()
 
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
@@ -4671,6 +4776,8 @@ set(CPACK_FILES
 )
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
+else()
+  list(REMOVE_ITEM CPACK_FILES ${WEB_SITE_PAGE_FILES})
 endif()
 set(CPACK_GEN_FILES)
 

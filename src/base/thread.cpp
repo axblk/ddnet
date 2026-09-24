@@ -93,7 +93,7 @@ void *thread_init(void (*threadfunc)(void *), void *u, const char *name)
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 		// Return control to the browser's main thread to allow the pthread to be started,
 		// otherwise we deadlock when waiting for a thread immediately after starting it.
-		emscripten_sleep(0);
+		web_yield(0);
 #endif
 		return (void *)id;
 	}
@@ -135,7 +135,7 @@ void thread_wait(void *thread)
 		dbg_assert(join_result == EBUSY, "pthread_tryjoin_np failure");
 		// Busy waiting so we can periodically yield control to browser's
 		// main thread because blocking on the main thread is very bad.
-		emscripten_sleep(10);
+		web_yield(10);
 	}
 #elif defined(CONF_FAMILY_UNIX)
 	dbg_assert(pthread_join((pthread_t)thread, nullptr) == 0, "pthread_join failure");
@@ -154,7 +154,7 @@ void thread_sleep_idle(std::chrono::nanoseconds duration)
 	// it counts in whole milliseconds.
 	const int64_t milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 	if(milliseconds > 0)
-		emscripten_sleep(milliseconds);
+		web_yield(milliseconds);
 #else
 	std::this_thread::sleep_for(duration);
 #endif
@@ -208,3 +208,36 @@ void thread_init_and_detach(void (*threadfunc)(void *), void *u, const char *nam
 	void *thread = thread_init(threadfunc, u, name);
 	thread_detach(thread);
 }
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// How deep this thread is in `web_yield`. A count, because waits may nest on
+// threads that are allowed to wait. Asyncify does not run the destructor below
+// until the stack has been put back together.
+static thread_local int gs_WebYieldDepth = 0;
+
+CWebYieldScope::CWebYieldScope()
+{
+	++gs_WebYieldDepth;
+}
+
+CWebYieldScope::~CWebYieldScope()
+{
+	--gs_WebYieldDepth;
+}
+
+void web_yield(int64_t milliseconds)
+{
+	CWebYieldScope Scope;
+	emscripten_sleep(milliseconds > 0 ? (int)milliseconds : 0);
+}
+
+bool web_unwound()
+{
+	return gs_WebYieldDepth > 0;
+}
+#else
+bool web_unwound()
+{
+	return false;
+}
+#endif

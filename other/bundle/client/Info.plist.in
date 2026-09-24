@@ -37,7 +37,7 @@
 				<key>CFBundleTypeName</key>
 				<string>DDNet demo</string>
 				<key>CFBundleTypeRole</key>
-				<string>DDNet demo viewer</string>
+				<string>DDNet demo player</string>
 				<key>LSItemContentTypes</key>
 				<array>
 					<string>dyn.ah62d4rv4ge80k3prr6</string>

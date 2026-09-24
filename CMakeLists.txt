@@ -2747,6 +2747,8 @@ if(CLIENT)
     serverbrowser_ping_cache.h
     session.cpp
     session.h
+    session_runtime.cpp
+    session_runtime.h
     session_sources.cpp
     session_sources.h
     sixup_translate_system.cpp

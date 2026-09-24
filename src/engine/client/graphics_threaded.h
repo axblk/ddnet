@@ -63,6 +63,10 @@ class CGraphics_Threaded : public IEngineGraphics
 	bool m_DoScreenshot;
 	char m_aScreenshotName[IO_MAX_PATH_LENGTH];
 	bool m_RenderStatsEnabled = false;
+	std::array<std::string, MAX_GPU_RENDER_ZONES> m_aGpuRenderZoneNames;
+	size_t m_NumGpuRenderZones = 0;
+	void GpuRenderZone(CGpuRenderZone Zone, bool Begin);
+	uint64_t m_RenderStatsGpuStartSample = 0;
 	CFrameRenderStats m_CurrentFrameRenderStats;
 	CFrameRenderStats m_LastFrameRenderStats;
 
@@ -315,6 +319,10 @@ public:
 	SFrameMailboxStats FrameMailboxStats() const override;
 	CFrameRenderStats FrameRenderStats() const override;
 	void SetRenderStatsEnabled(bool Enabled) override;
+	CGpuRenderZone RegisterGpuRenderZone(const char *pName) override;
+	std::span<const std::string> GpuRenderZoneNames() const override;
+	void GpuRenderZoneBegin(CGpuRenderZone Zone) override { GpuRenderZone(Zone, true); }
+	void GpuRenderZoneEnd(CGpuRenderZone Zone) override { GpuRenderZone(Zone, false); }
 
 	const TTwGraphicsGpuList &GetGpus() const override;
 

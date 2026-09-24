@@ -14,6 +14,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <string>
 
 // The graphics without a window: the frontend, the backend host and the
 // null renderer, opened through the window-less window. This runs wherever
@@ -125,4 +126,18 @@ TEST_F(GraphicsFrontend, ReadsBackTheVirtualScreen)
 	// The null backend draws nothing.
 	EXPECT_FALSE(pReadback->Wait(Image));
 	Image.Free();
+}
+
+TEST_F(GraphicsFrontend, RegistersGpuRenderZonesByName)
+{
+	const IGraphics::CGpuRenderZone World = m_pGraphics->RegisterGpuRenderZone("world");
+	const IGraphics::CGpuRenderZone Hud = m_pGraphics->RegisterGpuRenderZone("hud");
+	EXPECT_TRUE(World.IsValid());
+	EXPECT_NE(World, Hud);
+	EXPECT_EQ(m_pGraphics->RegisterGpuRenderZone("world"), World);
+	for(size_t i = m_pGraphics->GpuRenderZoneNames().size(); i < IGraphics::MAX_GPU_RENDER_ZONES; ++i)
+		EXPECT_TRUE(m_pGraphics->RegisterGpuRenderZone(std::to_string(i).c_str()).IsValid());
+	EXPECT_FALSE(m_pGraphics->RegisterGpuRenderZone("one too many").IsValid());
+	ASSERT_EQ(m_pGraphics->GpuRenderZoneNames().size(), IGraphics::MAX_GPU_RENDER_ZONES);
+	EXPECT_EQ(m_pGraphics->GpuRenderZoneNames()[Hud.Index()], "hud");
 }

@@ -1,6 +1,8 @@
 #include "gameclient.h"
 
+#include <base/log.h>
 #include <base/str.h>
+#include <base/time.h>
 
 #include <engine/graphics.h>
 #include <engine/image.h>
@@ -9,7 +11,157 @@
 #include <generated/client_data.h>
 #include <generated/client_data7.h>
 
-CGameClient::CImageAsset CGameClient::LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory) const
+#include <algorithm>
+
+void CGameClient::StartLoadingCoreImages()
+{
+	m_vStartupImageLoads.clear();
+	m_CoreImagesPending = true;
+
+	for(int ImageId = 0; ImageId < g_pData->m_NumImages; ++ImageId)
+	{
+		if(ImageId == IMAGE_GAME)
+			LoadGameSkin(g_Config.m_ClAssetGame);
+		else if(ImageId == IMAGE_EMOTICONS)
+			LoadEmoticonsSkin(g_Config.m_ClAssetEmoticons);
+		else if(ImageId == IMAGE_PARTICLES)
+			LoadParticlesSkin(g_Config.m_ClAssetParticles);
+		else if(ImageId == IMAGE_HUD)
+			LoadHudSkin(g_Config.m_ClAssetHud);
+		else if(ImageId == IMAGE_EXTRAS)
+			LoadExtrasSkin(g_Config.m_ClAssetExtras);
+		else if(g_pData->m_aImages[ImageId].m_pFilename[0] != '\0')
+			m_vStartupImageLoads.push_back({ImageId, m_AssetLoader.LoadImageFile(Storage(), g_pData->m_aImages[ImageId].m_pFilename, IStorage::TYPE_ALL)});
+	}
+}
+
+void CGameClient::FinishLoadingCoreImages()
+{
+	UpdateAssetPackLoads();
+	for(auto It = m_vStartupImageLoads.begin(); It != m_vStartupImageLoads.end();)
+	{
+		IGraphics::CTextureHandle &Texture = g_pData->m_aImages[It->m_ImageId].m_Id;
+		if(!It->m_Resource.FinishTexture(Graphics(), Texture))
+		{
+			++It;
+			continue;
+		}
+		if(!Texture.IsValid())
+			Texture = Graphics()->LoadTexture(g_pData->m_aImages[It->m_ImageId].m_pFilename, IStorage::TYPE_ALL); // null texture
+		It = m_vStartupImageLoads.erase(It);
+	}
+	if(m_vStartupImageLoads.empty() && m_vAssetPackLoads.empty())
+	{
+		m_CoreImagesPending = false;
+		m_Menus.FinishLoading();
+	}
+}
+
+void CGameClient::TryFinishStartupAssets()
+{
+	if(!m_StartupAssetsPending || m_CoreImagesPending || !m_Sounds.StartupAssetsLoaded() || !m_Skins.StartupAssetsLoaded() || !m_Skins7.StartupAssetsLoaded() || !m_Menus.StartupAssetsLoaded() || !m_CountryFlags.StartupAssetsLoaded() || !m_Scoreboard.StartupAssetsLoaded())
+		return;
+	m_StartupAssetsPending = false;
+	log_info("asset_loader", "Client startup assets complete: wall=%.2fms", (time_get() - m_StartupAssetsStart) * 1000.0 / time_freq());
+}
+
+void CGameClient::StartLoadingAssetPack(int ImageId, const char *pName, bool AsDir)
+{
+	const char *pDirectory = nullptr;
+	switch(ImageId)
+	{
+	case IMAGE_GAME: pDirectory = "game"; break;
+	case IMAGE_EMOTICONS: pDirectory = "emoticons"; break;
+	case IMAGE_PARTICLES: pDirectory = "particles"; break;
+	case IMAGE_HUD: pDirectory = "hud"; break;
+	case IMAGE_EXTRAS: pDirectory = "extras"; break;
+	default:
+		dbg_assert_failed("Invalid asset pack image ID: %d", ImageId);
+		return;
+	}
+
+	m_vAssetPackLoads.erase(
+		std::remove_if(m_vAssetPackLoads.begin(), m_vAssetPackLoads.end(), [ImageId](const CAssetPackLoad &Load) { return Load.m_ImageId == ImageId; }),
+		m_vAssetPackLoads.end());
+
+	CAssetPackLoad Load;
+	Load.m_ImageId = ImageId;
+	Load.m_Name = pName;
+	Load.m_AsDir = AsDir;
+	const auto Submit = [&](const char *pPath) {
+		Load.m_vResources.push_back(m_AssetLoader.LoadImageFile(Storage(), pPath, IStorage::TYPE_ALL));
+	};
+	if(str_comp(pName, "default") != 0)
+	{
+		char aPath[IO_MAX_PATH_LENGTH];
+		if(!AsDir)
+		{
+			str_format(aPath, sizeof(aPath), "assets/%s/%s.png", pDirectory, pName);
+			Submit(aPath);
+		}
+		str_format(aPath, sizeof(aPath), "assets/%s/%s/%s", pDirectory, pName, g_pData->m_aImages[ImageId].m_pFilename);
+		Submit(aPath);
+	}
+	Submit(g_pData->m_aImages[ImageId].m_pFilename);
+	m_vAssetPackLoads.push_back(std::move(Load));
+}
+
+void CGameClient::UpdateAssetPackLoads()
+{
+	for(auto It = m_vAssetPackLoads.begin(); It != m_vAssetPackLoads.end();)
+	{
+		if(std::any_of(It->m_vResources.begin(), It->m_vResources.end(), [](const CImageResource &Resource) { return !Resource.IsFinished(); }))
+		{
+			++It;
+			continue;
+		}
+
+		m_DecodedAssetImages.clear();
+		for(CImageResource &Resource : It->m_vResources)
+		{
+			if(!Resource.IsReady())
+				continue;
+			m_DecodedAssetImages.emplace(Resource.Path(), Resource.TakeImage());
+		}
+		switch(It->m_ImageId)
+		{
+		case IMAGE_GAME: CommitGameSkin(It->m_Name.c_str(), It->m_AsDir); break;
+		case IMAGE_EMOTICONS: CommitEmoticonsSkin(It->m_Name.c_str(), It->m_AsDir); break;
+		case IMAGE_PARTICLES: CommitParticlesSkin(It->m_Name.c_str(), It->m_AsDir); break;
+		case IMAGE_HUD: CommitHudSkin(It->m_Name.c_str(), It->m_AsDir); break;
+		case IMAGE_EXTRAS: CommitExtrasSkin(It->m_Name.c_str(), It->m_AsDir); break;
+		}
+		m_DecodedAssetImages.clear();
+		It = m_vAssetPackLoads.erase(It);
+	}
+}
+
+void CGameClient::LoadGameSkin(const char *pPath, bool AsDir)
+{
+	StartLoadingAssetPack(IMAGE_GAME, pPath, AsDir);
+}
+
+void CGameClient::LoadEmoticonsSkin(const char *pPath, bool AsDir)
+{
+	StartLoadingAssetPack(IMAGE_EMOTICONS, pPath, AsDir);
+}
+
+void CGameClient::LoadParticlesSkin(const char *pPath, bool AsDir)
+{
+	StartLoadingAssetPack(IMAGE_PARTICLES, pPath, AsDir);
+}
+
+void CGameClient::LoadHudSkin(const char *pPath, bool AsDir)
+{
+	StartLoadingAssetPack(IMAGE_HUD, pPath, AsDir);
+}
+
+void CGameClient::LoadExtrasSkin(const char *pPath, bool AsDir)
+{
+	StartLoadingAssetPack(IMAGE_EXTRAS, pPath, AsDir);
+}
+
+CGameClient::CImageAsset CGameClient::LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory)
 {
 	CImageAsset LoadedAsset;
 	LoadedAsset.m_IsDefault = str_comp(pPath, "default") == 0;
@@ -26,18 +178,23 @@ CGameClient::CImageAsset CGameClient::LoadAssetFromPath(const char *pPath, bool 
 		str_format(LoadedAsset.m_aPath, sizeof(LoadedAsset.m_aPath), "assets/%s/%s.png", pDirectory, pPath);
 	}
 
-	Graphics()->LoadPng(LoadedAsset.m_ImageInfo, LoadedAsset.m_aPath, IStorage::TYPE_ALL);
+	auto It = m_DecodedAssetImages.find(LoadedAsset.m_aPath);
+	if(It != m_DecodedAssetImages.end())
+		LoadedAsset.m_ImageInfo = std::move(It->second);
 
 	if(!LoadedAsset.m_IsDefault && LoadedAsset.IsLoaded())
 	{
 		CImageInfo ImgDefaultInfo;
-		if(Graphics()->LoadPng(ImgDefaultInfo, g_pData->m_aImages[AssetId].m_pFilename, IStorage::TYPE_ALL))
+		auto DefaultIt = m_DecodedAssetImages.find(g_pData->m_aImages[AssetId].m_pFilename);
+		if(DefaultIt != m_DecodedAssetImages.end())
+			ImgDefaultInfo = std::move(DefaultIt->second);
+		if(ImgDefaultInfo.m_pData != nullptr)
 			LoadedAsset.m_FallbackImageInfo = std::move(ImgDefaultInfo);
 	}
 	return LoadedAsset;
 }
 
-void CGameClient::LoadGameSkin(const char *pPath, bool AsDir)
+void CGameClient::CommitGameSkin(const char *pPath, bool AsDir)
 {
 	if(m_GameSkin.m_Loaded)
 	{
@@ -133,9 +290,9 @@ void CGameClient::LoadGameSkin(const char *pPath, bool AsDir)
 	if(!LoadedAsset.IsLoaded() && !LoadedAsset.m_IsDefault)
 	{
 		if(AsDir)
-			LoadGameSkin("default");
+			CommitGameSkin("default");
 		else
-			LoadGameSkin(pPath, true);
+			CommitGameSkin(pPath, true);
 	}
 	else if(LoadedAsset.IsLoaded() && Graphics()->CheckImageDivisibility(LoadedAsset.m_aPath, ImgInfo, g_pData->m_aSprites[SPRITE_HEALTH_FULL].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_HEALTH_FULL].m_pSet->m_Gridy, true) && Graphics()->IsImageFormatRgba(LoadedAsset.m_aPath, ImgInfo))
 	{
@@ -267,7 +424,7 @@ void CGameClient::LoadGameSkin(const char *pPath, bool AsDir)
 		FallbackImgInfo.value().Free();
 }
 
-void CGameClient::LoadEmoticonsSkin(const char *pPath, bool AsDir)
+void CGameClient::CommitEmoticonsSkin(const char *pPath, bool AsDir)
 {
 	if(m_EmoticonsSkin.m_Loaded)
 	{
@@ -283,9 +440,9 @@ void CGameClient::LoadEmoticonsSkin(const char *pPath, bool AsDir)
 	if(!LoadedAsset.IsLoaded() && !LoadedAsset.m_IsDefault)
 	{
 		if(AsDir)
-			LoadEmoticonsSkin("default");
+			CommitEmoticonsSkin("default");
 		else
-			LoadEmoticonsSkin(pPath, true);
+			CommitEmoticonsSkin(pPath, true);
 	}
 	else if(LoadedAsset.IsLoaded() && Graphics()->CheckImageDivisibility(LoadedAsset.m_aPath, ImgInfo, g_pData->m_aSprites[SPRITE_OOP].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_OOP].m_pSet->m_Gridy, true) && Graphics()->IsImageFormatRgba(LoadedAsset.m_aPath, ImgInfo))
 	{
@@ -299,7 +456,7 @@ void CGameClient::LoadEmoticonsSkin(const char *pPath, bool AsDir)
 		FallbackImgInfo.value().Free();
 }
 
-void CGameClient::LoadParticlesSkin(const char *pPath, bool AsDir)
+void CGameClient::CommitParticlesSkin(const char *pPath, bool AsDir)
 {
 	if(m_ParticlesSkin.m_Loaded)
 	{
@@ -324,9 +481,9 @@ void CGameClient::LoadParticlesSkin(const char *pPath, bool AsDir)
 	if(!LoadedAsset.IsLoaded() && !LoadedAsset.m_IsDefault)
 	{
 		if(AsDir)
-			LoadParticlesSkin("default");
+			CommitParticlesSkin("default");
 		else
-			LoadParticlesSkin(pPath, true);
+			CommitParticlesSkin(pPath, true);
 	}
 	else if(LoadedAsset.IsLoaded() && Graphics()->CheckImageDivisibility(LoadedAsset.m_aPath, ImgInfo, g_pData->m_aSprites[SPRITE_PART_SLICE].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_PART_SLICE].m_pSet->m_Gridy, true) && Graphics()->IsImageFormatRgba(LoadedAsset.m_aPath, ImgInfo))
 	{
@@ -357,7 +514,7 @@ void CGameClient::LoadParticlesSkin(const char *pPath, bool AsDir)
 		FallbackImgInfo.value().Free();
 }
 
-void CGameClient::LoadHudSkin(const char *pPath, bool AsDir)
+void CGameClient::CommitHudSkin(const char *pPath, bool AsDir)
 {
 	if(m_HudSkin.m_Loaded)
 	{
@@ -401,9 +558,9 @@ void CGameClient::LoadHudSkin(const char *pPath, bool AsDir)
 	if(!LoadedAsset.IsLoaded() && !LoadedAsset.m_IsDefault)
 	{
 		if(AsDir)
-			LoadHudSkin("default");
+			CommitHudSkin("default");
 		else
-			LoadHudSkin(pPath, true);
+			CommitHudSkin(pPath, true);
 	}
 	else if(LoadedAsset.IsLoaded() && Graphics()->CheckImageDivisibility(LoadedAsset.m_aPath, ImgInfo, g_pData->m_aSprites[SPRITE_HUD_AIRJUMP].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_HUD_AIRJUMP].m_pSet->m_Gridy, true) && Graphics()->IsImageFormatRgba(LoadedAsset.m_aPath, ImgInfo))
 	{
@@ -446,7 +603,7 @@ void CGameClient::LoadHudSkin(const char *pPath, bool AsDir)
 		FallbackImgInfo.value().Free();
 }
 
-void CGameClient::LoadExtrasSkin(const char *pPath, bool AsDir)
+void CGameClient::CommitExtrasSkin(const char *pPath, bool AsDir)
 {
 	if(m_ExtrasSkin.m_Loaded)
 	{
@@ -466,9 +623,9 @@ void CGameClient::LoadExtrasSkin(const char *pPath, bool AsDir)
 	if(!LoadedAsset.IsLoaded() && !LoadedAsset.m_IsDefault)
 	{
 		if(AsDir)
-			LoadExtrasSkin("default");
+			CommitExtrasSkin("default");
 		else
-			LoadExtrasSkin(pPath, true);
+			CommitExtrasSkin(pPath, true);
 	}
 	else if(LoadedAsset.IsLoaded() && Graphics()->CheckImageDivisibility(LoadedAsset.m_aPath, ImgInfo, g_pData->m_aSprites[SPRITE_PART_SNOWFLAKE].m_pSet->m_Gridx, g_pData->m_aSprites[SPRITE_PART_SNOWFLAKE].m_pSet->m_Gridy, true) && Graphics()->IsImageFormatRgba(LoadedAsset.m_aPath, ImgInfo))
 	{

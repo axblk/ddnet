@@ -3,6 +3,9 @@
 #ifndef GAME_CLIENT_COMPONENTS_GHOST_H
 #define GAME_CLIENT_COMPONENTS_GHOST_H
 
+#include <engine/client/asset_loader.h>
+#include <engine/client/ghost.h>
+
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
@@ -84,10 +87,35 @@ private:
 		int FindFirstAtOrAfterTick(int Tick) const;
 	};
 
+	// Reads and parses a ghost file
+	class CGhostLoadJob : public CAssetJob
+	{
+		std::unique_ptr<CGhostLoader> m_pGhostLoader;
+		char m_aMapName[MAX_MAP_LENGTH];
+		SHA256_DIGEST m_MapSha256;
+		unsigned m_MapCrc;
+
+		CGhostSkin m_Skin;
+		CGhostPath m_Path;
+		int m_StartTick = -1;
+		char m_aPlayer[MAX_NAME_LENGTH] = {};
+
+		bool Process() override;
+
+	public:
+		CGhostLoadJob(std::unique_ptr<CGhostLoader> pGhostLoader, class IStorage *pStorage, const char *pFilename, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+
+		const CGhostSkin &Skin() const { return m_Skin; }
+		CGhostPath &GhostPath() { return m_Path; }
+		int StartTick() const { return m_StartTick; }
+		const char *Player() const { return m_aPlayer; }
+	};
+
 	class CGhostItem
 	{
 	public:
 		std::shared_ptr<CManagedTeeRenderInfo> m_pManagedTeeRenderInfo;
+		CTypedAssetResource<CGhostLoadJob> m_LoadResource;
 		CGhostSkin m_Skin;
 		CGhostPath m_Path;
 		int m_StartTick;
@@ -95,9 +123,11 @@ private:
 
 		CGhostItem() { Reset(); }
 
-		bool Empty() const { return m_Path.Size() == 0; }
+		bool Empty() const { return m_Path.Size() == 0 && !m_LoadResource; }
+		bool Ready() const { return m_Path.Size() != 0; }
 		void Reset()
 		{
+			m_LoadResource.Reset();
 			m_pManagedTeeRenderInfo = nullptr;
 			m_Path.Reset();
 			m_StartTick = -1;
@@ -158,6 +188,7 @@ public:
 	void OnMapLoad() override;
 	void OnShutdown() override;
 	void OnNewSnapshot() override;
+	void OnUpdate() override;
 
 	void OnNewPredictedSnapshot();
 

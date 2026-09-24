@@ -1,6 +1,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 #define GAME_CLIENT_COMPONENTS_MENU_BACKGROUND_H
 
+#include <engine/client/asset_loader.h>
+
 #include <game/client/components/background.h>
 #include <game/client/components/camera.h>
 
@@ -20,6 +22,7 @@ public:
 	bool m_HasDay;
 	bool m_HasNight;
 	IGraphics::CTextureHandle m_IconTexture;
+	CImageResource m_IconResource;
 	bool operator<(const CTheme &Other) const { return m_Name < Other.m_Name; }
 };
 
@@ -85,11 +88,18 @@ private:
 	float m_MoveTime;
 
 	bool m_IsInit;
-	bool m_Loading;
+
+	CTypedAssetResource<CFileAssetJob> m_MapResource;
+	std::string m_MenuMapName;
+	// Paths to try in order, a theme can have day and night variants
+	std::vector<std::string> m_vMapCandidates;
 
 	void ResetPositions();
 
+	void StartLoadingMapCandidate();
+	void FinishMapLoad();
 	void LoadThemeIcon(CTheme &Theme);
+	void FinishThemeIconLoads();
 	static int ThemeScan(const char *pName, int IsDir, int DirType, void *pUser);
 
 	std::vector<CTheme> m_vThemes;
@@ -100,12 +110,13 @@ public:
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
+	void OnUpdate() override;
+	void OnShutdown() override;
 	void OnMapLoad() override;
 
 	void LoadMenuBackground(bool HasDayHint = true, bool HasNightHint = true);
 
 	bool Render();
-	bool IsLoading() const { return m_Loading; }
 
 	void ChangePosition(int PositionNumber);
 

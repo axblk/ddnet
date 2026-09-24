@@ -128,7 +128,12 @@ void CScoreboard::OnConsoleInit()
 
 void CScoreboard::OnInit()
 {
-	m_DeadTeeTexture = Graphics()->LoadTexture("deadtee.png", IStorage::TYPE_ALL);
+	m_DeadTeeResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "deadtee.png", IStorage::TYPE_ALL);
+}
+
+void CScoreboard::OnUpdate()
+{
+	m_DeadTeeResource.FinishTexture(Graphics(), m_DeadTeeTexture);
 }
 
 void CScoreboard::OnReset()
@@ -164,6 +169,8 @@ void CScoreboard::ResetTexts()
 
 void CScoreboard::OnShutdown()
 {
+	m_DeadTeeResource.Reset();
+	Graphics()->UnloadTexture(&m_DeadTeeTexture);
 	ResetTexts();
 }
 

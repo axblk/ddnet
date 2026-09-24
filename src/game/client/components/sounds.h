@@ -5,21 +5,26 @@
 
 #include <base/vmath.h>
 
-#include <engine/shared/jobs.h>
+#include <engine/client/asset_loader.h>
 #include <engine/sound.h>
 
 #include <game/client/component.h>
 
 #include <optional>
+#include <vector>
 
-class CSoundLoading : public IJob
+class CSoundAssetJob final : public CAssetJob
 {
-	CGameClient *m_pGameClient;
-	bool m_Render;
+	ISound *m_pSound;
+	int m_SampleId = -1;
+
+protected:
+	bool Process() override;
 
 public:
-	CSoundLoading(CGameClient *pGameClient, bool Render);
-	void Run() override;
+	CSoundAssetJob(ISound *pSound, IStorage *pStorage, const char *pPath);
+	~CSoundAssetJob() override;
+	int TakeSample();
 };
 
 class CSounds : public CComponent
@@ -37,8 +42,15 @@ class CSounds : public CComponent
 	CQueueEntry m_aQueue[QUEUE_SIZE];
 	int m_QueuePos;
 	int64_t m_QueueWaitTime;
-	std::shared_ptr<CSoundLoading> m_pSoundJob;
-	bool m_WaitForSoundJob;
+	class CSoundLoad
+	{
+	public:
+		int m_SetId;
+		int m_SoundId;
+		CTypedAssetResource<CSoundAssetJob> m_Resource;
+	};
+	std::vector<CSoundLoad> m_vSoundLoads;
+	bool m_WaitForSoundJob = false;
 
 	void UpdateChannels();
 	int GetSampleId(int SetId);
@@ -61,6 +73,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
+	void OnShutdown() override;
 	void OnReset() override;
 	void OnStateChange(int NewState, int OldState) override;
 	void Update(std::optional<vec2> ListenerPosition);
@@ -72,6 +85,7 @@ public:
 	void PlayAndRecord(int Channel, int SetId, float Volume, vec2 Position);
 	void Stop(int SetId);
 	bool IsPlaying(int SetId);
+	bool StartupAssetsLoaded() const { return !m_WaitForSoundJob; }
 
 	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume);
 	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position);

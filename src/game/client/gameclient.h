@@ -16,6 +16,7 @@
 #include <base/vmath.h>
 
 #include <engine/client.h>
+#include <engine/client/asset_loader.h>
 #include <engine/client/enums.h>
 #include <engine/console.h>
 #include <engine/shared/config.h>
@@ -77,6 +78,8 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class IMap;
@@ -146,6 +149,7 @@ public:
 private:
 	std::vector<class CComponent *> m_vpAll;
 	std::vector<class CComponent *> m_vpInput;
+	CAssetLoader m_AssetLoader;
 	CNetObjHandler m_NetObjHandler;
 	protocol7::CNetObjHandler m_NetObjHandler7;
 
@@ -234,6 +238,7 @@ public:
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
 	IEngine *Engine() const { return m_pEngine; }
+	CAssetLoader &AssetLoader() { return m_AssetLoader; }
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
@@ -405,6 +410,9 @@ public:
 	void OnWindowResize() override;
 
 	void InitializeLanguage() override;
+	void UpdateLanguageLoads();
+	CTypedAssetResource<CFileAssetJob> m_LanguageIndexResource;
+	CTypedAssetResource<CFileAssetJob> m_LanguageResource;
 	bool m_LanguageChanged = false;
 	void OnLanguageChange();
 	void HandleLanguageChanged();
@@ -684,6 +692,8 @@ public:
 	int FindFirstMultiViewId();
 	void CleanMultiViewId(int ClientId);
 
+	bool StartupAssetsPending() const { return m_StartupAssetsPending; }
+
 private:
 	std::vector<CSnapEntities> m_vSnapEntities;
 	void SnapCollectEntities(CSessionId SessionId, int Conn);
@@ -693,13 +703,46 @@ private:
 	public:
 		bool IsLoaded() const { return m_ImageInfo.m_pData != nullptr; }
 
-		char m_aPath[IO_MAX_PATH_LENGTH];
-		bool m_IsDefault;
+		char m_aPath[IO_MAX_PATH_LENGTH] = {};
+		bool m_IsDefault = false;
 		CImageInfo m_ImageInfo;
 		std::optional<CImageInfo> m_FallbackImageInfo;
 	};
 
-	CImageAsset LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory) const;
+	class CStartupImageLoad
+	{
+	public:
+		int m_ImageId = -1;
+		CImageResource m_Resource;
+	};
+
+	class CAssetPackLoad
+	{
+	public:
+		int m_ImageId = -1;
+		std::string m_Name;
+		bool m_AsDir = false;
+		std::vector<CImageResource> m_vResources;
+	};
+
+	bool m_CoreImagesPending = false;
+	bool m_StartupAssetsPending = false;
+	int64_t m_StartupAssetsStart = 0;
+	std::vector<CStartupImageLoad> m_vStartupImageLoads;
+	std::vector<CAssetPackLoad> m_vAssetPackLoads;
+	std::unordered_map<std::string, CImageInfo> m_DecodedAssetImages;
+
+	void StartLoadingCoreImages();
+	void FinishLoadingCoreImages();
+	void TryFinishStartupAssets();
+	void StartLoadingAssetPack(int ImageId, const char *pName, bool AsDir);
+	void UpdateAssetPackLoads();
+	CImageAsset LoadAssetFromPath(const char *pPath, bool AsDir, int AssetId, const char *pDirectory);
+	void CommitGameSkin(const char *pPath, bool AsDir = false);
+	void CommitEmoticonsSkin(const char *pPath, bool AsDir = false);
+	void CommitParticlesSkin(const char *pPath, bool AsDir = false);
+	void CommitHudSkin(const char *pPath, bool AsDir = false);
+	void CommitExtrasSkin(const char *pPath, bool AsDir = false);
 
 	std::vector<std::shared_ptr<CManagedTeeRenderInfo>> m_vpManagedTeeRenderInfos;
 	void UpdateManagedTeeRenderInfos();

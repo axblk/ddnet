@@ -18,20 +18,15 @@ const char *Localize(const char *pStr, const char *pContext)
 	return pNewStr ? pNewStr : pStr;
 }
 
-void CLocalizationDatabase::LoadIndexfile(IStorage *pStorage, IConsole *pConsole)
+void CLocalizationDatabase::ParseIndex(std::string_view Index)
 {
 	m_vLanguages.clear();
 
 	const std::vector<std::string> vEnglishLanguageCodes = {"en"};
 	m_vLanguages.emplace_back("English", "", 826, vEnglishLanguageCodes);
 
-	const char *pFilename = "languages/index.txt";
 	CLineReader LineReader;
-	if(!LineReader.OpenFile(pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
-	{
-		log_error("localization", "Couldn't open index file '%s'", pFilename);
-		return;
-	}
+	LineReader.OpenCopy(Index);
 
 	while(const char *pLine = LineReader.Get())
 	{
@@ -170,6 +165,20 @@ bool CLocalizationDatabase::Load(const char *pFilename, IStorage *pStorage, ICon
 {
 	// empty string means unload
 	if(pFilename[0] == 0)
+		return ParseLanguage("", pFilename);
+
+	char *pFileData = pStorage->ReadFileStr(pFilename, IStorage::TYPE_ALL);
+	if(pFileData == nullptr)
+		return false;
+	const bool Success = ParseLanguage(pFileData, pFilename);
+	free(pFileData);
+	return Success;
+}
+
+bool CLocalizationDatabase::ParseLanguage(std::string_view Text, const char *pName)
+{
+	// empty text means unload
+	if(Text.empty())
 	{
 		m_vStrings.clear();
 		m_StringsHeap.Reset();
@@ -177,10 +186,9 @@ bool CLocalizationDatabase::Load(const char *pFilename, IStorage *pStorage, ICon
 	}
 
 	CLineReader LineReader;
-	if(!LineReader.OpenFile(pStorage->OpenFile(pFilename, IOFLAG_READ, IStorage::TYPE_ALL)))
-		return false;
+	LineReader.OpenCopy(Text);
 
-	log_info("localization", "loaded '%s'", pFilename);
+	log_info("localization", "loaded '%s'", pName);
 	m_vStrings.clear();
 	m_StringsHeap.Reset();
 

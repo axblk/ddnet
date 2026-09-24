@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 enum
 {
@@ -58,7 +59,7 @@ class CGhostRecorder : public IGhostRecorder
 public:
 	CGhostRecorder();
 
-	void Init();
+	void Init(IStorage *pStorage);
 
 	int Start(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, const char *pName) override;
 	void Stop(int Ticks, int Time) override;
@@ -69,7 +70,10 @@ public:
 
 class CGhostLoader : public IGhostLoader
 {
-	IOHANDLE m_File;
+	// The whole ghost file
+	std::vector<uint8_t> m_vData;
+	size_t m_ReadPos = 0;
+	bool m_Loaded = false;
 	char m_aFilename[IO_MAX_PATH_LENGTH];
 	class IStorage *m_pStorage;
 
@@ -86,7 +90,9 @@ class CGhostLoader : public IGhostLoader
 	std::optional<CGhostItem> m_LastItem;
 
 	void ResetBuffer();
-	IOHANDLE ReadHeader(CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
+	size_t Read(void *pData, size_t Size);
+	// The header size depends on the version
+	bool ReadHeader(CGhostHeader &Header, const unsigned char *pData, size_t Size, size_t *pHeaderSize, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
 	bool ValidateHeader(const CGhostHeader &Header, const char *pFilename) const;
 	bool CheckHeaderMap(const CGhostHeader &Header, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc, bool LogMapMismatch) const;
 	bool ReadChunk(int *pType);
@@ -94,9 +100,10 @@ class CGhostLoader : public IGhostLoader
 public:
 	CGhostLoader();
 
-	void Init();
+	void Init(IStorage *pStorage);
 
 	bool Load(const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc) override;
+	bool LoadFromMemory(std::vector<uint8_t> vData, const char *pFilename, const char *pMap, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
 	void Close() override;
 	const CGhostInfo *GetInfo() const override { return &m_Info; }
 

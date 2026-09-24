@@ -303,8 +303,10 @@ void CMenus::RenderSkinSelection7(CUIRect MainView)
 	static std::vector<const CSkins7::CSkin *> s_vpSkinList;
 	static CListBox s_ListBox;
 
-	if(!m_SkinList7LastRefreshTime.has_value() || m_SkinList7LastRefreshTime.value() != m_SkinList7LastRefreshTime)
+	// The list holds pointers into the skins, which change while they load
+	if(m_SkinList7LastRefreshTime != GameClient()->m_Skins7.LastRefreshTime())
 	{
+		m_SkinList7LastRefreshTime = GameClient()->m_Skins7.LastRefreshTime();
 		s_vpSkinList.clear();
 		for(const CSkins7::CSkin &Skin : GameClient()->m_Skins7.GetSkins())
 		{
@@ -387,9 +389,10 @@ void CMenus::RenderSkinPartSelection7(CUIRect MainView)
 {
 	static std::vector<const CSkins7::CSkinPart *> s_avpList[protocol7::NUM_SKINPARTS];
 	static CListBox s_ListBox;
-	for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
+	if(m_SkinPartsList7LastRefreshTime != GameClient()->m_Skins7.LastRefreshTime())
 	{
-		if(!m_SkinList7LastRefreshTime.has_value() || m_SkinList7LastRefreshTime.value() != GameClient()->m_Skins7.LastRefreshTime())
+		m_SkinPartsList7LastRefreshTime = GameClient()->m_Skins7.LastRefreshTime();
+		for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
 		{
 			s_avpList[Part].clear();
 			for(const CSkins7::CSkinPart &SkinPart : GameClient()->m_Skins7.GetSkinParts(Part))

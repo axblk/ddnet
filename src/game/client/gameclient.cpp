@@ -159,6 +159,8 @@ CGameView &CGameClient::LegacyGameView()
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
+	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
+	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->NetworkSessionId(), NUM_DUMMIES));
 	m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Client()->DemoSessionId(), 1));
@@ -350,11 +352,40 @@ void CGameClient::OnConsoleInit()
 
 void CGameClient::InitializeLanguage()
 {
-	// set the language
-	g_Localization.LoadIndexfile(Storage(), Console());
-	if(g_Config.m_ClShowWelcome)
-		g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
-	g_Localization.Load(g_Config.m_ClLanguagefile, Storage(), Console());
+	m_LanguageIndexResource = m_AssetLoader.LoadFile(Storage(), "languages/index.txt", IStorage::TYPE_ALL);
+}
+
+void CGameClient::UpdateLanguageLoads()
+{
+	if(m_LanguageIndexResource && m_LanguageIndexResource.IsFinished())
+	{
+		if(m_LanguageIndexResource.IsReady())
+			g_Localization.ParseIndex(m_LanguageIndexResource.Result().Text());
+		else
+			log_error("localization", "Couldn't open index file '%s'", m_LanguageIndexResource.Path());
+		m_LanguageIndexResource.Reset();
+		if(g_Config.m_ClShowWelcome)
+		{
+			g_Localization.SelectDefaultLanguage(Console(), g_Config.m_ClLanguagefile, sizeof(g_Config.m_ClLanguagefile));
+			TextRender()->SetFontLanguageVariant(g_Config.m_ClLanguagefile);
+		}
+		if(g_Config.m_ClLanguagefile[0] != '\0')
+			m_LanguageResource = m_AssetLoader.LoadFile(Storage(), g_Config.m_ClLanguagefile, IStorage::TYPE_ALL);
+	}
+	if(m_LanguageResource && m_LanguageResource.IsFinished())
+	{
+		if(m_LanguageResource.IsReady())
+		{
+			g_Localization.ParseLanguage(m_LanguageResource.Result().Text(), m_LanguageResource.Path());
+			// Clear all text containers
+			Client()->OnWindowResize();
+		}
+		else
+		{
+			log_error("localization", "Couldn't load language file '%s'", m_LanguageResource.Path());
+		}
+		m_LanguageResource.Reset();
+	}
 }
 
 void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
@@ -365,6 +396,8 @@ void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
 void CGameClient::OnInit()
 {
 	const int64_t OnInitStart = time_get();
+	m_StartupAssetsPending = true;
+	m_StartupAssetsStart = OnInitStart;
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -434,7 +467,7 @@ void CGameClient::OnInit()
 	for(int i = 0; i < OLD_NUM_NETOBJTYPES; i++)
 		Client()->SnapSetStaticsize7(i, m_NetObjHandler7.GetObjSize(i));
 
-	if(!TextRender()->LoadFonts())
+	if(!TextRender()->WaitForFonts([this]() { m_AssetLoader.Update(); }))
 	{
 		Client()->AddWarning(SWarning(Localize("Some fonts could not be loaded. Check the local console for details.")));
 	}
@@ -447,6 +480,7 @@ void CGameClient::OnInit()
 	const char *pLoadingMessageComponents = Localize("Initializing components");
 	const char *pLoadingMessageComponentsSpecial = Localize("Why are you slowmo replaying to read this?");
 	char aLoadingMessage[256];
+	StartLoadingCoreImages();
 
 	// init all components
 	int SkippedComps = 1;
@@ -455,6 +489,7 @@ void CGameClient::OnInit()
 	for(int i = NumComponents - 1; i >= 0; --i)
 	{
 		m_vpAll[i]->OnInit();
+		m_AssetLoader.Update();
 		// try to render a frame after each component, also flushes GPU uploads
 		if(m_Menus.IsInit())
 		{
@@ -469,26 +504,7 @@ void CGameClient::OnInit()
 		++CompCounter;
 	}
 
-	// setup load amount, load textures
-	const char *pLoadingMessageAssets = Localize("Initializing assets");
-	for(int i = 0; i < g_pData->m_NumImages; i++)
-	{
-		if(i == IMAGE_GAME)
-			LoadGameSkin(g_Config.m_ClAssetGame);
-		else if(i == IMAGE_EMOTICONS)
-			LoadEmoticonsSkin(g_Config.m_ClAssetEmoticons);
-		else if(i == IMAGE_PARTICLES)
-			LoadParticlesSkin(g_Config.m_ClAssetParticles);
-		else if(i == IMAGE_HUD)
-			LoadHudSkin(g_Config.m_ClAssetHud);
-		else if(i == IMAGE_EXTRAS)
-			LoadExtrasSkin(g_Config.m_ClAssetExtras);
-		else if(g_pData->m_aImages[i].m_pFilename[0] == '\0') // handle special null image without filename
-			g_pData->m_aImages[i].m_Id = IGraphics::CTextureHandle();
-		else
-			g_pData->m_aImages[i].m_Id = Graphics()->LoadTexture(g_pData->m_aImages[i].m_pFilename, IStorage::TYPE_ALL);
-		m_Menus.RenderLoading(pLoadingDDNetCaption, pLoadingMessageAssets, 1);
-	}
+	FinishLoadingCoreImages();
 
 	OnSessionClosed(Client()->FocusedSessionId());
 
@@ -512,12 +528,25 @@ void CGameClient::OnInit()
 		pChecksum->m_aComponentsChecksum[i] = Size;
 	}
 
-	m_Menus.FinishLoading();
 	log_trace("gameclient", "initialization finished after %.2fms", (time_get() - OnInitStart) * 1000.0f / (float)time_freq());
 }
 
 void CGameClient::OnUpdate()
 {
+	m_AssetLoader.Update();
+	if(TextRender()->Update())
+	{
+		// Text containers keep the glyphs they were built with
+		Client()->OnWindowResize();
+	}
+	if(m_CoreImagesPending)
+	{
+		FinishLoadingCoreImages();
+		if(m_CoreImagesPending)
+			return;
+	}
+	UpdateAssetPackLoads();
+	UpdateLanguageLoads();
 	HandleLanguageChanged();
 
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
@@ -574,6 +603,7 @@ void CGameClient::OnUpdate()
 	{
 		pComponent->OnUpdate();
 	}
+	TryFinishStartupAssets();
 
 	UpdateNetworkPlayerInfo();
 	m_NewTick = false;
@@ -952,6 +982,11 @@ const CGameClient::CPreparedRenderEntry &CGameClient::AudibleRenderEntry() const
 
 void CGameClient::OnRender()
 {
+	if(m_CoreImagesPending)
+	{
+		m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Initializing assets"), 0, false);
+		return;
+	}
 	const CPreparedRenderEntry &AudibleEntry = AudibleRenderEntry();
 #if defined(CONF_VIDEORECORDER)
 	const bool IsVideoOutput = IVideo::Current() != nullptr;
@@ -1080,6 +1115,8 @@ void CGameClient::OnRender()
 void CGameClient::OnRenderPrepare()
 {
 	m_vPreparedRenderEntries.clear();
+	if(m_CoreImagesPending)
+		return;
 	m_vPreparedRenderEntries.reserve(3);
 
 	CGameSessionContext &ActiveSession = SessionContext();
@@ -1712,6 +1749,7 @@ void CGameClient::OnStateChange(int NewState, int OldState)
 
 void CGameClient::OnShutdown()
 {
+	m_AssetLoader.Shutdown();
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnShutdown();
 	m_SessionPresentations.UnloadAll();

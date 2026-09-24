@@ -32,6 +32,7 @@
 #include <functional>
 #include <iterator>
 #include <queue>
+#include <string_view>
 
 using namespace std::chrono_literals;
 
@@ -777,7 +778,28 @@ void CTouchControls::CBindToggleTouchButtonBehavior::WriteToConfiguration(CJsonW
 void CTouchControls::OnInit()
 {
 	InitVisibilityFunctions();
-	if(!LoadConfigurationFromFile(IStorage::TYPE_ALL))
+	m_ConfigurationResource = GameClient()->AssetLoader().LoadFile(Storage(), CONFIGURATION_FILENAME, IStorage::TYPE_ALL);
+}
+
+void CTouchControls::OnUpdate()
+{
+	if(!m_ConfigurationResource || !m_ConfigurationResource.IsFinished())
+	{
+		return;
+	}
+
+	bool Loaded = false;
+	if(m_ConfigurationResource.IsReady())
+	{
+		const std::string_view Configuration = m_ConfigurationResource.Result().Text();
+		Loaded = ParseConfiguration(Configuration.data(), Configuration.size());
+	}
+	else
+	{
+		log_error("touch_controls", "Failed to read configuration from '%s'", CONFIGURATION_FILENAME);
+	}
+	m_ConfigurationResource.Reset();
+	if(!Loaded)
 	{
 		Client()->AddWarning(SWarning(Localize("Error loading touch controls"), Localize("Could not load touch controls from file. See local console for details.")));
 	}

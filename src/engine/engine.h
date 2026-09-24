@@ -5,6 +5,7 @@
 
 #include "kernel.h"
 
+#include <cstddef>
 #include <memory>
 
 class CFutureLogger;
@@ -18,6 +19,7 @@ class IEngine : public IInterface
 public:
 	virtual void Init() = 0;
 	virtual void AddJob(std::shared_ptr<IJob> pJob) = 0;
+	virtual size_t JobThreadCount() const = 0;
 	virtual void ShutdownJobs() = 0;
 	virtual void SetAdditionalLogger(std::shared_ptr<ILogger> &&pLogger) = 0;
 };

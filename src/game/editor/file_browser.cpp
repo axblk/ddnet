@@ -230,7 +230,7 @@ void CFileBrowser::Render()
 			str_copy(m_aSelectedFileDisplayName, m_SelectedFileIndex >= 0 ? m_vpFilteredFileList[m_SelectedFileIndex]->m_aDisplayName : "");
 			UpdateFilenameInput();
 			m_ListBox.ScrollToSelected();
-			m_PreviewState = EPreviewState::UNLOADED;
+			ResetFilePreview();
 		}
 	}
 
@@ -287,7 +287,7 @@ void CFileBrowser::Render()
 		{
 			m_FilenameInput.WasChanged(); // this clears the changed flag
 		}
-		m_PreviewState = EPreviewState::UNLOADED;
+		ResetFilePreview();
 	}
 
 	// Buttons
@@ -474,7 +474,7 @@ void CFileBrowser::OnEditorClose()
 
 void CFileBrowser::OnDialogClose()
 {
-	m_PreviewState = EPreviewState::UNLOADED;
+	ResetFilePreview();
 	Graphics()->UnloadTexture(&m_PreviewImage);
 	m_PreviewImageWidth = -1;
 	m_PreviewImageHeight = -1;
@@ -500,19 +500,8 @@ void CFileBrowser::UpdateFilePreview()
 	{
 		char aImagePath[IO_MAX_PATH_LENGTH];
 		str_format(aImagePath, sizeof(aImagePath), "%s/%s", m_pCurrentPath, m_vpFilteredFileList[m_SelectedFileIndex]->m_aFilename);
-		CImageInfo PreviewImageInfo;
-		if(Graphics()->LoadPng(PreviewImageInfo, aImagePath, m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType))
-		{
-			Graphics()->UnloadTexture(&m_PreviewImage);
-			m_PreviewImageWidth = PreviewImageInfo.m_Width;
-			m_PreviewImageHeight = PreviewImageInfo.m_Height;
-			m_PreviewImage = Graphics()->LoadTextureRawMove(PreviewImageInfo, 0, aImagePath);
-			m_PreviewState = EPreviewState::LOADED;
-		}
-		else
-		{
-			m_PreviewState = EPreviewState::ERROR;
-		}
+		m_PreviewResource = Editor()->AssetLoader().LoadImageFile(Storage(), aImagePath, m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType);
+		m_PreviewState = EPreviewState::LOADING;
 	}
 	else if(m_FileType == CFileBrowser::EFileType::SOUND)
 	{
@@ -522,6 +511,37 @@ void CFileBrowser::UpdateFilePreview()
 		m_PreviewSound = Sound()->LoadOpus(aSoundPath, m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType);
 		m_PreviewState = m_PreviewSound == -1 ? EPreviewState::ERROR : EPreviewState::LOADED;
 	}
+}
+
+void CFileBrowser::ResetFilePreview()
+{
+	m_PreviewResource.Reset();
+	m_PreviewState = EPreviewState::UNLOADED;
+}
+
+void CFileBrowser::FinishFilePreview()
+{
+	if(m_PreviewState != EPreviewState::LOADING || !m_PreviewResource.IsFinished())
+		return;
+	if(m_PreviewResource.IsReady())
+	{
+		CImageInfo Image = m_PreviewResource.TakeImage();
+		m_PreviewImageWidth = Image.m_Width;
+		m_PreviewImageHeight = Image.m_Height;
+		Graphics()->UnloadTexture(&m_PreviewImage);
+		m_PreviewImage = Graphics()->LoadTextureRawMove(Image, 0, m_PreviewResource.Path());
+		m_PreviewState = m_PreviewImage.IsValid() ? EPreviewState::LOADED : EPreviewState::ERROR;
+	}
+	else
+	{
+		m_PreviewState = EPreviewState::ERROR;
+	}
+	m_PreviewResource.Reset();
+}
+
+void CFileBrowser::OnUpdate()
+{
+	FinishFilePreview();
 }
 
 void CFileBrowser::RenderFilePreview(CUIRect Preview)
@@ -762,7 +782,7 @@ void CFileBrowser::FilelistPopulate(int StorageType, bool KeepSelection)
 		m_SelectedFileIndex = m_vpFilteredFileList.empty() ? -1 : 0;
 		str_copy(m_aSelectedFileDisplayName, m_SelectedFileIndex >= 0 ? m_vpFilteredFileList[m_SelectedFileIndex]->m_aDisplayName : "");
 	}
-	m_PreviewState = EPreviewState::UNLOADED;
+	ResetFilePreview();
 }
 
 int CFileBrowser::DirectoryListingCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser)

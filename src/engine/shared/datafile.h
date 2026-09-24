@@ -13,11 +13,51 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <span>
 #include <vector>
 
 enum
 {
 	ITEMTYPE_EX = 0xFFFF,
+};
+
+/**
+ * The contents of one data item as they are stored in the file. It shares
+ * ownership of the bytes it views, so it stays valid after the reader that
+ * handed it out is closed.
+ */
+class CDataFileRawData
+{
+	std::shared_ptr<const std::vector<uint8_t>> m_pBuffer;
+	std::span<const uint8_t> m_Data;
+	size_t m_UncompressedSize = 0;
+	bool m_Compressed = false;
+
+public:
+	CDataFileRawData() = default;
+	CDataFileRawData(std::vector<uint8_t> vData, size_t UncompressedSize, bool Compressed);
+	/**
+	 * @param pBuffer Buffer that holds `Data`.
+	 * @param Data The stored bytes of the data item.
+	 * @param UncompressedSize Size of the data item after uncompressing it.
+	 * @param Compressed Whether `Data` is compressed.
+	 */
+	CDataFileRawData(std::shared_ptr<const std::vector<uint8_t>> pBuffer, std::span<const uint8_t> Data, size_t UncompressedSize, bool Compressed);
+
+	size_t UncompressedSize() const { return m_UncompressedSize; }
+
+	/**
+	 * @return Buffer of `UncompressedSize()` bytes, `nullptr` if the data is
+	 * corrupt or the memory could not be allocated.
+	 */
+	[[nodiscard]] std::unique_ptr<uint8_t[]> Uncompress() const;
+	/**
+	 * @param pDest Buffer of `UncompressedSize()` bytes.
+	 *
+	 * @return `false` if the data is corrupt.
+	 */
+	[[nodiscard]] bool UncompressTo(uint8_t *pDest) const;
 };
 
 /**
@@ -33,9 +73,12 @@ typedef std::function<std::pair<void *, size_t>(void *pData, size_t Size)> FData
 class CDataFileReader
 {
 	class CDatafile *m_pDataFile = nullptr;
+	// Shared with the raw data handed out
+	std::shared_ptr<const std::vector<uint8_t>> m_pFileData;
 
 	int GetExternalItemType(int InternalType, CUuid *pUuid);
 	int GetInternalItemType(int ExternalType);
+	[[nodiscard]] bool OpenBuffer(std::vector<uint8_t> vFileData, const char *pFullName, const char *pPath);
 
 public:
 	~CDataFileReader();
@@ -43,14 +86,29 @@ public:
 
 	[[nodiscard]] bool Open(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType);
 	[[nodiscard]] bool Open(IStorage *pStorage, const char *pPath, int StorageType);
+	/**
+	 * @param pFullName Name of the file without its extension.
+	 * @param vData Contents of the file.
+	 * @param pPath Where the contents came from.
+	 */
+	[[nodiscard]] bool OpenFromMemory(const char *pFullName, std::vector<uint8_t> vData, const char *pPath);
 	void Close();
 	bool IsOpen() const;
-	IOHANDLE File() const;
+	/**
+	 * @return The contents of the file, valid until the reader is closed.
+	 */
+	const unsigned char *FileData() const;
 
 	int GetDataSize(int Index) const;
 	void *GetData(int Index);
 	void *GetDataSwapped(int Index); // makes sure that the data is 32bit LE ints when saved
 	const char *GetDataString(int Index);
+	/**
+	 * Hands out the stored bytes of a data item without uncompressing them,
+	 * so that they can be uncompressed on another thread. Data that is
+	 * already loaded or has a data processor is copied as `GetData` returns it.
+	 */
+	[[nodiscard]] bool GetRawData(int Index, CDataFileRawData &RawData);
 	void AddDataProcessor(int Index, FDataProcessor DataProcessor);
 	void UnloadData(int Index);
 	int NumData() const;

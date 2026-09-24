@@ -1,6 +1,7 @@
 #ifndef GAME_CLIENT_COMPONENTS_MAPSOUNDS_H
 #define GAME_CLIENT_COMPONENTS_MAPSOUNDS_H
 
+#include <engine/client/asset_loader.h>
 #include <engine/sound.h>
 
 #include <game/client/component.h>
@@ -16,10 +17,20 @@ class IMap;
 
 class CMapSounds : public CComponentInterfaces
 {
+	class CMapSoundLoading;
+	class CMapSoundLoad
+	{
+	public:
+		int m_Sound;
+		CTypedAssetResource<CMapSoundLoading> m_Resource;
+	};
+
 	int m_aSounds[MAX_MAPSOUNDS];
 	int m_Count;
 	float m_Time;
 	bool m_Audible = false;
+	bool m_LoadWarning = false;
+	std::vector<CMapSoundLoad> m_vSoundLoads;
 
 	class CSourceQueueEntry
 	{
@@ -31,6 +42,7 @@ class CMapSounds : public CComponentInterfaces
 		const CSoundSource *m_pSource;
 	};
 	std::vector<CSourceQueueEntry> m_vSourceQueue;
+	void FinishSoundLoads();
 
 public:
 	CMapSounds();

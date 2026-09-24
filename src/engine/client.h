@@ -106,8 +106,6 @@ protected:
 
 	TLoadingCallback m_LoadingCallback = nullptr;
 
-	char m_aNews[3000] = "";
-	int m_Points = -1;
 	int m_ActiveConnection = 0;
 
 public:
@@ -165,54 +163,7 @@ public:
 	float FrameTimeAverage() const { return m_FrameTimeAverage; }
 	virtual CRenderTrace *RenderTrace() = 0;
 
-	virtual void Restart() = 0;
-	virtual void Quit() = 0;
-	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
 #if defined(CONF_VIDEORECORDER)
-	/**
-	 * The export settings as the configuration has them, for every caller that
-	 * does not build its own. There is only one set of them, so a demo rendered
-	 * from the console comes out like one rendered from the dialog.
-	 */
-	virtual CVideoExportSettings DefaultVideoExportSettings() = 0;
-	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
-	virtual void DemoPlayer_StartRenderQueue() = 0;
-	virtual void DemoPlayer_ClearRenderQueue() = 0;
-	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
-	/**
-	 * Number of queued exports that have not been started yet.
-	 */
-	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
-	/**
-	 * Demo of the pending export at @p Index, which must be less than
-	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
-	 * with and what a name in it should say; the video name is derived from
-	 * it and says the same thing twice.
-	 */
-	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
-	/**
-	 * Demo of the export that is running, or an empty string when none is.
-	 */
-	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
-	/**
-	 * Removes the pending export at @p Index, which must be less than
-	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
-	 */
-	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
-	/**
-	 * Moves the pending export at @p Index one position towards the front or
-	 * back of the queue. Both @p Index and the resulting position must be less
-	 * than `DemoPlayer_RenderQueuePending()`.
-	 */
-	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
-	/**
-	 * Aborts the export that is currently running. Pending exports are kept and
-	 * the next one is started afterwards.
-	 */
-	virtual void DemoPlayer_CancelActiveRender() = 0;
-	virtual bool DemoPlayer_RenderQueueActive() const = 0;
-	virtual const char *DemoPlayer_RenderQueueError() const = 0;
-	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
 	virtual CSessionId VideoSessionId() const = 0;
 	virtual bool VideoUsesOfflineAudio() const = 0;
 #endif
@@ -225,45 +176,11 @@ public:
 	//
 	virtual const char *PlayerName() const = 0;
 	virtual const char *DummyName() = 0;
-	virtual const char *ErrorString() const = 0;
-
-	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
-
-	// DDRace
-
-	const char *News() const { return m_aNews; }
-	int Points() const { return m_Points; }
 
 	virtual void AddWarning(const SWarning &Warning) = 0;
 	virtual std::optional<SWarning> CurrentWarning() = 0;
 
 	virtual IFriends *Foes() = 0;
-
-	/**
-	 * Opens a link in the browser.
-	 *
-	 * @param pLink The link to open in a browser.
-	 *
-	 * @return `true` on success, `false` on failure.
-	 *
-	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
-	 */
-	virtual bool ViewLink(const char *pLink) = 0;
-	/**
-	 * Opens a file or directory with the default program.
-	 *
-	 * @param pFilename The file or folder to open with the default program.
-	 *
-	 * @return `true` on success, `false` on failure.
-	 *
-	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
-	 *
-	 * @remark On iOS the file or directory is shown in the Files app.
-	 */
-	virtual bool ViewFile(const char *pFilename) = 0;
-
-	virtual std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) = 0;
-	virtual void GetGpuInfoString(char (&aGpuInfo)[512]) = 0;
 };
 
 /**
@@ -387,6 +304,99 @@ public:
 	virtual void ShellRegister() = 0;
 	virtual void ShellUnregister() = 0;
 #endif
+};
+
+/**
+ * What only the front end asks of the client: quitting and restarting it,
+ * playing and exporting demos from the demo browser, why the last connection
+ * ended, news and points from the info server, and opening links and files.
+ * Only the full client registers it; a program without a front end has none.
+ */
+class IClientFrontend : public IInterface
+{
+	MACRO_INTERFACE("clientfrontend")
+public:
+	virtual void Restart() = 0;
+	virtual void Quit() = 0;
+	virtual const char *DemoPlayer_Play(const char *pFilename, int StorageType) = 0;
+#if defined(CONF_VIDEORECORDER)
+	/**
+	 * The export settings as the configuration has them, for every caller that
+	 * does not build its own. There is only one set of them, so a demo rendered
+	 * from the console comes out like one rendered from the dialog.
+	 */
+	virtual CVideoExportSettings DefaultVideoExportSettings() = 0;
+	virtual const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) = 0;
+	virtual void DemoPlayer_StartRenderQueue() = 0;
+	virtual void DemoPlayer_ClearRenderQueue() = 0;
+	virtual size_t DemoPlayer_RenderQueueSize() const = 0;
+	/**
+	 * Number of queued exports that have not been started yet.
+	 */
+	virtual size_t DemoPlayer_RenderQueuePending() const = 0;
+	/**
+	 * Demo of the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. That is what the queue was filled
+	 * with and what a name in it should say; the video name is derived from
+	 * it and says the same thing twice.
+	 */
+	virtual const char *DemoPlayer_RenderQueueName(size_t Index) const = 0;
+	/**
+	 * Demo of the export that is running, or an empty string when none is.
+	 */
+	virtual const char *DemoPlayer_ActiveRenderName() const = 0;
+	/**
+	 * Removes the pending export at @p Index, which must be less than
+	 * `DemoPlayer_RenderQueuePending()`. The active export is not affected.
+	 */
+	virtual void DemoPlayer_RenderQueueErase(size_t Index) = 0;
+	/**
+	 * Moves the pending export at @p Index one position towards the front or
+	 * back of the queue. Both @p Index and the resulting position must be less
+	 * than `DemoPlayer_RenderQueuePending()`.
+	 */
+	virtual void DemoPlayer_RenderQueueMove(size_t Index, bool Up) = 0;
+	/**
+	 * Aborts the export that is currently running. Pending exports are kept and
+	 * the next one is started afterwards.
+	 */
+	virtual void DemoPlayer_CancelActiveRender() = 0;
+	virtual bool DemoPlayer_RenderQueueActive() const = 0;
+	virtual const char *DemoPlayer_RenderQueueError() const = 0;
+	virtual bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const = 0;
+#endif
+
+	virtual const char *ErrorString() const = 0;
+
+	virtual IGraphics::CTextureHandle GetDebugFont() = 0; // TODO: remove this function
+
+	// DDRace
+
+	virtual const char *News() const = 0;
+	virtual int Points() const = 0;
+
+	/**
+	 * Opens a link in the browser.
+	 *
+	 * @param pLink The link to open in a browser.
+	 *
+	 * @return `true` on success, `false` on failure.
+	 *
+	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
+	 */
+	virtual bool ViewLink(const char *pLink) = 0;
+	/**
+	 * Opens a file or directory with the default program.
+	 *
+	 * @param pFilename The file or folder to open with the default program.
+	 *
+	 * @return `true` on success, `false` on failure.
+	 *
+	 * @remark This may not be called with untrusted input or it'll result in arbitrary code execution, especially on Windows.
+	 *
+	 * @remark On iOS the file or directory is shown in the Files app.
+	 */
+	virtual bool ViewFile(const char *pFilename) = 0;
 };
 
 class IGameClient : public IInterface

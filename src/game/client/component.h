@@ -29,6 +29,11 @@ protected:
 	 * front end: it is defined with them, and a program without one has none.
 	 */
 	class CGameFrontend *Frontend() const;
+	/**
+	 * Get what only the front end asks of the client. Defined with the front
+	 * end, like `Frontend`.
+	 */
+	class IClientFrontend *ClientFrontend() const;
 
 	/**
 	 * Get the client interface.

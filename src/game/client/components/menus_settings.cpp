@@ -154,7 +154,7 @@ void CMenus::RenderSettings(CUIRect MainView)
 			}
 			else
 			{
-				Client()->Restart();
+				ClientFrontend()->Restart();
 			}
 		}
 	}

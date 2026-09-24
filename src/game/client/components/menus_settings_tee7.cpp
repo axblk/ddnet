@@ -201,7 +201,7 @@ void CMenus::RenderSettingsTee7(CUIRect MainView)
 	{
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "skins7", aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("skins7", IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Open the directory to add custom skins"));
 

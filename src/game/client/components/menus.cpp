@@ -516,7 +516,7 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		}
 		else
 		{
-			Client()->Quit();
+			ClientFrontend()->Quit();
 		}
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_QuitButton, &Button, Localize("Quit"));
@@ -833,7 +833,7 @@ bool CMenus::VideoProgress(CVideoProgress &Progress)
 	int FirstTick;
 	int CurrentTick;
 	int LastTick;
-	if(!Client()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
+	if(!ClientFrontend()->DemoPlayer_RenderInfo(&FirstTick, &CurrentTick, &LastTick) || IVideo::Current() == nullptr)
 		return false;
 	Progress.m_Status = IVideo::Current()->Status();
 	const int TotalTicks = LastTick - FirstTick;
@@ -844,7 +844,7 @@ bool CMenus::VideoProgress(CVideoProgress &Progress)
 		m_DemoRenderStartTime = Now;
 	m_DemoRenderLastSubmittedFrames = Progress.m_Status.m_SubmittedFrames;
 	Progress.m_Elapsed = std::chrono::duration<float>(Now - m_DemoRenderStartTime).count();
-	Progress.m_QueueSize = Client()->DemoPlayer_RenderQueueSize();
+	Progress.m_QueueSize = ClientFrontend()->DemoPlayer_RenderQueueSize();
 	return true;
 }
 
@@ -955,7 +955,7 @@ bool CMenus::RenderVideoProgressScreen(const CVideoProgress &Progress)
 	static CButtonContainer s_DemoRenderCancelAllButton;
 	const bool CancelAll = DoButton_Menu(&s_DemoRenderCancelAllButton, Localize("Cancel all"), 0, &CancelAllButton);
 	if(CancelAll)
-		Client()->DemoPlayer_ClearRenderQueue();
+		ClientFrontend()->DemoPlayer_ClearRenderQueue();
 	RenderTools()->RenderCursor(Ui()->MousePos(), 24.0f);
 	Ui()->FinishCheck();
 	Ui()->ClearHotkeys();
@@ -994,7 +994,7 @@ void CMenus::RenderNews(CUIRect MainView)
 
 	CUIRect Label;
 
-	const char *pStr = Client()->News();
+	const char *pStr = ClientFrontend()->News();
 	char aLine[256];
 	while((pStr = str_next_token(pStr, "\n", aLine, sizeof(aLine))))
 	{
@@ -1425,12 +1425,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	else if(m_Popup == POPUP_DISCONNECTED)
 	{
 		pTitle = Localize("Disconnected");
-		pExtraText = Client()->ErrorString();
+		pExtraText = ClientFrontend()->ErrorString();
 		pButtonText = Localize("Ok");
 		if(ClientNetwork()->ReconnectTime() > 0)
 		{
 			str_format(aBuf, sizeof(aBuf), Localize("Reconnect in %d sec"), (int)((ClientNetwork()->ReconnectTime() - time_get()) / time_freq()) + 1);
-			pTitle = Client()->ErrorString();
+			pTitle = ClientFrontend()->ErrorString();
 			pExtraText = aBuf;
 			pButtonText = Localize("Abort");
 		}
@@ -1488,9 +1488,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 	else if(m_Popup == POPUP_POINTS)
 	{
 		pTitle = Localize("Existing Player");
-		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && ClientFrontend()->Points() > 50)
 		{
-			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), Client()->Points());
+			str_format(aBuf, sizeof(aBuf), Localize("Your nickname '%s' is already used (%d points). Do you still want to use it?"), Client()->PlayerName(), ClientFrontend()->Points());
 			pExtraText = aBuf;
 			TopAlign = true;
 		}
@@ -1630,12 +1630,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			if(m_Popup == POPUP_RESTART)
 			{
 				m_Popup = POPUP_NONE;
-				Client()->Restart();
+				ClientFrontend()->Restart();
 			}
 			else
 			{
 				m_Popup = POPUP_NONE;
-				Client()->Quit();
+				ClientFrontend()->Quit();
 			}
 		}
 	}
@@ -2120,7 +2120,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		CloseButton.VSplitRight(20.0f, &CloseButton, nullptr);
 		ButtonBar.VSplitMid(&RemoveButton, &StartButton, 20.0f);
 
-		const bool RenderActive = Client()->DemoPlayer_RenderQueueActive();
+		const bool RenderActive = ClientFrontend()->DemoPlayer_RenderQueueActive();
 		if(RenderActive)
 		{
 			CUIRect ActiveLabel, CancelActiveButton;
@@ -2130,14 +2130,14 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			ActiveLabel.VSplitRight(10.0f, &ActiveLabel, nullptr);
 			char aActiveName[128];
 			char aActive[192];
-			str_format(aActive, sizeof(aActive), "%s: %s", Localize("Currently rendering"), DemoName(Client()->DemoPlayer_ActiveRenderName(), aActiveName));
+			str_format(aActive, sizeof(aActive), "%s: %s", Localize("Currently rendering"), DemoName(ClientFrontend()->DemoPlayer_ActiveRenderName(), aActiveName));
 			Ui()->DoLabel(&ActiveLabel, aActive, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = ActiveLabel.w, .m_EllipsisAtEnd = true});
 			static CButtonContainer s_ButtonCancelActive;
 			if(DoButton_Menu(&s_ButtonCancelActive, Localize("Cancel current"), 0, &CancelActiveButton))
-				Client()->DemoPlayer_CancelActiveRender();
+				ClientFrontend()->DemoPlayer_CancelActiveRender();
 		}
 
-		const int PendingCount = static_cast<int>(Client()->DemoPlayer_RenderQueuePending());
+		const int PendingCount = static_cast<int>(ClientFrontend()->DemoPlayer_RenderQueuePending());
 		static int s_SelectedIndex = 0;
 		s_SelectedIndex = std::clamp(s_SelectedIndex, 0, std::max(PendingCount - 1, 0));
 
@@ -2149,7 +2149,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		s_ListBox.DoStart(20.0f, PendingCount, 1, 3, s_SelectedIndex, &Box);
 		for(int i = 0; i < PendingCount; ++i)
 		{
-			const char *pDemoPath = Client()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
+			const char *pDemoPath = ClientFrontend()->DemoPlayer_RenderQueueName(static_cast<size_t>(i));
 			const CListboxItem Item = s_ListBox.DoNextItem(pDemoPath, i == s_SelectedIndex);
 			if(!Item.m_Visible)
 				continue;
@@ -2163,12 +2163,12 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			Ui()->DoLabel(&Label, aPosition, 12.8f, TEXTALIGN_ML, {.m_MaxWidth = Label.w, .m_EllipsisAtEnd = true});
 			if(i > 0 && Ui()->DoButton_FontIcon(&m_RenderQueueRowIds[i].m_Up, FontIcon::CHEVRON_UP, 0, &MoveUpButton, BUTTONFLAG_LEFT))
 			{
-				Client()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), true);
+				ClientFrontend()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), true);
 				s_SelectedIndex = i - 1;
 			}
 			if(i < PendingCount - 1 && Ui()->DoButton_FontIcon(&m_RenderQueueRowIds[i].m_Down, FontIcon::CHEVRON_DOWN, 0, &MoveDownButton, BUTTONFLAG_LEFT))
 			{
-				Client()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), false);
+				ClientFrontend()->DemoPlayer_RenderQueueMove(static_cast<size_t>(i), false);
 				s_SelectedIndex = i + 1;
 			}
 		}
@@ -2181,15 +2181,15 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_ButtonRemove;
 		if(DoButton_Menu(&s_ButtonRemove, Localize("Remove"), 0, &RemoveButton) && PendingCount > 0)
 		{
-			Client()->DemoPlayer_RenderQueueErase(static_cast<size_t>(s_SelectedIndex));
-			if(Client()->DemoPlayer_RenderQueueSize() == 0)
+			ClientFrontend()->DemoPlayer_RenderQueueErase(static_cast<size_t>(s_SelectedIndex));
+			if(ClientFrontend()->DemoPlayer_RenderQueueSize() == 0)
 				m_Popup = POPUP_NONE;
 		}
 
 		static CButtonContainer s_ButtonStart;
 		if(DoButton_Menu(&s_ButtonStart, Localize("Start rendering"), RenderActive, &StartButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			Client()->DemoPlayer_StartRenderQueue();
+			ClientFrontend()->DemoPlayer_StartRenderQueue();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2214,7 +2214,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		static CButtonContainer s_ButtonOpenFolder;
 		if(DoButton_Menu(&s_ButtonOpenFolder, Localize("Videos directory"), 0, &OpenFolder))
 		{
-			Client()->ViewFile(aSaveFolder);
+			ClientFrontend()->ViewFile(aSaveFolder);
 		}
 
 		static CButtonContainer s_ButtonOk;
@@ -2478,7 +2478,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		Box.HSplitBottom(24.0f, &Box, &Part);
 		Part.VMargin(120.0f, &Part);
 
-		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && Client()->Points() > 50)
+		if(ClientNetwork()->InfoState() == IClientNetwork::EInfoState::SUCCESS && ClientFrontend()->Points() > 50)
 		{
 			CUIRect Yes, No;
 			Part.VSplitMid(&No, &Yes, 40.0f);
@@ -2797,7 +2797,7 @@ void CMenus::DemoRenderResolution(int *pWidth, int *pHeight) const
 {
 	// The same numbers the export itself will use, so what the dialog shows and
 	// checks is what comes out.
-	const CVideoExportSettings Settings = Client()->DefaultVideoExportSettings();
+	const CVideoExportSettings Settings = ClientFrontend()->DefaultVideoExportSettings();
 	*pWidth = Settings.m_Width;
 	*pHeight = Settings.m_Height;
 }
@@ -2808,8 +2808,8 @@ void CMenus::PopupConfirmDemoReplaceVideo()
 	str_format(aBuf, sizeof(aBuf), "%s/%s.demo", m_aCurrentDemoFolder, m_aCurrentDemoSelectionName);
 	char aVideoName[IO_MAX_PATH_LENGTH];
 	str_copy(aVideoName, m_DemoRenderInput.GetString());
-	const CVideoExportSettings Settings = Client()->DefaultVideoExportSettings();
-	const char *pError = Client()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, Settings, m_Speed, !m_DemoRenderQueueOnly);
+	const CVideoExportSettings Settings = ClientFrontend()->DefaultVideoExportSettings();
+	const char *pError = ClientFrontend()->DemoPlayer_Render(aBuf, m_DemolistStorageType, aVideoName, Settings, m_Speed, !m_DemoRenderQueueOnly);
 	if(!pError)
 	{
 		m_DemoRenderStartTime = std::chrono::nanoseconds::zero();
@@ -2914,9 +2914,9 @@ void CMenus::OnStateChange(int NewState, int OldState)
 		if(OldState >= IClient::STATE_ONLINE && NewState < IClient::STATE_QUITTING)
 			UpdateMusicState();
 		m_Popup = POPUP_NONE;
-		if(Client()->ErrorString() && Client()->ErrorString()[0] != 0)
+		if(ClientFrontend()->ErrorString() && ClientFrontend()->ErrorString()[0] != 0)
 		{
-			if(str_find(Client()->ErrorString(), "password"))
+			if(str_find(ClientFrontend()->ErrorString(), "password"))
 			{
 				m_Popup = POPUP_PASSWORD;
 				m_PasswordInput.SelectAll();

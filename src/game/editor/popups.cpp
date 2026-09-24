@@ -501,7 +501,7 @@ CUi::EPopupMenuFunctionResult CEditor::CPopupMapTab::Render(void *pContext, CUIR
 				}
 				char aCompletePath[IO_MAX_PATH_LENGTH];
 				pEditor->Storage()->GetCompletePath(CheckStorageType, aParentDirectory, aCompletePath, sizeof(aCompletePath));
-				if(!pEditor->Client()->ViewFile(aCompletePath))
+				if(!pEditor->ClientFrontend()->ViewFile(aCompletePath))
 				{
 					pEditor->ShowFileDialogError("Failed to open the folder '%s'.", aCompletePath);
 				}
@@ -2192,7 +2192,7 @@ CUi::EPopupMenuFunctionResult CEditor::PopupSelectAutomapperConfig(void *pContex
 		pEditor->Storage()->GetCompletePath(IStorage::TYPE_SAVE, "editor/automap", aPath, sizeof(aPath));
 		pEditor->Storage()->CreateFolder("editor", IStorage::TYPE_SAVE);
 		pEditor->Storage()->CreateFolder("editor/automap", IStorage::TYPE_SAVE);
-		pEditor->Client()->ViewFile(aPath);
+		pEditor->ClientFrontend()->ViewFile(aPath);
 	}
 
 	View.HSplitBottom(5.0f, &View, &Button);

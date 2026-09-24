@@ -32,9 +32,15 @@ CGameFrontend *CComponentInterfaces::Frontend() const
 	return static_cast<CGameFrontend *>(GameClient()->Frontend());
 }
 
+IClientFrontend *CComponentInterfaces::ClientFrontend() const
+{
+	return Frontend()->ClientFrontend();
+}
+
 void CGameFrontend::OnInterfacesInit(CGameClient *pClient)
 {
 	CComponent::OnInterfacesInit(pClient);
+	m_pClientFrontend = CComponent::Kernel()->RequestInterface<IClientFrontend>();
 	m_LocalServer.OnInterfacesInit(pClient);
 }
 

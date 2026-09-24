@@ -413,7 +413,7 @@ void CFileBrowser::Render()
 		{
 			char aOpenPath[IO_MAX_PATH_LENGTH];
 			Storage()->GetCompletePath(m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType, m_pCurrentPath, aOpenPath, sizeof(aOpenPath));
-			if(!Client()->ViewFile(aOpenPath))
+			if(!Editor()->ClientFrontend()->ViewFile(aOpenPath))
 			{
 				Editor()->ShowFileDialogError("Failed to open the directory '%s'.", aOpenPath);
 			}

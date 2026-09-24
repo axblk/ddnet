@@ -3,6 +3,8 @@
 #ifndef GAME_CLIENT_COMPONENTS_FRONTEND_H
 #define GAME_CLIENT_COMPONENTS_FRONTEND_H
 
+#include <engine/client.h>
+
 #include <game/client/component.h>
 #include <game/client/components/console.h>
 #include <game/client/components/key_binder.h>
@@ -22,6 +24,7 @@
  */
 class CGameFrontend : public IGameFrontend, public CComponent
 {
+	IClientFrontend *m_pClientFrontend = nullptr;
 	std::vector<CComponentInfo> m_vComponents;
 	std::array<std::vector<CComponent *>, (size_t)ESlot::NUM> m_avpSlots;
 
@@ -37,6 +40,11 @@ public:
 
 	CGameFrontend();
 	int Sizeof() const override { return sizeof(*this); }
+
+	/**
+	 * What only the front end asks of the client.
+	 */
+	IClientFrontend *ClientFrontend() const { return m_pClientFrontend; }
 
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnConsoleInit() override;

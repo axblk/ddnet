@@ -110,7 +110,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 		if(DoButton_Menu(&s_SettingsButtonId, Localize("Settings file"), 0, &SettingsButton))
 		{
 			Storage()->GetCompletePath(IStorage::TYPE_SAVE, CONFIG_FILE, aBuf, sizeof(aBuf));
-			Client()->ViewFile(aBuf);
+			ClientFrontend()->ViewFile(aBuf);
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_SettingsButtonId, &SettingsButton, Localize("Open the settings file"));
 
@@ -121,7 +121,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 		if(DoButton_Menu(&s_SavesButtonId, Localize("Saves file"), 0, &SavesButton))
 		{
 			Storage()->GetCompletePath(IStorage::TYPE_SAVE, SAVES_FILE, aBuf, sizeof(aBuf));
-			Client()->ViewFile(aBuf);
+			ClientFrontend()->ViewFile(aBuf);
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_SavesButtonId, &SavesButton, Localize("Open the saves file"));
 
@@ -132,7 +132,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 		if(DoButton_Menu(&s_ConfigButtonId, Localize("Config directory"), 0, &ConfigButton))
 		{
 			Storage()->GetCompletePath(IStorage::TYPE_SAVE, "", aBuf, sizeof(aBuf));
-			Client()->ViewFile(aBuf);
+			ClientFrontend()->ViewFile(aBuf);
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_ConfigButtonId, &ConfigButton, Localize("Open the directory that contains the configuration and user files"));
 
@@ -144,7 +144,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 		{
 			Storage()->GetCompletePath(IStorage::TYPE_SAVE, "themes", aBuf, sizeof(aBuf));
 			Storage()->CreateFolder("themes", IStorage::TYPE_SAVE);
-			Client()->ViewFile(aBuf);
+			ClientFrontend()->ViewFile(aBuf);
 		}
 		GameClient()->m_Tooltips.DoToolTip(&s_ThemesButtonId, &DirectoryButton, Localize("Open the directory to add custom themes"));
 

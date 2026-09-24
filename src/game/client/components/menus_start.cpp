@@ -63,7 +63,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	static CButtonContainer s_DiscordButton;
 	if(Frontend()->m_Menus.DoButton_Menu(&s_DiscordButton, Localize("Discord"), 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
 	{
-		Client()->ViewLink(Localize("https://ddnet.org/discord"));
+		ClientFrontend()->ViewLink(Localize("https://ddnet.org/discord"));
 	}
 
 	ExtMenu.HSplitBottom(5.0f, &ExtMenu, nullptr); // little space
@@ -71,7 +71,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	static CButtonContainer s_LearnButton;
 	if(Frontend()->m_Menus.DoButton_Menu(&s_LearnButton, Localize("Learn"), 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
 	{
-		Client()->ViewLink(Localize("https://wiki.ddnet.org/"));
+		ClientFrontend()->ViewLink(Localize("https://wiki.ddnet.org/"));
 	}
 
 	ExtMenu.HSplitBottom(5.0f, &ExtMenu, nullptr); // little space
@@ -87,7 +87,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 	static CButtonContainer s_WebsiteButton;
 	if(Frontend()->m_Menus.DoButton_Menu(&s_WebsiteButton, Localize("Website"), 0, &Button, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
 	{
-		Client()->ViewLink("https://ddnet.org/");
+		ClientFrontend()->ViewLink("https://ddnet.org/");
 	}
 
 	ExtMenu.HSplitBottom(5.0f, &ExtMenu, nullptr); // little space
@@ -135,7 +135,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		}
 		else
 		{
-			Client()->Quit();
+			ClientFrontend()->Quit();
 		}
 	}
 
@@ -247,7 +247,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		static CButtonContainer s_VersionUpdate;
 		if(Frontend()->m_Menus.DoButton_Menu(&s_VersionUpdate, Localize("Restart"), 0, &UpdateButton, BUTTONFLAG_LEFT, 0, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
 		{
-			Client()->Restart();
+			ClientFrontend()->Restart();
 		}
 	}
 	else if(State >= IUpdater::GETTING_MANIFEST && State < IUpdater::NEED_RESTART)
@@ -292,7 +292,7 @@ void CMenusStart::RenderStartMenu(CUIRect MainView)
 		static CButtonContainer s_DownloadButton;
 		if(Frontend()->m_Menus.DoButton_Menu(&s_DownloadButton, Localize("Download"), 0, &DownloadButton, BUTTONFLAG_LEFT, nullptr, IGraphics::CORNER_ALL, 5.0f, 0.0f, ColorRGBA(0.0f, 0.0f, 0.0f, 0.25f)))
 		{
-			Client()->ViewLink("https://ddnet.org/downloads/");
+			ClientFrontend()->ViewLink("https://ddnet.org/downloads/");
 		}
 
 		char aBuf[64];

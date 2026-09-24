@@ -134,44 +134,23 @@ public:
 	virtual int Run() = 0;
 
 	CRenderTrace *RenderTrace() override { return &m_RenderTrace; }
-	IGraphics::CTextureHandle GetDebugFont() override { return IGraphics::CTextureHandle(); }
 	void UpdateAndSwap() override {}
 	void OnWindowResize() override;
 	void Notify(const char *pTitle, const char *pMessage) override {}
-	std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) override { return std::nullopt; }
-	void GetGpuInfoString(char (&aGpuInfo)[512]) override;
-	bool ViewLink(const char *pLink) override { return false; }
-	bool ViewFile(const char *pFilename) override { return false; }
 
 	IFriends *Foes() override { return &m_Foes; }
 
-	void Quit() override;
-	void Restart() override { Quit(); }
+	/**
+	 * Ends the program after the current frame.
+	 */
+	void Quit();
 	const char *PlayerName() const override { return ""; }
 	const char *DummyName() override { return ""; }
-	const char *ErrorString() const override { return m_aError; }
 
-	const char *DemoPlayer_Play(const char *pFilename, int StorageType) override;
 #if defined(CONF_VIDEORECORDER)
 	CSessionId VideoExportSessionId() const override { return {}; }
 	CSessionId VideoSessionId() const override { return m_DemoSessionId; }
 	bool VideoUsesOfflineAudio() const override { return false; }
-	bool DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const override;
-	CVideoExportSettings DefaultVideoExportSettings() override { return m_Settings; }
-
-	// There is no menu and so no render queue: the one demo is the one drawn.
-	const char *DemoPlayer_Render(const char *pFilename, int StorageType, const char *pVideoName, const CVideoExportSettings &Settings, int SpeedIndex, bool StartQueue) override { return "A demo program renders one demo."; }
-	void DemoPlayer_StartRenderQueue() override {}
-	void DemoPlayer_ClearRenderQueue() override {}
-	size_t DemoPlayer_RenderQueueSize() const override { return 0; }
-	size_t DemoPlayer_RenderQueuePending() const override { return 0; }
-	const char *DemoPlayer_RenderQueueName(size_t Index) const override { return ""; }
-	const char *DemoPlayer_ActiveRenderName() const override { return m_aDemoPath; }
-	void DemoPlayer_RenderQueueErase(size_t Index) override {}
-	void DemoPlayer_RenderQueueMove(size_t Index, bool Up) override {}
-	void DemoPlayer_CancelActiveRender() override { Quit(); }
-	bool DemoPlayer_RenderQueueActive() const override;
-	const char *DemoPlayer_RenderQueueError() const override { return m_aError; }
 #endif
 };
 

@@ -149,6 +149,7 @@ CUpdater::CUpdater()
 {
 	m_pClient = nullptr;
 	m_pClientNetwork = nullptr;
+	m_pClientFrontend = nullptr;
 	m_pStorage = nullptr;
 	m_pEngine = nullptr;
 	m_pHttp = nullptr;
@@ -166,6 +167,7 @@ void CUpdater::Init()
 {
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pClientNetwork = Kernel()->RequestInterface<IClientNetwork>();
+	m_pClientFrontend = Kernel()->RequestInterface<IClientFrontend>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	m_pHttp = Kernel()->RequestInterface<IHttp>();
@@ -485,6 +487,6 @@ void CUpdater::CommitUpdate()
 		SetCurrentState(IUpdater::NEED_RESTART);
 	else
 	{
-		m_pClient->Restart();
+		m_pClientFrontend->Restart();
 	}
 }

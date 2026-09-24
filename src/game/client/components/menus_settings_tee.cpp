@@ -487,7 +487,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	static CButtonContainer s_SkinDatabaseButton;
 	if(DoButton_Menu(&s_SkinDatabaseButton, Localize("Skin Database"), 0, &DatabaseButton))
 	{
-		Client()->ViewLink("https://ddnet.org/skins/");
+		ClientFrontend()->ViewLink("https://ddnet.org/skins/");
 	}
 
 	static CButtonContainer s_DirectoryButton;
@@ -495,7 +495,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 	{
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "skins", aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("skins", IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_DirectoryButton, &DirectoryButton, Localize("Open the directory to add custom skins"));
 

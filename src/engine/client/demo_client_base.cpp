@@ -138,18 +138,6 @@ void CDemoClientBase::OnWindowResize()
 	TextRender()->OnWindowResize();
 }
 
-void CDemoClientBase::GetGpuInfoString(char (&aGpuInfo)[512])
-{
-	str_format(aGpuInfo, sizeof(aGpuInfo), "%s\n%s\n%s",
-		Graphics()->GetVendorString(), Graphics()->GetRendererString(), Graphics()->GetVersionString());
-}
-
-const char *CDemoClientBase::DemoPlayer_Play(const char *pFilename, int StorageType)
-{
-	str_copy(m_aDemoPath, pFilename);
-	return PlayDemo();
-}
-
 const char *CDemoClientBase::PlayDemo()
 {
 	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
@@ -206,22 +194,6 @@ const char *CDemoClientBase::StartVideo()
 bool CDemoClientBase::Exporting() const
 {
 	return m_pVideo != nullptr && IVideo::Current() == m_pVideo.get();
-}
-
-bool CDemoClientBase::DemoPlayer_RenderQueueActive() const
-{
-	return m_pVideo != nullptr;
-}
-
-bool CDemoClientBase::DemoPlayer_RenderInfo(int *pFirstTick, int *pCurrentTick, int *pLastTick) const
-{
-	if(m_pVideo == nullptr)
-		return false;
-	const IDemoPlayer::CInfo *pInfo = DemoPlayer().BaseInfo();
-	*pFirstTick = pInfo->m_FirstTick;
-	*pCurrentTick = pInfo->m_CurrentTick;
-	*pLastTick = pInfo->m_LastTick;
-	return true;
 }
 
 void CDemoClientBase::RenderExportFrame()

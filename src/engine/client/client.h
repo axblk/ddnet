@@ -53,7 +53,7 @@ class INotifications;
 class IStorage;
 class IUpdater;
 
-class CClient : public CClientCore, public IClientNetwork
+class CClient : public CClientCore, public IClientNetwork, public IClientFrontend
 {
 	// needed interfaces
 	IKernel *Kernel() { return CClientCore::Kernel(); }
@@ -119,6 +119,10 @@ class CClient : public CClientCore, public IClientNetwork
 
 	// version-checking
 	char m_aVersionStr[10] = "0";
+
+	// from the info server
+	char m_aNews[3000] = "";
+	int m_Points = -1;
 
 	// pinging
 	int64_t m_PingStartTime = 0;
@@ -301,6 +305,8 @@ public:
 	bool ConnectionProblems(CSessionId SessionId, int Conn) const override;
 
 	IGraphics::CTextureHandle GetDebugFont() override;
+	const char *News() const override { return m_aNews; }
+	int Points() const override { return m_Points; }
 
 	void SendInput();
 
@@ -559,8 +565,8 @@ public:
 	void ShellUnregister() override;
 #endif
 
-	std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox) override;
-	void GetGpuInfoString(char (&aGpuInfo)[512]) override;
+	std::optional<int> ShowMessageBox(const IGraphics::CMessageBox &MessageBox);
+	void GetGpuInfoString(char (&aGpuInfo)[512]);
 };
 
 #endif

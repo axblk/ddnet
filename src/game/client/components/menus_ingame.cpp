@@ -493,7 +493,7 @@ void CMenus::PopupConfirmTurnOffEditor()
 
 void CMenus::PopupConfirmOpenWiki()
 {
-	Client()->ViewLink(Localize("https://wiki.ddnet.org/wiki/Touch_controls"));
+	ClientFrontend()->ViewLink(Localize("https://wiki.ddnet.org/wiki/Touch_controls"));
 }
 
 void CMenus::RenderPlayers(CUIRect MainView)
@@ -1434,7 +1434,7 @@ void CMenus::RenderGhost(CUIRect MainView)
 		char aBuf[IO_MAX_PATH_LENGTH];
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, "ghosts", aBuf, sizeof(aBuf));
 		Storage()->CreateFolder("ghosts", IStorage::TYPE_SAVE);
-		Client()->ViewFile(aBuf);
+		ClientFrontend()->ViewFile(aBuf);
 	}
 
 	Status.VSplitLeft(5.0f, &Button, &Status);

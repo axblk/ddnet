@@ -2921,6 +2921,8 @@ if(CLIENT)
     components/voting.cpp
     components/voting.h
     frontend.h
+    game_prediction.cpp
+    game_prediction.h
     game_state.cpp
     game_state.h
     game_view.cpp
@@ -2996,6 +2998,9 @@ if(CLIENT)
   # game/client/frontend.h): the menus, the consoles, the key binder, the theme
   # behind the menus and the local server.
   set(GAME_FRONTEND_REGEX "src/game/client/(match_journal|match_stats_export|components/(community_icons|console|frontend|key_binder|local_server|menu_background|menus(_[a-z0-9_]*)?))\\.(cpp|h)$")
+  # What a game that is played predicts beyond the last snapshot (see
+  # game/client/game_prediction.h). Programs that only show a demo leave it out.
+  set(GAME_PREDICTION_REGEX "src/game/client/game_prediction\\.(cpp|h)$")
   set_src(GAME_EDITOR GLOB_RECURSE src/game/editor
     # tidy-alphabetical-start
     auto_map.cpp
@@ -3469,6 +3474,7 @@ if(CLIENT)
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_PREDICTION_REGEX}")
   if(TARGET_OS STREQUAL "emscripten")
     # The browser's own fetch, which the assets are fetched with.
     list(APPEND DEMO_CLIENT_SRC src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)

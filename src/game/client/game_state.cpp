@@ -1,5 +1,6 @@
 #include "game_state.h"
 
+#include "game_prediction.h"
 #include "map_context.h"
 
 #include <base/str.h>
@@ -329,8 +330,9 @@ void CGameState::Reset()
 	m_RaceMessages.Reset();
 }
 
-void CGameState::InitPrediction(CMapContext &MapContext)
+void CGameState::InitPrediction(CMapContext &MapContext, const IGamePrediction *pPrediction)
 {
+	m_pPrediction = pPrediction;
 	std::copy(MapContext.TuningList(), MapContext.TuningList() + TuneZone::NUM, m_aTuning.begin());
 	m_GameWorld.Init(MapContext.Collision(), m_aTuning.data(), MapContext.MapBugs(), &MapContext.GameConfig());
 	m_GameWorld.m_Core.InitSwitchers(MapContext.Collision()->m_HighestSwitchNumber);
@@ -665,78 +667,14 @@ void CGameState::RebuildGameWorld()
 			SnapshotClient.m_HasExtendedCharacter ? &SnapshotClient.m_ExtendedCharacter : nullptr,
 			GameTeam, ClientId == m_LocalClientId);
 	}
-	for(const CEntitySnapshot &Entity : m_vEntities)
-		m_GameWorld.NetObjAdd(Entity.m_Id, Entity.m_Type, Entity.m_vData.data(), Entity.m_HasEntityEx ? &Entity.m_EntityEx : nullptr);
+	if(m_pPrediction != nullptr)
+		m_pPrediction->AddEntities(*this);
 	m_GameWorld.NetObjEnd();
-}
-
-void CGameState::Predict(const ISessions &Sessions)
-{
-	const CSessionId SessionId = m_SessionId;
-	PredictTo(Sessions.PredGameTick(SessionId), [&Sessions, SessionId](int Tick) {
-		return reinterpret_cast<const CNetObj_PlayerInput *>(Sessions.GetInput(SessionId, Tick));
-	});
 }
 
 void CGameState::ClearPrediction()
 {
 	m_aPredictedClients = {};
-}
-
-void CGameState::PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt)
-{
-	ClearPrediction();
-	if(m_FullyPredicted)
-		return;
-	if(!m_PredictionInitialized || m_LocalClientId < 0 || m_LocalClientId >= MAX_CLIENTS || !m_aClients[m_LocalClientId].m_HasCharacter)
-		return;
-	if(m_HasGameInfo && (m_GameInfo.m_GameStateFlags & GAMESTATEFLAG_PAUSED))
-		return;
-
-	m_PredictedWorld.CopyWorld(&m_GameWorld);
-	CCharacter *pLocalCharacter = m_PredictedWorld.GetCharacterById(m_LocalClientId);
-	if(!pLocalCharacter)
-		return;
-	m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
-	auto RecordPredictionHistory = [this](int Tick) {
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-		{
-			if(const CCharacter *pCharacter = m_PredictedWorld.GetCharacterById(ClientId))
-			{
-				m_vClientPredictionHistory[ClientId].m_aPredPos[Tick % 200] = pCharacter->Core()->m_Pos;
-				m_vClientPredictionHistory[ClientId].m_aPredTick[Tick % 200] = Tick;
-			}
-		}
-	};
-	RecordPredictionHistory(m_SnapshotTick);
-
-	for(int Tick = m_SnapshotTick + 1; Tick <= TargetTick; Tick++)
-	{
-		const CNetObj_PlayerInput *pInput = InputAt(Tick);
-		if(pInput)
-			pLocalCharacter->OnDirectInput(pInput);
-		m_PredictedWorld.m_GameTick = Tick;
-		if(pInput)
-			pLocalCharacter->OnPredictedInput(pInput);
-		if(Tick == TargetTick)
-			m_PrevPredictedWorld.CopyWorld(&m_PredictedWorld);
-		m_PredictedWorld.Tick();
-		RecordPredictionHistory(Tick);
-	}
-
-	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-	{
-		if(CCharacter *pCharacter = m_PrevPredictedWorld.GetCharacterById(ClientId))
-		{
-			m_aPredictedClients[ClientId].m_HasPrev = true;
-			m_aPredictedClients[ClientId].m_Prev = pCharacter->GetCore();
-		}
-		if(CCharacter *pCharacter = m_PredictedWorld.GetCharacterById(ClientId))
-		{
-			m_aPredictedClients[ClientId].m_HasCurrent = true;
-			m_aPredictedClients[ClientId].m_Current = pCharacter->GetCore();
-		}
-	}
 }
 
 void CGameState::UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick)

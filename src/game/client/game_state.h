@@ -21,6 +21,7 @@
 
 class ISessions;
 class CMapContext;
+class IGamePrediction;
 class CParticles;
 
 class CGameInfo
@@ -554,6 +555,8 @@ private:
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	bool m_PredictionInitialized = false;
+	// Without one the world only has the players.
+	const IGamePrediction *m_pPrediction = nullptr;
 	bool m_MapDoorsBuilt = false;
 	bool m_FullyPredicted = false;
 	bool m_Shown = false;
@@ -567,7 +570,7 @@ public:
 	CGameState() { Reset(); }
 
 	void Reset();
-	void InitPrediction(CMapContext &MapContext);
+	void InitPrediction(CMapContext &MapContext, const IGamePrediction *pPrediction = nullptr);
 	void ApplySnapshot(const ISessions &Sessions);
 	void ApplySnapshotData(int Tick, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
 	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);
@@ -575,8 +578,10 @@ public:
 	void SetTeam(int ClientId, int Team);
 	void SetNumDDRaceTeams(int NumDDRaceTeams) { m_Teams.m_NumDDRaceTeams = NumDDRaceTeams; }
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
+	// The prediction's own part, see game_prediction.cpp.
 	void Predict(const ISessions &Sessions);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
+	void AddSnapshotEntities();
 	// Leaves the clients to be drawn from snapshots until the next prediction.
 	void ClearPrediction();
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);

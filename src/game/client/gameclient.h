@@ -188,6 +188,7 @@ private:
 #endif
 	class IHttp *m_pHttp;
 	class IGameFrontend *m_pFrontend = nullptr;
+	class IGamePrediction *m_pPrediction = nullptr;
 
 	std::vector<std::unique_ptr<CGameSessionContext>> m_vpSessionContexts;
 	// The view the player looks through on a single screen. It follows the
@@ -235,7 +236,6 @@ private:
 	void PersistLiveStatsOnDisconnect(CSessionId SessionId, CGameSessionContext &Session);
 	void HandleMatchReportMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker);
 	void RequestLiveStats() const;
-	void ProcessPrediction();
 	void AimView(const CGameSessionContext &Session, const CGameState &State, CGameView &View) const;
 	void UpdatePositions(CGameState &State, CGameView &View, const CGameTickInfo &Time, float LocalTime, bool Interactive);
 	void FillPreparedRenderEntry(CPreparedRenderEntry &Entry, int64_t PresentationTime) const;
@@ -611,8 +611,6 @@ public:
 	void SendKill() const;
 	void SendReadyChange7(); // NOLINT(readability-make-member-function-const)
 
-	void ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld);
-
 	// DDRace
 
 	const CTeamsCore &FocusedTeams() const { return InputState().Teams(); }
@@ -855,6 +853,13 @@ public:
 	bool StartupAssetsPending() const { return m_StartupAssetsPending; }
 
 private:
+	// The prediction's own part, see game_prediction.cpp.
+	friend class CGamePrediction;
+	void UpdatePrediction();
+	void PredictSession(CSessionId SessionId);
+	void ProcessPrediction();
+	void ApplyPreInputs(int Tick, bool Direct, CGameWorld &GameWorld);
+
 	std::vector<CSnapEntities> m_vSnapEntities;
 	void SnapCollectEntities(CSessionId SessionId);
 
@@ -909,7 +914,6 @@ private:
 
 	void UpdateInputRoutes(CGameSessionContext &Session) const;
 	void UpdateLocalTuning(CSessionId SessionId, CGameSessionContext &Session, CGameState &State);
-	void UpdatePrediction();
 	void UpdateRenderedClients(const CGameSessionContext &Session, CGameState &State, int64_t Now, const CGameTickInfo &Time, EPresentationPlayback Playback);
 	void UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time);
 	void HandlePredictedEvents(int Tick);

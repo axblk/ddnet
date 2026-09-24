@@ -68,7 +68,6 @@ CMenuBackground::CMenuBackground() :
 	m_MoveTime = 0.0f;
 
 	m_IsInit = false;
-	m_Loading = false;
 }
 
 void CMenuBackground::OnInterfacesInit(CGameClient *pClient)
@@ -100,15 +99,29 @@ void CMenuBackground::LoadThemeIcon(CTheme &Theme)
 {
 	char aIconPath[IO_MAX_PATH_LENGTH];
 	str_format(aIconPath, sizeof(aIconPath), "themes/%s.png", Theme.m_Name.empty() ? "none" : Theme.m_Name.c_str());
-	Theme.m_IconTexture = Graphics()->LoadTexture(aIconPath, IStorage::TYPE_ALL);
-	if(Theme.m_IconTexture.IsNullTexture())
+	Theme.m_IconResource = GameClient()->AssetLoader().LoadImageFile(Storage(), aIconPath, IStorage::TYPE_ALL);
+}
+
+void CMenuBackground::FinishThemeIconLoads()
+{
+	for(CTheme &Theme : m_vThemes)
+		Theme.m_IconResource.FinishTexture(Graphics(), Theme.m_IconTexture);
+}
+
+void CMenuBackground::OnUpdate()
+{
+	FinishMapLoad();
+	FinishThemeIconLoads();
+}
+
+void CMenuBackground::OnShutdown()
+{
+	for(CTheme &Theme : m_vThemes)
 	{
-		log_error("menuthemes", "failed to load theme icon '%s'", aIconPath);
+		Theme.m_IconResource.Reset();
+		Graphics()->UnloadTexture(&Theme.m_IconTexture);
 	}
-	else
-	{
-		log_trace("menuthemes", "loaded theme icon '%s'", aIconPath);
-	}
+	CBackground::OnShutdown();
 }
 
 int CMenuBackground::ThemeScan(const char *pName, int IsDir, int DirType, void *pUser)
@@ -184,10 +197,11 @@ void CMenuBackground::LoadMenuBackground(bool HasDayHint, bool HasNightHint)
 
 	str_copy(m_aMapName, g_Config.m_ClMenuMap);
 
+	m_MapResource.Reset();
+	m_vMapCandidates.clear();
+
 	if(g_Config.m_ClMenuMap[0] != '\0')
 	{
-		m_Loading = true;
-
 		const char *pMenuMap = g_Config.m_ClMenuMap;
 		if(str_comp(pMenuMap, "auto") == 0)
 		{
@@ -228,64 +242,77 @@ void CMenuBackground::LoadMenuBackground(bool HasDayHint, bool HasNightHint)
 			}
 		}
 
-		char aBuf[128];
-
 		const int HourOfTheDay = time_houroftheday();
 		const bool IsDaytime = HourOfTheDay >= 6 && HourOfTheDay < 18;
 
-		if(!m_Loaded && ((HasDayHint && IsDaytime) || (HasNightHint && !IsDaytime)))
+		m_MenuMapName = pMenuMap;
+		char aPath[IO_MAX_PATH_LENGTH];
+		if((HasDayHint && IsDaytime) || (HasNightHint && !IsDaytime))
 		{
-			str_format(aBuf, sizeof(aBuf), "themes/%s_%s.map", pMenuMap, IsDaytime ? "day" : "night");
-			if(m_pMap->Load(pMenuMap, Storage(), aBuf, IStorage::TYPE_ALL))
-			{
-				m_Loaded = true;
-			}
+			str_format(aPath, sizeof(aPath), "themes/%s_%s.map", pMenuMap, IsDaytime ? "day" : "night");
+			m_vMapCandidates.emplace_back(aPath);
 		}
-
-		if(!m_Loaded)
+		str_format(aPath, sizeof(aPath), "themes/%s.map", pMenuMap);
+		m_vMapCandidates.emplace_back(aPath);
+		if((HasDayHint && !IsDaytime) || (HasNightHint && IsDaytime))
 		{
-			str_format(aBuf, sizeof(aBuf), "themes/%s.map", pMenuMap);
-			if(m_pMap->Load(pMenuMap, Storage(), aBuf, IStorage::TYPE_ALL))
-			{
-				m_Loaded = true;
-			}
+			str_format(aPath, sizeof(aPath), "themes/%s_%s.map", pMenuMap, IsDaytime ? "night" : "day");
+			m_vMapCandidates.emplace_back(aPath);
 		}
+		StartLoadingMapCandidate();
+	}
+}
 
-		if(!m_Loaded && ((HasDayHint && !IsDaytime) || (HasNightHint && IsDaytime)))
+void CMenuBackground::StartLoadingMapCandidate()
+{
+	if(m_vMapCandidates.empty())
+	{
+		log_error("menubackground", "failed to load menu background map '%s'", m_MenuMapName.c_str());
+		return;
+	}
+	const std::string Path = m_vMapCandidates.front();
+	m_vMapCandidates.erase(m_vMapCandidates.begin());
+	m_MapResource = GameClient()->AssetLoader().LoadFile(Storage(), Path.c_str(), IStorage::TYPE_ALL);
+}
+
+void CMenuBackground::FinishMapLoad()
+{
+	if(!m_MapResource || !m_MapResource.IsFinished())
+		return;
+
+	bool Loaded = false;
+	if(m_MapResource.IsReady())
+		Loaded = m_pMap->LoadFromMemory(m_MenuMapName.c_str(), m_MapResource.Result().TakeBytes(), m_MapResource.Path());
+	m_MapResource.Reset();
+	if(!Loaded)
+	{
+		StartLoadingMapCandidate();
+		return;
+	}
+
+	m_Loaded = true;
+	m_vMapCandidates.clear();
+	m_pLayers->Init(m_pMap, true, true);
+
+	m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
+	CMapLayers::Load(m_pLayers, m_pBackgroundImages);
+
+	// look for custom positions
+	CMapItemLayerTilemap *pGameLayer = m_pLayers->GameLayer();
+	const CTile *pTiles = static_cast<const CTile *>(m_pLayers->Map()->GetData(pGameLayer->m_Data));
+	for(int y = 0; y < pGameLayer->m_Height; ++y)
+	{
+		for(int x = 0; x < pGameLayer->m_Width; ++x)
 		{
-			str_format(aBuf, sizeof(aBuf), "themes/%s_%s.map", pMenuMap, IsDaytime ? "night" : "day");
-			if(m_pMap->Load(pMenuMap, Storage(), aBuf, IStorage::TYPE_ALL))
+			unsigned char Index = pTiles[y * pGameLayer->m_Width + x].m_Index;
+			if(Index >= TILE_TIME_CHECKPOINT_FIRST && Index <= TILE_TIME_CHECKPOINT_LAST)
 			{
-				m_Loaded = true;
+				int ArrayIndex = std::clamp<int>((Index - TILE_TIME_CHECKPOINT_FIRST), 0, NUM_POS);
+				m_aPositions[ArrayIndex] = vec2(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
 			}
+
+			x += pTiles[y * pGameLayer->m_Width + x].m_Skip;
 		}
-
-		if(m_Loaded)
-		{
-			m_pLayers->Init(m_pMap, true, true);
-
-			m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
-			CMapLayers::Load(m_pLayers, m_pBackgroundImages);
-
-			// look for custom positions
-			CMapItemLayerTilemap *pGameLayer = m_pLayers->GameLayer();
-			const CTile *pTiles = static_cast<const CTile *>(m_pLayers->Map()->GetData(pGameLayer->m_Data));
-			for(int y = 0; y < pGameLayer->m_Height; ++y)
-			{
-				for(int x = 0; x < pGameLayer->m_Width; ++x)
-				{
-					unsigned char Index = pTiles[y * pGameLayer->m_Width + x].m_Index;
-					if(Index >= TILE_TIME_CHECKPOINT_FIRST && Index <= TILE_TIME_CHECKPOINT_LAST)
-					{
-						int ArrayIndex = std::clamp<int>((Index - TILE_TIME_CHECKPOINT_FIRST), 0, NUM_POS);
-						m_aPositions[ArrayIndex] = vec2(x * 32.0f + 16.0f, y * 32.0f + 16.0f);
-					}
-
-					x += pTiles[y * pGameLayer->m_Width + x].m_Skip;
-				}
-			}
-		}
-		m_Loading = false;
 	}
 }
 
@@ -338,6 +365,7 @@ bool CMenuBackground::Render()
 		m_ChangedPosition = false;
 	}
 
+	m_pBackgroundImages->Update();
 	m_pBackgroundImages->SetGameInfo(GameClient()->FocusedGameInfo());
 	CMapLayers::Render(m_Camera.Center(), m_Camera.Zoom());
 

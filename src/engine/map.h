@@ -6,8 +6,11 @@
 #include <base/hash.h>
 #include <base/types.h>
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
+class CDataFileRawData;
 class IStorage;
 struct CUuid;
 
@@ -25,6 +28,10 @@ public:
 	virtual void *GetData(int Index) = 0;
 	virtual void *GetDataSwapped(int Index) = 0;
 	virtual const char *GetDataString(int Index) = 0;
+	/**
+	 * @see CDataFileReader::GetRawData
+	 */
+	[[nodiscard]] virtual bool GetRawData(int Index, CDataFileRawData &RawData) = 0;
 	virtual void UnloadData(int Index) = 0;
 	virtual int NumData() const = 0;
 
@@ -37,9 +44,13 @@ public:
 
 	[[nodiscard]] virtual bool Load(const char *pFullName, IStorage *pStorage, const char *pPath, int StorageType) = 0;
 	[[nodiscard]] virtual bool Load(IStorage *pStorage, const char *pPath, int StorageType) = 0;
+	[[nodiscard]] virtual bool LoadFromMemory(const char *pFullName, std::vector<uint8_t> vData, const char *pPath) = 0;
 	virtual void Unload() = 0;
 	virtual bool IsLoaded() const = 0;
-	virtual IOHANDLE File() const = 0;
+	/**
+	 * @return The contents of the map file, `Size()` bytes.
+	 */
+	virtual const unsigned char *MapData() const = 0;
 
 	/**
 	 * Returns the full name of the currently loaded map.

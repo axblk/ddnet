@@ -21,6 +21,7 @@ public:
 
 	bool Read(void *pData, size_t Size);
 	bool Error() const { return m_Error; }
+	size_t Size() const { return m_Size; }
 };
 
 class CByteBufferWriter
@@ -37,6 +38,10 @@ class CImageLoader
 {
 public:
 	CImageLoader() = delete;
+
+	static constexpr size_t MAX_PNG_FILE_SIZE = 64 * 1024 * 1024;
+	static constexpr size_t MAX_IMAGE_DIMENSION = 16384;
+	static constexpr size_t MAX_IMAGE_DATA_SIZE = 64 * 1024 * 1024;
 
 	enum
 	{

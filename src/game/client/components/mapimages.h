@@ -3,12 +3,16 @@
 #ifndef GAME_CLIENT_COMPONENTS_MAPIMAGES_H
 #define GAME_CLIENT_COMPONENTS_MAPIMAGES_H
 
+#include <engine/client/asset_loader.h>
 #include <engine/console.h>
 #include <engine/graphics.h>
 
 #include <game/client/component.h>
 #include <game/map/render_interfaces.h>
 #include <game/mapitems.h>
+
+#include <cstdint>
+#include <vector>
 
 enum EMapImageModType
 {
@@ -52,6 +56,8 @@ public:
 	int Sizeof() const override { return sizeof(*this); }
 
 	void OnInit() override;
+	void OnUpdate() override;
+	void OnShutdown() override;
 
 	// DDRace
 	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType);
@@ -80,8 +86,20 @@ private:
 	IGraphics::CTextureHandle m_OverlayTopTexture;
 	IGraphics::CTextureHandle m_OverlayCenterTexture;
 	int m_TextureScale;
+	class CEntitiesLoad
+	{
+	public:
+		int m_EntityVariant;
+		EMapImageModType m_ModType;
+		bool m_Masked;
+		std::vector<CImageResource> m_vResources;
+	};
+	std::vector<CEntitiesLoad> m_vEntitiesLoads;
+	CImageResource m_SpeedupArrowResource;
 
 	static void ConchainClTextEntitiesSize(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
+	void FinishEntitiesLoads();
+	bool FinishEntitiesLoad(const CEntitiesLoad &Load, CImageInfo &ImgInfo, const char *pPath);
 	void InitOverlayTextures();
 	IGraphics::CTextureHandle UploadEntityLayerText(int TextureSize, int MaxWidth, int YOffset);
 	void UpdateEntityLayerText(CImageInfo &TextImage, int TextureSize, int MaxWidth, int YOffset, int NumbersPower, int MaxNumber = -1);
@@ -94,12 +112,22 @@ class CMapRenderImages : public CComponentInterfaces, public IMapImages
 	int m_Count = 0;
 	EMapImageModType m_EntitiesModType = MAP_IMAGE_MOD_TYPE_DDNET;
 	bool m_EntitiesAreMasked = true;
+	class CImageLoad
+	{
+	public:
+		int m_Index;
+		int m_LoadFlags;
+		CImageResource m_Resource;
+	};
+	std::vector<CImageLoad> m_vImageLoads;
 
 public:
 	explicit CMapRenderImages(CMapImages &Assets);
 
 	void Load(class CLayers *pLayers, class IMap *pMap, bool Sixup);
 	void Unload();
+	// Uploads the images that finished loading.
+	void Update();
 	void SetGameInfo(const CGameInfo &GameInfo);
 
 	IGraphics::CTextureHandle Get(int Index) const override { return m_aTextures[Index]; }

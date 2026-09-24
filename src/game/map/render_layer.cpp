@@ -618,16 +618,22 @@ void CRenderLayerTile::RenderTiles(const ColorRGBA &Color, const CRenderLayerPar
 void CRenderLayerTile::Init()
 {
 	InitCallback();
-	if(m_pLayerTilemap->m_Image >= 0 && m_pLayerTilemap->m_Image < m_pMapImages->Num())
-		m_TextureHandle = m_pMapImages->Get(m_pLayerTilemap->m_Image);
-	else
-		m_TextureHandle.Invalidate();
 	UploadTileData(m_VisualTiles, 0, false);
+}
+
+IGraphics::CTextureHandle CRenderLayerTile::GetTexture() const
+{
+	return HasTexture() ? m_pMapImages->Get(m_pLayerTilemap->m_Image) : IGraphics::CTextureHandle();
+}
+
+bool CRenderLayerTile::HasTexture() const
+{
+	return m_pLayerTilemap->m_Image >= 0 && m_pLayerTilemap->m_Image < m_pMapImages->Num();
 }
 
 void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsOptional, int CurOverlay, bool AddAsSpeedup, bool IsGameLayer)
 {
-	const bool DoTextureCoords = GetTexture().IsValid();
+	const bool DoTextureCoords = HasTexture();
 
 	// create the visual and set it in the optional, afterwards get it
 	VisualsOptional.emplace();
@@ -899,11 +905,6 @@ void CRenderLayerQuads::OnInit(IGraphics *pGraphics, ITextRender *pTextRender, C
 void CRenderLayerQuads::Init()
 {
 	InitCallback();
-	if(m_pLayerQuads->m_Image >= 0 && m_pLayerQuads->m_Image < m_pMapImages->Num())
-		m_TextureHandle = m_pMapImages->Get(m_pLayerQuads->m_Image);
-	else
-		m_TextureHandle.Invalidate();
-
 	std::vector<CTmpQuad> vTmpQuads;
 	std::vector<CTmpQuadTextured> vTmpQuadsTextured;
 	CQuadLayerVisuals v;
@@ -911,7 +912,7 @@ void CRenderLayerQuads::Init()
 	m_VisualQuad = v;
 	CQuadLayerVisuals *pQLayerVisuals = &(m_VisualQuad.value());
 
-	const bool Textured = m_pLayerQuads->m_Image >= 0 && m_pLayerQuads->m_Image < m_pMapImages->Num();
+	const bool Textured = HasTexture();
 
 	if(Textured)
 		vTmpQuadsTextured.resize(m_pLayerQuads->m_NumQuads);
@@ -1044,6 +1045,16 @@ void CRenderLayerQuads::Init()
 		pQLayerVisuals->m_BufferObjectIndex = BufferObject;
 		pQLayerVisuals->m_Layout = Textured ? IGraphics::EVertexLayout::QUAD_TEXTURED : IGraphics::EVertexLayout::QUAD;
 	}
+}
+
+IGraphics::CTextureHandle CRenderLayerQuads::GetTexture() const
+{
+	return HasTexture() ? m_pMapImages->Get(m_pLayerQuads->m_Image) : IGraphics::CTextureHandle();
+}
+
+bool CRenderLayerQuads::HasTexture() const
+{
+	return m_pLayerQuads->m_Image >= 0 && m_pLayerQuads->m_Image < m_pMapImages->Num();
 }
 
 void CRenderLayerQuads::Unload()

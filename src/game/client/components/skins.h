@@ -3,23 +3,20 @@
 #ifndef GAME_CLIENT_COMPONENTS_SKINS_H
 #define GAME_CLIENT_COMPONENTS_SKINS_H
 
-#include <base/lock.h>
-
+#include <engine/client/asset_loader.h>
 #include <engine/shared/config.h>
-#include <engine/shared/jobs.h>
 
 #include <game/client/component.h>
 #include <game/client/skin.h>
 
 #include <chrono>
+#include <cstdint>
 #include <list>
 #include <optional>
 #include <set>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
-
-class IHttpRequest;
 
 class CSkins : public CComponent
 {
@@ -34,23 +31,6 @@ private:
 		CImageInfo m_InfoGrayscale;
 		CSkin::CSkinMetrics m_Metrics;
 		ColorRGBA m_BloodColor;
-	};
-
-	/**
-	 * An abstract job to load a skin from a source determined by the derived class.
-	 */
-	class CAbstractSkinLoadJob : public IJob
-	{
-	public:
-		CAbstractSkinLoadJob(CSkins *pSkins, const char *pName);
-		~CAbstractSkinLoadJob() override;
-
-		CSkinLoadData m_Data;
-		bool m_NotFound = false;
-
-	protected:
-		CSkins *m_pSkins;
-		char m_aName[MAX_SKIN_LENGTH];
 	};
 
 public:
@@ -86,7 +66,7 @@ public:
 			 */
 			PENDING,
 			/**
-			 * Skin is currently loading, iff @link m_pLoadJob @endlink is set.
+			 * Skin is currently loading, iff @link m_LoadResource @endlink is set.
 			 */
 			LOADING,
 			/**
@@ -135,7 +115,8 @@ public:
 
 		EState m_State = EState::UNLOADED;
 		std::unique_ptr<CSkin> m_pSkin = nullptr;
-		std::shared_ptr<CAbstractSkinLoadJob> m_pLoadJob = nullptr;
+		CImageResource m_LoadResource;
+		std::shared_ptr<CSkinLoadData> m_pLoadData = nullptr;
 
 		/**
 		 * The time when loading of this skin was first requested.
@@ -237,6 +218,7 @@ public:
 	void RefreshEventSkins();
 	void Refresh(TSkinLoadedCallback &&SkinLoadedCallback);
 	CSkinLoadingStats LoadingStats() const;
+	bool StartupAssetsLoaded() const;
 	CSkinList &SkinList();
 
 	const CSkinContainer *FindContainerOrNullptr(const char *pName);
@@ -266,33 +248,6 @@ private:
 		"pinky", "redbopp", "redstripe", "saddo", "toptri",
 		"twinbop", "twintri", "warpaint", "x_ninja", "x_spec"};
 
-	class CSkinLoadJob : public CAbstractSkinLoadJob
-	{
-	public:
-		CSkinLoadJob(CSkins *pSkins, const char *pName, int StorageType);
-
-	protected:
-		void Run() override;
-
-	private:
-		int m_StorageType;
-	};
-
-	class CSkinDownloadJob : public CAbstractSkinLoadJob
-	{
-	public:
-		CSkinDownloadJob(CSkins *pSkins, const char *pName);
-
-		bool Abort() override REQUIRES(!m_Lock);
-
-	protected:
-		void Run() override REQUIRES(!m_Lock);
-
-	private:
-		CLock m_Lock;
-		std::shared_ptr<IHttpRequest> m_pGetRequest GUARDED_BY(m_Lock);
-	};
-
 	std::unordered_map<std::string_view, std::unique_ptr<CSkinContainer>> m_Skins;
 	std::optional<std::chrono::nanoseconds> m_ContainerUpdateTime;
 	/**
@@ -307,9 +262,12 @@ private:
 	CSkin m_PlaceholderSkin;
 	char m_aEventSkinPrefix[MAX_SKIN_LENGTH];
 
-	bool LoadSkinData(const char *pName, CSkinLoadData &Data) const;
-	void LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
-	void LoadSkinDirect(const char *pName);
+	bool LoadSkinData(const char *pName, CImageInfo &Info, CSkinLoadData &Data) const;
+	bool LoadSkinFinish(CSkinContainer *pSkinContainer, const CSkinLoadData &Data);
+	void AddSkinContainer(const char *pName);
+	std::function<bool(CImageInfo &)> SkinPostprocess(CSkinContainer *pSkinContainer);
+	void StartLocalSkinLoad(CSkinContainer *pSkinContainer);
+	void StartDownload(CSkinContainer *pSkinContainer, bool Force);
 	const CSkinContainer *FindContainerImpl(const char *pName);
 	static int SkinScan(const char *pName, int IsDir, int StorageType, void *pUser);
 

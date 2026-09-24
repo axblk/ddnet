@@ -1156,9 +1156,12 @@ void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 	CurrentServerInfo.m_MapSize = pMap->Size();
 }
 
-void CClient::LoadDebugFont()
+IGraphics::CTextureHandle CClient::GetDebugFont()
 {
-	m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
+	// Rarely used, so loaded on demand
+	if(!m_DebugFont.IsValid())
+		m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
+	return m_DebugFont;
 }
 
 // ---
@@ -1222,7 +1225,7 @@ void CClient::RenderDebug()
 	char aBuffer[512];
 	const float FontSize = 16.0f;
 
-	Graphics()->TextureSet(m_DebugFont);
+	Graphics()->TextureSet(GetDebugFont());
 	Graphics()->MapScreenToSize(Graphics()->ScreenWidth(), Graphics()->ScreenHeight());
 	Graphics()->QuadsBegin();
 
@@ -3604,8 +3607,8 @@ void CClient::InitInterfaces()
 	m_Friends.Init();
 	m_Foes.Init(true);
 
-	m_GhostRecorder.Init();
-	m_GhostLoader.Init();
+	m_GhostRecorder.Init(m_pStorage);
+	m_GhostLoader.Init(m_pStorage);
 }
 
 static void SleepIdle(std::chrono::nanoseconds Duration)
@@ -3737,8 +3740,6 @@ void CClient::Run()
 	m_ServerBrowser.OnInit();
 	// loads the existing ddnet info file if it exists
 	LoadDDNetInfo();
-
-	LoadDebugFont();
 
 	if(Steam()->GetPlayerName())
 	{
@@ -4841,8 +4842,8 @@ void CClient::DemoRecorder_Start(const char *pFilename, bool WithTimestamp, int 
 		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
 		GameClient()->Map(m_NetworkSessionId)->Size(),
+		GameClient()->Map(m_NetworkSessionId)->MapData(),
 		nullptr,
-		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }
@@ -5947,8 +5948,8 @@ void CClient::RaceRecord_Start(const char *pFilename)
 		GameClient()->Map(m_NetworkSessionId)->Crc(),
 		"client",
 		GameClient()->Map(m_NetworkSessionId)->Size(),
+		GameClient()->Map(m_NetworkSessionId)->MapData(),
 		nullptr,
-		GameClient()->Map(m_NetworkSessionId)->File(),
 		nullptr,
 		nullptr);
 }

@@ -4,6 +4,8 @@
 #define ENGINE_SHARED_LINEREADER_H
 #include <base/types.h>
 
+#include <string_view>
+
 // buffered stream for reading lines
 class CLineReader
 {
@@ -17,6 +19,7 @@ public:
 
 	bool OpenFile(IOHANDLE File);
 	void OpenBuffer(char *pBuffer); // Buffer must have been allocated with malloc, will be freed by the line reader
+	void OpenCopy(std::string_view Text);
 
 	const char *Get(); // Returned string is valid until the line reader is destroyed
 };

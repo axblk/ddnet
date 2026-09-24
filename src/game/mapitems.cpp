@@ -1,4 +1,11 @@
+#include <base/str.h>
+
+#include <engine/map.h>
+
 #include <game/mapitems.h>
+
+#include <algorithm>
+#include <iterator>
 
 ColorRGBA CEnvPoint::ColorValue() const
 {
@@ -11,6 +18,52 @@ void CEnvPoint::SetColorValue(const ColorRGBA &Color)
 	m_aValues[1] = f2fx(Color.g);
 	m_aValues[2] = f2fx(Color.b);
 	m_aValues[3] = f2fx(Color.a);
+}
+
+CImageInfo::EImageFormat MapImageFormat(const CMapItemImage_v2 *pImage)
+{
+	if(pImage->m_Version < 2)
+		return CImageInfo::FORMAT_RGBA;
+	switch(pImage->m_MustBe1)
+	{
+	case 0:
+		return CImageInfo::FORMAT_RGB;
+	case 1:
+		return CImageInfo::FORMAT_RGBA;
+	default:
+		return CImageInfo::FORMAT_UNDEFINED;
+	}
+}
+
+bool IsMapImageRedrawnFor07(const char *pName)
+{
+	static constexpr const char *REDRAWN_IMAGES[] = {
+		"desert_main",
+		"easter",
+		"generic_shadows",
+		"generic_unhookable",
+		"grass_doodads",
+		"grass_main",
+		"winter_main",
+	};
+	return std::any_of(std::begin(REDRAWN_IMAGES), std::end(REDRAWN_IMAGES), [pName](const char *pRedrawn) {
+		return str_comp(pName, pRedrawn) == 0;
+	});
+}
+
+bool IsTeeworlds07Map(IMap *pMap)
+{
+	int Start, Num;
+	pMap->GetType(MAPITEMTYPE_IMAGE, &Start, &Num);
+	for(int i = 0; i < Num; i++)
+	{
+		if(pMap->GetItemSize(Start + i) < (int)sizeof(CMapItemImage_v2))
+			continue;
+		const CMapItemImage_v2 *pImage = static_cast<const CMapItemImage_v2 *>(pMap->GetItem(Start + i));
+		if(pImage->m_Version >= 2 && MapImageFormat(pImage) != CImageInfo::FORMAT_UNDEFINED)
+			return true;
+	}
+	return false;
 }
 
 bool IsValidGameTile(int Index)

@@ -4,6 +4,7 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/client/asset_loader.h>
 #include <engine/input.h>
 
 #include <game/client/component.h>
@@ -50,6 +51,7 @@ public:
 
 	int Sizeof() const override { return sizeof(*this); }
 	void OnInit() override;
+	void OnUpdate() override;
 	void OnReset() override;
 	void OnWindowResize() override;
 	void OnRender(const CRenderContext &Context) override;
@@ -590,6 +592,8 @@ private:
 	 * Whether there are changes to the current configuration in editing mode.
 	 */
 	bool m_EditingChanges = false;
+
+	CTypedAssetResource<CFileAssetJob> m_ConfigurationResource;
 
 	void InitVisibilityFunctions();
 	int NextActiveAction(int Action) const;

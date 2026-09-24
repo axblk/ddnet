@@ -6,6 +6,10 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/image.h>
+
+class IMap;
+
 // layer types
 enum
 {
@@ -390,6 +394,46 @@ public:
 };
 
 typedef CMapItemImage_v1 CMapItemImage;
+
+/**
+ * The pixel format of the picture a map image item embeds.
+ *
+ * The first version of the item is always RGBA. Teeworlds 0.7 added a format
+ * field, which is `m_MustBe1` here: 0 for RGB and 1 for RGBA.
+ *
+ * @param pImage The image item, of any version.
+ *
+ * @return The format, or `CImageInfo::FORMAT_UNDEFINED` for a format field
+ * that no map writer uses.
+ */
+CImageInfo::EImageFormat MapImageFormat(const CMapItemImage_v2 *pImage);
+
+/**
+ * Whether Teeworlds 0.7 drew the external image of this name again, with its
+ * tiles in other places. A map made for 0.7 means that picture, which the
+ * client has as `mapres/<name>_0.7.png`.
+ *
+ * @param pName The name the map gives the external image.
+ *
+ * @return Whether there is a 0.7 picture of that name.
+ */
+bool IsMapImageRedrawnFor07(const char *pName);
+
+/**
+ * Whether Teeworlds 0.7 wrote this map, which means the 0.7 pictures of the
+ * images 0.7 drew again, see `IsMapImageRedrawnFor07`.
+ *
+ * Teeworlds 0.7 writes the second version of the image item, the one with the
+ * format field (`m_MustBe1` here). 0.6 and DDNet write the first, and so does
+ * `map_convert_07`, whose maps embed the pictures of the 0.6 tilesets. Only
+ * the image items are asked: they are what the answer is needed for.
+ *
+ * @param pMap The map to look at.
+ *
+ * @return Whether one of its image items is of the second version, with a
+ * format that a map writer uses.
+ */
+bool IsTeeworlds07Map(IMap *pMap);
 
 class CMapItemGroup_v1
 {

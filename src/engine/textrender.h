@@ -9,6 +9,7 @@
 #include <engine/graphics.h>
 
 #include <cstdint>
+#include <functional>
 
 enum
 {
@@ -199,7 +200,20 @@ public:
 		uint64_t m_UploadBytes = 0;
 	};
 
-	virtual bool LoadFonts() = 0;
+	/**
+	 * Waits for the fonts that `IEngineTextRender::Init` started loading.
+	 *
+	 * @param Pump Called while waiting.
+	 *
+	 * @return `true` if all fonts were loaded.
+	 */
+	virtual bool WaitForFonts(const std::function<void()> &Pump = {}) = 0;
+	/**
+	 * Adds the deferred fonts that finished loading. Called once per frame.
+	 *
+	 * @return `true` if font faces were added, text containers must be recreated then.
+	 */
+	virtual bool Update() = 0;
 	virtual void SetFontPreset(EFontPreset FontPreset) = 0;
 	virtual void SetFontLanguageVariant(const char *pLanguageFile) = 0;
 

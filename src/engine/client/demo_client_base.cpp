@@ -268,6 +268,7 @@ int DemoClientMain(CDemoClientBase *pClient, int ArgumentCount, const char **ppA
 
 	IKernel *pKernel = IKernel::Create();
 	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
+	pKernel->RegisterInterface(static_cast<ISessions *>(pClient), false);
 	pClient->RegisterInterfaces();
 
 	IEngine *pEngine = CreateEngine(GAME_NAME, pFutureConsoleLogger);

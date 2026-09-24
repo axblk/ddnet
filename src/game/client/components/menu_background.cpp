@@ -295,7 +295,7 @@ void CMenuBackground::FinishMapLoad()
 	m_vMapCandidates.clear();
 	m_pLayers->Init(m_pMap, true, true);
 
-	m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
+	m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
 	CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 
 	// look for custom positions

@@ -635,7 +635,7 @@ void CMenus::RenderServerInfo(CUIRect MainView)
 	const float FontSizeTitle = 32.0f;
 	const float FontSizeBody = 20.0f;
 
-	const CServerInfo &CurrentServerInfo = Client()->ServerInfo(Client()->FocusedSessionId());
+	const CServerInfo &CurrentServerInfo = Sessions()->ServerInfo(Sessions()->FocusedSessionId());
 
 	CUIRect ServerInfo, GameInfo, Motd;
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);

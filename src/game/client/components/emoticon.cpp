@@ -39,7 +39,7 @@ void CEmoticon::ConKeyEmoticon(IConsole::IResult *pResult, void *pUserData)
 		return;
 	}
 
-	if(View.SessionId() != pSelf->Client()->NetworkSessionId() || View.IsSpectating())
+	if(View.SessionId() != pSelf->Sessions()->NetworkSessionId() || View.IsSpectating())
 		return;
 
 	Selector.m_OriginSessionId = View.SessionId();
@@ -232,7 +232,7 @@ void CEmoticon::Emote(int Emoticon)
 
 void CEmoticon::Emote(int Emoticon, int Conn)
 {
-	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+	if(Sessions()->FocusedSessionId() != Sessions()->NetworkSessionId())
 		return;
 
 	CNetMsg_Cl_Emoticon Msg;
@@ -254,7 +254,7 @@ void CEmoticon::EyeEmote(int Emote)
 
 void CEmoticon::EyeEmote(int Emote, int Conn)
 {
-	if(Client()->FocusedSessionId() != Client()->NetworkSessionId())
+	if(Sessions()->FocusedSessionId() != Sessions()->NetworkSessionId())
 		return;
 
 	char aBuf[32];

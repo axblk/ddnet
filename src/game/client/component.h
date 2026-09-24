@@ -36,6 +36,11 @@ protected:
 	class IClient *Client() const;
 
 	/**
+	 * Get the game sessions: their time and their snapshots.
+	 */
+	class ISessions *Sessions() const;
+
+	/**
 	 * Get the interface of the client's connection to a server.
 	 */
 	class IClientNetwork *ClientNetwork() const;

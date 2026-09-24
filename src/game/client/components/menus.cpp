@@ -764,7 +764,7 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 	// An export running in the background loads its next demo without anybody
 	// waiting for it, so its loading screen would flash over whatever the user
 	// is actually doing. The export overlay already says that something runs.
-	if(Client()->VideoSessionId().IsValid() && Client()->VideoSessionId() != Client()->FocusedSessionId())
+	if(Client()->VideoSessionId().IsValid() && Client()->VideoSessionId() != Sessions()->FocusedSessionId())
 		return;
 #endif
 

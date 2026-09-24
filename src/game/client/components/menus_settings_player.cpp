@@ -38,10 +38,10 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 	}
 
 	if(Client()->State() == IClient::STATE_ONLINE &&
-		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Client()->GameTick(Client()->NetworkSessionId(), m_Dummy))
+		GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo > Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy))
 	{
 		char aChangeInfo[128], aTimeLeft[32];
-		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Client()->GameTick(Client()->NetworkSessionId(), m_Dummy) + Client()->GameTickSpeed() - 1) / Client()->GameTickSpeed());
+		str_format(aTimeLeft, sizeof(aTimeLeft), Localize("%ds left"), (GameClient()->GameState(m_Dummy).m_Runtime.m_NextChangeInfo - Sessions()->GameTick(Sessions()->NetworkSessionId(), m_Dummy) + Sessions()->GameTickSpeed() - 1) / Sessions()->GameTickSpeed());
 		str_format(aChangeInfo, sizeof(aChangeInfo), "%s: %s", Localize("Player info change cooldown"), aTimeLeft);
 		Ui()->DoLabel(&ChangeInfo, aChangeInfo, 10.f, TEXTALIGN_ML);
 	}

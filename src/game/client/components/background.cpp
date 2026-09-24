@@ -76,7 +76,7 @@ void CBackground::LoadBackground()
 
 		if(m_Loaded)
 		{
-			m_pBackgroundImages->Load(m_pLayers, m_pMap, Client()->IsSixup(Client()->FocusedSessionId()));
+			m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
 			CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 		}
 	}

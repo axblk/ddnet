@@ -25,6 +25,7 @@
 #include <engine/graphics.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/sessions.h>
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
@@ -4663,6 +4664,7 @@ void CEditor::Init()
 	m_pInput = Kernel()->RequestInterface<IInput>();
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pClientNetwork = Kernel()->RequestInterface<IClientNetwork>();
+	m_pSessions = Kernel()->RequestInterface<ISessions>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
 	m_pConfig = m_pConfigManager->Values();
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
@@ -4842,7 +4844,7 @@ void CEditor::HandleWriterFinishJobs()
 	// send rcon.. if we can
 	if(ClientNetwork()->RconAuthed() && g_Config.m_EdAutoMapReload)
 	{
-		const CServerInfo &CurrentServerInfo = Client()->ServerInfo(Client()->NetworkSessionId());
+		const CServerInfo &CurrentServerInfo = Sessions()->ServerInfo(Sessions()->NetworkSessionId());
 		if(net_addr_is_local(&ClientNetwork()->ServerAddress()))
 		{
 			char aMapName[MAX_MAP_LENGTH];

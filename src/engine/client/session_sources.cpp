@@ -76,7 +76,7 @@ void CDemoSessionSource::PrepareSnapshots()
 	m_Connection.ResetGameplay();
 	mem_zero(m_aSnapshotHolders, sizeof(m_aSnapshotHolders));
 	mem_zero(m_aaSnapshotData, sizeof(m_aaSnapshotData));
-	for(int SnapshotType = 0; SnapshotType < IClient::NUM_SNAPSHOT_TYPES; SnapshotType++)
+	for(int SnapshotType = 0; SnapshotType < ISessions::NUM_SNAPSHOT_TYPES; SnapshotType++)
 	{
 		CSnapshotStorage::CHolder &Holder = m_aSnapshotHolders[SnapshotType];
 		Holder.m_pSnap = m_aaSnapshotData[SnapshotType][0].AsSnapshot();

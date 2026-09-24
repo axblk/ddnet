@@ -21,6 +21,7 @@
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/graphics.h>
+#include <engine/sessions.h>
 #include <engine/shared/config.h>
 #include <engine/shared/snapshot.h>
 
@@ -85,7 +86,7 @@ class IMap;
 class CSnapEntities
 {
 public:
-	IClient::CSnapItem m_Item;
+	ISessions::CSnapItem m_Item;
 	const CNetObj_EntityEx *m_pDataEx;
 };
 
@@ -166,6 +167,7 @@ private:
 	class IGraphicsWindow *m_pWindow;
 	class ITextRender *m_pTextRender;
 	class IClient *m_pClient;
+	class ISessions *m_pSessions;
 	class IClientNetwork *m_pClientNetwork = nullptr;
 	class CRenderTrace *m_pRenderTrace;
 	class ISound *m_pSound;
@@ -272,15 +274,16 @@ public:
 	class IGraphics *Graphics() const { return m_pGraphics; }
 	class IGraphicsWindow *Window() const { return m_pWindow; }
 	class IClient *Client() const { return m_pClient; }
+	class ISessions *Sessions() const { return m_pSessions; }
 	class IClientNetwork *ClientNetwork() const { return m_pClientNetwork; }
 	/**
 	 * Whether the dummy is connected, `false` in a program without a
 	 * connection.
 	 */
 	bool DummyConnected() const { return m_pClientNetwork != nullptr && m_pClientNetwork->DummyConnected(); }
-	int ActiveConnection() const { return Client()->ActiveConnection(Client()->FocusedSessionId()); }
+	int ActiveConnection() const { return Client()->ActiveConnection(Sessions()->FocusedSessionId()); }
 	CGameSessionContext &SessionContext(CSessionId SessionId) const;
-	CGameSessionContext &SessionContext() const { return SessionContext(Client()->FocusedSessionId()); }
+	CGameSessionContext &SessionContext() const { return SessionContext(Sessions()->FocusedSessionId()); }
 	CGameSessionContext *FindSessionContext(CSessionId SessionId) const { return FindSessionEntry(m_vpSessionContexts, SessionId); }
 	const CStoredMatch *LiveStats(CSessionId SessionId) const;
 	CSessionPresentation &SessionPresentation(CSessionId SessionId) const;

@@ -18,7 +18,7 @@
 #include <memory>
 #include <vector>
 
-class IClient;
+class ISessions;
 class CMapContext;
 class CParticles;
 class CSessionId;
@@ -556,14 +556,14 @@ public:
 
 	void Reset();
 	void InitPrediction(CMapContext &MapContext);
-	void ApplySnapshot(const IClient &Client, CSessionId SessionId, int Conn);
+	void ApplySnapshot(const ISessions &Sessions, CSessionId SessionId, int Conn);
 	void ApplySnapshotData(int Tick, std::array<CClientSnapshot, MAX_CLIENTS> aClients, const CNetObj_GameInfo *pGameInfo = nullptr, std::vector<CEntitySnapshot> vEntities = {});
 	void ApplyEmoticon(int ClientId, int Emoticon, int Tick, float StartFraction);
 	void ApplyTuning(const CTuningParams &Tuning, int TuneZone = 0);
 	void SetTeam(int ClientId, int Team);
 	void SetNumDDRaceTeams(int NumDDRaceTeams) { m_Teams.m_NumDDRaceTeams = NumDDRaceTeams; }
 	void SetCoreGameInfo(const CGameInfo &GameInfo);
-	void Predict(const IClient &Client, CSessionId SessionId, int Conn);
+	void Predict(const ISessions &Sessions, CSessionId SessionId, int Conn);
 	void PredictTo(int TargetTick, const std::function<const CNetObj_PlayerInput *(int)> &InputAt);
 	void UpdateRenderedClient(int ClientId, bool UsePredicted, bool PredictedLocal, float IntraGameTick, float PredIntraGameTick);
 	// The full prediction keeps its world across snapshots, the simple one here rebuilds it from each.

@@ -8,6 +8,7 @@
 #include <base/hash.h>
 
 #include <engine/client.h>
+#include <engine/sessions.h>
 #include <engine/shared/demo.h>
 #include <engine/warning.h>
 
@@ -27,7 +28,7 @@ void FormatMapDownloadFilename(const char *pName, const std::optional<SHA256_DIG
  * snapshots, demo playback and loading the map of a session. The game client
  * and the programs that only show a demo are built on it.
  */
-class CClientCore : public IClient
+class CClientCore : public IClient, public ISessions
 {
 protected:
 	// Hands what the demo player of one session reads to the client, together
@@ -127,6 +128,7 @@ protected:
 	const char *LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc);
 
 public:
+	IKernel *Kernel() { return IClient::Kernel(); }
 	IGameClient *GameClient() { return m_pGameClient; }
 	const IGameClient *GameClient() const { return m_pGameClient; }
 	IStorage *Storage() { return m_pStorage; }
@@ -136,6 +138,8 @@ public:
 	CSessionId DemoSessionId() const override { return m_DemoSessionId; }
 	ESessionSourceType SessionType(CSessionId SessionId) const override { return SessionSource(SessionId).Type(); }
 	ESessionState SessionState(CSessionId SessionId) const override { return SessionSource(SessionId).State(); }
+	using IClient::ActiveConnection;
+	int ActiveConnection(CSessionId SessionId) const override { return SessionType(SessionId) == ESessionSourceType::DEMO ? CONN_MAIN : m_ActiveConnection; }
 	bool DemoPlaybackPaused(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Paused; }
 	float DemoPlaybackSpeed(CSessionId SessionId) const override { return DemoSource(SessionId).m_DemoPlayer.BaseInfo()->m_Speed; }
 	int64_t DemoPlaybackTime(CSessionId SessionId) const override;

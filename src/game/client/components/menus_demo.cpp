@@ -55,7 +55,7 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 {
 	if((PositionToSeek >= 0.0f && PositionToSeek <= 1.0f) || TimeToSeek != 0.0f)
 	{
-		const CSessionId DemoSessionId = Client()->DemoSessionId();
+		const CSessionId DemoSessionId = Sessions()->DemoSessionId();
 		CGameSessionContext *pDemoSession = GameClient()->FindSessionContext(DemoSessionId);
 		dbg_assert(pDemoSession != nullptr, "missing Demo session context");
 		CGameState &DemoState = pDemoSession->GameState(IClient::CONN_MAIN);
@@ -135,7 +135,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static_assert(SKIP_DURATIONS_SECONDS[DEFAULT_SKIP_DURATION_INDEX] == 5.0f);
 	static_assert(std::size(SKIP_DURATIONS_SECONDS) == std::size(SKIP_DURATIONS_STRINGS));
 
-	const float DemoLengthSeconds = TotalTicks / static_cast<float>(Client()->GameTickSpeed());
+	const float DemoLengthSeconds = TotalTicks / static_cast<float>(Sessions()->GameTickSpeed());
 	int NumDurationLabels = 0;
 	for(size_t i = 0; i < std::size(SKIP_DURATIONS_SECONDS); ++i)
 	{
@@ -472,9 +472,9 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 
 		// draw time
 		char aCurrentTime[32];
-		str_time((int64_t)CurrentTick / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aCurrentTime, sizeof(aCurrentTime));
+		str_time((int64_t)CurrentTick / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aCurrentTime, sizeof(aCurrentTime));
 		char aTotalTime[32];
-		str_time((int64_t)TotalTicks / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aTotalTime, sizeof(aTotalTime));
+		str_time((int64_t)TotalTicks / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aTotalTime, sizeof(aTotalTime));
 		char aSeekBarLabel[128];
 		str_format(aSeekBarLabel, sizeof(aSeekBarLabel), "%s / %s", aCurrentTime, aTotalTime);
 		Ui()->DoLabel(&SeekBar, aSeekBarLabel, SeekBar.h * 0.70f, TEXTALIGN_MC);
@@ -525,7 +525,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		{
 			const int HoveredTick = (int)(std::clamp((Ui()->MouseX() - SeekBar.x - Rounding) / (SeekBar.w - 2 * Rounding), 0.0f, 1.0f) * TotalTicks);
 			static char s_aHoveredTime[32];
-			str_time((int64_t)HoveredTick / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, s_aHoveredTime, sizeof(s_aHoveredTime));
+			str_time((int64_t)HoveredTick / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, s_aHoveredTime, sizeof(s_aHoveredTime));
 			GameClient()->m_Tooltips.DoToolTip(&s_SeekBarId, &SeekBar, s_aHoveredTime);
 		}
 	}
@@ -821,11 +821,11 @@ void CMenus::RenderDemoPlayerSliceSavePopup(CUIRect MainView)
 	const int64_t RealSliceBegin = g_Config.m_ClDemoSliceBegin == -1 ? 0 : (g_Config.m_ClDemoSliceBegin - pInfo->m_FirstTick);
 	const int64_t RealSliceEnd = (g_Config.m_ClDemoSliceEnd == -1 ? pInfo->m_LastTick : g_Config.m_ClDemoSliceEnd) - pInfo->m_FirstTick;
 	char aSliceBegin[32];
-	str_time(RealSliceBegin / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceBegin, sizeof(aSliceBegin));
+	str_time(RealSliceBegin / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceBegin, sizeof(aSliceBegin));
 	char aSliceEnd[32];
-	str_time(RealSliceEnd / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceEnd, sizeof(aSliceEnd));
+	str_time(RealSliceEnd / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceEnd, sizeof(aSliceEnd));
 	char aSliceLength[32];
-	str_time((RealSliceEnd - RealSliceBegin) / Client()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceLength, sizeof(aSliceLength));
+	str_time((RealSliceEnd - RealSliceBegin) / Sessions()->GameTickSpeed() * 100, ETimeFormat::HOURS, aSliceLength, sizeof(aSliceLength));
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "%s: %s – %s", Localize("Cut interval"), aSliceBegin, aSliceEnd);
 	Ui()->DoLabel(&SliceInterval, aBuf, 18.0f, TEXTALIGN_ML);

@@ -133,7 +133,7 @@ void CClientCore::GetSmoothTick(CSessionId SessionId, int Conn, int64_t Now, int
 	*pSmoothIntraTick = (SmoothTime - (*pSmoothTick - 1) * time_freq() / GameTickSpeed()) / (float)(time_freq() / GameTickSpeed());
 }
 
-IClient::CSnapItem CClientCore::SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const
+ISessions::CSnapItem CClientCore::SnapGetItem(CSessionId SessionId, int Conn, int SnapId, int Index) const
 {
 	dbg_assert(SnapId >= 0 && SnapId < NUM_SNAPSHOT_TYPES, "invalid SnapId");
 	const CSnapshot *pSnapshot = Connection(SessionId, Conn).m_apSnapshots[SnapId]->m_pAltSnap;

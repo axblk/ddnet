@@ -175,7 +175,7 @@ void CGhost::CheckStart()
 	int RaceTick = -GameClient()->Snap().m_pGameInfoObj->m_WarmupTimer;
 	int RenderTick = m_NewRenderTick;
 
-	if(GameClient()->LastRaceTick() != RaceTick && Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection()) - RaceTick < Client()->GameTickSpeed())
+	if(GameClient()->LastRaceTick() != RaceTick && Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection()) - RaceTick < Sessions()->GameTickSpeed())
 	{
 		if(m_Rendering && m_RenderingStartedByServer) // race restarted: stop rendering
 			StopRender();
@@ -208,7 +208,7 @@ void CGhost::CheckStartLocal(bool Predicted)
 		{
 			if(m_Rendering && !m_RenderingStartedByServer) // race restarted: stop rendering
 				StopRender();
-			RenderTick = Client()->PredGameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
+			RenderTick = Sessions()->PredGameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 
 		TryRenderStart(RenderTick, false);
@@ -801,7 +801,7 @@ void CGhost::SortGhostlist()
 void CGhost::ConGPlay(IConsole::IResult *pResult, void *pUserData)
 {
 	CGhost *pGhost = (CGhost *)pUserData;
-	pGhost->StartRender(pGhost->Client()->PredGameTick(pGhost->Client()->FocusedSessionId(), pGhost->GameClient()->ActiveConnection()));
+	pGhost->StartRender(pGhost->Sessions()->PredGameTick(pGhost->Sessions()->FocusedSessionId(), pGhost->GameClient()->ActiveConnection()));
 }
 
 void CGhost::OnConsoleInit()
@@ -823,7 +823,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 			if(m_Recording)
 				StopRecord();
 			StopRender();
-			m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
+			m_LastDeathTick = Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
 		}
 	}
 	else if(MsgType == NETMSGTYPE_SV_KILLMSGTEAM)
@@ -836,7 +836,7 @@ void CGhost::OnMessage(int MsgType, void *pRawMsg)
 				if(m_Recording)
 					StopRecord();
 				StopRender();
-				m_LastDeathTick = Client()->GameTick(Client()->FocusedSessionId(), GameClient()->ActiveConnection());
+				m_LastDeathTick = Sessions()->GameTick(Sessions()->FocusedSessionId(), GameClient()->ActiveConnection());
 			}
 		}
 	}

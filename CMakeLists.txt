@@ -2403,6 +2403,7 @@ set_src(ENGINE_INTERFACE GLOB src/engine
   rust.h
   server.h
   serverbrowser.h
+  sessions.h
   sound.h
   sqlite.h
   steam.h

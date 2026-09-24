@@ -1113,9 +1113,9 @@ void CClient::RenderDebug()
 		}
 		for(int i = CSnapshot::MAX_TYPE; i > (CSnapshot::MAX_TYPE - 64); i--)
 		{
-			if(SnapshotDelta()->GetDataRate(i) && Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT])
+			if(SnapshotDelta()->GetDataRate(i) && Connection(ActiveConnection()).m_apSnapshots[ISessions::SNAP_CURRENT])
 			{
-				const int Type = Connection(ActiveConnection()).m_apSnapshots[IClient::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
+				const int Type = Connection(ActiveConnection()).m_apSnapshots[ISessions::SNAP_CURRENT]->m_pAltSnap->GetExternalItemType(i);
 				if(Type == UUID_INVALID)
 				{
 					str_format(
@@ -5484,6 +5484,7 @@ int main(int argc, const char **argv)
 
 	IKernel *pKernel = IKernel::Create();
 	pKernel->RegisterInterface(static_cast<IClient *>(pClient), false);
+	pKernel->RegisterInterface(static_cast<ISessions *>(pClient), false);
 	pKernel->RegisterInterface(static_cast<IClientNetwork *>(pClient), false);
 	pClient->RegisterInterfaces();
 	CleanerFunctions.emplace([pKernel, pClient]() {

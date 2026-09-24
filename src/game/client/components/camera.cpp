@@ -84,7 +84,7 @@ vec2 CCamera::LocalCharacterPos() const
 
 bool CCamera::IsDemoSession() const
 {
-	return Client()->SessionType(Session().Id()) != ESessionSourceType::NETWORK;
+	return Sessions()->SessionType(Session().Id()) != ESessionSourceType::NETWORK;
 }
 
 // Whether the session plays as this client, with its main or dummy connection.

@@ -6,6 +6,7 @@
 #include <base/time.h>
 
 #include <engine/client.h>
+#include <engine/sessions.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
@@ -25,15 +26,15 @@ public:
 	};
 	CClientData m_aClients[MAX_CLIENTS];
 
-	CSnapshotBuffer m_aDemoSnapshotData[IClient::NUM_SNAPSHOT_TYPES];
-	CSnapshot *m_apAltSnapshots[IClient::NUM_SNAPSHOT_TYPES];
+	CSnapshotBuffer m_aDemoSnapshotData[ISessions::NUM_SNAPSHOT_TYPES];
+	CSnapshot *m_apAltSnapshots[ISessions::NUM_SNAPSHOT_TYPES];
 
 	CClientSnapshotHandler() :
 		m_aClients()
 	{
 		mem_zero(m_aDemoSnapshotData, sizeof(m_aDemoSnapshotData));
 
-		for(int SnapshotType = 0; SnapshotType < IClient::NUM_SNAPSHOT_TYPES; SnapshotType++)
+		for(int SnapshotType = 0; SnapshotType < ISessions::NUM_SNAPSHOT_TYPES; SnapshotType++)
 		{
 			m_apAltSnapshots[SnapshotType] = m_aDemoSnapshotData[SnapshotType].AsSnapshot();
 		}
@@ -81,16 +82,16 @@ public:
 
 	int SnapNumItems(int SnapId)
 	{
-		dbg_assert(SnapId >= 0 && SnapId < IClient::NUM_SNAPSHOT_TYPES, "Invalid SnapId: %d", SnapId);
+		dbg_assert(SnapId >= 0 && SnapId < ISessions::NUM_SNAPSHOT_TYPES, "Invalid SnapId: %d", SnapId);
 		return m_apAltSnapshots[SnapId]->NumItems();
 	}
 
-	IClient::CSnapItem SnapGetItem(int SnapId, int Index)
+	ISessions::CSnapItem SnapGetItem(int SnapId, int Index)
 	{
-		dbg_assert(SnapId >= 0 && SnapId < IClient::NUM_SNAPSHOT_TYPES, "Invalid SnapId: %d", SnapId);
+		dbg_assert(SnapId >= 0 && SnapId < ISessions::NUM_SNAPSHOT_TYPES, "Invalid SnapId: %d", SnapId);
 		const CSnapshot *pSnapshot = m_apAltSnapshots[SnapId];
 		const CSnapshotItem *pSnapshotItem = m_apAltSnapshots[SnapId]->GetItem(Index);
-		IClient::CSnapItem Item;
+		ISessions::CSnapItem Item;
 		Item.m_Type = pSnapshot->GetItemType(Index);
 		Item.m_Id = pSnapshotItem->Id();
 		Item.m_pData = pSnapshotItem->Data();
@@ -100,10 +101,10 @@ public:
 
 	void OnNewSnapshot()
 	{
-		int Num = SnapNumItems(IClient::SNAP_CURRENT);
+		int Num = SnapNumItems(ISessions::SNAP_CURRENT);
 		for(int i = 0; i < Num; i++)
 		{
-			const IClient::CSnapItem Item = SnapGetItem(IClient::SNAP_CURRENT, i);
+			const ISessions::CSnapItem Item = SnapGetItem(ISessions::SNAP_CURRENT, i);
 
 			if(Item.m_Type == NETOBJTYPE_CLIENTINFO)
 			{
@@ -125,8 +126,8 @@ public:
 		if(AltSnapSize < 0)
 			return;
 
-		std::swap(m_apAltSnapshots[IClient::SNAP_PREV], m_apAltSnapshots[IClient::SNAP_CURRENT]);
-		mem_copy(m_apAltSnapshots[IClient::SNAP_CURRENT], AltSnapBuffer.AsSnapshot(), AltSnapSize);
+		std::swap(m_apAltSnapshots[ISessions::SNAP_PREV], m_apAltSnapshots[ISessions::SNAP_CURRENT]);
+		mem_copy(m_apAltSnapshots[ISessions::SNAP_CURRENT], AltSnapBuffer.AsSnapshot(), AltSnapSize);
 
 		OnNewSnapshot();
 	}

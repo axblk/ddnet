@@ -172,7 +172,7 @@ void CSpectator::ConKeySpectator(IConsole::IResult *pResult, void *pUserData)
 	}
 
 	const CGameSessionContext &Session = pSelf->GameClient()->SessionContext(View.SessionId());
-	const bool Demo = Session.Id() == pSelf->Client()->DemoSessionId();
+	const bool Demo = Session.Id() == pSelf->Sessions()->DemoSessionId();
 	if(!View.IsSpectating() && !Demo)
 	{
 		Selector.m_Active = false;
@@ -660,7 +660,7 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 {
 	if(Selector.m_OriginDemo)
 	{
-		if(Selector.m_OriginSessionId != Client()->DemoSessionId())
+		if(Selector.m_OriginSessionId != Sessions()->DemoSessionId())
 			return;
 		GameClient()->m_DemoSpecId = std::clamp(SpectatorId, (int)SPEC_FOLLOW, MAX_CLIENTS - 1);
 		View.SetSpectatorMode(GameClient()->m_DemoSpecId);
@@ -671,7 +671,7 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 		return;
 	}
 
-	if(Selector.m_OriginSessionId != Client()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
+	if(Selector.m_OriginSessionId != Sessions()->NetworkSessionId() || Selector.m_OriginConnection < IClient::CONN_MAIN || Selector.m_OriginConnection >= IClient::NUM_CONNS || View.SpectatorMode() == SpectatorId)
 		return;
 
 	if(Selector.m_OriginSixup)
@@ -699,9 +699,9 @@ void CSpectator::Spectate(int SpectatorId)
 {
 	CGameView::CSpectatorSelectorState Target;
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	Target.m_OriginSessionId = Target.m_OriginDemo ? Client()->DemoSessionId() : Client()->NetworkSessionId();
+	Target.m_OriginSessionId = Target.m_OriginDemo ? Sessions()->DemoSessionId() : Sessions()->NetworkSessionId();
 	Target.m_OriginConnection = Client()->ActiveConnection();
-	Target.m_OriginSixup = Client()->IsSixup(Target.m_OriginSessionId);
+	Target.m_OriginSixup = Sessions()->IsSixup(Target.m_OriginSessionId);
 	Spectate(GameClient()->LegacyGameView(), Target, SpectatorId);
 }
 

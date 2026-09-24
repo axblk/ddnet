@@ -60,11 +60,17 @@ public:
 	bool m_DebugRenderQuadClips;
 	bool m_DebugRenderClusterClips;
 	bool m_DebugRenderTileClips;
-	// Draw every group where the map itself is, whatever speed it moves at.
-	// A picture of a whole map is taken from no one place, so a layer that
-	// moves at its own speed has no one right offset either, and only this
-	// joins up between the pieces such a picture is drawn in.
-	bool m_IgnoreParallax = false;
+	/**
+	 * How much of the world the view shows in world units without the zoom, or
+	 * zero to work it out from the screen the way the game does.
+	 */
+	vec2 m_ViewSize = vec2(0.0f, 0.0f);
+	/**
+	 * Which part of that view is drawn, as fractions of it from the top left.
+	 * A picture drawn in pieces shares one view, so that layers with parallax
+	 * line up across the pieces.
+	 */
+	CScreenRect m_Window = CScreenRect(0.0f, 0.0f, 1.0f, 1.0f);
 };
 
 class CRenderLayer : public CRenderComponent
@@ -120,6 +126,11 @@ protected:
 		return IGraphics::CTextureHandle();
 	}
 	bool HasTexture() const override { return false; }
+
+	float ViewScale(const CRenderLayerParams &Params) const;
+	static CScreenRect Scaled(const CScreenRect &Rect, float Scale);
+	// The part of `Rect` that `Window` covers.
+	static CScreenRect Windowed(const CScreenRect &Rect, const CScreenRect &Window);
 
 	CMapItemGroup *m_pGroup;
 };

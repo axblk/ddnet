@@ -18,12 +18,14 @@
 #include <engine/input.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
+#include <engine/shared/protocol.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
 #include <game/version.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -111,6 +113,11 @@ void CDemoClientBase::ShutdownGame()
 		return;
 	SetState(IClient::STATE_QUITTING);
 #if defined(CONF_VIDEORECORDER)
+	// A demo read again for an export goes first, because it hands the encoder
+	// its last frames as it stops.
+	const CSessionId ExportSessionId = VideoExportSessionId();
+	if(ExportSessionId.IsValid() && ExportSessionId != m_DemoSessionId && SessionState(ExportSessionId) != ESessionState::OFFLINE)
+		StopDemoSession(ExportSessionId, nullptr);
 	if(m_pVideo != nullptr)
 	{
 		if(IVideo::Current() == m_pVideo.get())
@@ -139,31 +146,51 @@ void CDemoClientBase::OnWindowResize()
 	TextRender()->OnWindowResize();
 }
 
-const char *CDemoClientBase::PlayDemo()
+const char *CDemoClientBase::PlayDemo(CSessionId SessionId)
 {
-	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
-	SetState(IClient::STATE_LOADING);
-	if(const char *pError = LoadDemo(m_DemoSessionId, m_aDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE))
+	CDemoSessionSource &Source = DemoSource(SessionId);
+	// Only the demo being watched is the program loading; another one is
+	// opened beside it.
+	const bool Watched = SessionId == m_DemoSessionId;
+	if(Watched)
+		SetState(IClient::STATE_LOADING);
+	else
+		Source.SetState(ESessionState::LOADING_MAP);
+	if(const char *pError = LoadDemo(SessionId, m_aDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE))
 		return pError;
-	SetState(IClient::STATE_DEMOPLAYBACK);
-	GameClient()->OnConnected(m_DemoSessionId);
+	if(Watched)
+		SetState(IClient::STATE_DEMOPLAYBACK);
+	else
+		Source.SetState(ESessionState::READY);
+	GameClient()->OnConnected(SessionId);
 	Source.PrepareSnapshots();
 	Source.m_DemoPlayer.Play();
-	GameClient()->OnEnterGame(m_DemoSessionId);
+	GameClient()->OnEnterGame(SessionId);
 	return nullptr;
 }
 
-void CDemoClientBase::StopDemoSession(const char *pReason)
+void CDemoClientBase::StopDemoSession(CSessionId SessionId, const char *pReason)
 {
-	if(pReason != nullptr && pReason[0] != '\0' && m_aError[0] == '\0')
+	if(SessionId == m_DemoSessionId && pReason != nullptr && pReason[0] != '\0' && m_aError[0] == '\0')
 		str_copy(m_aError, pReason);
-	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
+	CDemoSessionSource &Source = DemoSource(SessionId);
 	Source.m_DemoPlayer.Stop(pReason == nullptr ? "" : pReason);
 	if(State() < IClient::STATE_QUITTING)
-		GameClient()->OnSessionClosed(m_DemoSessionId);
+		GameClient()->OnSessionClosed(SessionId);
 	Source.SetState(ESessionState::OFFLINE);
 	Source.m_Connection.ResetSnapshots();
 	Source.ResetMetadata();
+}
+
+void CDemoClientBase::Spectate(int SpectatorId)
+{
+	m_aPendingSpectateName[0] = '\0';
+	ViewControl()->SetSpectatorId(m_DemoSessionId, SpectatorId);
+}
+
+void CDemoClientBase::SetSpectateName(const char *pName)
+{
+	str_copy(m_aPendingSpectateName, pName);
 }
 
 void CDemoClientBase::Update()
@@ -171,6 +198,26 @@ void CDemoClientBase::Update()
 	set_new_tick();
 	if(SessionState(m_DemoSessionId) == ESessionState::READY && !UpdateDemoPlayer(m_DemoSessionId))
 		StopDemoSession(DemoPlayer().ErrorMessage());
+#if defined(CONF_VIDEORECORDER)
+	// A demo read again for an export stops when it runs out, which is how its
+	// export learns that it is done.
+	const CSessionId ExportSessionId = VideoExportSessionId();
+	if(ExportSessionId.IsValid() && ExportSessionId != m_DemoSessionId && SessionState(ExportSessionId) == ESessionState::READY && !UpdateDemoPlayer(ExportSessionId))
+		StopDemoSession(ExportSessionId, nullptr);
+#endif
+	// A player asked for by name shows up a snapshot or two in.
+	if(m_aPendingSpectateName[0] != '\0' && SessionState(m_DemoSessionId) == ESessionState::READY)
+	{
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		{
+			char aName[MAX_NAME_LENGTH];
+			if(ViewControl()->PlayerName(m_DemoSessionId, ClientId, aName, sizeof(aName)) && str_comp(aName, m_aPendingSpectateName) == 0)
+			{
+				Spectate(ClientId);
+				break;
+			}
+		}
+	}
 	Sound()->Update();
 	GameClient()->OnUpdate();
 }
@@ -181,7 +228,15 @@ const char *CDemoClientBase::StartVideo()
 	Graphics()->WaitForIdle();
 	const int StorageType = fs_is_relative_path(m_aVideoPath) ? IStorage::TYPE_SAVE : IStorage::TYPE_ABSOLUTE;
 	m_pVideo = CreateVideo(Graphics(), Sound(), Storage(), m_Settings, m_LocalStartTime, m_aVideoPath, StorageType, false, true);
-	DemoPlayer().SetVideo(m_pVideo.get());
+	CDemoPlayer &Player = DemoSource(VideoSessionId()).m_DemoPlayer;
+	// The file can say how long it will be from its first fragment: what is
+	// left of the demo at the speed it plays at.
+	const IDemoPlayer::CInfo *pInfo = Player.BaseInfo();
+	const int EndTick = m_VideoLastTick >= 0 ? m_VideoLastTick : pInfo->m_LastTick;
+	const int RemainingTicks = std::max(EndTick - pInfo->m_CurrentTick, 0);
+	const float Speed = pInfo->m_Speed > 0.0f ? pInfo->m_Speed : 1.0f;
+	m_pVideo->SetExpectedDuration(RemainingTicks / (float)SERVER_TICK_SPEED / Speed);
+	Player.SetVideo(m_pVideo.get());
 	if(!m_pVideo->Start())
 	{
 		const CVideoExportStatus Status = m_pVideo->Status();
@@ -208,10 +263,14 @@ void CDemoClientBase::RenderExportFrame()
 	if(pVideo == nullptr || !pVideo->BeginVideoFrameRender())
 		return;
 	GameClient()->OnRenderPrepare();
-	GameClient()->OnRenderVideoPrepare(m_DemoSessionId, pVideo->Settings());
+	GameClient()->OnRenderVideoPrepare(VideoSessionId(), pVideo->Settings());
 	GameClient()->OnRender();
 	if(pVideo->HasAudio())
-		pVideo->NextAudioFrameTimeline([this](short *pFinalOut, unsigned Frames) { Sound()->Mix(pFinalOut, Frames, false); });
+	{
+		// An export in a session of its own is mixed apart from the speakers.
+		const bool Offline = VideoUsesOfflineAudio();
+		pVideo->NextAudioFrameTimeline([this, Offline](short *pFinalOut, unsigned Frames) { Sound()->Mix(pFinalOut, Frames, Offline); });
+	}
 	GameClient()->OnRenderFinalize();
 	pVideo->EndVideoFrameRender();
 	OnExportFrame();

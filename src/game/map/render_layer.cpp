@@ -282,9 +282,17 @@ bool CRenderLayerGroup::DoRender(const CRenderLayerParams &Params)
 		if(m_pGroup->m_Version >= 2 && m_pGroup->m_UseClipping)
 		{
 			// set clipping
-			Graphics()->MapScreenToInterface(Params.m_Center.x, Params.m_Center.y, Params.m_Zoom);
+			//
+			// The clip is worked out in the view the group is drawn in, which a map
+			// viewer decides itself.
+			const CScreenRect WorldRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+							      Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y,
+								      100.0f, 100.0f, 100.0f, 0.0f, 0.0f, Params.m_Zoom) :
+							      Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, 100.0f, 100.0f, 100.0f,
+								      0.0f, 0.0f, Graphics()->ViewportAspect(), Params.m_Zoom);
+			Graphics()->MapScreen(Windowed(WorldRect, Params.m_Window));
 
-			CScreenRect ScreenRect = Graphics()->GetScreen();
+			CScreenRect ScreenRect = Windowed(Scaled(WorldRect, ViewScale(Params)), Params.m_Window);
 			float ScreenWidth = ScreenRect.Width();
 			float ScreenHeight = ScreenRect.Height();
 			float Left = m_pGroup->m_ClipX - ScreenRect.m_TopLeft.x;
@@ -330,14 +338,49 @@ void CRenderLayerGroup::Init()
 	InitCallback();
 }
 
+float CRenderLayerGroup::ViewScale(const CRenderLayerParams &Params) const
+{
+	const int Parallax = std::max(m_pGroup->m_ParallaxX, m_pGroup->m_ParallaxY);
+	// The shape of the whole picture, not of the piece on the surface.
+	const float Aspect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+				     Params.m_ViewSize.x / Params.m_ViewSize.y :
+				     Graphics()->ViewportAspect();
+	return CalcGroupViewScale(Aspect, g_Config.m_ClViewMaxAspect / 100.0f, Parallax);
+}
+
+CScreenRect CRenderLayerGroup::Scaled(const CScreenRect &Rect, float Scale)
+{
+	if(Scale == 1.0f)
+		return Rect;
+	const vec2 Center = (Rect.m_TopLeft + Rect.m_BottomRight) / 2.0f;
+	const vec2 Half = Rect.Size() * (Scale / 2.0f);
+	return CScreenRect(Center - Half, Center + Half);
+}
+
+CScreenRect CRenderLayerGroup::Windowed(const CScreenRect &Rect, const CScreenRect &Window)
+{
+	// Exactly the rectangle for the whole of it, which arithmetic might not give.
+	if(Window.m_TopLeft == vec2(0.0f, 0.0f) && Window.m_BottomRight == vec2(1.0f, 1.0f))
+		return Rect;
+	const vec2 Size = Rect.Size();
+	return CScreenRect(
+		Rect.m_TopLeft + Size * Window.m_TopLeft,
+		Rect.m_TopLeft + Size * Window.m_BottomRight);
+}
+
 void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 {
-	const int ParallaxX = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxX;
-	const int ParallaxY = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxY;
+	const int ParallaxX = m_pGroup->m_ParallaxX;
+	const int ParallaxY = m_pGroup->m_ParallaxY;
 	int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
-	CScreenRect ScreenRect = Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
-		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ViewportAspect(), Params.m_Zoom);
-	Graphics()->MapScreen(ScreenRect);
+	CScreenRect ScreenRect = Params.m_ViewSize.x > 0.0f && Params.m_ViewSize.y > 0.0f ?
+					 Graphics()->MapViewToWorld(Params.m_ViewSize * Params.m_Zoom, Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Params.m_Zoom) :
+					 Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
+						 m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ViewportAspect(), Params.m_Zoom);
+	// Groups that do not follow the world grow to cover a wide screen instead,
+	// see `CalcGroupViewScale`.
+	Graphics()->MapScreen(Windowed(Scaled(ScreenRect, ViewScale(Params)), Params.m_Window));
 }
 
 /**************

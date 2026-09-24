@@ -283,7 +283,7 @@ void CGameClient::TargetView(CGameView &View, CSessionId SessionId) const
 template<class TInterface>
 static TInterface *ToolOptionalInterface(IKernel *pKernel)
 {
-#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_VIEWER_TOOL)
+#if defined(CONF_DEMO_RENDER_TOOL) || defined(CONF_DEMO_PLAYER_TOOL)
 	return pKernel->TryGetInterface<TInterface>();
 #else
 	return pKernel->RequestInterface<TInterface>();

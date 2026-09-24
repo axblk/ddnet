@@ -4,6 +4,8 @@
 #ifndef BASE_THREAD_H
 #define BASE_THREAD_H
 
+#include "detect.h"
+
 #include <chrono>
 
 /**
@@ -99,5 +101,43 @@ void thread_detach(void *thread);
  * @param name Name describing the use of the thread.
  */
 void thread_init_and_detach(void (*threadfunc)(void *), void *user, const char *name);
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+/**
+ * Waits on the browser's main thread by giving the browser its turn, which
+ * unwinds the program's stack until the wait is over. See `web_unwound`.
+ *
+ * @ingroup Threads
+ *
+ * @param milliseconds How long to wait at least; zero just gives the turn.
+ */
+void web_yield(int64_t milliseconds);
+
+/**
+ * Counts as a `web_yield` for as long as it lives, for a wait that does not
+ * go through it, such as one awaited in JavaScript.
+ *
+ * @ingroup Threads
+ */
+class CWebYieldScope
+{
+public:
+	CWebYieldScope();
+	~CWebYieldScope();
+	CWebYieldScope(const CWebYieldScope &Other) = delete;
+	CWebYieldScope &operator=(const CWebYieldScope &Other) = delete;
+};
+#endif
+
+/**
+ * Whether this thread is in `web_yield`. A call from the page must then not
+ * wait itself, because unwinding twice crashes; it puts its work aside
+ * instead.
+ *
+ * @ingroup Threads
+ *
+ * @return Always `false` outside a browser.
+ */
+bool web_unwound();
 
 #endif

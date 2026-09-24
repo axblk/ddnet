@@ -7,6 +7,7 @@
 
 #include <base/log.h>
 #include <base/str.h>
+#include <base/thread.h>
 
 #include <engine/client/backend/backend_base.h>
 #include <engine/client/backend/gpu_timestamp.h>
@@ -37,8 +38,8 @@
 #include <vector>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-// Defined in backend_webgpu.cpp: hands control back to the browser.
-extern "C" void YieldToBrowser(int WaitForFrame);
+// Defined below: hands control back to the browser.
+void YieldToBrowser(int WaitForFrame);
 #endif
 
 using namespace std::chrono_literals; // NOLINT(google-build-using-namespace)
@@ -775,15 +776,18 @@ public:
 // Hands control back to the browser: an animation frame for a whole frame,
 // otherwise a message channel task, which unlike a timer has no millisecond
 // floor. A hidden page gets neither, so it falls back to a slow timer
-// (spinning through microtasks would never let it become visible again).
+// (spinning through microtasks would never let it become visible again). A
+// worker has no page and no animation frames, so it always takes the shortest
+// turn.
 // clang-format off
-EM_ASYNC_JS(void, YieldToBrowser, (int WaitForFrame), {
-	if(document.hidden)
+EM_ASYNC_JS(void, YieldToBrowserAndWait, (int WaitForFrame), {
+	var onPage = typeof document !== "undefined";
+	if(onPage && document.hidden)
 	{
 		await new Promise(function(resolve) { setTimeout(resolve, 100); });
 		return;
 	}
-	if(WaitForFrame)
+	if(WaitForFrame && onPage)
 	{
 		await new Promise(function(resolve) {
 			var frame = requestAnimationFrame(function() {
@@ -819,6 +823,15 @@ EM_ASYNC_JS(void, YieldToBrowser, (int WaitForFrame), {
 	});
 });
 // clang-format on
+
+void YieldToBrowser(int WaitForFrame)
+{
+	// Awaiting in JavaScript unwinds the stack the same way a sleep does, so
+	// it is said the same way: a call that comes in from the page while this
+	// lasts must not do anything that waits again. See `web_unwound`.
+	CWebYieldScope Scope;
+	YieldToBrowserAndWait(WaitForFrame);
+}
 #endif
 
 void CCommandProcessorFragment_WebGpu::AdapterCallback(WGPURequestAdapterStatus Status, WGPUAdapter Adapter, WGPUStringView Message, void *pUserdata1, void *)
@@ -2044,7 +2057,7 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_S
 		if(!SubmitCommands(true))
 			return false;
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-		emscripten_sleep(0);
+		YieldToBrowser(0);
 #else
 		wgpuDevicePoll(m_Device, WGPU_FALSE, nullptr);
 #endif

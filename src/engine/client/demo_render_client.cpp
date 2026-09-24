@@ -13,11 +13,49 @@
 #include <algorithm>
 #include <cinttypes>
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <emscripten/emscripten.h>
+
+// How far the render has come, for a page, with the numbers the log carries.
+// clang-format off
+EM_JS(void, BrowserRenderProgress, (float Progress, double EncodedFrames, double SubmittedFrames, float FramesPerSecond), {
+	if(typeof Module.ddnetRenderProgress === 'function')
+		Module.ddnetRenderProgress({progress: Progress, encodedFrames: EncodedFrames, submittedFrames: SubmittedFrames, framesPerSecond: FramesPerSecond});
+});
+// clang-format on
+#endif
+
 std::optional<int> CDemoRenderClient::ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments)
 {
+	// Whom to follow is this program's own argument. It is taken off first,
+	// so that its value is not mistaken for the demo.
+	vArguments.assign(ppArguments, ppArguments + ArgumentCount);
+	for(auto It = vArguments.begin() + 1; It != vArguments.end();)
+	{
+		if(str_comp(*It, "--follow") != 0)
+		{
+			++It;
+			continue;
+		}
+		if(It + 1 == vArguments.end() || (*(It + 1))[0] == '\0' || str_length(*(It + 1)) >= static_cast<int>(sizeof(m_aFollow)))
+		{
+			log_error("videorecorder", "Invalid value for --follow.");
+			return -1;
+		}
+		str_copy(m_aFollow, *(It + 1));
+		It = vArguments.erase(It, It + 2);
+	}
+	ArgumentCount = static_cast<int>(vArguments.size());
+	ppArguments = vArguments.data();
+
 	CCommandLineVideoExport VideoExport;
 	if(!VideoExport.ParseArguments(ArgumentCount, ppArguments, vArguments, "ddnet-demo-render", true))
 		return -1;
+	if(VideoExport.m_Help)
+	{
+		log_info("videorecorder", "  --follow <player>  Follow a player, by client id or by name. A demo a server");
+		log_info("videorecorder", "                     recorded has nobody to follow without this.");
+	}
 	if(VideoExport.m_ListCodecs)
 	{
 		for(const CVideoEncoder &Encoder : VideoEncoders())
@@ -63,6 +101,9 @@ void CDemoRenderClient::OnExportFrame()
 	const CVideoExportStatus Status = m_pVideo->Status();
 	log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded, %.0f per second)",
 		Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	BrowserRenderProgress(Progress, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
+#endif
 }
 
 int CDemoRenderClient::Run()
@@ -72,7 +113,19 @@ int CDemoRenderClient::Run()
 	{
 		const char *pError = PlayDemo();
 		if(pError == nullptr)
+		{
+			// A number is a client id, anything else a name, followed once the
+			// demo names it.
+			if(m_aFollow[0] != '\0')
+			{
+				int ClientId;
+				if(str_toint(m_aFollow, &ClientId))
+					Spectate(ClientId);
+				else
+					SetSpectateName(m_aFollow);
+			}
 			pError = StartVideo();
+		}
 		if(pError != nullptr)
 			log_error("videorecorder", "%s", pError);
 		else

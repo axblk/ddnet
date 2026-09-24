@@ -2737,10 +2737,10 @@ if(CLIENT)
     connection.h
     demo_client_base.cpp
     demo_client_base.h
+    demo_player_client.cpp
+    demo_player_client.h
     demo_render_client.cpp
     demo_render_client.h
-    demo_viewer_client.cpp
-    demo_viewer_client.h
     demoedit.cpp
     demoedit.h
     discord.cpp
@@ -2798,6 +2798,10 @@ if(CLIENT)
     video.cpp
     video.h
     video_webcodecs.cpp
+    viewer_controls.cpp
+    viewer_controls.h
+    viewer_fullscreen.cpp
+    viewer_fullscreen.h
     warning.cpp
     window_offscreen.cpp
     window_sdl.cpp
@@ -3186,8 +3190,12 @@ if(CLIENT)
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_GRAPHICS})
   # The programs that only show a demo are built on these instead of client.cpp.
   set(ENGINE_CLIENT_DEMO ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|render_client|viewer_client)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|player_client|render_client)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
+  # The controls the demo player and the map viewer draw over what they show.
+  set(ENGINE_CLIENT_VIEWER ${ENGINE_CLIENT})
+  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen)\\.(cpp|h)$")
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_VIEWER})
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
@@ -3474,7 +3482,7 @@ if(CLIENT)
   # game/client/frontend.h), and none of the network, the server browser, the
   # editor or the platform integrations.
   set(DEMO_CLIENT_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_player_client|demo_render_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_PREDICTION_REGEX}")
@@ -3484,7 +3492,7 @@ if(CLIENT)
   endif()
   # These and the map viewer leave the updater and the platform integrations
   # out.
-  set(STANDALONE_CLIENT_TARGETS demo-renderer demo-viewer map-viewer)
+  set(STANDALONE_CLIENT_TARGETS demo-player demo-renderer map-viewer)
 
   if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
     # Draws into a surface without a window, so no SDL and the null input.
@@ -3537,15 +3545,16 @@ if(CLIENT)
     )
   endif()
 
-  # Shows one demo in a window. Not shipped either:
-  # `cmake --build . --target demo-viewer`. Not on Android and iOS, where the
-  # client is an app of its own (and Xcode builds the generated client sources
-  # for one target only).
+  # Shows one demo in a window, with the controls of a video player. Not shipped
+  # either: `cmake --build . --target demo-player`. Not on Android and iOS, where
+  # the client is an app of its own (and Xcode builds the generated client
+  # sources for one target only).
   if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
-    add_executable(demo-viewer EXCLUDE_FROM_ALL
+    add_executable(demo-player EXCLUDE_FROM_ALL
       ${DEMO_CLIENT_SRC}
-      src/engine/client/demo_viewer_client.cpp
-      src/engine/client/demo_viewer_client.h
+      ${ENGINE_CLIENT_VIEWER}
+      src/engine/client/demo_player_client.cpp
+      src/engine/client/demo_player_client.h
       ${DEPS_CLIENT}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
@@ -3555,10 +3564,10 @@ if(CLIENT)
       $<TARGET_OBJECTS:game-shared>
       # tidy-alphabetical-end
     )
-    ddnet_graphics_program(demo-viewer)
-    set_property(TARGET demo-viewer PROPERTY OUTPUT_NAME ddnet-demo-viewer)
-    target_compile_definitions(demo-viewer PRIVATE CONF_DEMO_VIEWER_TOOL)
-    target_link_libraries(demo-viewer
+    ddnet_graphics_program(demo-player)
+    set_property(TARGET demo-player PROPERTY OUTPUT_NAME ddnet-demo-player)
+    target_compile_definitions(demo-player PRIVATE CONF_DEMO_PLAYER_TOOL)
+    target_link_libraries(demo-player
       # tidy-alphabetical-start
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
@@ -3577,7 +3586,7 @@ if(CLIENT)
       ${PLATFORM_LIBS}
       ${CMAKE_THREAD_LIBS_INIT}
     )
-    target_include_directories(demo-viewer SYSTEM PRIVATE
+    target_include_directories(demo-player SYSTEM PRIVATE
       # tidy-alphabetical-start
       ${FFMPEG_INCLUDE_DIRS}
       ${FREETYPE_INCLUDE_DIRS}
@@ -3594,13 +3603,14 @@ if(CLIENT)
     )
   endif()
 
-  # A program that shows one map in a window. Where the demo viewer brings a
+  # A program that shows one map in a window. Where the demo player brings a
   # whole client, this brings none at all: a map, the renderer that draws it, a
   # window and a pointer. It is the same view the map render tool draws with,
   # with somebody looking at it instead of a file to write.
   if(CLIENT AND SDL2_FOUND)
     add_executable(map-viewer EXCLUDE_FROM_ALL
       ${DEPS_CLIENT}
+      ${ENGINE_CLIENT_VIEWER}
       ${GAME_MAP}
       ${GAME_MAP_STANDALONE}
       # The window and the keyboard, and nothing else out of the client - and

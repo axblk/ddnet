@@ -73,8 +73,9 @@ private:
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 
 /**
- * Fetches the index of the data directory, which lies beside the page. Has to
- * run before the storage is initialised and before other threads start.
+ * Fetches the index of the data directory, which lies at
+ * `Module.ddnetDataBase` or beside the page. Has to run before the storage is
+ * initialised and before other threads start.
  *
  * @return `true` when the index was read.
  */

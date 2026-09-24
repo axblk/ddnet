@@ -100,6 +100,12 @@ void CatchVideoExportInterrupt();
 bool VideoExportInterrupted();
 
 /**
+ * Asks for the same stop as the interrupt signal, for a browser, which has
+ * no signals.
+ */
+void InterruptVideoExport();
+
+/**
  * The video export arguments of a command line: the demo, the output file,
  * `--list-codecs` and `--help`. Everything else about the video comes from the
  * `cl_video_*` settings, which the rest of the command line can set.
@@ -156,6 +162,15 @@ class IVideo
 public:
 	virtual ~IVideo() = default;
 
+	/**
+	 * How long the video is going to be, so that the header written at the
+	 * start of a streamed file is right from the first fragment. Only the
+	 * browser's encoder uses it.
+	 *
+	 * @param Seconds How long the export will run, 0 where that is not known.
+	 */
+	virtual void SetExpectedDuration(float Seconds) {}
+
 	virtual bool Start() = 0;
 	virtual void Stop() = 0;
 	/**
@@ -195,6 +210,9 @@ protected:
  * Prepares the linked video export before the first one is created.
  */
 void InitVideoBackend();
+
+/** Whether this build can encode video where it is running. A browser may not. */
+bool VideoEncodingSupported();
 
 /**
  * Creates the video export this build was linked with.

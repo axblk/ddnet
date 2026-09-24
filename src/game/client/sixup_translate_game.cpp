@@ -705,7 +705,7 @@ void *CGameClient::TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker
 		char aBuf[256];
 		const bool TeamPlay = SourceState.HasGameInfo() && (SourceState.GameInfo().m_GameFlags & GAMEFLAG_TEAMS) != 0;
 		bool OfflineAudio = false;
-		const bool AudioActive = AudioForSession(SessionId, OfflineAudio) && SessionId == Seats().InputSessionId(ContextSessionId(SessionId), g_Config.m_ClDummy);
+		const bool AudioActive = AudioForState(SourceState, OfflineAudio);
 		if(gs_GameMsgList7[GameMsgId].m_Action == DO_SPECIAL)
 		{
 			switch(GameMsgId)

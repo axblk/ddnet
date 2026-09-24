@@ -190,10 +190,15 @@ private:
 	class IGameFrontend *m_pFrontend = nullptr;
 
 	std::vector<std::unique_ptr<CGameSessionContext>> m_vpSessionContexts;
-	// The view that takes input, and two more for a split screen.
-	CGameView m_LegacyView;
-	CGameView m_SecondaryView;
-	CGameView m_TertiaryView;
+	// The view the player looks through on a single screen. It follows the
+	// dummy switch, so zoom and camera carry over as in DDNet.
+	CGameView m_InputView;
+	// A view per pane of the split screen: the player, the dummy and the demo.
+	// It stays with what it shows, so a pane keeps its zoom and selections
+	// whichever of them takes input. The demo looks through its own view on a
+	// single screen too.
+	static constexpr int PANE_DEMO = NUM_DUMMIES;
+	std::array<CGameView, NUM_DUMMIES + 1> m_aPaneViews;
 #if defined(CONF_VIDEORECORDER)
 	// The view a demo is rendered to video through when the export is not the
 	// session on the screen.
@@ -267,6 +272,11 @@ public:
 	 * heard with its server.
 	 */
 	bool AudioForSession(CSessionId SessionId, bool &Offline) const;
+	/**
+	 * Whether the sounds of a game state are heard: those of its session, as
+	 * long as it is the seat that is played.
+	 */
+	bool AudioForState(const CGameState &State, bool &Offline) const;
 	static std::function<bool(int, int, int, int)> GetScoreComparator(bool TimeScore, bool ReceivedMillisecondFinishTimes, bool Race7);
 
 	IKernel *Kernel() { return IInterface::Kernel(); }
@@ -344,7 +354,19 @@ public:
 	CGameState &InputState() const { return GameState(InputSessionId()); }
 	// The seat of the session that gets the input, 0 for a demo.
 	int InputSeat() const { return SeatOf(InputSessionId()); }
-	CGameView &LegacyGameView();
+	/**
+	 * The view a session is shown through: on a single screen the one the
+	 * player looks through while the session takes input, a pane view
+	 * otherwise.
+	 */
+	CGameView &GameView(CSessionId SessionId);
+	// The view of the session that gets the input.
+	CGameView &InputView() { return GameView(InputSessionId()); }
+	/**
+	 * The session of a server or demo that is played rather than only
+	 * watched: the seat cl_dummy selects on the server, the demo itself.
+	 */
+	CSessionId PlayedSessionId(CSessionId ContextId) const { return Seats().InputSessionId(ContextId, g_Config.m_ClDummy); }
 	/**
 	 * Points a view at a session. The other seat on the same server keeps
 	 * what the view follows there.
@@ -800,7 +822,7 @@ public:
 
 	const std::vector<CSnapEntities> &SnapEntities() { return m_vSnapEntities; }
 
-	CGameView::CMultiViewState &MultiView() { return LegacyGameView().m_MultiView; }
+	CGameView::CMultiViewState &MultiView() { return InputView().m_MultiView; }
 
 	void ResetMultiView();
 	int FindFirstMultiViewId();
@@ -887,12 +909,18 @@ private:
 
 	CTuningParams *TuningList() const { return MapContext().TuningList(); }
 
-	float m_LastShowDistanceZoom;
-	float m_LastZoom;
-	vec2 m_LastShowDistance;
-	float m_LastDeadzone;
-	float m_LastFollowFactor;
-	bool m_LastDummyConnected;
+	// What each seat was last told about the view it is shown in.
+	class CCameraSent
+	{
+	public:
+		bool m_Sent = false;
+		float m_ShowDistanceZoom = 0.0f;
+		vec2 m_ShowDistance = vec2(0.0f, 0.0f);
+		float m_Zoom = 0.0f;
+		float m_Deadzone = 0.0f;
+		float m_FollowFactor = 0.0f;
+	};
+	std::array<CCameraSent, NUM_DUMMIES> m_aCameraSent;
 
 	void HandleMultiView(const CGameState &State, float LocalTime);
 	bool IsMultiViewIdSet();

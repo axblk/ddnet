@@ -44,8 +44,7 @@ void CChat::CCachedLine::Invalidate(CChat &This)
 	This.TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	This.Graphics()->DeleteQuadContainer(m_QuadContainerIndex);
 	m_Revision = 0;
-	m_Binding = {};
-	m_Viewport = {};
+	m_LayoutKey = {};
 	m_ScoreboardOpen = false;
 	m_ShowLargeArea = false;
 	m_YOffset = -1.0f;
@@ -233,7 +232,7 @@ void CChat::ConShowChat(IConsole::IResult *pResult, void *pUserData)
 	CChat *pChat = (CChat *)pUserData;
 	pChat->m_Show = pResult->GetInteger(0) != 0;
 	if(pChat->m_Show)
-		pChat->m_ShowBinding = pChat->GameClient()->LegacyGameView().Binding();
+		pChat->m_ShowBinding = pChat->GameClient()->InputView().Binding();
 }
 
 void CChat::ConEcho(IConsole::IResult *pResult, void *pUserData)
@@ -572,7 +571,7 @@ void CChat::EnableMode(int Team)
 
 	if(m_Mode == MODE_NONE)
 	{
-		const CGameView &View = GameClient()->LegacyGameView();
+		const CGameView &View = GameClient()->InputView();
 		if(!GameClient()->IsNetworkSeat(View.SessionId()))
 			return;
 		m_InputBinding = View.Binding();
@@ -963,14 +962,15 @@ void CChat::OnPrepareLines(const CRenderContext &Context, float y)
 		if(Now > Line.m_Time + 16 * Context.m_Time.m_PresentationTimeFrequency && !ShowLargeArea)
 			break;
 
-		const CViewport &Viewport = Context.m_View.Viewport();
-		const bool CacheMatches = Cached.m_Revision == Line.m_Revision && Cached.m_Binding == Context.m_View.Binding() && Cached.m_Viewport == Viewport && Cached.m_ScoreboardOpen == IsScoreBoardOpen && Cached.m_ShowLargeArea == ShowLargeArea;
+		// A line reads the same in every seat of its server, so the player and
+		// the dummy side by side share it.
+		const CLayoutKey LayoutKey = Context.LayoutKey(false);
+		const bool CacheMatches = Cached.m_Revision == Line.m_Revision && Cached.m_LayoutKey == LayoutKey && Cached.m_ScoreboardOpen == IsScoreBoardOpen && Cached.m_ShowLargeArea == ShowLargeArea;
 		if(!CacheMatches)
 		{
 			Cached.Invalidate(*this);
 			Cached.m_Revision = Line.m_Revision;
-			Cached.m_Binding = Context.m_View.Binding();
-			Cached.m_Viewport = Viewport;
+			Cached.m_LayoutKey = LayoutKey;
 			Cached.m_ScoreboardOpen = IsScoreBoardOpen;
 			Cached.m_ShowLargeArea = ShowLargeArea;
 		}

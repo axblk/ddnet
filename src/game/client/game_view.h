@@ -9,6 +9,8 @@
 #include <engine/client/session.h>
 #include <engine/shared/video.h>
 
+#include <array>
+#include <cstdint>
 #include <span>
 
 class CGameSessionContext;
@@ -192,7 +194,7 @@ public:
 		float m_ZoomSmoothingTarget = 0.0f;
 		bool m_AutoSpecCameraZooming = false;
 		bool m_AutoSpecCamera = true;
-		float m_UserZoomTarget = 0.0f;
+		float m_UserZoomTarget = 1.0f;
 		vec2 m_DyncamTargetCameraOffset = vec2(0.0f, 0.0f);
 		vec2 m_DynamicCameraOffset = vec2(0.0f, 0.0f);
 		vec2 m_LastInputPosition = vec2(0.0f, 0.0f);
@@ -245,6 +247,16 @@ public:
 	}
 	const CViewport &Viewport() const { return m_Viewport; }
 	void SetViewport(CViewport Viewport) { m_Viewport = Viewport; }
+	/**
+	 * Where a point given as a fraction of the whole screen lies, as a
+	 * fraction of this view.
+	 */
+	vec2 ScreenFractionToView(vec2 Fraction, vec2 ScreenSize) const
+	{
+		if(m_Viewport.m_Width <= 0 || m_Viewport.m_Height <= 0)
+			return Fraction;
+		return (Fraction * ScreenSize - vec2(m_Viewport.m_X, m_Viewport.m_Y)) / vec2(m_Viewport.m_Width, m_Viewport.m_Height);
+	}
 	vec2 CameraPosition() const { return m_Camera.m_Center; }
 	void SetCameraPosition(vec2 Position) { m_Camera.m_Center = Position; }
 	float Zoom() const { return m_Camera.m_Zoom; }
@@ -291,6 +303,81 @@ public:
 	bool IsOtherTeamFromLocalPlayer(int ClientId) const;
 };
 
+/**
+ * Everything besides the content that decides how an overlay lays out what it
+ * draws in a view: whose it is, and the size of the view in pixels. Where on
+ * the screen the view sits does not move a glyph, so views of the same size
+ * share what was laid out for any of them.
+ */
+class CLayoutKey
+{
+public:
+	/**
+	 * The session whose text it is: the server or demo for what all of its
+	 * seats read alike, the seat's own session for what differs between them.
+	 */
+	CSessionId m_SessionId;
+	int m_Width = 0;
+	int m_Height = 0;
+
+	bool operator==(const CLayoutKey &Other) const = default;
+};
+
+/**
+ * What an overlay laid out, kept once for each differently keyed view it is
+ * drawn in. The views of a frame take turns, and with a single copy every one
+ * of them would throw away and build again what the one before it laid out.
+ */
+template<class TLayout>
+class CLayoutCache
+{
+	class CSlot
+	{
+	public:
+		CLayoutKey m_Key;
+		uint64_t m_LastUse = 0;
+		TLayout m_Layout;
+	};
+	// A column for the player, the dummy and the demo.
+	std::array<CSlot, 3> m_aSlots;
+	uint64_t m_Uses = 0;
+
+public:
+	/**
+	 * The layout kept for the key. When there is none, the one used longest
+	 * ago is handed to `Clear` and then taken over.
+	 */
+	template<class FClear>
+	TLayout &Find(const CLayoutKey &Key, FClear &&Clear)
+	{
+		CSlot *pOldest = m_aSlots.data();
+		for(CSlot &Slot : m_aSlots)
+		{
+			if(Slot.m_LastUse != 0 && Slot.m_Key == Key)
+			{
+				Slot.m_LastUse = ++m_Uses;
+				return Slot.m_Layout;
+			}
+			if(Slot.m_LastUse < pOldest->m_LastUse)
+				pOldest = &Slot;
+		}
+		Clear(pOldest->m_Layout);
+		pOldest->m_Key = Key;
+		pOldest->m_LastUse = ++m_Uses;
+		return pOldest->m_Layout;
+	}
+
+	template<class FClear>
+	void ClearAll(FClear &&Clear)
+	{
+		for(CSlot &Slot : m_aSlots)
+		{
+			Clear(Slot.m_Layout);
+			Slot.m_LastUse = 0;
+		}
+	}
+};
+
 class CRenderContext
 {
 public:
@@ -305,6 +392,13 @@ public:
 	CRenderContext(const CGameSessionContext &Session, const CGameState &State, const CGameView &View, CGameTickInfo Time, CVisibleWorldRect VisibleWorldRect, bool IsVideoOutput = false, CVideoExportSettings VideoSettings = {});
 
 	float AspectRatio(float DefaultAspectRatio) const;
+	/**
+	 * The key for what an overlay lays out in this view.
+	 *
+	 * @param PerState Pass true for what differs between the seats of one
+	 * server, such as whose name plate is the local one.
+	 */
+	CLayoutKey LayoutKey(bool PerState) const;
 	bool IsOtherTeam(int ClientId) const;
 	float AlphaForOwner(int OwnerClientId, float OtherTeamAlpha) const;
 };

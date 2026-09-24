@@ -137,6 +137,16 @@ CLocalSeats CGameClient::Seats() const
 	return CLocalSeats(ClientNetwork()->NetworkSessionId(), ClientNetwork()->DummySessionId());
 }
 
+bool CGameClient::AudioForState(const CGameState &State, bool &Offline) const
+{
+	Offline = false;
+	// Only the seat that is played is heard. The other one shows the same world,
+	// and would play every sound a second time.
+	if(State.m_SessionId != PlayedSessionId(ContextSessionId(State.m_SessionId)))
+		return false;
+	return AudioForSession(State.m_SessionId, Offline);
+}
+
 CGameSessionContext *CGameClient::FindSessionContext(CSessionId SessionId) const
 {
 	for(const auto &pContext : m_vpSessionContexts)
@@ -204,10 +214,18 @@ bool CGameClient::AudioForSession(CSessionId SessionId, bool &Offline) const
 	return Sessions()->FocusedSessionId() == SessionId;
 }
 
-CGameView &CGameClient::LegacyGameView()
+CGameView &CGameClient::GameView(CSessionId SessionId)
 {
-	TargetView(m_LegacyView, InputSessionId());
-	return m_LegacyView;
+	// A demo keeps a view of its own wherever it is shown, so its camera
+	// neither jumps nor is handed to the server when the focus moves.
+	if(SessionId == InputSessionId() && IsNetworkSeat(SessionId) && !g_Config.m_ClDummySplitScreen)
+	{
+		TargetView(m_InputView, SessionId);
+		return m_InputView;
+	}
+	CGameView &View = m_aPaneViews[IsNetworkSeat(SessionId) ? SeatOf(SessionId) : PANE_DEMO];
+	View.SetTarget(SessionId);
+	return View;
 }
 
 void CGameClient::TargetView(CGameView &View, CSessionId SessionId) const
@@ -250,10 +268,8 @@ void CGameClient::OnConsoleInit()
 	if(Sessions()->VideoExportSessionId().IsValid())
 		m_vpSessionContexts.push_back(std::make_unique<CGameSessionContext>(Sessions()->VideoExportSessionId()));
 #endif
-	m_LegacyView.SetTarget(NetworkSessionId());
-	m_SecondaryView.SetTarget(DummySessionId());
-	m_TertiaryView.SetTarget(NetworkSessionId());
-	m_Camera.BindState(m_LegacyView.m_Camera);
+	m_InputView.SetTarget(InputSessionId());
+	m_Camera.BindState(m_InputView.m_Camera);
 	m_pTextRender = Kernel()->RequestInterface<ITextRender>();
 	m_pSound = Kernel()->RequestInterface<ISound>();
 	m_pConfigManager = Kernel()->RequestInterface<IConfigManager>();
@@ -668,7 +684,7 @@ void CGameClient::OnUpdate()
 	{
 		if(pComponent == &m_TouchControls)
 		{
-			if(m_TouchControls.UpdateController(LegacyGameView(), vTouchFingerStates, !TouchHandled) && !TouchHandled)
+			if(m_TouchControls.UpdateController(InputView(), vTouchFingerStates, !TouchHandled) && !TouchHandled)
 			{
 				Input()->ClearTouchDeltas();
 				TouchHandled = true;
@@ -835,7 +851,7 @@ void CGameClient::OnDummySwap()
 {
 	CGameSessionContext &Session = SessionContext(NetworkSessionId());
 	const int ActiveSeat = g_Config.m_ClDummy;
-	LegacyGameView();
+	InputView();
 	m_Camera.UpdateCamera();
 	for(CClientData &Client : m_aClients)
 		Client.UpdateSkinInfo(Session.SeatState(ActiveSeat));
@@ -1067,20 +1083,17 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 
 	// Map bugs and tunings are reset when the map context is loaded.
 
-	m_LastShowDistanceZoom = 0.0f;
-	m_LastZoom = 0.0f;
-	m_LastShowDistance = vec2(0.0f, 0.0f);
-	m_LastDeadzone = 0.0f;
-	m_LastFollowFactor = 0.0f;
-	m_LastDummyConnected = false;
+	m_aCameraSent = {};
 
 	MultiView().Reset();
 
-	for(CGameView *pView : {&m_LegacyView, &m_SecondaryView, &m_TertiaryView})
-	{
-		pView->SetSpectator(false);
-		pView->m_SpectatorCursor.Reset();
-	}
+	auto ResetSpectator = [](CGameView &View) {
+		View.SetSpectator(false);
+		View.m_SpectatorCursor.Reset();
+	};
+	ResetSpectator(m_InputView);
+	for(CGameView &View : m_aPaneViews)
+		ResetSpectator(View);
 
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnReset();
@@ -1187,7 +1200,7 @@ void CGameClient::OnSessionFocused(CSessionId SessionId)
 		}
 	}
 	InvalidateSnapshot(SessionId);
-	LegacyGameView();
+	InputView();
 	m_SessionPresentations.SetAudible(SessionId);
 	if(!Session.m_MapContext.Map()->IsLoaded())
 		return;
@@ -1578,63 +1591,49 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	m_vPreparedRenderEntries.reserve(3);
 
 	CGameSessionContext &ActiveSession = SessionContext();
-	const bool FocusedDemo = ActiveSession.Id() == Sessions()->DemoSessionId();
-	const int ActiveSeat = InputSeat();
 	CGameState &ActiveState = InputState();
-	CGameView &View = LegacyGameView();
+	CGameView &View = InputView();
 
-	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State, CGameView &RenderView) {
-		TargetView(RenderView, State.m_SessionId);
+	for(const auto &pContext : m_vpSessionContexts)
+		for(CGameState &State : pContext->GameStates())
+			State.SetShown(false);
+	auto AddEntry = [&](CGameSessionContext &Session, CGameState &State) {
+		State.SetShown(true);
 		CPreparedRenderEntry Entry;
 		Entry.m_pSession = &Session;
 		Entry.m_pState = &State;
-		Entry.m_pView = &RenderView;
-		Entry.m_Audible = &RenderView == &View;
+		Entry.m_pView = &GameView(State.m_SessionId);
+		Entry.m_Audible = Entry.m_pView == &View;
 		m_vPreparedRenderEntries.push_back(Entry);
 	};
-	auto AddNetworkEntries = [&](CGameView &MainView, CGameView &DummyView) {
-		CGameSessionContext &NetworkSession = SessionContext(NetworkSessionId());
-		AddEntry(NetworkSession, NetworkSession.SeatState(IClient::CONN_MAIN), MainView);
-		if(DummyConnected())
-			AddEntry(NetworkSession, NetworkSession.SeatState(IClient::CONN_DUMMY), DummyView);
-	};
-
-	const bool MultiGameScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
-	if(MultiGameScreen && FocusedDemo && Sessions()->SessionState(NetworkSessionId()) == ESessionState::READY)
+	// The split screen shows the dummy beside the player, and a demo beside the
+	// server. Servers and demos keep the order they were opened in, so that
+	// moving the focus between them does not move them around.
+	const bool SplitScreen = g_Config.m_ClDummySplitScreen != 0 && !VideoOutput;
+	for(const auto &pContext : m_vpSessionContexts)
 	{
-		AddNetworkEntries(m_SecondaryView, m_TertiaryView);
-		AddEntry(ActiveSession, ActiveState, View);
-	}
-	else if(MultiGameScreen && !FocusedDemo)
-	{
-		if(ActiveSeat == IClient::CONN_MAIN)
-			AddNetworkEntries(View, m_SecondaryView);
+		CGameSessionContext &Session = *pContext;
+		if(&Session != &ActiveSession && (!SplitScreen || !Sessions()->IsSessionShowable(Session.Id())))
+			continue;
+		if(SplitScreen && Session.Id() == NetworkSessionId() && DummyConnected())
+		{
+			AddEntry(Session, Session.SeatState(IClient::CONN_MAIN));
+			AddEntry(Session, Session.SeatState(IClient::CONN_DUMMY));
+		}
 		else
-			AddNetworkEntries(m_SecondaryView, View);
-		if(Sessions()->SessionState(Sessions()->DemoSessionId()) == ESessionState::READY)
 		{
-			CGameSessionContext &DemoSession = SessionContext(Sessions()->DemoSessionId());
-			AddEntry(DemoSession, DemoSession.SeatState(IClient::CONN_MAIN), m_TertiaryView);
+			AddEntry(Session, Session.GameState(PlayedSessionId(Session.Id())));
 		}
-	}
-	else
-	{
-		AddEntry(ActiveSession, ActiveState, View);
 	}
 
-	if(m_vPreparedRenderEntries.size() > 1)
+	const int ScreenWidth = Graphics()->ScreenWidth();
+	const int ScreenHeight = Graphics()->ScreenHeight();
+	const int NumColumns = m_vPreparedRenderEntries.size();
+	for(int Column = 0; Column < NumColumns; ++Column)
 	{
-		for(size_t i = 0; i < m_vPreparedRenderEntries.size(); ++i)
-		{
-			CPreparedRenderEntry &Entry = m_vPreparedRenderEntries[i];
-			const int Left = Graphics()->ScreenWidth() * static_cast<int>(i) / static_cast<int>(m_vPreparedRenderEntries.size());
-			const int Right = Graphics()->ScreenWidth() * static_cast<int>(i + 1) / static_cast<int>(m_vPreparedRenderEntries.size());
-			Entry.m_pView->SetViewport({Left, 0, Right - Left, Graphics()->ScreenHeight()});
-		}
-	}
-	else
-	{
-		View.SetViewport({});
+		const int Left = ScreenWidth * Column / NumColumns;
+		const int Right = ScreenWidth * (Column + 1) / NumColumns;
+		m_vPreparedRenderEntries[Column].m_pView->SetViewport(NumColumns > 1 ? CViewport{Left, 0, Right - Left, ScreenHeight} : CViewport{});
 	}
 
 	// A recording shows the focused session on the clock of its video.
@@ -1750,7 +1749,7 @@ void CGameClient::OnRenderVideoPrepare(CSessionId SessionId, const CVideoExportS
 	// Leave the camera on the view that takes input, so a console command or a
 	// question about the zoom between frames does not land on the export.
 	CGameSessionContext &FocusedSession = SessionContext();
-	m_Camera.BindTarget(FocusedSession, FocusedSession.GameState(InputSessionId()), LegacyGameView(), true, Client()->LocalTime());
+	m_Camera.BindTarget(FocusedSession, FocusedSession.GameState(InputSessionId()), InputView(), true, Client()->LocalTime());
 }
 #endif
 
@@ -2384,7 +2383,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 	CGameSessionContext &Session = SessionContext(SessionId);
 	CGameState &State = Session.GameState(SessionId);
 	bool OfflineAudio;
-	const bool AudioActive = AudioForSession(SessionId, OfflineAudio);
+	const bool AudioActive = AudioForState(State, OfflineAudio);
 	const int Num = Sessions()->SnapNumItems(SessionId, SnapType);
 	for(int Index = 0; Index < Num; Index++)
 	{
@@ -2421,7 +2420,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 			vec2 HammerHitPos = vec2(pEvent->m_X, pEvent->m_Y);
 			if(!State.m_PredictedWorld.CheckPredictedEventHandled(CGameWorld::CPredictedEvent(Item.m_Type, HammerHitPos, -1, Sessions()->GameTick(SessionId))))
 			{
-				m_Effects.HammerHit(SessionId, State, HammerHitPos, Alpha, Volume);
+				m_Effects.HammerHit(State, HammerHitPos, Alpha, Volume);
 			}
 		}
 		else if(Item.m_Type == NETEVENTTYPE_BIRTHDAY)
@@ -2437,7 +2436,7 @@ void CGameClient::ProcessEvents(CSessionId SessionId)
 		else if(Item.m_Type == NETEVENTTYPE_SPAWN)
 		{
 			const CNetEvent_Spawn *pEvent = (const CNetEvent_Spawn *)Item.m_pData;
-			m_Effects.PlayerSpawn(SessionId, State, vec2(pEvent->m_X, pEvent->m_Y), Alpha, Volume);
+			m_Effects.PlayerSpawn(State, vec2(pEvent->m_X, pEvent->m_Y), Alpha, Volume);
 		}
 		else if(Item.m_Type == NETEVENTTYPE_DEATH)
 		{
@@ -2719,6 +2718,14 @@ void CGameClient::OnNewSnapshot(CSessionId SessionId)
 		ProcessedEvents = true;
 	}
 #endif
+	else if(State.IsShown())
+	{
+		// Explosions, hits and deaths are events rather than objects, so a pane
+		// that does not take input only shows them if they are processed for its
+		// state as well. Sounds stay with the state that is played.
+		ProcessEvents(SessionId);
+		ProcessedEvents = true;
+	}
 	if(ProcessedEvents)
 		ProcessAirJumpEffects(SessionId);
 	if(EnteredGameOver)
@@ -2747,7 +2754,7 @@ void CGameClient::ProcessAirJumpEffects(CSessionId SessionId)
 		if(Session.m_MapContext.Collision()->IsOnGround(PreviousPosition, CCharacterCore::PhysicalSize()))
 			continue;
 		const vec2 Position = mix(PreviousPosition, vec2(Character.m_Cur.m_X, Character.m_Cur.m_Y), Sessions()->IntraGameTick(SessionId));
-		m_Effects.AirJump(SessionId, State, Position, i, 1.0f, 1.0f); // TODO snd_game_volume_others
+		m_Effects.AirJump(State, Position, i, 1.0f, 1.0f); // TODO snd_game_volume_others
 	}
 }
 
@@ -3321,42 +3328,63 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			DummyRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
 		}
 
-		float ShowDistanceZoom = m_Camera.Zoom();
-		float Zoom = m_Camera.Zoom();
-		if(m_Camera.IsZooming())
+		// Each seat is told what the view it is shown in covers. On a single
+		// screen that is the view the player looks through, for both of them as
+		// in DDNet. Side by side, the dummy has a pane of its own, with its own
+		// zoom and a narrower shape than the whole screen.
+		for(int ViewSeat = IClient::CONN_MAIN; ViewSeat < NUM_DUMMIES; ++ViewSeat)
 		{
-			if(m_Camera.ZoomSmoothingTarget() > m_Camera.Zoom()) // Zooming out
-				ShowDistanceZoom = m_Camera.ZoomSmoothingTarget();
-			else if(m_Camera.ZoomSmoothingTarget() < m_Camera.Zoom() && m_LastShowDistanceZoom > 0) // Zooming in
-				ShowDistanceZoom = m_LastShowDistanceZoom;
+			CCameraSent &Sent = m_aCameraSent[ViewSeat];
+			if(ViewSeat == IClient::CONN_DUMMY && !DummyConnected())
+			{
+				Sent = {};
+				continue;
+			}
+			const CGameView &SeatView = g_Config.m_ClDummySplitScreen ? GameView(SeatSessionId(ViewSeat)) : InputView();
+			const CGameView::CCameraState &Camera = SeatView.m_Camera;
+			float ShowDistanceZoom = Camera.m_Zoom;
+			float Zoom = Camera.m_Zoom;
+			if(Camera.m_Zooming)
+			{
+				if(Camera.m_ZoomSmoothingTarget > Camera.m_Zoom) // Zooming out
+					ShowDistanceZoom = Camera.m_ZoomSmoothingTarget;
+				else if(Camera.m_ZoomSmoothingTarget < Camera.m_Zoom && Sent.m_ShowDistanceZoom > 0) // Zooming in
+					ShowDistanceZoom = Sent.m_ShowDistanceZoom;
 
-			Zoom = m_Camera.ZoomSmoothingTarget();
-		}
+				Zoom = Camera.m_ZoomSmoothingTarget;
+			}
 
-		float Deadzone = m_Camera.Deadzone();
-		float FollowFactor = m_Camera.FollowFactor();
+			float Deadzone = m_Camera.Deadzone();
+			float FollowFactor = m_Camera.FollowFactor();
+			const CGameState &SeatState = Session.SeatState(ViewSeat);
+			if(SeatState.m_Snap.m_SpecInfo.m_Active && Sent.m_Sent)
+			{
+				// don't send camera information when spectating
+				Zoom = Sent.m_Zoom;
+				Deadzone = Sent.m_Deadzone;
+				FollowFactor = Sent.m_FollowFactor;
+			}
 
-		if(Snap.m_SpecInfo.m_Active)
-		{
-			// don't send camera information when spectating
-			Zoom = m_LastZoom;
-			Deadzone = m_LastDeadzone;
-			FollowFactor = m_LastFollowFactor;
-		}
-
-		// initialize dummy vital when first connected
-		if(DummyConnected() && !m_LastDummyConnected)
-		{
+			// The size itself decides, not what went into it: the zoom, the screen
+			// and the setting for wide screens all move it, and the server only
+			// cares that it clips to what is on screen.
+			const CViewport &Viewport = SeatView.Viewport();
+			const float Aspect = Viewport.m_Width > 0 && Viewport.m_Height > 0 ? Viewport.m_Width / (float)Viewport.m_Height : Graphics()->ScreenAspect();
+			float ShowDistanceX, ShowDistanceY;
+			Graphics()->CalcScreenParams(Aspect, ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
+			if(!Sent.m_Sent || ShowDistanceX != Sent.m_ShowDistance.x || ShowDistanceY != Sent.m_ShowDistance.y)
 			{
 				CNetMsg_Cl_ShowDistance Msg;
-				float x, y;
-				Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &x, &y);
-				Msg.m_X = x;
-				Msg.m_Y = y;
+				Msg.m_X = ShowDistanceX;
+				Msg.m_Y = ShowDistanceY;
+				if(ViewSeat == IClient::CONN_MAIN)
+					ClientNetwork()->ChecksumData()->m_Zoom = ShowDistanceZoom;
 				CMsgPacker Packer(&Msg);
 				Msg.Pack(&Packer);
-				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+				ClientNetwork()->SendMsg(ViewSeat, &Packer, MSGFLAG_VITAL);
 			}
+
+			if(!Sent.m_Sent || Zoom != Sent.m_Zoom || Deadzone != Sent.m_Deadzone || FollowFactor != Sent.m_FollowFactor)
 			{
 				CNetMsg_Cl_CameraInfo Msg;
 				Msg.m_Zoom = round_truncate(Zoom * 1000.f);
@@ -3364,51 +3392,16 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 				Msg.m_FollowFactor = FollowFactor;
 				CMsgPacker Packer(&Msg);
 				Msg.Pack(&Packer);
-				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
+				ClientNetwork()->SendMsg(ViewSeat, &Packer, MSGFLAG_VITAL);
 			}
+
+			Sent.m_Sent = true;
+			Sent.m_ShowDistanceZoom = ShowDistanceZoom;
+			Sent.m_ShowDistance = vec2(ShowDistanceX, ShowDistanceY);
+			Sent.m_Zoom = Zoom;
+			Sent.m_Deadzone = Deadzone;
+			Sent.m_FollowFactor = FollowFactor;
 		}
-
-		// send show distance
-		// The size itself decides, not what went into it: the zoom, the screen and
-		// the setting for wide screens all move it, and the server only cares that it
-		// clips to what is on screen.
-		float ShowDistanceX, ShowDistanceY;
-		Graphics()->CalcScreenParams(Graphics()->ScreenAspect(), ShowDistanceZoom, &ShowDistanceX, &ShowDistanceY);
-		if(ShowDistanceX != m_LastShowDistance.x || ShowDistanceY != m_LastShowDistance.y)
-		{
-			CNetMsg_Cl_ShowDistance Msg;
-			Msg.m_X = ShowDistanceX;
-			Msg.m_Y = ShowDistanceY;
-			ClientNetwork()->ChecksumData()->m_Zoom = ShowDistanceZoom;
-			CMsgPacker Packer(&Msg);
-			Msg.Pack(&Packer);
-
-			ClientNetwork()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(DummyConnected() && m_LastDummyConnected)
-				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		}
-
-		// send camera info
-		if(Zoom != m_LastZoom || Deadzone != m_LastDeadzone || FollowFactor != m_LastFollowFactor)
-		{
-			CNetMsg_Cl_CameraInfo Msg;
-			Msg.m_Zoom = round_truncate(Zoom * 1000.f);
-			Msg.m_Deadzone = Deadzone;
-			Msg.m_FollowFactor = FollowFactor;
-			CMsgPacker Packer(&Msg);
-			Msg.Pack(&Packer);
-
-			ClientNetwork()->SendMsg(IClient::CONN_MAIN, &Packer, MSGFLAG_VITAL);
-			if(DummyConnected() && m_LastDummyConnected)
-				ClientNetwork()->SendMsg(IClient::CONN_DUMMY, &Packer, MSGFLAG_VITAL);
-		}
-
-		m_LastShowDistanceZoom = ShowDistanceZoom;
-		m_LastShowDistance = vec2(ShowDistanceX, ShowDistanceY);
-		m_LastZoom = Zoom;
-		m_LastDeadzone = Deadzone;
-		m_LastFollowFactor = FollowFactor;
-		m_LastDummyConnected = DummyConnected();
 	}
 
 	for(auto &pComponent : m_vpAll)
@@ -3724,7 +3717,7 @@ void CGameClient::ProcessPrediction()
 			int Events = pLocalChar->Core()->m_TriggeredEvents;
 			if(g_Config.m_ClPredict && !m_SuppressEvents)
 				if(Events & COREEVENT_AIR_JUMP)
-					m_Effects.AirJump(SessionId, ActiveState, Pos, pLocalChar->GetCid(), 1.0f, 1.0f);
+					m_Effects.AirJump(ActiveState, Pos, pLocalChar->GetCid(), 1.0f, 1.0f);
 			if(g_Config.m_SndGame && !m_SuppressEvents)
 			{
 				if(Events & COREEVENT_GROUND_JUMP)
@@ -3748,7 +3741,7 @@ void CGameClient::ProcessPrediction()
 			int Events = pDummyChar->Core()->m_TriggeredEvents;
 			if(g_Config.m_ClPredict && !m_SuppressEvents)
 				if(Events & COREEVENT_AIR_JUMP)
-					m_Effects.AirJump(SessionId, ActiveState, Pos, pDummyChar->GetCid(), 1.0f, 1.0f);
+					m_Effects.AirJump(ActiveState, Pos, pDummyChar->GetCid(), 1.0f, 1.0f);
 		}
 
 		HandlePredictedEvents(Tick);
@@ -4546,7 +4539,7 @@ void CGameClient::UpdateRenderedClients(const CGameSessionContext &Session, CGam
 
 void CGameClient::UpdateSpectatorCursor(const CGameState &State, const CGameTickInfo &Time)
 {
-	CGameView &View = LegacyGameView();
+	CGameView &View = InputView();
 	CGameView::CSpectatorCursorState &Cursor = View.m_SpectatorCursor;
 	using CCursorState = CGameView::CSpectatorCursorState;
 	const int CursorOwnerId = View.IsSpectating() ? View.SpectatorId() : State.LocalClientId();
@@ -4717,7 +4710,7 @@ void CGameClient::HandlePredictedEvents(const int Tick)
 			}
 			else if(EventsIterator->m_EventId == NETEVENTTYPE_HAMMERHIT)
 			{
-				m_Effects.HammerHit(Sessions()->FocusedSessionId(), InputState(), EventsIterator->m_Pos, Alpha, Volume);
+				m_Effects.HammerHit(InputState(), EventsIterator->m_Pos, Alpha, Volume);
 			}
 			else if(EventsIterator->m_EventId == NETEVENTTYPE_DAMAGEIND)
 			{

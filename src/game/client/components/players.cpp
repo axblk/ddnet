@@ -753,7 +753,7 @@ void CPlayers::UpdatePlayerPresentation(
 
 	constexpr float Volume = 1.0f;
 	if(!State.m_InAir && State.m_WantOtherDir && length(State.m_Vel * 50) > 500.0f)
-		GameClient()->m_Effects.SkidTrail(Context.m_Session.Id(), GameState, Context.m_Time, State.m_Position, State.m_Vel, State.m_Player.m_Direction, ClientId, 1.0f, Volume, Context.m_Audio == EPresentationAudio::AUDIBLE);
+		GameClient()->m_Effects.SkidTrail(GameState, Context.m_Time, State.m_Position, State.m_Vel, State.m_Player.m_Direction, ClientId, 1.0f, Volume, Context.m_Audio == EPresentationAudio::AUDIBLE);
 
 	if(State.m_Player.m_Weapon == WEAPON_NINJA && !(State.m_RenderInfo.m_TeeRenderFlags & TEE_NO_WEAPON))
 	{

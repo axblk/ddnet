@@ -336,7 +336,7 @@ void CRenderLayerGroup::Render(const CRenderLayerParams &Params)
 	const int ParallaxY = Params.m_IgnoreParallax ? 100 : m_pGroup->m_ParallaxY;
 	int ParallaxZoom = std::clamp(std::max(ParallaxX, ParallaxY), 0, 100);
 	CScreenRect ScreenRect = Graphics()->MapScreenToWorld(Params.m_Center.x, Params.m_Center.y, ParallaxX, ParallaxY, (float)ParallaxZoom,
-		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ScreenAspect(), Params.m_Zoom);
+		m_pGroup->m_OffsetX, m_pGroup->m_OffsetY, Graphics()->ViewportAspect(), Params.m_Zoom);
 	Graphics()->MapScreen(ScreenRect);
 }
 

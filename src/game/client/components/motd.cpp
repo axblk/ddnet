@@ -32,7 +32,7 @@ uint64_t CMotd::ServerMotdRevision() const
 
 void CMotd::Clear()
 {
-	GameClient()->LegacyGameView().m_Motd.Dismiss();
+	GameClient()->InputView().m_Motd.Dismiss();
 	InvalidateRenderCache();
 }
 
@@ -41,16 +41,13 @@ void CMotd::InvalidateRenderCache()
 	Graphics()->DeleteQuadContainer(m_RectQuadContainer);
 	TextRender()->DeleteTextContainer(m_TextContainerIndex);
 	m_TouchRect.reset();
-	m_RenderedSessionId = CSessionId();
-	m_pRenderedView = nullptr;
-	m_RenderedViewportWidth = 0;
-	m_RenderedViewportHeight = 0;
+	m_RenderedLayoutKey = {};
 }
 
 bool CMotd::IsActive() const
 {
 	const CGameSessionContext &Session = GameClient()->SessionContext();
-	return GameClient()->LegacyGameView().m_Motd.IsActive(Session.Id(), Session.m_Motd.Revision(), time());
+	return GameClient()->InputView().m_Motd.IsActive(Session.Id(), Session.m_Motd.Revision(), time());
 }
 
 bool CMotd::IsActive(const CRenderContext &Context) const
@@ -79,24 +76,19 @@ void CMotd::OnRender(const CRenderContext &Context)
 {
 	if(!IsActive(Context))
 		return;
-	if(&Context.m_View == &GameClient()->LegacyGameView() && GameClient()->m_Statboard.IsRenderable(Context))
+	if(&Context.m_View == &GameClient()->InputView() && GameClient()->m_Statboard.IsRenderable(Context))
 	{
 		Clear();
 		return;
 	}
 
 	const CGameSessionContext &Session = Context.m_Session;
-	const CViewport &Viewport = Context.m_View.Viewport();
-	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Session.m_Motd.Revision() ||
-		m_pRenderedView != &Context.m_View ||
-		m_RenderedViewportWidth != Viewport.m_Width || m_RenderedViewportHeight != Viewport.m_Height)
+	const CLayoutKey LayoutKey = Context.LayoutKey(false);
+	if(m_RenderedLayoutKey != LayoutKey || m_RenderedRevision != Session.m_Motd.Revision())
 	{
 		InvalidateRenderCache();
-		m_RenderedSessionId = Session.Id();
+		m_RenderedLayoutKey = LayoutKey;
 		m_RenderedRevision = Session.m_Motd.Revision();
-		m_pRenderedView = &Context.m_View;
-		m_RenderedViewportWidth = Viewport.m_Width;
-		m_RenderedViewportHeight = Viewport.m_Height;
 	}
 
 	if(GameClient()->m_ImportantAlert.IsActive())
@@ -157,7 +149,7 @@ void CMotd::DoMotd(CGameSessionContext &Session, const char *pText, bool Show)
 	{
 		if(!IsActive())
 			m_ShownSince = time_get_nanoseconds();
-		GameClient()->LegacyGameView().m_Motd.Show(Session.Id(), Session.m_Motd.Revision(), VisibleUntil);
+		GameClient()->InputView().m_Motd.Show(Session.Id(), Session.m_Motd.Revision(), VisibleUntil);
 	}
 	InvalidateRenderCache();
 

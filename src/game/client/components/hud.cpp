@@ -34,9 +34,9 @@ CHud::CHud()
 	m_DDRaceEffectsTextContainerIndex.Reset();
 }
 
-void CHud::ResetScoreHudContainers()
+void CHud::ClearScoreHud(CScoreHudLayout &Layout)
 {
-	for(auto &ScoreInfo : m_aScoreInfo)
+	for(auto &ScoreInfo : Layout.m_aScoreInfo)
 	{
 		TextRender()->DeleteTextContainer(ScoreInfo.m_OptionalNameTextContainerIndex);
 		TextRender()->DeleteTextContainer(ScoreInfo.m_TextRankContainerIndex);
@@ -45,7 +45,12 @@ void CHud::ResetScoreHudContainers()
 
 		ScoreInfo.Reset();
 	}
-	m_ScoreHudCacheValid = false;
+	Layout.m_LastLocalClientId = -1;
+}
+
+void CHud::ResetScoreHudContainers()
+{
+	m_ScoreHudLayouts.ClearAll([this](CScoreHudLayout &Layout) { ClearScoreHud(Layout); });
 }
 
 void CHud::ResetHudContainers()
@@ -55,10 +60,12 @@ void CHud::ResetHudContainers()
 	TextRender()->DeleteTextContainer(m_FPSTextContainerIndex);
 	m_LastFPS = -1;
 	TextRender()->DeleteTextContainer(m_DDRaceEffectsTextContainerIndex);
-	m_GameTimerText.Reset(TextRender());
-	m_LastGameTimerTime.reset();
+	m_GameTimerLayouts.ClearAll([this](CGameTimerLayout &Layout) {
+		Layout.m_Text.Reset(TextRender());
+		Layout.m_LastTime.reset();
+	});
 	m_LocalTimeText.Reset(TextRender());
-	m_SpectatorHudText.Reset(TextRender());
+	m_SpectatorHudTexts.ClearAll([this](CCachedText &Text) { Text.Reset(TextRender()); });
 }
 
 void CHud::OnWindowResize()
@@ -123,12 +130,16 @@ void CHud::RenderGameTimer(const CRenderContext &Context)
 		}
 
 		float FontSize = 10.0f;
-		if(m_LastGameTimerTime != Time)
+		CGameTimerLayout &Layout = m_GameTimerLayouts.Find(Context.LayoutKey(true), [this](CGameTimerLayout &Old) {
+			Old.m_Text.Reset(TextRender());
+			Old.m_LastTime.reset();
+		});
+		if(Layout.m_LastTime != Time)
 		{
 			char aBuf[32];
 			str_time((int64_t)Time * 100, ETimeFormat::DAYS, aBuf, sizeof(aBuf));
-			m_GameTimerText.Update(TextRender(), aBuf, FontSize);
-			m_LastGameTimerTime = Time;
+			Layout.m_Text.Update(TextRender(), aBuf, FontSize);
+			Layout.m_LastTime = Time;
 		}
 		static float s_TextWidthM = TextRender()->TextWidth(FontSize, "00:00", -1, -1.0f);
 		static float s_TextWidthH = TextRender()->TextWidth(FontSize, "00:00:00", -1, -1.0f);
@@ -143,7 +154,7 @@ void CHud::RenderGameTimer(const CRenderContext &Context)
 			float Alpha = Time <= 10 && (2 * time() / time_freq()) % 2 ? 0.5f : 1.0f;
 			Color = ColorRGBA(1.0f, 0.25f, 0.25f, Alpha);
 		}
-		m_GameTimerText.Render(TextRender(), vec2(Half - w / 2, 2.0f), Color);
+		Layout.m_Text.Render(TextRender(), vec2(Half - w / 2, 2.0f), Color);
 	}
 }
 
@@ -183,20 +194,12 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 	if(pClientsByScore == nullptr)
 		return;
 	const CNetObj_GameData *pGameData = State.GameData();
-	const CViewport &Viewport = Context.m_View.Viewport();
-	// A single cache is enough because only two score rows are rebuilt when
-	// requests alternate between views.
-	if(!m_ScoreHudCacheValid || m_ScoreHudBinding != Context.m_View.Binding() || m_ScoreHudViewportX != Viewport.m_X || m_ScoreHudViewportY != Viewport.m_Y || m_ScoreHudViewportWidth != Viewport.m_Width || m_ScoreHudViewportHeight != Viewport.m_Height || m_ScoreHudGameFlags != GameInfo.m_GameFlags || m_ScoreHudHasGameData != (pGameData != nullptr))
+	CScoreHudLayout &Layout = m_ScoreHudLayouts.Find(Context.LayoutKey(true), [this](CScoreHudLayout &Old) { ClearScoreHud(Old); });
+	if(Layout.m_GameFlags != GameInfo.m_GameFlags || Layout.m_HasGameData != (pGameData != nullptr))
 	{
-		ResetScoreHudContainers();
-		m_ScoreHudBinding = Context.m_View.Binding();
-		m_ScoreHudViewportX = Viewport.m_X;
-		m_ScoreHudViewportY = Viewport.m_Y;
-		m_ScoreHudViewportWidth = Viewport.m_Width;
-		m_ScoreHudViewportHeight = Viewport.m_Height;
-		m_ScoreHudGameFlags = GameInfo.m_GameFlags;
-		m_ScoreHudHasGameData = pGameData != nullptr;
-		m_ScoreHudCacheValid = true;
+		ClearScoreHud(Layout);
+		Layout.m_GameFlags = GameInfo.m_GameFlags;
+		Layout.m_HasGameData = pGameData != nullptr;
 	}
 	const bool TeamPlay = (GameInfo.m_GameFlags & GAMEFLAG_TEAMS) != 0;
 
@@ -206,8 +209,8 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 
 		const float ScoreSingleBoxHeight = 18.0f;
 
-		bool ForceScoreInfoInit = !m_aScoreInfo[0].m_Initialized || !m_aScoreInfo[1].m_Initialized;
-		m_aScoreInfo[0].m_Initialized = m_aScoreInfo[1].m_Initialized = true;
+		bool ForceScoreInfoInit = !Layout.m_aScoreInfo[0].m_Initialized || !Layout.m_aScoreInfo[1].m_Initialized;
+		Layout.m_aScoreInfo[0].m_Initialized = Layout.m_aScoreInfo[1].m_Initialized = true;
 
 		if(TeamPlay && pGameData != nullptr)
 		{
@@ -215,7 +218,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 			str_format(aScoreTeam[TEAM_RED], sizeof(aScoreTeam[TEAM_RED]), "%d", pGameData->m_TeamscoreRed);
 			str_format(aScoreTeam[TEAM_BLUE], sizeof(aScoreTeam[TEAM_BLUE]), "%d", pGameData->m_TeamscoreBlue);
 
-			bool aRecreateTeamScore[2] = {str_comp(aScoreTeam[0], m_aScoreInfo[0].m_aScoreText) != 0, str_comp(aScoreTeam[1], m_aScoreInfo[1].m_aScoreText) != 0};
+			bool aRecreateTeamScore[2] = {str_comp(aScoreTeam[0], Layout.m_aScoreInfo[0].m_aScoreText) != 0, str_comp(aScoreTeam[1], Layout.m_aScoreInfo[1].m_aScoreText) != 0};
 
 			const int aFlagCarrier[2] = {
 				pGameData->m_FlagCarrierRed,
@@ -226,14 +229,14 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 			{
 				if(aRecreateTeamScore[t])
 				{
-					m_aScoreInfo[t].m_ScoreTextWidth = TextRender()->TextWidth(14.0f, aScoreTeam[t == 0 ? TEAM_RED : TEAM_BLUE], -1, -1.0f);
-					str_copy(m_aScoreInfo[t].m_aScoreText, aScoreTeam[t == 0 ? TEAM_RED : TEAM_BLUE]);
+					Layout.m_aScoreInfo[t].m_ScoreTextWidth = TextRender()->TextWidth(14.0f, aScoreTeam[t == 0 ? TEAM_RED : TEAM_BLUE], -1, -1.0f);
+					str_copy(Layout.m_aScoreInfo[t].m_aScoreText, aScoreTeam[t == 0 ? TEAM_RED : TEAM_BLUE]);
 					RecreateRect = true;
 				}
 			}
 
 			static float s_TextWidth100 = TextRender()->TextWidth(14.0f, "100", -1, -1.0f);
-			float ScoreWidthMax = std::max({m_aScoreInfo[0].m_ScoreTextWidth, m_aScoreInfo[1].m_ScoreTextWidth, s_TextWidth100});
+			float ScoreWidthMax = std::max({Layout.m_aScoreInfo[0].m_ScoreTextWidth, Layout.m_aScoreInfo[1].m_ScoreTextWidth, s_TextWidth100});
 			float Split = 3.0f;
 			float ImageSize = (GameInfo.m_GameFlags & GAMEFLAG_FLAGS) ? 16.0f : Split;
 			for(int t = 0; t < 2; t++)
@@ -241,32 +244,32 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 				// draw box
 				if(RecreateRect)
 				{
-					Graphics()->DeleteQuadContainer(m_aScoreInfo[t].m_RoundRectQuadContainerIndex);
+					Graphics()->DeleteQuadContainer(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex);
 
 					if(t == 0)
 						Graphics()->SetColor(0.975f, 0.17f, 0.17f, 0.3f);
 					else
 						Graphics()->SetColor(0.17f, 0.46f, 0.975f, 0.3f);
-					m_aScoreInfo[t].m_RoundRectQuadContainerIndex = RenderTools()->CreateRectQuadContainer(m_Width - ScoreWidthMax - ImageSize - 2 * Split, StartY + t * 20, ScoreWidthMax + ImageSize + 2 * Split, ScoreSingleBoxHeight, 5.0f, IGraphics::CORNER_L);
+					Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex = RenderTools()->CreateRectQuadContainer(m_Width - ScoreWidthMax - ImageSize - 2 * Split, StartY + t * 20, ScoreWidthMax + ImageSize + 2 * Split, ScoreSingleBoxHeight, 5.0f, IGraphics::CORNER_L);
 				}
 				Graphics()->TextureClear();
 				Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
-				if(m_aScoreInfo[t].m_RoundRectQuadContainerIndex != -1)
-					Graphics()->RenderQuadContainer(m_aScoreInfo[t].m_RoundRectQuadContainerIndex, -1);
+				if(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex != -1)
+					Graphics()->RenderQuadContainer(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex, -1);
 
 				// draw score
 				if(aRecreateTeamScore[t])
 				{
 					CTextCursor Cursor;
-					Cursor.SetPosition(vec2(m_Width - ScoreWidthMax + (ScoreWidthMax - m_aScoreInfo[t].m_ScoreTextWidth) / 2 - Split, StartY + t * 20 + (18.f - 14.f) / 2.f));
+					Cursor.SetPosition(vec2(m_Width - ScoreWidthMax + (ScoreWidthMax - Layout.m_aScoreInfo[t].m_ScoreTextWidth) / 2 - Split, StartY + t * 20 + (18.f - 14.f) / 2.f));
 					Cursor.m_FontSize = 14.0f;
-					TextRender()->RecreateTextContainer(m_aScoreInfo[t].m_TextScoreContainerIndex, &Cursor, aScoreTeam[t]);
+					TextRender()->RecreateTextContainer(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex, &Cursor, aScoreTeam[t]);
 				}
-				if(m_aScoreInfo[t].m_TextScoreContainerIndex.Valid())
+				if(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex.Valid())
 				{
 					ColorRGBA TColor(1.f, 1.f, 1.f, 1.f);
 					ColorRGBA TOutlineColor(0.f, 0.f, 0.f, 0.3f);
-					TextRender()->RenderTextContainer(m_aScoreInfo[t].m_TextScoreContainerIndex, TColor, TOutlineColor);
+					TextRender()->RenderTextContainer(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex, TColor, TOutlineColor);
 				}
 
 				if(GameInfo.m_GameFlags & GAMEFLAG_FLAGS)
@@ -289,23 +292,23 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 						int Id = aFlagCarrier[t] % MAX_CLIENTS;
 						const CClientPresentation *pClient = Presentation.Client(State.m_Seat, Id);
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
-						if(str_comp(pName, m_aScoreInfo[t].m_aPlayerNameText) != 0 || RecreateRect)
+						if(str_comp(pName, Layout.m_aScoreInfo[t].m_aPlayerNameText) != 0 || RecreateRect)
 						{
-							str_copy(m_aScoreInfo[t].m_aPlayerNameText, pName);
+							str_copy(Layout.m_aScoreInfo[t].m_aPlayerNameText, pName);
 
 							float w = TextRender()->TextWidth(8.0f, pName, -1, -1.0f);
 
 							CTextCursor Cursor;
 							Cursor.SetPosition(vec2(std::min(m_Width - w - 1.0f, m_Width - ScoreWidthMax - ImageSize - 2 * Split), StartY + (t + 1) * 20.0f - 2.0f));
 							Cursor.m_FontSize = 8.0f;
-							TextRender()->RecreateTextContainer(m_aScoreInfo[t].m_OptionalNameTextContainerIndex, &Cursor, pName);
+							TextRender()->RecreateTextContainer(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex, &Cursor, pName);
 						}
 
-						if(m_aScoreInfo[t].m_OptionalNameTextContainerIndex.Valid())
+						if(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex.Valid())
 						{
 							ColorRGBA TColor(1.f, 1.f, 1.f, 1.f);
 							ColorRGBA TOutlineColor(0.f, 0.f, 0.f, 0.3f);
-							TextRender()->RenderTextContainer(m_aScoreInfo[t].m_OptionalNameTextContainerIndex, TColor, TOutlineColor);
+							TextRender()->RenderTextContainer(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex, TColor, TOutlineColor);
 						}
 
 						// draw tee of the flag holder
@@ -402,16 +405,16 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 				}
 			}
 
-			bool RecreateScores = str_comp(aScore[0], m_aScoreInfo[0].m_aScoreText) != 0 || str_comp(aScore[1], m_aScoreInfo[1].m_aScoreText) != 0 || m_LastLocalClientId != LocalClientId;
-			m_LastLocalClientId = LocalClientId;
+			bool RecreateScores = str_comp(aScore[0], Layout.m_aScoreInfo[0].m_aScoreText) != 0 || str_comp(aScore[1], Layout.m_aScoreInfo[1].m_aScoreText) != 0 || Layout.m_LastLocalClientId != LocalClientId;
+			Layout.m_LastLocalClientId = LocalClientId;
 
 			bool RecreateRect = ForceScoreInfoInit;
 			for(int t = 0; t < 2; t++)
 			{
 				if(RecreateScores)
 				{
-					m_aScoreInfo[t].m_ScoreTextWidth = TextRender()->TextWidth(14.0f, aScore[t], -1, -1.0f);
-					str_copy(m_aScoreInfo[t].m_aScoreText, aScore[t]);
+					Layout.m_aScoreInfo[t].m_ScoreTextWidth = TextRender()->TextWidth(14.0f, aScore[t], -1, -1.0f);
+					str_copy(Layout.m_aScoreInfo[t].m_aScoreText, aScore[t]);
 					RecreateRect = true;
 				}
 
@@ -422,24 +425,24 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 					{
 						const CClientPresentation *pClient = Presentation.Client(State.m_Seat, Id);
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
-						if(str_comp(pName, m_aScoreInfo[t].m_aPlayerNameText) != 0)
+						if(str_comp(pName, Layout.m_aScoreInfo[t].m_aPlayerNameText) != 0)
 							RecreateRect = true;
 					}
 				}
 				else
 				{
-					if(m_aScoreInfo[t].m_aPlayerNameText[0] != 0)
+					if(Layout.m_aScoreInfo[t].m_aPlayerNameText[0] != 0)
 						RecreateRect = true;
 				}
 
 				char aBuf[16];
 				str_format(aBuf, sizeof(aBuf), "%d.", aPos[t]);
-				if(str_comp(aBuf, m_aScoreInfo[t].m_aRankText) != 0)
+				if(str_comp(aBuf, Layout.m_aScoreInfo[t].m_aRankText) != 0)
 					RecreateRect = true;
 			}
 
 			static float s_TextWidth10 = TextRender()->TextWidth(14.0f, "10", -1, -1.0f);
-			float ScoreWidthMax = std::max({m_aScoreInfo[0].m_ScoreTextWidth, m_aScoreInfo[1].m_ScoreTextWidth, s_TextWidth10});
+			float ScoreWidthMax = std::max({Layout.m_aScoreInfo[0].m_ScoreTextWidth, Layout.m_aScoreInfo[1].m_ScoreTextWidth, s_TextWidth10});
 			float Split = 3.0f, ImageSize = 16.0f, PosSize = 16.0f;
 
 			for(int t = 0; t < 2; t++)
@@ -447,32 +450,32 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 				// draw box
 				if(RecreateRect)
 				{
-					Graphics()->DeleteQuadContainer(m_aScoreInfo[t].m_RoundRectQuadContainerIndex);
+					Graphics()->DeleteQuadContainer(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex);
 
 					if(t == Local)
 						Graphics()->SetColor(1.0f, 1.0f, 1.0f, 0.25f);
 					else
 						Graphics()->SetColor(0.0f, 0.0f, 0.0f, 0.25f);
-					m_aScoreInfo[t].m_RoundRectQuadContainerIndex = RenderTools()->CreateRectQuadContainer(m_Width - ScoreWidthMax - ImageSize - 2 * Split - PosSize, StartY + t * 20, ScoreWidthMax + ImageSize + 2 * Split + PosSize, ScoreSingleBoxHeight, 5.0f, IGraphics::CORNER_L);
+					Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex = RenderTools()->CreateRectQuadContainer(m_Width - ScoreWidthMax - ImageSize - 2 * Split - PosSize, StartY + t * 20, ScoreWidthMax + ImageSize + 2 * Split + PosSize, ScoreSingleBoxHeight, 5.0f, IGraphics::CORNER_L);
 				}
 				Graphics()->TextureClear();
 				Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
-				if(m_aScoreInfo[t].m_RoundRectQuadContainerIndex != -1)
-					Graphics()->RenderQuadContainer(m_aScoreInfo[t].m_RoundRectQuadContainerIndex, -1);
+				if(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex != -1)
+					Graphics()->RenderQuadContainer(Layout.m_aScoreInfo[t].m_RoundRectQuadContainerIndex, -1);
 
 				if(RecreateScores)
 				{
 					CTextCursor Cursor;
-					Cursor.SetPosition(vec2(m_Width - ScoreWidthMax + (ScoreWidthMax - m_aScoreInfo[t].m_ScoreTextWidth) - Split, StartY + t * 20 + (18.f - 14.f) / 2.f));
+					Cursor.SetPosition(vec2(m_Width - ScoreWidthMax + (ScoreWidthMax - Layout.m_aScoreInfo[t].m_ScoreTextWidth) - Split, StartY + t * 20 + (18.f - 14.f) / 2.f));
 					Cursor.m_FontSize = 14.0f;
-					TextRender()->RecreateTextContainer(m_aScoreInfo[t].m_TextScoreContainerIndex, &Cursor, aScore[t]);
+					TextRender()->RecreateTextContainer(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex, &Cursor, aScore[t]);
 				}
 				// draw score
-				if(m_aScoreInfo[t].m_TextScoreContainerIndex.Valid())
+				if(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex.Valid())
 				{
 					ColorRGBA TColor(1.f, 1.f, 1.f, 1.f);
 					ColorRGBA TOutlineColor(0.f, 0.f, 0.f, 0.3f);
-					TextRender()->RenderTextContainer(m_aScoreInfo[t].m_TextScoreContainerIndex, TColor, TOutlineColor);
+					TextRender()->RenderTextContainer(Layout.m_aScoreInfo[t].m_TextScoreContainerIndex, TColor, TOutlineColor);
 				}
 
 				if(apPlayerInfo[t])
@@ -485,19 +488,19 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 						const char *pName = pClient != nullptr ? pClient->m_aName : "";
 						if(RecreateRect)
 						{
-							str_copy(m_aScoreInfo[t].m_aPlayerNameText, pName);
+							str_copy(Layout.m_aScoreInfo[t].m_aPlayerNameText, pName);
 
 							CTextCursor Cursor;
 							Cursor.SetPosition(vec2(std::min(m_Width - TextRender()->TextWidth(8.0f, pName) - 1.0f, m_Width - ScoreWidthMax - ImageSize - 2 * Split - PosSize), StartY + (t + 1) * 20.0f - 2.0f));
 							Cursor.m_FontSize = 8.0f;
-							TextRender()->RecreateTextContainer(m_aScoreInfo[t].m_OptionalNameTextContainerIndex, &Cursor, pName);
+							TextRender()->RecreateTextContainer(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex, &Cursor, pName);
 						}
 
-						if(m_aScoreInfo[t].m_OptionalNameTextContainerIndex.Valid())
+						if(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex.Valid())
 						{
 							ColorRGBA TColor(1.f, 1.f, 1.f, 1.f);
 							ColorRGBA TOutlineColor(0.f, 0.f, 0.f, 0.3f);
-							TextRender()->RenderTextContainer(m_aScoreInfo[t].m_OptionalNameTextContainerIndex, TColor, TOutlineColor);
+							TextRender()->RenderTextContainer(Layout.m_aScoreInfo[t].m_OptionalNameTextContainerIndex, TColor, TOutlineColor);
 						}
 
 						// draw tee
@@ -517,7 +520,7 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 				}
 				else
 				{
-					m_aScoreInfo[t].m_aPlayerNameText[0] = 0;
+					Layout.m_aScoreInfo[t].m_aPlayerNameText[0] = 0;
 				}
 
 				// draw position
@@ -525,18 +528,18 @@ void CHud::RenderScoreHud(const CRenderContext &Context)
 				str_format(aBuf, sizeof(aBuf), "%d.", aPos[t]);
 				if(RecreateRect)
 				{
-					str_copy(m_aScoreInfo[t].m_aRankText, aBuf);
+					str_copy(Layout.m_aScoreInfo[t].m_aRankText, aBuf);
 
 					CTextCursor Cursor;
 					Cursor.SetPosition(vec2(m_Width - ScoreWidthMax - ImageSize - Split - PosSize, StartY + t * 20 + (18.f - 10.f) / 2.f));
 					Cursor.m_FontSize = 10.0f;
-					TextRender()->RecreateTextContainer(m_aScoreInfo[t].m_TextRankContainerIndex, &Cursor, aBuf);
+					TextRender()->RecreateTextContainer(Layout.m_aScoreInfo[t].m_TextRankContainerIndex, &Cursor, aBuf);
 				}
-				if(m_aScoreInfo[t].m_TextRankContainerIndex.Valid())
+				if(Layout.m_aScoreInfo[t].m_TextRankContainerIndex.Valid())
 				{
 					ColorRGBA TColor(1.f, 1.f, 1.f, 1.f);
 					ColorRGBA TOutlineColor(0.f, 0.f, 0.f, 0.3f);
-					TextRender()->RenderTextContainer(m_aScoreInfo[t].m_TextRankContainerIndex, TColor, TOutlineColor);
+					TextRender()->RenderTextContainer(Layout.m_aScoreInfo[t].m_TextRankContainerIndex, TColor, TOutlineColor);
 				}
 
 				StartY += 8.0f;
@@ -1649,8 +1652,9 @@ void CHud::RenderSpectatorHud(const CRenderContext &Context)
 	{
 		str_copy(aBuf, Localize("Free-View"));
 	}
-	m_SpectatorHudText.Update(TextRender(), aBuf, 8.0f);
-	m_SpectatorHudText.Render(TextRender(), vec2(m_Width - 174.0f, m_Height - 15.0f + (15.f - 8.f) / 2.f), TextRender()->DefaultTextColor());
+	CCachedText &SpectatorHudText = m_SpectatorHudTexts.Find(Context.LayoutKey(true), [this](CCachedText &Old) { Old.Reset(TextRender()); });
+	SpectatorHudText.Update(TextRender(), aBuf, 8.0f);
+	SpectatorHudText.Render(TextRender(), vec2(m_Width - 174.0f, m_Height - 15.0f + (15.f - 8.f) / 2.f), TextRender()->DefaultTextColor());
 
 	// draw the camera info
 	const CGameView::CCameraState &Camera = Context.m_View.m_Camera;

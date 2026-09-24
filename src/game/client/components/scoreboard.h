@@ -56,6 +56,8 @@ class CScoreboard : public CComponent
 	CImageResource m_DeadTeeResource;
 
 	std::optional<vec2> m_LastMousePos;
+	// The part of the screen the board took the mouse in, in pixels.
+	CUIRect m_UiViewport = {0.0f, 0.0f, 0.0f, 0.0f};
 	bool m_MouseUnlocked = false;
 
 	void SetUiMousePos(vec2 Pos);

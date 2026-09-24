@@ -650,6 +650,74 @@ TEST(GameView, RetargetingResetsWhatBelongsToTheOldTarget)
 	EXPECT_FALSE(View.m_MultiView.m_aSelected[7]);
 }
 
+TEST(GameView, OverlayLayoutsAreSharedByViewsOfTheSameSize)
+{
+	const auto pSession = std::make_unique<CGameSessionContext>(CSessionId(1), CSessionId(3));
+	CGameView PlayerView;
+	PlayerView.SetTarget(CSessionId(1));
+	PlayerView.SetViewport({0, 0, 640, 720});
+	CGameView DummyView;
+	DummyView.SetTarget(CSessionId(3));
+	DummyView.SetViewport({640, 0, 640, 720});
+	const CVisibleWorldRect VisibleWorldRect(vec2(0.0f, 0.0f), vec2(1.0f, 1.0f));
+	const CRenderContext PlayerContext(*pSession, pSession->SeatState(0), PlayerView, CGameTickInfo(), VisibleWorldRect);
+	const CRenderContext DummyContext(*pSession, pSession->SeatState(1), DummyView, CGameTickInfo(), VisibleWorldRect);
+
+	// Where a view sits does not matter, whose seat it shows only for what
+	// differs between the seats.
+	EXPECT_EQ(PlayerContext.LayoutKey(false), DummyContext.LayoutKey(false));
+	EXPECT_EQ(PlayerContext.LayoutKey(false).m_SessionId, CSessionId(1));
+	EXPECT_NE(PlayerContext.LayoutKey(true), DummyContext.LayoutKey(true));
+	EXPECT_EQ(DummyContext.LayoutKey(true).m_SessionId, CSessionId(3));
+
+	DummyView.SetViewport({640, 0, 320, 720});
+	EXPECT_NE(PlayerContext.LayoutKey(false), DummyContext.LayoutKey(false));
+}
+
+TEST(GameView, LayoutCacheKeepsAColumnForEveryPane)
+{
+	CLayoutCache<int> Cache;
+	int Clears = 0;
+	auto Clear = [&](int &Layout) {
+		Layout = 0;
+		++Clears;
+	};
+	const CLayoutKey Player{CSessionId(1), 640, 720};
+	const CLayoutKey Dummy{CSessionId(3), 640, 720};
+	const CLayoutKey Demo{CSessionId(2), 640, 720};
+	Cache.Find(Player, Clear) = 1;
+	Cache.Find(Dummy, Clear) = 3;
+	Cache.Find(Demo, Clear) = 2;
+	EXPECT_EQ(Clears, 3);
+
+	// Views that take turns keep what they laid out.
+	EXPECT_EQ(Cache.Find(Player, Clear), 1);
+	EXPECT_EQ(Cache.Find(Dummy, Clear), 3);
+	EXPECT_EQ(Cache.Find(Demo, Clear), 2);
+	EXPECT_EQ(Clears, 3);
+
+	// A fourth takes over the one used longest ago.
+	EXPECT_EQ(Cache.Find(CLayoutKey{CSessionId(1), 1280, 720}, Clear), 0);
+	EXPECT_EQ(Clears, 4);
+	EXPECT_EQ(Cache.Find(Dummy, Clear), 3);
+	EXPECT_EQ(Cache.Find(Player, Clear), 0);
+	EXPECT_EQ(Clears, 5);
+
+	Cache.ClearAll(Clear);
+	EXPECT_EQ(Clears, 8);
+	EXPECT_EQ(Cache.Find(Dummy, Clear), 0);
+}
+
+TEST(GameView, ScreenFractionToView)
+{
+	CGameView View;
+	const vec2 ScreenSize(1280.0f, 720.0f);
+	EXPECT_EQ(View.ScreenFractionToView(vec2(0.25f, 0.5f), ScreenSize), vec2(0.25f, 0.5f));
+	View.SetViewport({640, 0, 640, 720});
+	EXPECT_EQ(View.ScreenFractionToView(vec2(0.75f, 0.5f), ScreenSize), vec2(0.5f, 0.5f));
+	EXPECT_EQ(View.ScreenFractionToView(vec2(0.5f, 0.0f), ScreenSize), vec2(0.0f, 0.0f));
+}
+
 TEST(GameView, SpectatorSelection)
 {
 	CGameView::CSpectatorSelectorState Selector;

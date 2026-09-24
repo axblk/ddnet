@@ -13,7 +13,7 @@
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
 
-void CEffects::AirJump(CSessionId SessionId, CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
+void CEffects::AirJump(CGameState &State, vec2 Pos, int OwnerClientId, float Alpha, float Volume)
 {
 	CParticle p;
 	p.SetDefault();
@@ -36,7 +36,7 @@ void CEffects::AirJump(CSessionId SessionId, CGameState &State, vec2 Pos, int Ow
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 
 	bool OfflineAudio;
-	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_AIRJUMP, Volume, Pos, OfflineAudio);
 }
 
@@ -137,7 +137,7 @@ void CEffects::SmokeTrail(CGameState &State, vec2 Pos, vec2 Vel, int OwnerClient
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::SkidTrail(CSessionId SessionId, CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
+void CEffects::SkidTrail(CGameState &State, const CGameTickInfo &Time, vec2 Pos, vec2 Vel, int Direction, int OwnerClientId, float Alpha, float Volume, bool PlaySound)
 {
 	CGameState::CEffectClockState &EffectClock = State.m_EffectClock;
 	if(EffectClock.m_Add100hz)
@@ -162,7 +162,7 @@ void CEffects::SkidTrail(CSessionId SessionId, CGameState &State, const CGameTic
 		if(EffectClock.TrySkidSound(Time.m_PresentationTime, Time.m_PresentationTimeFrequency))
 		{
 			bool OfflineAudio;
-			if(GameClient()->AudioForSession(SessionId, OfflineAudio))
+			if(GameClient()->AudioForState(State, OfflineAudio))
 				GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SKID, Volume, Pos, OfflineAudio);
 		}
 	}
@@ -187,7 +187,7 @@ void CEffects::BulletTrail(CGameState &State, vec2 Pos, int OwnerClientId, float
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_PROJECTILE_TRAIL, p, TimePassed);
 }
 
-void CEffects::PlayerSpawn(CSessionId SessionId, CGameState &State, vec2 Pos, float Alpha, float Volume)
+void CEffects::PlayerSpawn(CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	for(int i = 0; i < 32; i++)
 	{
@@ -208,7 +208,7 @@ void CEffects::PlayerSpawn(CSessionId SessionId, CGameState &State, vec2 Pos, fl
 		GameClient()->m_Particles.Add(State, CParticles::GROUP_GENERAL, p);
 	}
 	bool OfflineAudio;
-	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_PLAYER_SPAWN, Volume, Pos, OfflineAudio);
 }
 
@@ -378,7 +378,7 @@ void CEffects::Explosion(CGameState &State, const CCollision &Collision, vec2 Po
 	}
 }
 
-void CEffects::HammerHit(CSessionId SessionId, CGameState &State, vec2 Pos, float Alpha, float Volume)
+void CEffects::HammerHit(CGameState &State, vec2 Pos, float Alpha, float Volume)
 {
 	// add the explosion
 	CParticle p;
@@ -393,7 +393,7 @@ void CEffects::HammerHit(CSessionId SessionId, CGameState &State, vec2 Pos, floa
 	p.m_StartAlpha = Alpha;
 	GameClient()->m_Particles.Add(State, CParticles::GROUP_EXPLOSIONS, p);
 	bool OfflineAudio;
-	if(g_Config.m_SndGame && GameClient()->AudioForSession(SessionId, OfflineAudio))
+	if(g_Config.m_SndGame && GameClient()->AudioForState(State, OfflineAudio))
 		GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos, OfflineAudio);
 }
 

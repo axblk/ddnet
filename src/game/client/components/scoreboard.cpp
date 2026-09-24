@@ -128,12 +128,9 @@ CScoreboard::CScoreboard()
 
 void CScoreboard::SetUiMousePos(vec2 Pos)
 {
-	const vec2 WindowSize = vec2(Graphics()->WindowWidth(), Graphics()->WindowHeight());
-	const CUIRect *pScreen = Ui()->Screen();
-
-	const vec2 UpdatedMousePos = Ui()->UpdatedMousePos();
-	Pos = Pos / vec2(pScreen->w, pScreen->h) * WindowSize;
-	Ui()->OnCursorMove(Pos.x - UpdatedMousePos.x, Pos.y - UpdatedMousePos.y);
+	Ui()->SetViewport(m_UiViewport);
+	Ui()->SetMousePos(Pos);
+	Ui()->SetViewport({});
 }
 
 void CScoreboard::LockMouse()
@@ -182,7 +179,10 @@ void CScoreboard::ConToggleScoreboardCursor(IConsole::IResult *pResult, void *pU
 
 	if(pSelf->m_LastMousePos == std::nullopt)
 	{
-		pSelf->SetUiMousePos(pSelf->Ui()->Screen()->Center());
+		pSelf->Ui()->SetViewport(pSelf->m_UiViewport);
+		const vec2 Center = pSelf->Ui()->Screen()->Center();
+		pSelf->Ui()->SetViewport({});
+		pSelf->SetUiMousePos(Center);
 	}
 	else
 	{
@@ -1238,7 +1238,7 @@ void CScoreboard::RenderMatchReportSummary(const CStoredMatch &Stored, CUIRect S
 void CScoreboard::OnRender(const CRenderContext &Context)
 {
 	CInteractionLayout DiscardedLayout;
-	CInteractionLayout &Layout = &Context.m_View == &GameClient()->LegacyGameView() ? m_InteractionLayout : DiscardedLayout;
+	CInteractionLayout &Layout = &Context.m_View == &GameClient()->InputView() ? m_InteractionLayout : DiscardedLayout;
 	Layout = {};
 	Layout.m_Binding = Context.m_View.Binding();
 	Layout.m_Viewport = Context.m_View.Viewport();
@@ -1528,7 +1528,13 @@ void CScoreboard::PrepareApplicationOverlay(const CRenderContext &Context)
 	}
 	if(GameClient()->MenuActive() || GameClient()->m_Chat.IsActive())
 		return;
+	// The board takes the mouse in the view it is drawn in, which on a split
+	// screen is only a part of the window.
+	const CViewport &Viewport = Context.m_View.Viewport();
+	m_UiViewport = {(float)Viewport.m_X, (float)Viewport.m_Y, (float)Viewport.m_Width, (float)Viewport.m_Height};
+	Ui()->SetViewport(m_UiViewport);
 	m_ApplicationOverlayReady = UpdateApplicationOverlay(Context);
+	Ui()->SetViewport({});
 	if(!m_ApplicationOverlayReady && (Ui()->IsPopupOpen(&m_ScoreboardPopupContext) || Ui()->IsPopupOpen(&m_MapTitlePopupContext)))
 		Ui()->ClosePopupMenus();
 }
@@ -1549,15 +1555,17 @@ void CScoreboard::RenderApplicationOverlay(const CRenderContext &Context)
 	RenderRecordingNotification((ScreenWidth / 7) * 4 + 10);
 	if(!m_ApplicationOverlayReady)
 		return;
+	Ui()->SetViewport(m_UiViewport);
 	Ui()->RenderPopupMenus();
 	if(m_MouseUnlocked)
 		RenderTools()->RenderCursor(Ui()->MousePos(), 24.0f);
 	Ui()->FinishCheck();
+	Ui()->SetViewport({});
 }
 
 bool CScoreboard::IsActive() const
 {
-	const CGameView &View = GameClient()->LegacyGameView();
+	const CGameView &View = GameClient()->InputView();
 	return IsActive(GameClient()->GameState(View.SessionId()), View);
 }
 
@@ -1630,7 +1638,7 @@ CUi::EPopupMenuFunctionResult CScoreboard::CScoreboardPopupContext::Render(void 
 	CUi *pUi = pPopupContext->m_pScoreboard->Ui();
 
 	CGameClient *pGameClient = pScoreboard->GameClient();
-	CGameView &OriginView = pGameClient->LegacyGameView();
+	CGameView &OriginView = pGameClient->InputView();
 	if(OriginView.Binding() != pPopupContext->m_Binding)
 		return CUi::POPUP_CLOSE_CURRENT;
 	CSessionPresentation &Presentation = pGameClient->SessionPresentation(pPopupContext->m_Binding.m_SessionId);

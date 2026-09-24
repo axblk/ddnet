@@ -7,6 +7,7 @@
 #include <engine/textrender.h>
 
 #include <game/client/component.h>
+#include <game/client/game_view.h>
 #include <game/client/ui_rect.h>
 
 #include <chrono>
@@ -20,11 +21,10 @@ class CMotd : public CComponent
 {
 	int m_RectQuadContainer = -1;
 	STextContainerIndex m_TextContainerIndex;
-	CSessionId m_RenderedSessionId;
+	// A single layout, because the message is only ever shown in the view
+	// that takes input.
+	CLayoutKey m_RenderedLayoutKey;
 	uint64_t m_RenderedRevision = 0;
-	const CGameView *m_pRenderedView = nullptr;
-	int m_RenderedViewportWidth = 0;
-	int m_RenderedViewportHeight = 0;
 	std::chrono::nanoseconds m_ShownSince{0}; // when the MOTD last became visible
 	std::optional<CUIRect> m_TouchRect; // in normalized screen coordinates like the touch finger positions
 	std::optional<IInput::CTouchFinger> m_DismissTouchFinger; // the finger that dismissed the MOTD, ignored until released

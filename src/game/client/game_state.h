@@ -556,6 +556,7 @@ private:
 	bool m_PredictionInitialized = false;
 	bool m_MapDoorsBuilt = false;
 	bool m_FullyPredicted = false;
+	bool m_Shown = false;
 
 	void RebuildGameWorld();
 	void UpdatePhysicsRules();
@@ -582,6 +583,10 @@ public:
 	// The full prediction keeps its world across snapshots, the simple one here rebuilds it from each.
 	void SetFullyPredicted(bool FullyPredicted) { m_FullyPredicted = FullyPredicted; }
 	bool IsFullyPredicted() const { return m_FullyPredicted; }
+	// Whether the last frame drew this state, in a pane of its own or as the
+	// only one. Its events then get their effects too.
+	void SetShown(bool Shown) { m_Shown = Shown; }
+	bool IsShown() const { return m_Shown; }
 	void ClearPredictedClients() { m_aPredictedClients = {}; }
 
 	int LocalClientId() const { return m_LocalClientId; }

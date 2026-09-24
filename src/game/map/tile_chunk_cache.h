@@ -5,6 +5,8 @@
 
 #include <engine/graphics.h>
 
+#include <game/map/tile_run_store.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <functional>
@@ -60,6 +62,13 @@ public:
 		 * angle instead of drawn from their index.
 		 */
 		bool m_FillSpeedup = false;
+		/**
+		 * The layer's tiles as stretches of the same tile, when it keeps them
+		 * that way. Then the cache reads those instead of asking for every
+		 * tile, and they are already what the merging wants. A layer that does
+		 * not keep them leaves this at nullptr, and m_ReadTile is walked.
+		 */
+		const CTileRunStore *m_pRuns = nullptr;
 	};
 
 	/**
@@ -243,16 +252,12 @@ private:
 	{
 	public:
 		IGraphics::CBufferHandle m_BufferObject;
-		unsigned int m_OpaqueTiles = 0;
-		unsigned int m_TransparentTiles = 0;
+		// How many quads of the buffer belong to which pass. Same tiles next
+		// to each other are merged into one quad, so this is not a tile count.
+		unsigned int m_OpaqueQuads = 0;
+		unsigned int m_TransparentQuads = 0;
 		int m_Width = 0;
 		int m_Height = 0;
-		// Tile index -> first quad of that tile, one entry past the end so
-		// that a range of tiles is a subtraction instead of a search. A chunk
-		// holds at most CHUNK_SIZE * CHUNK_SIZE quads, so 16 bit are enough and
-		// the two tables together cost no more than one 32 bit table per tile.
-		std::vector<uint16_t> m_vOpaqueTileOffsets;
-		std::vector<uint16_t> m_vTransparentTileOffsets;
 		// What the chunk's buffer costs on the graphics card, and when it was
 		// last drawn. Both are only meaningful while it holds a buffer.
 		uint64_t m_Bytes = 0;

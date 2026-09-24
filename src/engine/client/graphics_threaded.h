@@ -146,7 +146,12 @@ class CGraphics_Threaded : public IEngineGraphics
 		}
 		CCommandBuffer *pCommandBuffer = GetCommandBuffer(Cmd.m_Cmd);
 		if(pCommandBuffer == nullptr)
+		{
+			// Whatever holds a buffer, texture or container has to give it back
+			// before the graphics shut down, because giving it back is a command.
+			dbg_assert(!m_ShutDown, "graphics: a command arrived after Shutdown(), release every handle before shutting the graphics down");
 			return false;
+		}
 		if(pCommandBuffer->AddCommandUnsafe(Cmd))
 			return true;
 		dbg_assert(pCommandBuffer != m_pCommandBuffer, "graphics: the frame arena refused a command");
@@ -242,6 +247,8 @@ class CGraphics_Threaded : public IEngineGraphics
 	// following destroy hits the same wall, so it is reported only once.
 	void ReportLostDestroy(const char *pWhat);
 	bool m_ReportedLostDestroy = false;
+	// Set once Shutdown() has freed the command buffers.
+	bool m_ShutDown = false;
 	void RecycleRetiredHandles();
 	void DropCurrentFrame();
 	void CollectBackendQueueWarnings();
@@ -407,8 +414,7 @@ public:
 		AddCmd(Command);
 	}
 
-	void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount) override;
-	void RenderBorderTiles(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, uint32_t FirstIndex, const vec2 &Offset, const vec2 &Scale, uint32_t DrawNum) override;
+	void RenderTileLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, const ColorRGBA &Color, const uint32_t *pFirstIndices, const uint32_t *pIndexCounts, size_t RangeCount, const vec2 &Offset, const vec2 &Scale) override;
 	void RenderQuadLayer(CBufferHandle VertexBuffer, EVertexLayout Layout, SQuadRenderInfo *pQuadInfo, size_t QuadNum, int QuadOffset, bool Grouped = false) override;
 	void RenderText(CBufferHandle VertexBuffer, int TextQuadNum, int TextureSize, CTextureHandle Texture, const ColorRGBA &TextColor, const ColorRGBA &TextOutlineColor) override;
 

@@ -23,8 +23,14 @@
 
 void CMenus::RenderSettingsGraphics(CUIRect MainView)
 {
+	size_t LabelIndex = 0;
+	const auto DoLabel = [&](const CUIRect &Rect, const char *pText, float Size, int Align) {
+		if(LabelIndex == m_vpSettingsGraphicsLabelUiElements.size())
+			m_vpSettingsGraphicsLabelUiElements.push_back(Ui()->GetNewUIElement(1));
+		Ui()->DoLabelStreamed(*m_vpSettingsGraphicsLabelUiElements[LabelIndex++]->Rect(0), &Rect, pText, Size, Align);
+	};
 	CUIRect Button;
-	char aBuf[128];
+	char aBuf[512];
 	bool CheckSettings = false;
 
 	static const int MAX_RESOLUTIONS = 256;
@@ -33,6 +39,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	static int s_GfxFsaaSamples = g_Config.m_GfxFsaaSamples;
 	static bool s_GfxBackendChanged = false;
 	static bool s_GfxGpuChanged = false;
+	static const std::string s_GfxDeviceApi = g_Config.m_GfxWebGpuBackend;
 
 	static int s_InitDisplayAllVideoModes = g_Config.m_GfxDisplayAllVideoModes;
 
@@ -74,7 +81,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 			g_Config.m_GfxScreenRefreshRate,
 			g_Config.m_GfxScreenWidth / G,
 			g_Config.m_GfxScreenHeight / G);
-		Ui()->DoLabel(&ModeLabel, aBuf, sc_FontSizeResListHeader, TEXTALIGN_MC);
+		DoLabel(ModeLabel, aBuf, sc_FontSizeResListHeader, TEXTALIGN_MC);
 	}
 
 	int OldSelected = -1;
@@ -96,7 +103,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 
 		int G = std::gcd(s_aModes[i].m_WindowWidth, s_aModes[i].m_WindowHeight);
 		str_format(aBuf, sizeof(aBuf), " %dx%d @%dhz (%d:%d)", s_aModes[i].m_CanvasWidth, s_aModes[i].m_CanvasHeight, s_aModes[i].m_RefreshRate, s_aModes[i].m_WindowWidth / G, s_aModes[i].m_WindowHeight / G);
-		Ui()->DoLabel(&Item.m_Rect, aBuf, sc_FontSizeResList, TEXTALIGN_ML);
+		DoLabel(Item.m_Rect, aBuf, sc_FontSizeResList, TEXTALIGN_ML);
 	}
 
 	const int NewSelected = s_ListBox.DoEnd();
@@ -245,7 +252,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		MainView.HSplitTop(20.0f, &Text, &MainView);
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &BackendDropDown, &MainView);
-		Ui()->DoLabel(&Text, Localize("Renderer"), 16.0f, TEXTALIGN_MC);
+		DoLabel(Text, Localize("Renderer"), 16.0f, TEXTALIGN_MC);
 
 		static std::vector<std::string> s_vBackendIdNames;
 		static std::vector<const char *> s_vpBackendIdNamesCStr;
@@ -318,6 +325,69 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		}
 	}
 
+	CUIRect CurrentRenderer;
+	MainView.HSplitTop(4.0f, nullptr, &MainView);
+	MainView.HSplitTop(20.0f, &CurrentRenderer, &MainView);
+	str_format(aBuf, sizeof(aBuf), "%s: %s", Localize("Current renderer"), Graphics()->GetRendererString());
+	DoLabel(CurrentRenderer, aBuf, 12.0f, TEXTALIGN_MC);
+
+	// A renderer that runs on top of another graphics API may let the player
+	// pick which one (gfx_webgpu_backend).
+	const IGraphics::SRendererChoice *pDeviceApiChoice = nullptr;
+	for(const IGraphics::SRendererChoice &Choice : vRendererChoices)
+	{
+		if(!Choice.m_vpDeviceApis.empty() && str_comp_nocase(Choice.m_pBackend, g_Config.m_GfxBackend) == 0)
+		{
+			pDeviceApiChoice = &Choice;
+			break;
+		}
+	}
+	if(pDeviceApiChoice != nullptr)
+	{
+		std::vector<const char *> vpDeviceApiValues = {"auto"};
+		std::vector<const char *> vpDeviceApiNames = {Localize("Auto")};
+		for(const char *pDeviceApi : pDeviceApiChoice->m_vpDeviceApis)
+		{
+			vpDeviceApiValues.push_back(pDeviceApi);
+			vpDeviceApiNames.push_back(pDeviceApi);
+		}
+
+		int OldSelectedDeviceApi = -1;
+		for(size_t i = 0; i < vpDeviceApiValues.size(); ++i)
+		{
+			if(str_comp_nocase(g_Config.m_GfxWebGpuBackend, vpDeviceApiValues[i]) == 0)
+				OldSelectedDeviceApi = (int)i;
+		}
+		// One set from the console that is not offered here stays selectable,
+		// so the next use of this dropdown does not silently overwrite it.
+		char aCustomDeviceApi[64];
+		if(OldSelectedDeviceApi == -1)
+		{
+			str_format(aCustomDeviceApi, sizeof(aCustomDeviceApi), "%s (%s)", g_Config.m_GfxWebGpuBackend, Localize("unsupported"));
+			OldSelectedDeviceApi = (int)vpDeviceApiValues.size();
+			vpDeviceApiValues.push_back(g_Config.m_GfxWebGpuBackend);
+			vpDeviceApiNames.push_back(aCustomDeviceApi);
+		}
+
+		CUIRect Text, DeviceApiDropDown;
+		MainView.HSplitTop(4.0f, nullptr, &MainView);
+		MainView.HSplitTop(20.0f, &Text, &MainView);
+		MainView.HSplitTop(2.0f, nullptr, &MainView);
+		MainView.HSplitTop(20.0f, &DeviceApiDropDown, &MainView);
+		str_format(aBuf, sizeof(aBuf), Localize("%s runs on"), pDeviceApiChoice->m_pBackend);
+		DoLabel(Text, aBuf, 16.0f, TEXTALIGN_MC);
+
+		static CUi::SDropDownState s_DeviceApiDropDownState;
+		static CScrollRegion s_DeviceApiDropDownScrollRegion;
+		s_DeviceApiDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_DeviceApiDropDownScrollRegion;
+		const int NewSelectedDeviceApi = Ui()->DoDropDown(&DeviceApiDropDown, OldSelectedDeviceApi, vpDeviceApiNames.data(), (int)vpDeviceApiNames.size(), s_DeviceApiDropDownState);
+		if(NewSelectedDeviceApi != OldSelectedDeviceApi)
+		{
+			str_copy(g_Config.m_GfxWebGpuBackend, vpDeviceApiValues[NewSelectedDeviceApi]);
+			CheckSettings = true;
+		}
+	}
+
 	// GPU list
 	const auto &GpuList = Graphics()->GetGpus();
 	if(GpuList.m_vGpus.size() > 1)
@@ -327,7 +397,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		MainView.HSplitTop(20.0f, &Text, &MainView);
 		MainView.HSplitTop(2.0f, nullptr, &MainView);
 		MainView.HSplitTop(20.0f, &GpuDropDown, &MainView);
-		Ui()->DoLabel(&Text, Localize("Graphics card"), 16.0f, TEXTALIGN_MC);
+		DoLabel(Text, Localize("Graphics card"), 16.0f, TEXTALIGN_MC);
 
 		static std::vector<const char *> s_vpGpuIdNames;
 
@@ -382,6 +452,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	{
 		m_NeedRestartGraphics = !(s_GfxFsaaSamples == g_Config.m_GfxFsaaSamples &&
 					  !s_GfxBackendChanged &&
-					  !s_GfxGpuChanged);
+					  !s_GfxGpuChanged &&
+					  str_comp_nocase(s_GfxDeviceApi.c_str(), g_Config.m_GfxWebGpuBackend) == 0);
 	}
 }

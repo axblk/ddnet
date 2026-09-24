@@ -59,7 +59,7 @@ constexpr static std::array<CTexCoords, N> MakeTexCoordsTable()
 
 constexpr std::array<CTexCoords, 8> TEX_COORDS_TABLE = MakeTexCoordsTable<8>();
 
-static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, unsigned char Index, int x, int y, const ivec2 &Offset, int Scale)
+static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, unsigned char Index, int x, int y, int SpanX, int SpanY, const ivec2 &Offset, int Scale)
 {
 	if(pTmpTex)
 	{
@@ -67,21 +67,28 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 		const auto &aTexX = TEX_COORDS_TABLE[TableFlag].m_aTexX;
 		const auto &aTexY = TEX_COORDS_TABLE[TableFlag].m_aTexY;
 
-		pTmpTex->m_TexCoordTopLeft.x = aTexX[0];
-		pTmpTex->m_TexCoordTopLeft.y = aTexY[0];
-		pTmpTex->m_TexCoordBottomLeft.x = aTexX[3];
-		pTmpTex->m_TexCoordBottomLeft.y = aTexY[3];
-		pTmpTex->m_TexCoordTopRight.x = aTexX[1];
-		pTmpTex->m_TexCoordTopRight.y = aTexY[1];
-		pTmpTex->m_TexCoordBottomRight.x = aTexX[2];
-		pTmpTex->m_TexCoordBottomRight.y = aTexY[2];
+		// The tile texture is an array with one layer per tile and it wraps, so
+		// a quad that covers more than one cell just counts cells: the same
+		// tile is repeated over it. Rotation swaps which span belongs to which
+		// texture axis, the way tile.vert swaps its scale for it.
+		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
+		const int TexSpanX = HasRotation ? SpanY : SpanX;
+		const int TexSpanY = HasRotation ? SpanX : SpanY;
+
+		pTmpTex->m_TexCoordTopLeft.x = aTexX[0] * TexSpanX;
+		pTmpTex->m_TexCoordTopLeft.y = aTexY[0] * TexSpanY;
+		pTmpTex->m_TexCoordBottomLeft.x = aTexX[3] * TexSpanX;
+		pTmpTex->m_TexCoordBottomLeft.y = aTexY[3] * TexSpanY;
+		pTmpTex->m_TexCoordTopRight.x = aTexX[1] * TexSpanX;
+		pTmpTex->m_TexCoordTopRight.y = aTexY[1] * TexSpanY;
+		pTmpTex->m_TexCoordBottomRight.x = aTexX[2] * TexSpanX;
+		pTmpTex->m_TexCoordBottomRight.y = aTexY[2] * TexSpanY;
 
 		pTmpTex->m_TexCoordTopLeft.z = Index;
 		pTmpTex->m_TexCoordBottomLeft.z = Index;
 		pTmpTex->m_TexCoordTopRight.z = Index;
 		pTmpTex->m_TexCoordBottomRight.z = Index;
 
-		bool HasRotation = (Flags & TILEFLAG_ROTATE) != 0;
 		pTmpTex->m_TexCoordTopLeft.w = HasRotation;
 		pTmpTex->m_TexCoordBottomLeft.w = HasRotation;
 		pTmpTex->m_TexCoordTopRight.w = HasRotation;
@@ -89,7 +96,7 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 	}
 
 	vec2 TopLeft(x * Scale + Offset.x, y * Scale + Offset.y);
-	vec2 BottomRight(x * Scale + Scale + Offset.x, y * Scale + Scale + Offset.y);
+	vec2 BottomRight(x * Scale + SpanX * Scale + Offset.x, y * Scale + SpanY * Scale + Offset.y);
 	pTmpTile->m_TopLeft = TopLeft;
 	pTmpTile->m_BottomLeft.x = TopLeft.x;
 	pTmpTile->m_BottomLeft.y = BottomRight.y;
@@ -98,16 +105,17 @@ static void FillTmpTile(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpT
 	pTmpTile->m_BottomRight = BottomRight;
 }
 
-static void FillTmpTileSpeedup(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, int x, int y, const ivec2 &Offset, int Scale, short AngleRotate)
+static void FillTmpTileSpeedup(CGraphicTile *pTmpTile, CGraphicTileTextureCoords *pTmpTex, unsigned char Flags, int x, int y, int SpanX, int SpanY, const ivec2 &Offset, int Scale, short AngleRotate)
 {
 	int Angle = AngleRotate % 360;
-	FillTmpTile(pTmpTile, pTmpTex, Angle >= 270 ? ROTATION_270 : (Angle >= 180 ? ROTATION_180 : (Angle >= 90 ? ROTATION_90 : 0)), AngleRotate % 90, x, y, Offset, Scale);
+	FillTmpTile(pTmpTile, pTmpTex, Angle >= 270 ? ROTATION_270 : (Angle >= 180 ? ROTATION_180 : (Angle >= 90 ? ROTATION_90 : 0)), AngleRotate % 90, x, y, SpanX, SpanY, Offset, Scale);
 }
 
-bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, bool DoTextureCoords, bool FillSpeedup, int AngleRotate, const ivec2 &Offset, int Scale)
+bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicTileTextureCoords> &vTmpTileTexCoords, unsigned char Index, unsigned char Flags, int x, int y, int SpanX, int SpanY, bool DoTextureCoords, bool FillSpeedup, int AngleRotate, const ivec2 &Offset, int Scale)
 {
 	if(Index <= 0)
 		return false;
+	dbg_assert(SpanX >= 1 && SpanY >= 1, "A tile covers at least one cell");
 
 	vTmpTiles.emplace_back();
 	CGraphicTile &Tile = vTmpTiles.back();
@@ -119,9 +127,9 @@ bool AddTileToBuffer(std::vector<CGraphicTile> &vTmpTiles, std::vector<CGraphicT
 		pTileTex = &TileTex;
 	}
 	if(FillSpeedup)
-		FillTmpTileSpeedup(&Tile, pTileTex, Flags, x, y, Offset, Scale, AngleRotate);
+		FillTmpTileSpeedup(&Tile, pTileTex, Flags, x, y, SpanX, SpanY, Offset, Scale, AngleRotate);
 	else
-		FillTmpTile(&Tile, pTileTex, Flags, Index, x, y, Offset, Scale);
+		FillTmpTile(&Tile, pTileTex, Flags, Index, x, y, SpanX, SpanY, Offset, Scale);
 
 	return true;
 }
@@ -416,10 +424,16 @@ void CRenderLayerTile::RenderTileBorder(const ColorRGBA &Color, int BorderX0, in
 	int Y1 = std::min((int)Visuals.m_Height, BorderY1);
 	int X1 = std::min((int)Visuals.m_Width, BorderX1);
 
+	// A border draws a run of edge tiles, each stretched over the distance to
+	// the screen edge, so that its texture repeats there.
+	auto DrawTiles = [&](vec2 Offset, vec2 Scale, uint32_t FirstIndex, uint32_t TileCount) {
+		const uint32_t IndexCount = TileCount * 6;
+		Graphics()->RenderTileLayer(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, &FirstIndex, &IndexCount, 1, Offset * 32.0f, Scale);
+	};
+
 	// corners
 	auto DrawCorner = [&](vec2 Offset, vec2 Scale, CTileLayerVisuals::CTileVisual &Visual) {
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, Visual.FirstIndex(), Offset, Scale, 1);
+		DrawTiles(Offset, Scale, Visual.FirstIndex(), 1);
 	};
 
 	if(BorderX0 < 0)
@@ -461,10 +475,8 @@ void CRenderLayerTile::RenderTileBorder(const ColorRGBA &Color, int BorderX0, in
 
 	// borders
 	auto DrawBorder = [&](vec2 Offset, vec2 Scale, CTileLayerVisuals::CTileVisual &StartVisual, CTileLayerVisuals::CTileVisual &EndVisual) {
-		unsigned int DrawNum = ((EndVisual.FirstIndex() - StartVisual.FirstIndex()) / 6) + (EndVisual.DoDraw() ? 1lu : 0lu);
-		const uint32_t FirstIndex = StartVisual.FirstIndex();
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, FirstIndex, Offset, Scale, DrawNum);
+		const uint32_t TileCount = ((EndVisual.FirstIndex() - StartVisual.FirstIndex()) / 6) + (EndVisual.DoDraw() ? 1 : 0);
+		DrawTiles(Offset, Scale, StartVisual.FirstIndex(), TileCount);
 	};
 
 	if(Y0 < (int)Visuals.m_Height && Y1 > 0)
@@ -533,8 +545,8 @@ void CRenderLayerTile::RenderKillTileBorder(const ColorRGBA &Color)
 
 	auto DrawKillBorder = [&](vec2 Offset, vec2 Scale) {
 		const uint32_t FirstIndex = Visuals.m_BorderKillTile.FirstIndex();
-		Offset *= 32.0f;
-		Graphics()->RenderBorderTiles(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, FirstIndex, Offset, Scale, 1);
+		const uint32_t IndexCount = 6;
+		Graphics()->RenderTileLayer(Visuals.m_BufferObjectIndex, Visuals.m_Layout, Color, &FirstIndex, &IndexCount, 1, Offset * 32.0f, Scale);
 	};
 
 	// Draw left kill tile border
@@ -605,7 +617,7 @@ bool CRenderLayerTile::DoRender(const CRenderLayerParams &Params)
 		return false;
 
 	// skip rendering if detail layers if not wanted
-	if(m_Flags & LAYERFLAG_DETAIL && !g_Config.m_GfxHighDetail && Params.m_RenderType != ERenderType::RENDERTYPE_FULL_DESIGN) // detail but no details
+	if(m_Flags & LAYERFLAG_DETAIL && !Params.m_HighDetail) // detail but no details
 		return false;
 	return true;
 }
@@ -655,6 +667,9 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	Visuals.m_ChunkSource.m_ReadTile = [this, CurOverlay](int x, int y, unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate) {
 		GetTileData(pIndex, pFlags, pAngleRotate, static_cast<unsigned int>(x), static_cast<unsigned int>(y), CurOverlay);
 	};
+	// The overlays of the entity layers read more than the stretches hold, so
+	// only a layer that kept its tiles this way hands them to the cache.
+	Visuals.m_ChunkSource.m_pRuns = m_RunStore.IsBuilt() ? &m_RunStore : nullptr;
 
 	// The layer itself is built per chunk while rendering, only the tiles that
 	// repeat the map edges outwards are uploaded here. They are one row or one
@@ -675,7 +690,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 		int AngleRotate = -1;
 		GetTileData(&Index, &Flags, &AngleRotate, static_cast<unsigned int>(TileX), static_cast<unsigned int>(TileY), CurOverlay);
 		Visual.SetIndexBufferByteOffset((offset_ptr32)vTiles.size());
-		if(AddTileToBuffer(vTiles, vTexCoords, Index, Flags, PosX, PosY, DoTextureCoords, AddAsSpeedup, AngleRotate, Offset))
+		if(AddTileToBuffer(vTiles, vTexCoords, Index, Flags, PosX, PosY, 1, 1, DoTextureCoords, AddAsSpeedup, AngleRotate, Offset))
 			Visual.Draw(true);
 	};
 
@@ -683,7 +698,7 @@ void CRenderLayerTile::UploadTileData(std::optional<CTileLayerVisuals> &VisualsO
 	if(IsGameLayer)
 	{
 		Visuals.m_BorderKillTile.SetIndexBufferByteOffset((offset_ptr32)vTiles.size());
-		if(AddTileToBuffer(vTiles, vTexCoords, TILE_DEATH, 0, 0, 0, DoTextureCoords))
+		if(AddTileToBuffer(vTiles, vTexCoords, TILE_DEATH, 0, 0, 0, 1, 1, DoTextureCoords))
 			Visuals.m_BorderKillTile.Draw(true);
 	}
 
@@ -744,6 +759,21 @@ void CRenderLayerTile::OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CR
 	CRenderLayer::OnInit(pGraphics, pTextRender, pRenderMap, pEnvelopeManager, pMap, pMapImages, CallbackLayerInitOptional);
 	InitTileData();
 
+	if(GivesTilesBack() && m_pTiles != nullptr)
+	{
+		// Read once into stretches of the same tile, then hand the map's copy
+		// back. What stays is what the layer holds rather than what it covers,
+		// and it is what the chunks are built from afterwards.
+		const int Width = m_pLayerTilemap->m_Width;
+		const CTile *pTiles = m_pTiles;
+		m_RunStore.Build(Width, m_pLayerTilemap->m_Height, [pTiles, Width](int x, int y) -> uint16_t {
+			const CTile &Tile = pTiles[(size_t)y * Width + x];
+			return (uint16_t)Tile.m_Index | (uint16_t)((uint16_t)Tile.m_Flags << 8);
+		});
+		m_pMap->UnloadData(GetDataIndex());
+		m_pTiles = nullptr;
+	}
+
 	// shrink the clip region to the tiles that are actually drawn. Reading the
 	// indices is cheap and has to happen for both backends, because the
 	// buffered one only builds geometry for the chunks it gets to see.
@@ -751,21 +781,33 @@ void CRenderLayerTile::OnInit(IGraphics *pGraphics, ITextRender *pTextRender, CR
 	int MaxX = 0;
 	int MinY = m_pLayerTilemap->m_Height;
 	int MaxY = 0;
-	for(int TileY = 0; TileY < m_pLayerTilemap->m_Height; ++TileY)
+	if(m_RunStore.IsBuilt())
 	{
-		for(int TileX = 0; TileX < m_pLayerTilemap->m_Width; ++TileX)
+		// The stretches were measured while they were read.
+		const CTileRunStore::CBounds &Bounds = m_RunStore.Bounds();
+		MinX = Bounds.m_MinX;
+		MaxX = Bounds.m_MaxX;
+		MinY = Bounds.m_MinY;
+		MaxY = Bounds.m_MaxY;
+	}
+	else
+	{
+		for(int TileY = 0; TileY < m_pLayerTilemap->m_Height; ++TileY)
 		{
-			unsigned char Index = 0;
-			unsigned char Flags = 0;
-			int Angle = 0;
-			GetTileData(&Index, &Flags, &Angle, static_cast<unsigned int>(TileX), static_cast<unsigned int>(TileY), 0);
-
-			if(Index > 0)
+			for(int TileX = 0; TileX < m_pLayerTilemap->m_Width; ++TileX)
 			{
-				MinX = std::min(TileX, MinX);
-				MaxX = std::max(TileX, MaxX);
-				MinY = std::min(TileY, MinY);
-				MaxY = std::max(TileY, MaxY);
+				unsigned char Index = 0;
+				unsigned char Flags = 0;
+				int Angle = 0;
+				GetTileData(&Index, &Flags, &Angle, static_cast<unsigned int>(TileX), static_cast<unsigned int>(TileY), 0);
+
+				if(Index > 0)
+				{
+					MinX = std::min(TileX, MinX);
+					MaxX = std::max(TileX, MaxX);
+					MinY = std::min(TileY, MinY);
+					MaxY = std::max(TileY, MaxY);
+				}
 			}
 		}
 	}
@@ -794,6 +836,13 @@ T *CRenderLayerTile::GetData() const
 
 void CRenderLayerTile::GetTileData(unsigned char *pIndex, unsigned char *pFlags, int *pAngleRotate, unsigned int x, unsigned int y, int CurOverlay) const
 {
+	if(m_RunStore.IsBuilt())
+	{
+		// This walks a chunk's stretches, so it is for the handful of tiles
+		// the border is made of, not for reading a layer.
+		m_RunStore.ReadTile((int)x, (int)y, pIndex, pFlags);
+		return;
+	}
 	*pIndex = m_pTiles[y * m_pLayerTilemap->m_Width + x].m_Index;
 	*pFlags = m_pTiles[y * m_pLayerTilemap->m_Width + x].m_Flags;
 }
@@ -1229,7 +1278,7 @@ bool CRenderLayerQuads::DoRender(const CRenderLayerParams &Params)
 		return false;
 
 	// skip rendering if detail layers if not wanted
-	if(m_Flags & LAYERFLAG_DETAIL && !g_Config.m_GfxHighDetail && Params.m_RenderType != ERenderType::RENDERTYPE_FULL_DESIGN) // detail but no details
+	if(m_Flags & LAYERFLAG_DETAIL && !Params.m_HighDetail) // detail but no details
 		return false;
 
 	// this option only deactivates quads in the background
@@ -1251,8 +1300,8 @@ CRenderLayerEntityBase::CRenderLayerEntityBase(int GroupId, int LayerId, int Fla
 
 bool CRenderLayerEntityBase::DoRender(const CRenderLayerParams &Params)
 {
-	// skip rendering if we render background force or full design
-	if(Params.m_RenderType == ERenderType::RENDERTYPE_BACKGROUND_FORCE || Params.m_RenderType == ERenderType::RENDERTYPE_FULL_DESIGN)
+	// skip rendering if we render background force
+	if(Params.m_RenderType == ERenderType::RENDERTYPE_BACKGROUND_FORCE)
 		return false;
 
 	// skip rendering of entities if don't want them

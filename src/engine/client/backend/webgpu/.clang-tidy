@@ -1,0 +1,8 @@
+# The wgpu headers build every descriptor with a WGPU_*_INIT macro that casts a
+# literal zero into enums which have no zero enumerator, and wgpu-native extends
+# WGPUSType with values the base enum does not declare. Both are how the API is
+# meant to be used, so the two checks that report every descriptor are off here.
+InheritParentConfig: true
+Checks: >
+  -bugprone-invalid-enum-default-initialization,
+  -clang-analyzer-optin.core.EnumCastOutOfRange

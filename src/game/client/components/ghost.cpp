@@ -13,11 +13,13 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
-#include <game/client/components/menus.h>
 #include <game/client/components/players.h>
 #include <game/client/components/skins.h>
 #include <game/client/gameclient.h>
 #include <game/client/race.h>
+
+#include <algorithm>
+#include <ctime>
 
 const char *CGhost::ms_pGhostDir = "ghosts";
 
@@ -398,7 +400,7 @@ void CGhost::StopRecord(int Time)
 	m_Recording = false;
 	bool RecordingToFile = GhostRecorder()->IsRecording();
 
-	CMenus::CGhostItem *pOwnGhost = GameClient()->m_Menus.GetOwnGhost();
+	CGhostListItem *pOwnGhost = GetOwnGhost();
 	const bool StoreGhost = Time > 0 && (!pOwnGhost || Time < pOwnGhost->m_Time || !g_Config.m_ClRaceGhostSaveBest);
 
 	if(RecordingToFile)
@@ -415,7 +417,7 @@ void CGhost::StopRecord(int Time)
 			Unload(pOwnGhost->m_Slot);
 
 		// create ghost item
-		CMenus::CGhostItem Item;
+		CGhostListItem Item;
 		if(RecordingToFile)
 			GetPath(Item.m_aFilename, sizeof(Item.m_aFilename), m_CurGhost.m_aPlayer, Time);
 		str_copy(Item.m_aPlayer, m_CurGhost.m_aPlayer);
@@ -427,7 +429,7 @@ void CGhost::StopRecord(int Time)
 			Storage()->RenameFile(m_aTmpFilename, Item.m_aFilename, IStorage::TYPE_SAVE);
 
 		// add item to menu list
-		GameClient()->m_Menus.UpdateOwnGhost(Item);
+		UpdateOwnGhost(Item);
 	}
 
 	m_aTmpFilename[0] = '\0';
@@ -587,6 +589,7 @@ int CGhost::Load(const char *pFilename)
 
 void CGhost::OnUpdate()
 {
+	UpdateGhostlistScan();
 	for(int Slot = 0; Slot < MAX_ACTIVE_GHOSTS; Slot++)
 	{
 		CGhostItem &Ghost = m_aActiveGhosts[Slot];
@@ -596,7 +599,7 @@ void CGhost::OnUpdate()
 		CTypedAssetResource<CGhostLoadJob> Resource = std::move(Ghost.m_LoadResource);
 		if(!Resource.IsReady())
 		{
-			GameClient()->m_Menus.OnGhostLoadFailed(Slot);
+			OnGhostLoadFailed(Slot);
 			continue;
 		}
 
@@ -620,7 +623,7 @@ void CGhost::UnloadAll()
 		Unload(i);
 }
 
-void CGhost::SaveGhost(CMenus::CGhostItem *pItem)
+void CGhost::SaveGhost(CGhostListItem *pItem)
 {
 	int Slot = pItem->m_Slot;
 	if(!pItem->Active() || pItem->HasFile() || !m_aActiveGhosts[Slot].Ready() || GhostRecorder()->IsRecording())
@@ -638,6 +641,161 @@ void CGhost::SaveGhost(CMenus::CGhostItem *pItem)
 		GhostRecorder()->WriteData(GHOSTDATA_TYPE_CHARACTER, pGhost->m_Path.Get(i), sizeof(CGhostCharacter));
 
 	GhostRecorder()->Stop(NumTicks, pItem->m_Time);
+}
+
+CGhost::CGhostlistScanJob::CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
+	m_pStorage(pStorage), m_pGhostLoader(std::move(pGhostLoader)), m_MapSha256(MapSha256), m_MapCrc(MapCrc)
+{
+	str_copy(m_aGhostDir, pGhostDir);
+	str_copy(m_aMapName, pMapName);
+}
+
+int CGhost::CGhostlistScanJob::FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser)
+{
+	CGhostlistScanJob *pSelf = static_cast<CGhostlistScanJob *>(pUser);
+	if(IsDir || !str_endswith(pInfo->m_pName, ".gho") || !str_startswith(pInfo->m_pName, pSelf->m_aMapName))
+		return 0;
+
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s/%s", pSelf->m_aGhostDir, pInfo->m_pName);
+
+	CGhostInfo Info;
+	if(!pSelf->m_pGhostLoader->GetGhostInfo(aFilename, &Info, pSelf->m_aMapName, pSelf->m_MapSha256, pSelf->m_MapCrc))
+		return 0;
+
+	CGhostListItem Item;
+	str_copy(Item.m_aFilename, aFilename);
+	str_copy(Item.m_aPlayer, Info.m_aOwner);
+	Item.m_Date = pInfo->m_TimeModified;
+	Item.m_Time = Info.m_Time;
+	if(Item.m_Time > 0)
+		pSelf->m_vGhosts.push_back(Item);
+
+	return 0;
+}
+
+void CGhost::CGhostlistScanJob::Run()
+{
+	m_pStorage->ListDirectoryInfo(IStorage::TYPE_ALL, m_aGhostDir, FetchCallback, this);
+}
+
+void CGhost::GhostlistPopulate()
+{
+	if(m_pGhostlistScanJob)
+		m_pGhostlistScanJob->Abort();
+	m_vGhosts.clear();
+
+	auto pGhostLoader = std::make_unique<CGhostLoader>();
+	pGhostLoader->Init(Storage());
+	m_pGhostlistScanJob = std::make_shared<CGhostlistScanJob>(Storage(), std::move(pGhostLoader),
+		GetGhostDir(), GameClient()->Map()->BaseName(),
+		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc());
+	Engine()->AddJob(m_pGhostlistScanJob);
+}
+
+void CGhost::UpdateGhostlistScan()
+{
+	if(!m_pGhostlistScanJob || !m_pGhostlistScanJob->Done())
+		return;
+
+	const bool Aborted = m_pGhostlistScanJob->State() != IJob::STATE_DONE;
+	std::shared_ptr<CGhostlistScanJob> pJob = std::move(m_pGhostlistScanJob);
+	if(Aborted)
+		return;
+
+	m_vGhosts = std::move(pJob->Ghosts());
+	SortGhostlist();
+
+	CGhostListItem *pOwnGhost = nullptr;
+	for(auto &Ghost : m_vGhosts)
+	{
+		Ghost.m_Failed = false;
+		if(str_comp(Ghost.m_aPlayer, Client()->PlayerName()) == 0 && (!pOwnGhost || Ghost < *pOwnGhost))
+			pOwnGhost = &Ghost;
+	}
+
+	if(pOwnGhost)
+	{
+		pOwnGhost->m_Own = true;
+		pOwnGhost->m_Slot = Load(pOwnGhost->m_aFilename);
+	}
+}
+
+void CGhost::OnGhostLoadFailed(int Slot)
+{
+	for(CGhostListItem &Ghost : m_vGhosts)
+	{
+		if(Ghost.m_Slot == Slot)
+		{
+			Ghost.m_Slot = -1;
+			Ghost.m_Failed = true;
+		}
+	}
+}
+
+CGhost::CGhostListItem *CGhost::GetOwnGhost()
+{
+	for(auto &Ghost : m_vGhosts)
+		if(Ghost.m_Own)
+			return &Ghost;
+	return nullptr;
+}
+
+void CGhost::UpdateOwnGhost(CGhostListItem Item)
+{
+	int Own = -1;
+	for(size_t i = 0; i < m_vGhosts.size(); i++)
+		if(m_vGhosts[i].m_Own)
+			Own = i;
+
+	if(Own == -1)
+	{
+		Item.m_Own = true;
+	}
+	else if(g_Config.m_ClRaceGhostSaveBest && (Item.HasFile() || !m_vGhosts[Own].HasFile()))
+	{
+		Item.m_Own = true;
+		DeleteGhostItem(Own);
+	}
+	else if(m_vGhosts[Own].m_Time > Item.m_Time)
+	{
+		Item.m_Own = true;
+		m_vGhosts[Own].m_Own = false;
+		m_vGhosts[Own].m_Slot = -1;
+	}
+	else
+	{
+		Item.m_Own = false;
+		Item.m_Slot = -1;
+	}
+
+	Item.m_Date = std::time(nullptr);
+	Item.m_Failed = false;
+	m_vGhosts.insert(std::lower_bound(m_vGhosts.begin(), m_vGhosts.end(), Item), Item);
+	SortGhostlist();
+}
+
+void CGhost::DeleteGhostItem(int Index)
+{
+	if(m_vGhosts[Index].HasFile())
+		Storage()->RemoveFile(m_vGhosts[Index].m_aFilename, IStorage::TYPE_SAVE);
+	m_vGhosts.erase(m_vGhosts.begin() + Index);
+}
+
+void CGhost::SortGhostlist()
+{
+	if(g_Config.m_GhSort == GHOST_SORT_NAME)
+		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostListItem &Left, const CGhostListItem &Right) {
+			return g_Config.m_GhSortOrder ? (str_comp(Left.m_aPlayer, Right.m_aPlayer) > 0) : (str_comp(Left.m_aPlayer, Right.m_aPlayer) < 0);
+		});
+	else if(g_Config.m_GhSort == GHOST_SORT_TIME)
+		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostListItem &Left, const CGhostListItem &Right) {
+			return g_Config.m_GhSortOrder ? (Left.m_Time > Right.m_Time) : (Left.m_Time < Right.m_Time);
+		});
+	else if(g_Config.m_GhSort == GHOST_SORT_DATE)
+		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostListItem &Left, const CGhostListItem &Right) {
+			return g_Config.m_GhSortOrder ? (Left.m_Date > Right.m_Date) : (Left.m_Date < Right.m_Date);
+		});
 }
 
 void CGhost::ConGPlay(IConsole::IResult *pResult, void *pUserData)
@@ -726,6 +884,6 @@ void CGhost::OnMapLoad()
 {
 	OnReset();
 	UnloadAll();
-	GameClient()->m_Menus.GhostlistPopulate();
+	GhostlistPopulate();
 	m_AllowRestart = false;
 }

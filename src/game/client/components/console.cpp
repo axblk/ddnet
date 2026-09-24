@@ -1267,8 +1267,8 @@ void CGameConsole::OnRenderApplicationOverlay()
 	// it blurs a picture of everything that was drawn up to here rather than of
 	// the scene alone. Without that it would paint the scene over the menu and
 	// cut a hole into it.
-	if(GameClient()->m_Menus.CaptureMenuBackdrop())
-		GameClient()->m_Menus.RenderBackdropRegion({0.0f, 0.0f, Screen.w, ConsoleHeight}, IGraphics::CORNER_NONE, 0.0f);
+	if(GameClient()->m_Backdrop.Capture())
+		GameClient()->m_Backdrop.RenderRegion({0.0f, 0.0f, Screen.w, ConsoleHeight}, IGraphics::CORNER_NONE, 0.0f);
 
 	// background
 	Graphics()->TextureSet(g_pData->m_aImages[IMAGE_BACKGROUND_NOISE].m_Id);

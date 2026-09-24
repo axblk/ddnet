@@ -23,6 +23,7 @@
 #include <generated/client_data.h>
 
 #include <game/client/components/console.h>
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
@@ -80,14 +81,6 @@ void CMenus::HandleDemoSeeking(float PositionToSeek, float TimeToSeek)
 			DemoPlayer()->Pause();
 		}
 	}
-}
-
-void CMenus::DemoSeekTick(IDemoPlayer::ETickOffset TickOffset)
-{
-	GameClient()->m_SuppressEvents = true;
-	DemoPlayer()->SeekTick(TickOffset);
-	GameClient()->m_SuppressEvents = false;
-	DemoPlayer()->Pause();
 }
 
 void CMenus::RenderDemoPlayer(CUIRect MainView)
@@ -162,7 +155,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	// handle keyboard shortcuts independent of active menu
 	float PositionToSeek = -1.0f;
 	float TimeToSeek = 0.0f;
-	if(!GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
+	if(!Frontend()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE && g_Config.m_ClDemoKeyboardShortcuts && !Ui()->IsPopupOpen())
 	{
 		// increase/decrease speed
 		if(!Input()->ModifierIsPressed() && !Input()->ShiftIsPressed() && !Input()->AltIsPressed())
@@ -255,11 +248,11 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 		// Advance single frame forward/backward with period/comma key
 		if(Input()->KeyPress(KEY_PERIOD))
 		{
-			DemoSeekTick(IDemoPlayer::TICK_NEXT);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_NEXT);
 		}
 		else if(Input()->KeyPress(KEY_COMMA))
 		{
-			DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
 		}
 	}
 
@@ -625,7 +618,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static CButtonContainer s_OneTickBackButton;
 	if(Ui()->DoButton_FontIcon(&s_OneTickBackButton, FontIcon::BACKWARD_STEP, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
+		GameClient()->DemoSeekTick(IDemoPlayer::TICK_PREVIOUS);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_OneTickBackButton, &Button, Localize("Go back one tick"));
 
@@ -635,7 +628,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	static CButtonContainer s_OneTickForwardButton;
 	if(Ui()->DoButton_FontIcon(&s_OneTickForwardButton, FontIcon::FORWARD_STEP, 0, &Button, BUTTONFLAG_LEFT))
 	{
-		DemoSeekTick(IDemoPlayer::TICK_NEXT);
+		GameClient()->DemoSeekTick(IDemoPlayer::TICK_NEXT);
 	}
 	GameClient()->m_Tooltips.DoToolTip(&s_OneTickForwardButton, &Button, Localize("Go forward one tick"));
 
@@ -736,7 +729,7 @@ void CMenus::RenderDemoPlayer(CUIRect MainView)
 	// close button
 	ButtonBar.VSplitRight(ButtonbarHeight, &ButtonBar, &Button);
 	static CButtonContainer s_ExitButton;
-	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !GameClient()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
+	if(Ui()->DoButton_FontIcon(&s_ExitButton, FontIcon::XMARK, 0, &Button, BUTTONFLAG_LEFT) || (Input()->KeyPress(KEY_C) && !Frontend()->m_GameConsole.IsActive() && m_DemoPlayerState == DEMOPLAYER_NONE))
 	{
 		ClientNetwork()->Disconnect();
 		SetMenuPage(PAGE_DEMOS);
@@ -1136,7 +1129,7 @@ void CMenus::FetchAllHeaders()
 
 void CMenus::RenderDemoBrowser(CUIRect MainView)
 {
-	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
+	Frontend()->m_MenuBackground.ChangePosition(CMenuBackground::POS_DEMOS);
 
 	CUIRect ListView, DetailsView, ButtonsView;
 	DrawSurface(MainView, ms_ColorTabbarActive, IGraphics::CORNER_B, 10.0f);
@@ -1513,7 +1506,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		CUIRect DemoSearch;
 		ButtonBarTop.VSplitLeft(ButtonBarBottom.h * 21.0f, &DemoSearch, &ButtonBarTop);
 		ButtonBarTop.VSplitLeft(ButtonBarTop.h / 2.0f, nullptr, &ButtonBarTop);
-		if(Ui()->DoEditBox_Search(&m_DemoSearchInput, &DemoSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive()))
+		if(Ui()->DoEditBox_Search(&m_DemoSearchInput, &DemoSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive()))
 		{
 			RefreshFilteredDemos();
 			DemolistOnUpdate(false);
@@ -1603,7 +1596,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 		static CButtonContainer s_PlayButton;
 		const bool ActivateSelectedItem = DoButton_Menu(&s_PlayButton, (m_DemolistSelectedIndex >= 0 && m_vpFilteredDemos[m_DemolistSelectedIndex]->m_IsDir) ? FontIcon::FOLDER_OPEN : FontIcon::PLAY, 0, &PlayButton) || WasListboxItemActivated ||
 						  Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER) ||
-						  (Input()->KeyPress(KEY_P) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive());
+						  (Input()->KeyPress(KEY_P) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive());
 		SetIconMode(false);
 		const char *pPlayTooltip = m_vpFilteredDemos[m_DemolistSelectedIndex]->m_IsDir ? Localize("Open the selected folder") : Localize("Play the selected demo");
 		GameClient()->m_Tooltips.DoToolTip(&s_PlayButton, &PlayButton, pPlayTooltip);
@@ -1692,7 +1685,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				CUIRect DeleteButton;
 				ButtonBarBottom.VSplitRight(ButtonBarBottom.h * 3.0f, &ButtonBarBottom, &DeleteButton);
 				ButtonBarBottom.VSplitRight(ButtonBarBottom.h / 2.0f, &ButtonBarBottom, nullptr);
-				if(DoButton_Menu(&s_DeleteButton, FontIcon::TRASH, 0, &DeleteButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_DELETE) || (Input()->KeyPress(KEY_D) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
+				if(DoButton_Menu(&s_DeleteButton, FontIcon::TRASH, 0, &DeleteButton) || Ui()->ConsumeHotkey(CUi::HOTKEY_DELETE) || (Input()->KeyPress(KEY_D) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
 				{
 					SetIconMode(false);
 					char aBuf[128 + IO_MAX_PATH_LENGTH];
@@ -1714,7 +1707,7 @@ void CMenus::RenderDemoBrowserButtons(CUIRect ButtonsView, bool WasListboxItemAc
 				ButtonBarTop.VSplitRight(ButtonBarBottom.h, &ButtonBarTop, nullptr);
 				SetIconMode(true);
 				static CButtonContainer s_RenderButton;
-				if(DoButton_Menu(&s_RenderButton, FontIcon::VIDEO, 0, &RenderButton) || (Input()->KeyPress(KEY_R) && !GameClient()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
+				if(DoButton_Menu(&s_RenderButton, FontIcon::VIDEO, 0, &RenderButton) || (Input()->KeyPress(KEY_R) && !Frontend()->m_GameConsole.IsActive() && !m_DemoSearchInput.IsActive()))
 				{
 					SetIconMode(false);
 					char aNameWithoutExt[IO_MAX_PATH_LENGTH];

@@ -70,6 +70,7 @@
 #include <generated/protocol7.h>
 #include <generated/protocolglue.h>
 
+#include <game/client/frontend.h>
 #include <game/localization.h>
 #include <game/version.h>
 
@@ -5694,6 +5695,7 @@ int main(int argc, const char **argv)
 	pKernel->RegisterInterface(CreateEditor(), false);
 	pKernel->RegisterInterface(CreateFavorites().release());
 	pKernel->RegisterInterface(CreateGameClient());
+	pKernel->RegisterInterface(CreateGameFrontend());
 
 	pEngine->Init();
 	pConsole->Init();

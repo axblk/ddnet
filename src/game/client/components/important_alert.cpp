@@ -12,7 +12,6 @@
 
 #include <generated/protocol.h>
 
-#include <game/client/components/menus.h>
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
@@ -212,7 +211,7 @@ void CImportantAlert::OnMessage(int MsgType, void *pRawMsg)
 bool CImportantAlert::OnInput(const IInput::CEvent &Event)
 {
 	if(IsActive() &&
-		!GameClient()->m_Menus.IsActive() &&
+		!GameClient()->MenuActive() &&
 		SecondsActive() >= MINIMUM_ACTIVE_SECONDS &&
 		m_FadeOutSince < 0.0f &&
 		(Event.m_Flags & IInput::FLAG_PRESS) != 0 &&
@@ -248,8 +247,8 @@ bool CImportantAlert::OnTouchState(std::vector<IInput::CTouchFingerState> &vTouc
 		SecondsActive() < MINIMUM_ACTIVE_SECONDS ||
 		m_FadeOutSince >= 0.0f ||
 		GameClient()->m_Chat.IsActive() ||
-		GameClient()->m_GameConsole.IsActive() ||
-		GameClient()->m_Menus.IsActive() ||
+		GameClient()->ConsoleActive() ||
+		GameClient()->MenuActive() ||
 		GameClient()->m_Emoticon.IsActive() ||
 		GameClient()->m_Spectator.IsActive())
 	{

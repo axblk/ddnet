@@ -2,8 +2,6 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "skins7.h"
 
-#include "menus.h"
-
 #include <base/color.h>
 #include <base/dbg.h>
 #include <base/io.h>
@@ -390,7 +388,7 @@ void CSkins7::OnInit()
 	InitPlaceholderSkinParts();
 
 	Refresh([this]() {
-		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading skin files"), 0);
+		GameClient()->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading skin files"), 0);
 	});
 }
 

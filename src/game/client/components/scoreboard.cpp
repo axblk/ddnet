@@ -20,6 +20,7 @@
 #include <game/client/components/countryflags.h>
 #include <game/client/components/motd.h>
 #include <game/client/components/statboard.h>
+#include <game/client/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/match_report_view.h>
 #include <game/client/ui.h>
@@ -92,14 +93,19 @@ void CScoreboard::RunReportAction(int Action, CSessionId SessionId, CUuid MatchI
 	switch(Action)
 	{
 	case REPORT_ACTION_HISTORY:
-		GameClient()->m_Menus.OpenStats();
+		if(IGameFrontend *pFrontend = GameClient()->Frontend())
+			pFrontend->OpenStats();
 		break;
 	case REPORT_ACTION_DEMOS:
-		GameClient()->m_Menus.OpenDemos();
+		if(IGameFrontend *pFrontend = GameClient()->Frontend())
+			pFrontend->OpenDemos();
 		break;
 	case REPORT_ACTION_CSV:
 		if(const CGameSessionContext *pSession = GameClient()->FindSessionContext(SessionId); pSession && pSession->m_Stats.LatestMatch().has_value())
-			GameClient()->m_Menus.ExportMatchStats(*pSession->m_Stats.LatestMatch(), true);
+		{
+			if(IGameFrontend *pFrontend = GameClient()->Frontend())
+				pFrontend->ExportMatchStats(*pSession->m_Stats.LatestMatch(), true);
+		}
 		break;
 	case REPORT_ACTION_SCREENSHOT:
 		Console()->ExecuteLine("screenshot", IConsole::CLIENT_ID_UNSPECIFIED);
@@ -158,7 +164,7 @@ void CScoreboard::ConToggleScoreboardCursor(IConsole::IResult *pResult, void *pU
 	CScoreboard *pSelf = static_cast<CScoreboard *>(pUserData);
 
 	if(!pSelf->IsActive() ||
-		pSelf->GameClient()->m_Menus.IsActive() ||
+		pSelf->GameClient()->MenuActive() ||
 		pSelf->GameClient()->m_Chat.IsActive() ||
 		pSelf->Client()->State() == IClient::STATE_DEMOPLAYBACK)
 	{
@@ -385,7 +391,7 @@ void CScoreboard::RenderTitleBar(const CRenderContext &Context, CUIRect TitleBar
 
 void CScoreboard::RenderGoals(const CRenderContext &Context, CUIRect Goals)
 {
-	GameClient()->m_Menus.DrawSurface(Goals, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
+	GameClient()->m_Backdrop.DrawSurface(Goals, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 	Goals.VMargin(5.0f, &Goals);
 
 	const float FontSize = 10.0f;
@@ -420,7 +426,7 @@ void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Specta
 	const std::array<int, MAX_CLIENTS> *pClientsByName = Presentation.ClientsByName(GameState.m_Conn);
 	if(pClientsByName == nullptr)
 		return;
-	GameClient()->m_Menus.DrawSurface(Spectators, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
+	GameClient()->m_Backdrop.DrawSurface(Spectators, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 	constexpr float SpectatorCut = 5.0f;
 	Spectators.Margin(SpectatorCut, &Spectators);
 
@@ -1084,7 +1090,7 @@ void CScoreboard::RenderMatchReport(const CStoredMatch &Stored, CUIRect Screen)
 	const float ActionsHeight = ActionRows * 24.0f - 4.0f;
 	const float Height = 68.0f + (RowsPerColumn + 1) * RowHeight + 29.0f + ActionsHeight;
 	CUIRect Panel = {(Screen.w - Width) / 2.0f, 45.0f, Width, std::min(Height, 545.0f)};
-	GameClient()->m_Menus.DrawSurface(Panel, ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 7.5f);
+	GameClient()->m_Backdrop.DrawSurface(Panel, ColorRGBA(0.0f, 0.0f, 0.0f, 0.65f), IGraphics::CORNER_ALL, 7.5f);
 	Panel.Margin(10.0f, &Panel);
 
 	const CMatchStanding *pLocalStanding = nullptr;
@@ -1327,8 +1333,8 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 		Scoreboard.VSplitMid(&RedScoreboard, &BlueScoreboard, 7.5f);
 		// Title and body are two boxes that meet in a straight line, so one
 		// rounded backdrop each covers both.
-		GameClient()->m_Menus.RenderBackdropRegion(RedScoreboard, IGraphics::CORNER_ALL, 7.5f);
-		GameClient()->m_Menus.RenderBackdropRegion(BlueScoreboard, IGraphics::CORNER_ALL, 7.5f);
+		GameClient()->m_Backdrop.RenderRegion(RedScoreboard, IGraphics::CORNER_ALL, 7.5f);
+		GameClient()->m_Backdrop.RenderRegion(BlueScoreboard, IGraphics::CORNER_ALL, 7.5f);
 		RedScoreboard.HSplitTop(TitleHeight, &RedTitle, &RedScoreboard);
 		BlueScoreboard.HSplitTop(TitleHeight, &BlueTitle, &BlueScoreboard);
 
@@ -1361,7 +1367,7 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 	}
 	else
 	{
-		GameClient()->m_Menus.DrawSurface(Scoreboard, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
+		GameClient()->m_Backdrop.DrawSurface(Scoreboard, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
 
 		const char *pTitle;
 		if(pGameInfoObj && (pGameInfoObj->m_GameStateFlags & GAMESTATEFLAG_GAMEOVER))
@@ -1520,7 +1526,7 @@ void CScoreboard::PrepareApplicationOverlay(const CRenderContext &Context)
 			Ui()->ClosePopupMenus();
 		return;
 	}
-	if(GameClient()->m_Menus.IsActive() || GameClient()->m_Chat.IsActive())
+	if(GameClient()->MenuActive() || GameClient()->m_Chat.IsActive())
 		return;
 	m_ApplicationOverlayReady = UpdateApplicationOverlay(Context);
 	if(!m_ApplicationOverlayReady && (Ui()->IsPopupOpen(&m_ScoreboardPopupContext) || Ui()->IsPopupOpen(&m_MapTitlePopupContext)))

@@ -5,11 +5,13 @@
 
 #include <engine/client/asset_loader.h>
 #include <engine/client/ghost.h>
+#include <engine/console.h>
+#include <engine/map.h>
+#include <engine/shared/jobs.h>
 
 #include <generated/protocol.h>
 
 #include <game/client/component.h>
-#include <game/client/components/menus.h>
 #include <game/client/render.h>
 #include <game/ghost_data.h>
 
@@ -160,12 +162,77 @@ public:
 	void Unload(int Slot);
 	void UnloadAll();
 
-	void SaveGhost(CMenus::CGhostItem *pItem);
+	// A ghost of the current map on disk, as the ghost page of the menus
+	// lists it. The player's own best one is loaded with the map.
+	struct CGhostListItem
+	{
+		char m_aFilename[IO_MAX_PATH_LENGTH];
+		char m_aPlayer[MAX_NAME_LENGTH];
+
+		bool m_Failed;
+		int m_Time;
+		int m_Slot;
+		bool m_Own;
+		time_t m_Date;
+
+		CGhostListItem() :
+			m_Failed(false), m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
+
+		bool operator<(const CGhostListItem &Other) const { return m_Time < Other.m_Time; }
+
+		bool Active() const { return m_Slot != -1; }
+		bool HasFile() const { return m_aFilename[0]; }
+	};
+
+	enum
+	{
+		GHOST_SORT_NONE = -1,
+		GHOST_SORT_NAME,
+		GHOST_SORT_TIME,
+		GHOST_SORT_DATE,
+	};
+
+	std::vector<CGhostListItem> &Ghostlist() { return m_vGhosts; }
+	bool GhostlistScanning() const { return m_pGhostlistScanJob != nullptr; }
+	void GhostlistPopulate();
+	CGhostListItem *GetOwnGhost();
+	void DeleteGhostItem(int Index);
+	void SortGhostlist();
+
+	void SaveGhost(CGhostListItem *pItem);
 
 	const char *GetGhostDir() const { return ms_pGhostDir; }
 
 	class IGhostLoader *GhostLoader() const { return m_pGhostLoader; }
 	class IGhostRecorder *GhostRecorder() const { return m_pGhostRecorder; }
+
+private:
+	// Reads the headers of the ghosts of the current map
+	class CGhostlistScanJob : public IJob
+	{
+		IStorage *m_pStorage;
+		std::unique_ptr<CGhostLoader> m_pGhostLoader;
+		char m_aGhostDir[IO_MAX_PATH_LENGTH];
+		char m_aMapName[MAX_MAP_LENGTH];
+		SHA256_DIGEST m_MapSha256;
+		unsigned m_MapCrc;
+		std::vector<CGhostListItem> m_vGhosts;
+
+		static int FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
+		void Run() override;
+
+	public:
+		CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
+
+		std::vector<CGhostListItem> &Ghosts() { return m_vGhosts; }
+	};
+
+	std::vector<CGhostListItem> m_vGhosts;
+	std::shared_ptr<CGhostlistScanJob> m_pGhostlistScanJob;
+
+	void UpdateGhostlistScan();
+	void UpdateOwnGhost(CGhostListItem Item);
+	void OnGhostLoadFailed(int Slot);
 };
 
 #endif

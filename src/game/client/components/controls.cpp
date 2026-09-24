@@ -14,7 +14,6 @@
 
 #include <game/client/components/camera.h>
 #include <game/client/components/chat.h>
-#include <game/client/components/menus.h>
 #include <game/client/components/scoreboard.h>
 #include <game/client/gameclient.h>
 #include <game/collision.h>
@@ -247,7 +246,7 @@ int CControls::SnapInput(int *pData)
 	// update player state
 	if(GameClient()->m_Chat.IsActive())
 		Input.m_InputData.m_PlayerFlags = PLAYERFLAG_CHATTING;
-	else if(GameClient()->m_Menus.IsActive())
+	else if(GameClient()->MenuActive())
 		Input.m_InputData.m_PlayerFlags = PLAYERFLAG_IN_MENU;
 	else
 		Input.m_InputData.m_PlayerFlags = PLAYERFLAG_PLAYING;

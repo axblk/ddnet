@@ -261,7 +261,7 @@ bool CSpectator::OnInput(const IInput::CEvent &Event)
 	if(g_Config.m_ClSpectatorMouseclicks)
 	{
 		if(GameClient()->Snap().m_SpecInfo.m_Active && !IsActive() && !GameClient()->MultiView().m_Active &&
-			!Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive() && !GameClient()->m_Menus.IsActive())
+			!Ui()->IsPopupOpen() && !GameClient()->ConsoleActive() && !GameClient()->MenuActive())
 		{
 			if(Event.m_Flags & IInput::FLAG_PRESS && Event.m_Key == KEY_MOUSE_1)
 			{
@@ -667,7 +667,7 @@ void CSpectator::Spectate(CGameView &View, const CGameView::CSpectatorSelectorSt
 		// The tick must be rendered for the spectator mode to be updated, so we do it manually when demo playback is paused
 		// TODO: https://github.com/ddnet/ddnet/issues/11681
 		if(DemoPlayer()->BaseInfo()->m_Paused)
-			GameClient()->m_Menus.DemoSeekTick(IDemoPlayer::TICK_CURRENT);
+			GameClient()->DemoSeekTick(IDemoPlayer::TICK_CURRENT);
 		return;
 	}
 

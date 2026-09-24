@@ -14,7 +14,6 @@
 #include <generated/client_data.h>
 
 #include <game/client/components/camera.h>
-#include <game/client/components/menus.h>
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
@@ -122,7 +121,7 @@ void CSounds::OnInit()
 			}
 		}
 		m_WaitForSoundJob = !m_vSoundLoads.empty();
-		GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
+		GameClient()->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 0);
 	}
 	else
 	{
@@ -130,7 +129,7 @@ void CSounds::OnInit()
 		{
 			for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
 				g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_Id = Sound()->LoadWV(g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename);
-			GameClient()->m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
+			GameClient()->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
 		}
 		m_WaitForSoundJob = false;
 	}

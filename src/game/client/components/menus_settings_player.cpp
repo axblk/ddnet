@@ -9,6 +9,7 @@
 
 #include <game/client/components/console.h>
 #include <game/client/components/countryflags.h>
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
 #include <game/client/ui_listbox.h>
@@ -197,5 +198,5 @@ void CMenus::RenderSettingsPlayer(CUIRect MainView)
 		m_apSettingsPlayerSearchUiElements[0] = Ui()->GetNewUIElement(1);
 	if(m_apSettingsPlayerSearchUiElements[1] == nullptr)
 		m_apSettingsPlayerSearchUiElements[1] = Ui()->GetNewUIElement(2);
-	Ui()->DoEditBox_SearchCached(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_apSettingsPlayerSearchUiElements[0], m_apSettingsPlayerSearchUiElements[1]);
+	Ui()->DoEditBox_SearchCached(&s_FlagFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_apSettingsPlayerSearchUiElements[0], m_apSettingsPlayerSearchUiElements[1]);
 }

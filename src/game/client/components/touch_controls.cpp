@@ -17,10 +17,8 @@
 
 #include <game/client/components/camera.h>
 #include <game/client/components/chat.h>
-#include <game/client/components/console.h>
 #include <game/client/components/controls.h>
 #include <game/client/components/emoticon.h>
-#include <game/client/components/menus.h>
 #include <game/client/components/spectator.h>
 #include <game/client/components/voting.h>
 #include <game/client/gameclient.h>
@@ -442,7 +440,7 @@ void CTouchControls::CIngameMenuTouchButtonBehavior::OnDeactivate(bool ByFinger)
 {
 	if(!ByFinger)
 		return;
-	m_pTouchControls->GameClient()->m_Menus.SetActive(true);
+	m_pTouchControls->GameClient()->SetMenuActive(true);
 }
 
 // Extra menu button:
@@ -480,7 +478,7 @@ void CTouchControls::CExtraMenuTouchButtonBehavior::OnDeactivate(bool ByFinger)
 		return;
 	if(time_get_nanoseconds() - m_ActivationStartTime >= LONG_TOUCH_DURATION)
 	{
-		m_pTouchControls->GameClient()->m_Menus.SetActive(true);
+		m_pTouchControls->GameClient()->SetMenuActive(true);
 	}
 	else
 	{
@@ -944,8 +942,8 @@ bool CTouchControls::UpdateController(CGameView &View, std::span<const IInput::C
 
 	if(!AcceptInput ||
 		GameClient()->m_Chat.IsActive() ||
-		GameClient()->m_GameConsole.IsActive() ||
-		GameClient()->m_Menus.IsActive() ||
+		GameClient()->ConsoleActive() ||
+		GameClient()->MenuActive() ||
 		GameClient()->m_Emoticon.IsActive() ||
 		GameClient()->m_Spectator.IsActive() ||
 		m_PreviewAllButtons)
@@ -1997,7 +1995,7 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 					m_PopupParam.m_pOldSelectedButton = m_pSelectedButton;
 					m_PopupParam.m_pNewSelectedButton = &TouchButton;
 					m_PopupParam.m_PopupType = EPopupType::BUTTON_CHANGED;
-					GameClient()->m_Menus.SetActive(true);
+					GameClient()->SetMenuActive(true);
 					// End the function.
 					return;
 				}
@@ -2011,7 +2009,7 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 					{
 						m_PopupParam.m_PopupType = EPopupType::NO_SPACE;
 						m_PopupParam.m_KeepMenuOpen = true;
-						GameClient()->m_Menus.SetActive(true);
+						GameClient()->SetMenuActive(true);
 						return;
 					}
 					TouchButton.m_UnitRect = FreeRect.value();
@@ -2028,10 +2026,10 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 			vVisibleButtonRects.emplace_back(CalculateHitbox(TouchButton.m_UnitRect, TouchButton.m_Shape));
 		}
 		// If selected button not visible, unselect it.
-		else if(m_pSelectedButton == &TouchButton && !GameClient()->m_Menus.IsActive())
+		else if(m_pSelectedButton == &TouchButton && !GameClient()->MenuActive())
 		{
 			m_PopupParam.m_PopupType = EPopupType::BUTTON_INVISIBLE;
-			GameClient()->m_Menus.SetActive(true);
+			GameClient()->SetMenuActive(true);
 			return;
 		}
 	}
@@ -2055,7 +2053,7 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 			m_PopupParam.m_pOldSelectedButton = m_pSelectedButton;
 			m_PopupParam.m_KeepMenuOpen = false;
 			m_PopupParam.m_PopupType = EPopupType::BUTTON_CHANGED;
-			GameClient()->m_Menus.SetActive(true);
+			GameClient()->SetMenuActive(true);
 		}
 		else if(!IsInside)
 		{
@@ -2124,7 +2122,7 @@ void CTouchControls::UpdateButtonsEditor(const std::vector<IInput::CTouchFingerS
 			m_UnsavedChanges = true;
 			m_PopupParam.m_PopupType = EPopupType::NO_SPACE;
 			m_PopupParam.m_KeepMenuOpen = true;
-			GameClient()->m_Menus.SetActive(true);
+			GameClient()->SetMenuActive(true);
 			return;
 		}
 		m_pSampleButton->UpdateScreenFromUnitRect();

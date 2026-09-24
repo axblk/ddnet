@@ -4,6 +4,7 @@
 
 #include <engine/map.h>
 
+#include <game/client/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
@@ -55,7 +56,8 @@ void CMapLayers::Load(CLayers *pLayers, IMapImages *pImages)
 	str_format(aCaption, sizeof(aCaption), "%s: %s", Localize("Loading map"), m_pLayers->Map()->BaseName());
 
 	FCallbackMapRendererInit ProgressBarCallback = [&](int GroupId, int NumGroups, int LayerId, int NumLayers) {
-		GameClient()->m_Menus.RenderLoadingDirect(aCaption, Localize("Initializing layers"), std::make_optional((GroupId + (float)LayerId / NumLayers) / (float)NumGroups));
+		if(IGameFrontend *pFrontend = GameClient()->Frontend())
+			pFrontend->RenderLoadingDirect(aCaption, Localize("Initializing layers"), std::make_optional((GroupId + (float)LayerId / NumLayers) / (float)NumGroups), true);
 	};
 
 	// can't do that in CMapLayers::OnInit, because some of this interfaces are not available yet

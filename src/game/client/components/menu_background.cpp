@@ -10,6 +10,7 @@
 #include <engine/shared/config.h>
 
 #include <game/client/components/camera.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/mapimages.h>
 #include <game/client/components/maplayers.h>
 #include <game/client/gameclient.h>
@@ -172,7 +173,7 @@ int CMenuBackground::ThemeScan(const char *pName, int IsDir, int DirType, void *
 
 	if(time_get_nanoseconds() - pSelf->m_ThemeScanStartTime > 500ms)
 	{
-		pSelf->GameClient()->m_Menus.RenderLoading(Localize("Loading menu themes"), "", 0);
+		pSelf->Frontend()->m_Menus.RenderLoading(Localize("Loading menu themes"), "", 0);
 	}
 	return 0;
 }

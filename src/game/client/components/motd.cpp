@@ -116,7 +116,7 @@ void CMotd::OnRender(const CRenderContext &Context)
 	// so it only belongs behind this box while the box is the first thing over
 	// the scene. Over a scoreboard it would cut a hole into it.
 	if(!GameClient()->m_Scoreboard.IsActive() && !GameClient()->m_Statboard.IsActive())
-		GameClient()->m_Menus.RenderBackdropRegion({RectX, RectY, RectWidth, RectHeight}, IGraphics::CORNER_ALL, FontSize);
+		GameClient()->m_Backdrop.RenderRegion({RectX, RectY, RectWidth, RectHeight}, IGraphics::CORNER_ALL, FontSize);
 	m_TouchRect = CUIRect{RectX / ScreenWidth, RectY / ScreenHeight, RectWidth / ScreenWidth, RectHeight / ScreenHeight};
 
 	if(m_RectQuadContainer == -1)
@@ -210,8 +210,8 @@ bool CMotd::OnTouchState(std::vector<IInput::CTouchFingerState> &vTouchFingerSta
 	if(!IsActive())
 		return false;
 	if(GameClient()->m_Chat.IsActive() ||
-		GameClient()->m_GameConsole.IsActive() ||
-		GameClient()->m_Menus.IsActive() ||
+		GameClient()->ConsoleActive() ||
+		GameClient()->MenuActive() ||
 		GameClient()->m_Emoticon.IsActive() ||
 		GameClient()->m_Spectator.IsActive())
 	{

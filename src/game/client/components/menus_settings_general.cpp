@@ -7,6 +7,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
+#include <game/client/components/frontend.h>
 #include <game/client/components/menu_background.h>
 #include <game/client/components/tooltips.h>
 #include <game/client/gameclient.h>
@@ -212,7 +213,7 @@ void CMenus::RenderSettingsGeneral(CUIRect MainView)
 void CMenus::RenderThemeSelection(CUIRect MainView)
 {
 	size_t VisibleIndex = 2;
-	const std::vector<CTheme> &vThemes = GameClient()->m_MenuBackground.GetThemes();
+	const std::vector<CTheme> &vThemes = Frontend()->m_MenuBackground.GetThemes();
 
 	int SelectedTheme = -1;
 	for(int i = 0; i < (int)vThemes.size(); i++)
@@ -281,6 +282,6 @@ void CMenus::RenderThemeSelection(CUIRect MainView)
 	{
 		const CTheme &Theme = vThemes[SelectedTheme];
 		str_copy(g_Config.m_ClMenuMap, Theme.m_Name.c_str());
-		GameClient()->m_MenuBackground.LoadMenuBackground(Theme.m_HasDay, Theme.m_HasNight);
+		Frontend()->m_MenuBackground.LoadMenuBackground(Theme.m_HasDay, Theme.m_HasNight);
 	}
 }

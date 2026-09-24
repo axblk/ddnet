@@ -13,6 +13,7 @@
 #include <game/client/animstate.h>
 #include <game/client/components/console.h>
 #include <game/client/components/emoticon.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/skins.h>
 #include <game/client/components/tooltips.h>
 #include <game/client/gameclient.h>
@@ -478,7 +479,7 @@ void CMenus::RenderSettingsTee(CUIRect MainView)
 		}
 	}
 
-	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive(), m_aSettingsTeeSearchUiElements.data(), m_aSettingsTeeSearchUiElements.data() + 1))
+	if(Ui()->DoEditBox_SearchCached(&s_SkinFilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive(), m_aSettingsTeeSearchUiElements.data(), m_aSettingsTeeSearchUiElements.data() + 1))
 	{
 		SkinList.ForceRefresh();
 	}

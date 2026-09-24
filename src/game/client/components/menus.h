@@ -9,14 +9,12 @@
 #include <base/vmath.h>
 
 #include <engine/client/asset_loader.h>
-#include <engine/client/ghost.h>
 #include <engine/client/session.h>
 #include <engine/console.h>
 #include <engine/demo.h>
 #include <engine/friends.h>
 #include <engine/serverbrowser.h>
 #include <engine/shared/config.h>
-#include <engine/shared/jobs.h>
 #include <engine/shared/video.h>
 #include <engine/textrender.h>
 
@@ -517,8 +515,6 @@ protected:
 	// found in menus.cpp
 	void Render();
 	void RenderMenuBackground();
-	void DestroyMenuBackdropTextures();
-	bool EnsureMenuBackdropTextures();
 	void RenderPopupFullscreen(CUIRect Screen);
 	void RenderPopupConnecting(CUIRect Screen);
 	void RenderPopupLoading(CUIRect Screen);
@@ -844,45 +840,20 @@ private:
 	void UpdateColors();
 
 	IGraphics::CTextureHandle m_TextureBlob;
-	enum
-	{
-		// Halving steps from the screen down to the eighth the blur runs on.
-		NUM_MENU_BACKDROP_DOWNSAMPLES = 2,
-	};
-	IGraphics::CTextureHandle m_MenuBackdropSceneTexture;
-	IGraphics::CTextureHandle m_MenuBackdropOverlayTexture;
-	IGraphics::CTextureHandle m_aMenuBackdropDownsampleTextures[NUM_MENU_BACKDROP_DOWNSAMPLES];
-	IGraphics::CTextureHandle m_aMenuBackdropBlurTextures[2];
-	int m_MenuBackdropWidth = 0;
-	int m_MenuBackdropHeight = 0;
-	bool m_MenuBackdropActive = false;
-	bool m_MenuBackdropOverlayActive = false;
-	bool m_MenuBackdropReady = false;
-	bool m_MenuBackdropBackgroundRendered = false;
+	// Set once the background of the menus went into the scene, so it is
+	// not drawn again over it.
+	bool m_BackgroundInScene = false;
 	// Set while the tabs being drawn sit straight over the scene rather than on
 	// a box of their own, so each of them gets the backdrop in its own shape.
 	bool m_TabsOverScene = false;
-	bool MenuBackdropTexturesValid() const;
-	bool RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection);
-	bool BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source);
 
 public:
 	void RenderBackground();
-	bool BeginMenuBackdrop(ColorRGBA ClearColor);
-	void FinishMenuBackdrop();
 	/**
-	 * Blurs everything drawn over the scene so far and puts it on the screen.
-	 * Whoever is drawn after this gets a blurred picture of all of it, which is
-	 * what the console needs to sit over the game and over the menu alike.
-	 *
-	 * @return `true` if a blurred backdrop is available afterwards.
+	 * Draws the background of the menus into the scene, where the game would
+	 * be, so that it is blurred behind them the same way.
 	 */
-	bool CaptureMenuBackdrop();
-	/**
-	 * Puts what was drawn over the scene on the screen unblurred. Called once
-	 * at the end of the frame for the case where nothing captured it.
-	 */
-	void PresentMenuBackdrop();
+	void RenderSceneBackground();
 	/**
 	 * Paints the blurred backdrop in the shape a box over it is about to be drawn
 	 * in, so that the blur ends exactly where the box does.
@@ -890,25 +861,9 @@ public:
 	void RenderBackdropRegion(const CUIRect &Rect, int Corners, float Rounding);
 	/**
 	 * Draws a box that sits straight over the scene: the backdrop, then the tint,
-	 * in one shape. A box inside such a box is drawn plainly, since painting the
-	 * backdrop again would wipe out the tint it sits on.
+	 * in one shape.
 	 */
 	void DrawSurface(const CUIRect &Rect, ColorRGBA Color, int Corners, float Rounding);
-	/**
-	 * Whether anything is currently drawn on top of the scene that wants the
-	 * blurred backdrop. Deciding this in one place keeps the pass that fills
-	 * the backdrop and the pass that blurs it from drifting apart.
-	 *
-	 * @return `true` if the backdrop is needed this frame.
-	 */
-	bool BackdropConsumerActive() const;
-	/**
-	 * Whether anything wants the scene itself blurred. The console does not:
-	 * it blurs the menu and the boards along with it, later.
-	 *
-	 * @return `true` if the scene has to be blurred this frame.
-	 */
-	bool SceneBackdropConsumerActive() const;
 
 	CMenus();
 	int Sizeof() const override { return sizeof(*this); }
@@ -1019,71 +974,9 @@ public:
 	std::vector<CDemoItem *> m_vpFilteredDemos;
 	void DemolistPopulate();
 	void RefreshFilteredDemos();
-	void DemoSeekTick(IDemoPlayer::ETickOffset TickOffset);
 	bool m_Dummy;
 
 	const char *GetCurrentDemoFolder() const { return m_aCurrentDemoFolder; }
-
-	// Ghost
-	struct CGhostItem
-	{
-		char m_aFilename[IO_MAX_PATH_LENGTH];
-		char m_aPlayer[MAX_NAME_LENGTH];
-
-		bool m_Failed;
-		int m_Time;
-		int m_Slot;
-		bool m_Own;
-		time_t m_Date;
-
-		CGhostItem() :
-			m_Failed(false), m_Slot(-1), m_Own(false) { m_aFilename[0] = 0; }
-
-		bool operator<(const CGhostItem &Other) const { return m_Time < Other.m_Time; }
-
-		bool Active() const { return m_Slot != -1; }
-		bool HasFile() const { return m_aFilename[0]; }
-	};
-
-	enum
-	{
-		GHOST_SORT_NONE = -1,
-		GHOST_SORT_NAME,
-		GHOST_SORT_TIME,
-		GHOST_SORT_DATE,
-	};
-
-	// Reads the headers of the ghosts of the current map
-	class CGhostlistScanJob : public IJob
-	{
-		IStorage *m_pStorage;
-		std::unique_ptr<CGhostLoader> m_pGhostLoader;
-		char m_aGhostDir[IO_MAX_PATH_LENGTH];
-		char m_aMapName[MAX_MAP_LENGTH];
-		SHA256_DIGEST m_MapSha256;
-		unsigned m_MapCrc;
-		std::vector<CGhostItem> m_vGhosts;
-
-		static int FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser);
-		void Run() override;
-
-	public:
-		CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc);
-
-		std::vector<CGhostItem> &Ghosts() { return m_vGhosts; }
-	};
-
-	std::vector<CGhostItem> m_vGhosts;
-
-	std::shared_ptr<CGhostlistScanJob> m_pGhostlistScanJob;
-
-	void GhostlistPopulate();
-	void UpdateGhostlistScan();
-	CGhostItem *GetOwnGhost();
-	void UpdateOwnGhost(CGhostItem Item);
-	void OnGhostLoadFailed(int Slot);
-	void DeleteGhostItem(int Index);
-	void SortGhostlist();
 
 	bool CanDisplayWarning() const;
 

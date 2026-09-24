@@ -36,6 +36,7 @@
 #include <game/client/animstate.h>
 #include <game/client/components/binds.h>
 #include <game/client/components/console.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/key_binder.h>
 #include <game/client/components/menu_background.h>
 #include <game/client/components/sounds.h>
@@ -772,7 +773,7 @@ void CMenus::RenderLoadingDirect(const char *pCaption, const char *pContent, std
 
 	Ui()->MapScreen();
 
-	if(!GameClient()->m_MenuBackground.Render())
+	if(!Frontend()->m_MenuBackground.Render())
 	{
 		RenderBackground();
 	}
@@ -982,7 +983,7 @@ void CMenus::FinishLoading()
 
 void CMenus::RenderNews(CUIRect MainView)
 {
-	GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_NEWS);
+	Frontend()->m_MenuBackground.ChangePosition(CMenuBackground::POS_NEWS);
 
 	g_Config.m_UiUnreadNews = false;
 
@@ -1099,7 +1100,6 @@ void CMenus::OnUpdate()
 {
 	FinishImageLoads();
 	FinishAssetPreviewLoads();
-	UpdateGhostlistScan();
 }
 
 bool CMenus::StartupAssetsLoaded() const
@@ -1252,12 +1252,13 @@ void CMenus::Render()
 	}
 	else
 	{
-		if(!m_MenuBackdropBackgroundRendered)
+		if(!m_BackgroundInScene)
 			RenderMenuBackground();
 		ms_ColorTabbarInactive = ms_ColorTabbarInactiveOutgame;
 		ms_ColorTabbarActive = ms_ColorTabbarActiveOutgame;
 		ms_ColorTabbarHover = ms_ColorTabbarHoverOutgame;
 	}
+	m_BackgroundInScene = false;
 
 	CUIRect Screen = *Ui()->Screen();
 	if(Client()->State() != IClient::STATE_DEMOPLAYBACK || m_Popup != POPUP_NONE)
@@ -1394,7 +1395,7 @@ void CMenus::Render()
 	Ui()->RenderPopupMenus();
 
 	// Prevent UI elements from being hovered while a key reader is active
-	if(GameClient()->m_KeyBinder.IsActive())
+	if(Frontend()->m_KeyBinder.IsActive())
 	{
 		Ui()->SetHotItem(nullptr);
 	}
@@ -2368,8 +2369,8 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			{
 				// Activate internet tab before joining tutorial to make sure the server info
 				// for the tutorial servers is available.
-				GameClient()->m_Menus.SetMenuPage(CMenus::PAGE_INTERNET);
-				GameClient()->m_Menus.RefreshBrowserTab(true);
+				Frontend()->m_Menus.SetMenuPage(CMenus::PAGE_INTERNET);
+				Frontend()->m_Menus.RefreshBrowserTab(true);
 				m_JoinTutorial.m_Status = CJoinTutorial::EStatus::REFRESHING;
 				m_JoinTutorial.m_TryRefresh = false;
 				m_JoinTutorial.m_TriedRefresh = true;
@@ -2390,7 +2391,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			char *pDst = aMotd + str_length(aMotd);
 			str_escape(&pDst, Localize("You're playing on a local server because no online Tutorial server could be found.\n\nYour record will only be saved locally."), aMotd + sizeof(aMotd) - 1);
 			str_append(aMotd, "\"");
-			if(GameClient()->m_LocalServer.RunServer({"sv_register 0", "sv_map Tutorial", aMotd}))
+			if(Frontend()->m_LocalServer.RunServer({"sv_register 0", "sv_map Tutorial", aMotd}))
 			{
 				m_JoinTutorial.m_LocalServerState = CJoinTutorial::ELocalServerState::WAITING_START;
 				m_JoinTutorial.m_StateChange = time_get_nanoseconds();
@@ -2404,9 +2405,9 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		{
 			if(LastStateChangeSeconds >= RefreshDelay)
 			{
-				if(GameClient()->m_LocalServer.IsServerRunning())
+				if(Frontend()->m_LocalServer.IsServerRunning())
 				{
-					GameClient()->m_LocalServer.KillServer();
+					Frontend()->m_LocalServer.KillServer();
 					m_JoinTutorial.m_LocalServerState = CJoinTutorial::ELocalServerState::WAITING_STOP;
 					m_JoinTutorial.m_StateChange = time_get_nanoseconds();
 				}
@@ -2428,7 +2429,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			}
 			else
 			{
-				if(!GameClient()->m_LocalServer.IsServerRunning())
+				if(!Frontend()->m_LocalServer.IsServerRunning())
 				{
 					RunServer();
 				}
@@ -2439,16 +2440,16 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 		}
 		else if(m_JoinTutorial.m_LocalServerState == CJoinTutorial::ELocalServerState::WAITING_START)
 		{
-			if(LastStateChangeSeconds >= 5.0f && !GameClient()->m_LocalServer.IsStarting())
+			if(LastStateChangeSeconds >= 5.0f && !Frontend()->m_LocalServer.IsStarting())
 			{
 				ShowFinalErrorMessage();
 			}
 			else
 			{
 				if(LastStateChangeSeconds >= 2.0f &&
-					GameClient()->m_LocalServer.IsServerRunning())
+					Frontend()->m_LocalServer.IsServerRunning())
 				{
-					GameClient()->m_LocalServer.Connect();
+					Frontend()->m_LocalServer.Connect();
 				}
 
 				pProgressLabel = Localize("Waiting for local server to start…");
@@ -2467,7 +2468,7 @@ void CMenus::RenderPopupFullscreen(CUIRect Screen)
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ESCAPE) ||
 			Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER))
 		{
-			GameClient()->m_LocalServer.CancelConnect();
+			Frontend()->m_LocalServer.CancelConnect();
 			m_Popup = POPUP_NONE;
 		}
 	}
@@ -2865,7 +2866,6 @@ void CMenus::OnShutdown()
 	m_SettingsCreditsText.Reset(TextRender());
 	m_SettingsDdnetUpdaterText.Reset(TextRender());
 	m_SettingsLanguageCreditsText.Reset(TextRender());
-	DestroyMenuBackdropTextures();
 	m_BlobResource.Reset();
 	Graphics()->UnloadTexture(&m_TextureBlob);
 	for(CMenuImage &MenuImage : m_vMenuImages)
@@ -2952,237 +2952,28 @@ void CMenus::OnWindowResize()
 	m_SettingsDdnetUpdaterText.Reset(TextRender());
 	m_SettingsLanguageCreditsText.Reset(TextRender());
 	TextRender()->DeleteTextContainer(m_MotdTextContainerIndex);
-	DestroyMenuBackdropTextures();
-}
-
-void CMenus::DestroyMenuBackdropTextures()
-{
-	m_MenuBackdropActive = false;
-	m_MenuBackdropOverlayActive = false;
-	m_MenuBackdropReady = false;
-	Graphics()->UnloadTexture(&m_MenuBackdropSceneTexture);
-	Graphics()->UnloadTexture(&m_MenuBackdropOverlayTexture);
-	for(IGraphics::CTextureHandle &Texture : m_aMenuBackdropDownsampleTextures)
-		Graphics()->UnloadTexture(&Texture);
-	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[0]);
-	Graphics()->UnloadTexture(&m_aMenuBackdropBlurTextures[1]);
-	m_MenuBackdropWidth = 0;
-	m_MenuBackdropHeight = 0;
-}
-
-bool CMenus::EnsureMenuBackdropTextures()
-{
-	const int Width = Graphics()->ScreenWidth();
-	const int Height = Graphics()->ScreenHeight();
-	if(Width <= 0 || Height <= 0)
-		return false;
-	if(Width == m_MenuBackdropWidth && Height == m_MenuBackdropHeight)
-		return MenuBackdropTexturesValid();
-
-	DestroyMenuBackdropTextures();
-	m_MenuBackdropWidth = Width;
-	m_MenuBackdropHeight = Height;
-
-	IGraphics::CTextureDesc Desc;
-	Desc.m_Width = Width;
-	Desc.m_Height = Height;
-	Desc.m_Mipmaps = IGraphics::ETextureMipmaps::NONE;
-	Desc.m_Usage = IGraphics::TEXTURE_USAGE_SAMPLED | IGraphics::TEXTURE_USAGE_COLOR_TARGET;
-	m_MenuBackdropSceneTexture = Graphics()->CreateTexture(Desc);
-	m_MenuBackdropOverlayTexture = Graphics()->CreateTexture(Desc);
-
-	// The two blur passes run on an eighth of the screen, which is what decides
-	// how coarse the result looks. Getting down there in one step would sample
-	// four of the sixty-four pixels a target pixel covers, and which four
-	// changes as the scene moves, which is what made the blur crawl. Halving
-	// three times averages all of them.
-	for(int i = 0; i < NUM_MENU_BACKDROP_DOWNSAMPLES; ++i)
-	{
-		Desc.m_Width = std::max(1, (Width + (2 << i) - 1) / (2 << i));
-		Desc.m_Height = std::max(1, (Height + (2 << i) - 1) / (2 << i));
-		m_aMenuBackdropDownsampleTextures[i] = Graphics()->CreateTexture(Desc);
-	}
-	m_aMenuBackdropBlurTextures[0] = Graphics()->CreateTexture(Desc);
-	m_aMenuBackdropBlurTextures[1] = Graphics()->CreateTexture(Desc);
-	if(MenuBackdropTexturesValid())
-	{
-		log_debug("menus", "Created menu backdrop targets: scene=%dx%d blur=%dx%d", Width, Height, static_cast<int>(Desc.m_Width), static_cast<int>(Desc.m_Height));
-		return true;
-	}
-
-	DestroyMenuBackdropTextures();
-	log_debug("menus", "Menu backdrop render targets unavailable, using direct rendering");
-	return false;
-}
-
-bool CMenus::MenuBackdropTexturesValid() const
-{
-	if(!m_MenuBackdropSceneTexture.IsValid() || !m_MenuBackdropOverlayTexture.IsValid())
-		return false;
-	for(const IGraphics::CTextureHandle &Texture : m_aMenuBackdropDownsampleTextures)
-	{
-		if(!Texture.IsValid())
-			return false;
-	}
-	return m_aMenuBackdropBlurTextures[0].IsValid() && m_aMenuBackdropBlurTextures[1].IsValid();
-}
-
-bool CMenus::RenderMenuBackdropTexture(IGraphics::CTextureHandle Target, IGraphics::CTextureHandle Source, std::optional<IGraphics::EBlurDirection> BlurDirection)
-{
-	IGraphics::CRenderPassDesc Pass;
-	Pass.m_ColorTarget = Target;
-	if(!Graphics()->BeginRenderPass(Pass))
-		return false;
-	const bool Drawn = BlurDirection.has_value() ? Graphics()->BlurTexture(Source, BlurDirection.value()) : Graphics()->BlitTexture(Source);
-	const bool Ended = Graphics()->EndRenderPass();
-	return Drawn && Ended;
-}
-
-bool CMenus::BlurIntoMenuBackdrop(IGraphics::CTextureHandle Source)
-{
-	IGraphics::CTextureHandle Current = Source;
-	for(const IGraphics::CTextureHandle &Downsample : m_aMenuBackdropDownsampleTextures)
-	{
-		if(!RenderMenuBackdropTexture(Downsample, Current, std::nullopt))
-			return false;
-		Current = Downsample;
-	}
-	return RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[1], Current, IGraphics::EBlurDirection::HORIZONTAL) &&
-	       RenderMenuBackdropTexture(m_aMenuBackdropBlurTextures[0], m_aMenuBackdropBlurTextures[1], IGraphics::EBlurDirection::VERTICAL);
-}
-
-bool CMenus::BeginMenuBackdrop(ColorRGBA ClearColor)
-{
-	m_MenuBackdropActive = false;
-	m_MenuBackdropOverlayActive = false;
-	m_MenuBackdropReady = false;
-	m_MenuBackdropBackgroundRendered = false;
-	if(!g_Config.m_ClMenuBackgroundBlur)
-	{
-		if(m_MenuBackdropSceneTexture.IsValid())
-			DestroyMenuBackdropTextures();
-		return false;
-	}
-
-	const IClient::EClientState ClientState = Client()->State();
-	if(!BackdropConsumerActive() && (ClientState == IClient::STATE_ONLINE || ClientState == IClient::STATE_DEMOPLAYBACK))
-		return false;
-	if(!EnsureMenuBackdropTextures())
-		return false;
-
-	IGraphics::CRenderPassDesc Pass;
-	Pass.m_ColorTarget = m_MenuBackdropSceneTexture;
-	Pass.m_LoadOp = IGraphics::ERenderPassLoadOp::CLEAR;
-	Pass.m_ClearColor = ClearColor.WithAlpha(0.0f);
-	m_MenuBackdropActive = Graphics()->BeginRenderPass(Pass);
-	return m_MenuBackdropActive;
 }
 
 void CMenus::RenderMenuBackground()
 {
-	if(!GameClient()->m_MenuBackground.Render())
+	if(!Frontend()->m_MenuBackground.Render())
 		RenderBackground();
 }
 
-void CMenus::FinishMenuBackdrop()
+void CMenus::RenderSceneBackground()
 {
-	if(!m_MenuBackdropActive)
-		return;
-
-	const IClient::EClientState ClientState = Client()->State();
-	const bool RenderedBackground = ClientState != IClient::STATE_ONLINE && ClientState != IClient::STATE_DEMOPLAYBACK;
-	if(RenderedBackground)
-		RenderMenuBackground();
-
-	const bool SceneEnded = Graphics()->EndRenderPass();
-	// The console blurs its own picture later, so a frame where it is the
-	// only thing over the scene does not need the scene blurred at all.
-	const bool ApplyBlur = SceneBackdropConsumerActive() || RenderedBackground;
-	const bool Blurred = SceneEnded && ApplyBlur && BlurIntoMenuBackdrop(m_MenuBackdropSceneTexture);
-
-	// Everything that is drawn over the scene from here on goes into a second
-	// picture rather than straight to the screen, so that whatever is drawn
-	// last can have a blurred copy of all of it. The console is what needs
-	// that: it covers the menu just as it covers the game.
-	IGraphics::CRenderPassDesc OverlayPass;
-	OverlayPass.m_ColorTarget = m_MenuBackdropOverlayTexture;
-	m_MenuBackdropOverlayActive = Graphics()->BeginRenderPass(OverlayPass) && Graphics()->BlitTexture(m_MenuBackdropSceneTexture);
-	if(!m_MenuBackdropOverlayActive)
-	{
-		IGraphics::CRenderPassDesc PresentationPass;
-		const bool Started = Graphics()->BeginRenderPass(PresentationPass);
-		const bool Composited = Started && Graphics()->BlitTexture(m_MenuBackdropSceneTexture);
-		m_MenuBackdropReady = Blurred && Composited;
-		m_MenuBackdropBackgroundRendered = RenderedBackground && Composited;
-		m_MenuBackdropActive = false;
-		return;
-	}
-	m_MenuBackdropReady = Blurred;
-	m_MenuBackdropBackgroundRendered = RenderedBackground;
-	m_MenuBackdropActive = false;
-}
-
-bool CMenus::CaptureMenuBackdrop()
-{
-	if(!m_MenuBackdropOverlayActive)
-		return false;
-	const bool Ended = Graphics()->EndRenderPass();
-	const bool Blurred = Ended && BlurIntoMenuBackdrop(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropOverlayActive = false;
-	IGraphics::CRenderPassDesc PresentationPass;
-	const bool Started = Graphics()->BeginRenderPass(PresentationPass);
-	const bool Composited = Started && Graphics()->BlitTexture(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropReady = Blurred && Composited;
-	return m_MenuBackdropReady;
-}
-
-void CMenus::PresentMenuBackdrop()
-{
-	if(!m_MenuBackdropOverlayActive)
-		return;
-	const bool Ended = Graphics()->EndRenderPass();
-	m_MenuBackdropOverlayActive = false;
-	IGraphics::CRenderPassDesc PresentationPass;
-	if(Ended && Graphics()->BeginRenderPass(PresentationPass))
-		Graphics()->BlitTexture(m_MenuBackdropOverlayTexture);
-	m_MenuBackdropReady = false;
-}
-
-bool CMenus::SceneBackdropConsumerActive() const
-{
-	return IsActive() || GameClient()->m_Scoreboard.IsActive() || GameClient()->m_Statboard.IsActive() || GameClient()->m_Motd.IsActive();
-}
-
-bool CMenus::BackdropConsumerActive() const
-{
-	return SceneBackdropConsumerActive() || GameClient()->m_GameConsole.IsActive();
+	RenderMenuBackground();
+	m_BackgroundInScene = true;
 }
 
 void CMenus::RenderBackdropRegion(const CUIRect &Rect, int Corners, float Rounding)
 {
-	if(!m_MenuBackdropReady || Rect.w <= 0.0f || Rect.h <= 0.0f)
-		return;
-
-	// The very geometry the box is drawn with, sampling the blurred picture at
-	// the spot on the screen each corner lands on. A rectangle cut out with a
-	// scissor showed the blur past rounded corners and snapped to whole pixels
-	// where the box did not.
-	Graphics()->TextureSet(m_aMenuBackdropBlurTextures[0]);
-	Graphics()->BlendNone();
-	Graphics()->WrapClamp();
-	Graphics()->QuadsBegin();
-	Graphics()->QuadsSetScreenTexCoords();
-	RenderTools()->DrawRectExt(Rect.x, Rect.y, Rect.w, Rect.h, Rounding, Corners);
-	Graphics()->QuadsEnd();
-	Graphics()->WrapNormal();
-	Graphics()->BlendNormal();
-	Graphics()->TextureClear();
+	GameClient()->m_Backdrop.RenderRegion(Rect, Corners, Rounding);
 }
 
 void CMenus::DrawSurface(const CUIRect &Rect, ColorRGBA Color, int Corners, float Rounding)
 {
-	RenderBackdropRegion(Rect, Corners, Rounding);
-	Rect.Draw(Color, Corners, Rounding);
+	GameClient()->m_Backdrop.DrawSurface(Rect, Color, Corners, Rounding);
 }
 
 void CMenus::OnRenderApplicationOverlay()
@@ -3205,7 +2996,6 @@ void CMenus::OnRenderApplicationOverlay()
 		}
 		else if(Client()->State() != IClient::STATE_DEMOPLAYBACK)
 		{
-			FinishMenuBackdrop();
 			Ui()->ClearHotkeys();
 			return;
 		}
@@ -3213,7 +3003,6 @@ void CMenus::OnRenderApplicationOverlay()
 
 	Ui()->StartCheck();
 	UpdateColors();
-	FinishMenuBackdrop();
 
 	Ui()->Update();
 

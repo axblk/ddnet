@@ -8,7 +8,6 @@
 #include "components/broadcast.h"
 #include "components/camera.h"
 #include "components/chat.h"
-#include "components/console.h"
 #include "components/controls.h"
 #include "components/countryflags.h"
 #include "components/damageind.h"
@@ -23,8 +22,6 @@
 #include "components/mapimages.h"
 #include "components/maplayers.h"
 #include "components/mapsounds.h"
-#include "components/menu_background.h"
-#include "components/menus.h"
 #include "components/motd.h"
 #include "components/nameplates.h"
 #include "components/particles.h"
@@ -37,6 +34,7 @@
 #include "components/spectator.h"
 #include "components/statboard.h"
 #include "components/voting.h"
+#include "frontend.h"
 #include "lineinput.h"
 #include "prediction/entities/character.h"
 #include "prediction/entities/projectile.h"
@@ -245,6 +243,7 @@ void CGameClient::OnConsoleInit()
 	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
 	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
+	m_pFrontend = ToolOptionalInterface<IGameFrontend>(Kernel());
 	for(const auto &pContext : m_vpSessionContexts)
 		pContext->m_MapContext.Init();
 
@@ -264,6 +263,7 @@ void CGameClient::OnConsoleInit()
 					      &m_RaceDemo,
 					      &m_Censor,
 					      &m_Background,
+					      &m_Backdrop,
 					      &m_Particles.m_RenderTrail,
 					      &m_Particles.m_RenderTrailExtra,
 					      &m_Items,
@@ -287,24 +287,30 @@ void CGameClient::OnConsoleInit()
 					      &m_Scoreboard,
 					      &m_Statboard,
 					      &m_Motd,
-					      &m_Menus,
-					      &m_Tooltips,
-					      &m_KeyBinder,
-					      &m_GameConsole,
-					      &m_MenuBackground});
+					      &m_Tooltips});
+	// The front end comes after the game, and takes input where it says.
+	auto AddFrontendInput = [this](IGameFrontend::ESlot Slot) {
+		if(m_pFrontend != nullptr)
+			m_vpInput.insert(m_vpInput.end(), m_pFrontend->Slot(Slot).begin(), m_pFrontend->Slot(Slot).end());
+	};
+	if(m_pFrontend != nullptr)
+	{
+		for(const IGameFrontend::CComponentInfo &Info : m_pFrontend->Components())
+			m_vpAll.push_back(Info.m_pComponent);
+	}
 
 	// build the input stack
-	m_vpInput.insert(m_vpInput.end(), {&m_KeyBinder, // this will take over all input when we want to bind a key
-						  &m_Binds.m_SpecialBinds,
-						  &m_GameConsole,
-						  &m_Chat, // chat has higher prio, due to that you can quit it by pressing esc
+	AddFrontendInput(IGameFrontend::ESlot::INPUT_FIRST);
+	m_vpInput.push_back(&m_Binds.m_SpecialBinds);
+	AddFrontendInput(IGameFrontend::ESlot::INPUT_BEFORE_CHAT);
+	m_vpInput.insert(m_vpInput.end(), {&m_Chat, // chat has higher prio, due to that you can quit it by pressing esc
 						  &m_Scoreboard,
 						  &m_Motd, // for pressing esc to remove it
 						  &m_Spectator,
 						  &m_Emoticon,
-						  &m_ImportantAlert,
-						  &m_Menus,
-						  &m_Controls,
+						  &m_ImportantAlert});
+	AddFrontendInput(IGameFrontend::ESlot::INPUT_BEFORE_CONTROLS);
+	m_vpInput.insert(m_vpInput.end(), {&m_Controls,
 						  &m_TouchControls,
 						  &m_Binds});
 
@@ -331,8 +337,6 @@ void CGameClient::OnConsoleInit()
 	m_SessionPresentations.OnInterfacesInit(this);
 	for(const auto &pContext : m_vpSessionContexts)
 		m_SessionPresentations.Create(pContext->Id());
-
-	m_LocalServer.OnInterfacesInit(this);
 
 	// let all the other components register their console commands
 	for(auto &pComponent : m_vpAll)
@@ -405,8 +409,6 @@ void CGameClient::OnConsoleInit()
 	Console()->Chain("events", ConchainRefreshEventSkins, this);
 
 	Console()->Chain("cl_dummy", ConchainSpecialDummy, this);
-
-	Console()->Chain("cl_menu_map", ConchainMenuMap, this);
 }
 
 void CGameClient::InitializeLanguage()
@@ -449,7 +451,8 @@ void CGameClient::UpdateLanguageLoads()
 
 void CGameClient::ForceUpdateConsoleRemoteCompletionSuggestions()
 {
-	m_GameConsole.ForceUpdateRemoteCompletionSuggestions();
+	if(m_pFrontend != nullptr)
+		m_pFrontend->OnRconCommandsChanged();
 }
 
 void CGameClient::OnInit()
@@ -457,9 +460,6 @@ void CGameClient::OnInit()
 	const int64_t OnInitStart = time_get();
 	m_StartupAssetsPending = true;
 	m_StartupAssetsStart = OnInitStart;
-	std::string MatchJournalError;
-	if(!m_MatchJournal.Open(Storage(), &MatchJournalError))
-		log_error("match-journal", "%s", MatchJournalError.c_str());
 
 	Client()->SetLoadingCallback([this](IClient::ELoadingCallbackDetail Detail) {
 		const char *pTitle;
@@ -484,7 +484,7 @@ void CGameClient::OnInit()
 		default:
 			dbg_assert_failed("Invalid callback loading detail");
 		}
-		m_Menus.RenderLoading(pTitle, pMessage, 0);
+		RenderLoading(pTitle, pMessage, 0);
 	});
 
 	m_pGraphics = Kernel()->RequestInterface<IGraphics>();
@@ -502,25 +502,11 @@ void CGameClient::OnInit()
 
 	// propagate pointers
 	m_UI.Init(Kernel(), &m_RenderTools);
-	m_UI.SetOnBackButtonPressedCallback([this]() {
-		m_BackButtonHandledKeyBind = m_KeyBinder.HasPendingKeyReader();
-		if(m_BackButtonHandledKeyBind)
-			m_KeyBinder.AbortPendingKey();
-	});
-	m_UI.SetDispatchInputCallback([this](const IInput::CEvent &Event) {
-		if(m_BackButtonHandledKeyBind)
-		{
-			if(Event.m_Flags & IInput::FLAG_RELEASE)
-				m_BackButtonHandledKeyBind = false;
-			return;
-		}
-		OnInput(Event);
-	});
 	// A popup over a menu sits on the menu, not on the scene: the backdrop there
 	// would cut the scene into the menu instead of blurring what is behind it.
 	m_UI.SetRenderPopupMenuBackdropCallback([this](const CUIRect &Rect, int Corners, float Rounding) {
-		if(!m_Menus.IsActive())
-			m_Menus.RenderBackdropRegion(Rect, Corners, Rounding);
+		if(!MenuActive())
+			m_Backdrop.RenderRegion(Rect, Corners, Rounding);
 	});
 	m_RenderTools.Init(Graphics(), TextRender());
 	m_RenderMap.Init(Graphics(), TextRender());
@@ -568,10 +554,10 @@ void CGameClient::OnInit()
 		m_vpAll[i]->OnInit();
 		m_AssetLoader.Update();
 		// try to render a frame after each component, also flushes GPU uploads
-		if(m_Menus.IsInit())
+		if(m_pFrontend != nullptr && m_pFrontend->LoadingScreenReady())
 		{
 			str_format(aLoadingMessage, std::size(aLoadingMessage), "%s [%d/%d]", CompCounter == NumComponents ? pLoadingMessageComponentsSpecial : pLoadingMessageComponents, CompCounter, NumComponents);
-			m_Menus.RenderLoading(pLoadingDDNetCaption, aLoadingMessage, SkippedComps);
+			m_pFrontend->RenderLoading(pLoadingDDNetCaption, aLoadingMessage, SkippedComps, true);
 			SkippedComps = 1;
 		}
 		else
@@ -582,6 +568,7 @@ void CGameClient::OnInit()
 	}
 
 	FinishLoadingCoreImages();
+	m_InitComplete = true;
 
 	OnSessionClosed(Client()->FocusedSessionId());
 
@@ -691,7 +678,6 @@ void CGameClient::OnUpdate()
 	m_NewTick = false;
 	m_NewPredictedTick = false;
 	UpdateManagedTeeRenderInfos();
-	m_LocalServer.Update();
 }
 
 void CGameClient::UpdateNetworkPlayerInfo()
@@ -703,7 +689,7 @@ void CGameClient::UpdateNetworkPlayerInfo()
 	const int DummyLocalId = GameState(IClient::CONN_DUMMY).LocalClientId();
 	CGameState::CRuntimeState &MainRuntime = GameState(IClient::CONN_MAIN).m_Runtime;
 	CGameState::CRuntimeState &DummyRuntime = GameState(IClient::CONN_DUMMY).m_Runtime;
-	if(MainLocalId < 0 || !Client()->IsOnline() || m_Menus.IsActive() || !m_NewTick)
+	if(MainLocalId < 0 || !Client()->IsOnline() || MenuActive() || !m_NewTick)
 		return;
 
 	if(MainRuntime.m_CheckInfo == 0)
@@ -763,6 +749,46 @@ void CGameClient::UpdateNetworkPlayerInfo()
 
 	if(DummyRuntime.m_CheckInfo > 0)
 		DummyRuntime.m_CheckInfo -= std::min(Client()->GameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY) - Client()->PrevGameTick(Client()->NetworkSessionId(), IClient::CONN_DUMMY), DummyRuntime.m_CheckInfo);
+}
+
+bool CGameClient::MenuActive() const
+{
+	return m_pFrontend != nullptr && m_pFrontend->MenuActive();
+}
+
+bool CGameClient::ConsoleActive() const
+{
+	return m_pFrontend != nullptr && m_pFrontend->ConsoleActive();
+}
+
+void CGameClient::SetMenuActive(bool Active)
+{
+	if(m_pFrontend != nullptr)
+		m_pFrontend->SetMenuActive(Active);
+}
+
+void CGameClient::RenderLoading(const char *pCaption, const char *pContent, int IncreaseCounter, bool UpdateAndSwap)
+{
+	if(m_pFrontend != nullptr)
+		m_pFrontend->RenderLoading(pCaption, pContent, IncreaseCounter, UpdateAndSwap);
+}
+
+bool CGameClient::SceneBackdropWanted() const
+{
+	return MenuActive() || m_Scoreboard.IsActive() || m_Statboard.IsActive() || m_Motd.IsActive();
+}
+
+bool CGameClient::BackdropWanted() const
+{
+	return SceneBackdropWanted() || ConsoleActive();
+}
+
+void CGameClient::DemoSeekTick(IDemoPlayer::ETickOffset TickOffset)
+{
+	m_SuppressEvents = true;
+	DemoPlayer()->SeekTick(TickOffset);
+	m_SuppressEvents = false;
+	DemoPlayer()->Pause();
 }
 
 void CGameClient::OnInput(const IInput::CEvent &Event)
@@ -865,7 +891,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	const char *pConnectCaption = SessionId == Client()->DemoSessionId() ? Localize("Preparing demo playback") : Localize("Connected");
 	const char *pLoadMapContent = Localize("Initializing map logic");
 	if(Focused)
-		m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
+		RenderLoading(pConnectCaption, pLoadMapContent, 0);
 	MapContext.Layers()->Init(MapContext.Map(), false, true);
 	MapContext.Collision()->Init(MapContext.Layers());
 	Session.SetDescriptor(MapContext.Map()->BaseName(), Client()->IsSixup(SessionId) ? EGameProtocol::SIXUP : EGameProtocol::SIX);
@@ -885,7 +911,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	{
 		// the loader only starts the next jobs when it is updated
 		m_AssetLoader.Update();
-		m_Menus.RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
+		RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
 	}
 
 	if(SessionId == Client()->NetworkSessionId())
@@ -893,12 +919,13 @@ void CGameClient::OnConnected(CSessionId SessionId)
 		if(Focused)
 		{
 			Client()->SetLoadingStateDetail(IClient::LOADING_STATE_DETAIL_GETTING_READY);
-			m_Menus.RenderLoading(pConnectCaption, Localize("Sending initial client info"), 0);
+			RenderLoading(pConnectCaption, Localize("Sending initial client info"), 0);
 		}
 		SendInfo(true);
 		ClientNetwork()->Rcon("crashmeplx");
-		m_LocalServer.RconAuthIfPossible();
 	}
+	if(m_pFrontend != nullptr)
+		m_pFrontend->OnSessionConnected(SessionId);
 
 	if(!Focused)
 		return;
@@ -907,7 +934,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	m_SessionPresentations.SetAudible(SessionId);
 
 	// render loading before going through all components
-	m_Menus.RenderLoading(pConnectCaption, pLoadMapContent, 0);
+	RenderLoading(pConnectCaption, pLoadMapContent, 0);
 	for(auto &pComponent : m_vpAll)
 	{
 		pComponent->OnMapLoad();
@@ -917,11 +944,9 @@ void CGameClient::OnConnected(CSessionId SessionId)
 
 void CGameClient::StoreMatch(CSessionId SessionId, const CStoredMatch &Match, const CStoredMatch *pReplacedObserved)
 {
-	if(Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || !g_Config.m_ClSaveMatchStats || !m_MatchJournal.IsOpen())
+	if(Client()->SessionType(SessionId) != ESessionSourceType::NETWORK || m_pFrontend == nullptr)
 		return;
-	std::string Error;
-	if(m_MatchJournal.Insert(Match, pReplacedObserved, &Error) == CMatchJournal::EInsertResult::ERROR)
-		log_error("match-journal", "%s", Error.c_str());
+	m_pFrontend->StoreMatch(Match, pReplacedObserved);
 }
 
 void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContext &Session, const CGameState &State, EMatchTermination Termination)
@@ -1215,7 +1240,7 @@ CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CCompon
 		const char *m_pTraceName;
 		const char *m_pGpuZone;
 	};
-	const std::array<SEntry, 43> aEntries = {{
+	const std::array<SEntry, 39> aEntries = {{
 		{&m_Skins, "game/skins", nullptr},
 		{&m_Skins7, "game/skins7", nullptr},
 		{&m_CountryFlags, "game/country_flags", nullptr},
@@ -1254,16 +1279,20 @@ CGameClient::SRenderComponentInfo CGameClient::RenderComponentInfo(const CCompon
 		{&m_Scoreboard, "ui/scoreboard", "scoreboard"},
 		{&m_Statboard, "ui/statboard", "statboard"},
 		{&m_Motd, "ui/motd", "motd"},
-		{&m_Menus, "ui/menus", "menus"},
 		{&m_Tooltips, "ui/tooltips", "tooltips"},
-		{&m_KeyBinder, "ui/key_binder", nullptr},
-		{&m_GameConsole, "ui/console", "console"},
-		{&m_MenuBackground, "ui/menu_background", nullptr},
 	}};
 	for(const SEntry &Entry : aEntries)
 	{
 		if(Entry.m_pComponent == pComponent)
 			return {Entry.m_pTraceName, Entry.m_pGpuZone == nullptr ? IGraphics::CGpuRenderZone() : Graphics()->RegisterGpuRenderZone(Entry.m_pGpuZone)};
+	}
+	if(m_pFrontend != nullptr)
+	{
+		for(const IGameFrontend::CComponentInfo &Info : m_pFrontend->Components())
+		{
+			if(Info.m_pComponent == pComponent)
+				return {Info.m_pTraceName, Info.m_pGpuZone == nullptr ? IGraphics::CGpuRenderZone() : Graphics()->RegisterGpuRenderZone(Info.m_pGpuZone)};
+		}
 	}
 	return {"game/component", IGraphics::CGpuRenderZone()};
 }
@@ -1279,7 +1308,7 @@ void CGameClient::OnRender()
 {
 	if(m_CoreImagesPending)
 	{
-		m_Menus.RenderLoading(Localize("Loading DDNet Client"), Localize("Initializing assets"), 0, false);
+		RenderLoading(Localize("Loading DDNet Client"), Localize("Initializing assets"), 0, false);
 		return;
 	}
 	// A video export that is not the session on the screen has no view that
@@ -1287,7 +1316,8 @@ void CGameClient::OnRender()
 	const CPreparedRenderEntry &PrimaryEntry = m_PreparedIsolatedVideoOutput ? m_vPreparedRenderEntries.front() : AudibleRenderEntry();
 	const bool IsVideoOutput = m_PreparedVideoOutput;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	if(m_PreparedIsolatedVideoOutput || !m_Menus.BeginMenuBackdrop(ClearColor))
+	const bool NoGame = Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK;
+	if(m_PreparedIsolatedVideoOutput || !m_Backdrop.Begin(ClearColor, NoGame || BackdropWanted()))
 		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 	auto RenderInView = [this](const CViewport &Viewport, const auto &Render) {
 		const bool CustomViewport = Viewport.m_Width > 0 && Viewport.m_Height > 0;
@@ -1417,7 +1447,17 @@ void CGameClient::OnRender()
 				m_TouchControls.RenderApplicationOverlay();
 			});
 		});
-		m_Menus.FinishMenuBackdrop();
+		if(m_Backdrop.DrawingScene())
+		{
+			// Without a game the menus show their own background, blurred
+			// like the game would be.
+			if(NoGame && m_pFrontend != nullptr)
+				m_pFrontend->RenderSceneBackground();
+			// The console blurs its own picture later, so a frame where it
+			// is the only thing over the scene does not need the scene
+			// blurred at all.
+			m_Backdrop.Finish(NoGame || SceneBackdropWanted());
+		}
 	}
 	m_Scoreboard.BeginRenderFrame();
 	RenderComponents({&m_Scoreboard});
@@ -1440,12 +1480,19 @@ void CGameClient::OnRender()
 	// take the mouse over and bring their own pointer.
 	for(const CRenderContext &Context : vContexts)
 		RenderInView(Context.m_View.Viewport(), [&]() { m_Hud.RenderCursor(Context); });
-	for(CComponent *pComponent : {static_cast<CComponent *>(&m_Menus), static_cast<CComponent *>(&m_Tooltips), static_cast<CComponent *>(&m_GameConsole)})
-		RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRenderApplicationOverlay(); });
+	auto RenderOverlays = [&](IGameFrontend::ESlot Slot) {
+		if(m_pFrontend == nullptr)
+			return;
+		for(CComponent *pComponent : m_pFrontend->Slot(Slot))
+			RenderTraced(RenderInfo(pComponent), [&]() { pComponent->OnRenderApplicationOverlay(); });
+	};
+	RenderOverlays(IGameFrontend::ESlot::OVERLAY_BELOW_TOOLTIPS);
+	RenderTraced(RenderInfo(&m_Tooltips), [&]() { m_Tooltips.OnRenderApplicationOverlay(); });
+	RenderOverlays(IGameFrontend::ESlot::OVERLAY_ABOVE_TOOLTIPS);
 
 	// Nothing captured what was drawn over the scene, so it goes to the screen
 	// as it is.
-	m_Menus.PresentMenuBackdrop();
+	m_Backdrop.Present();
 
 	{
 		CRenderTraceScope TraceScope(pTrace, "ui/line_input");
@@ -1601,7 +1648,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 	for(CPreparedRenderEntry &Entry : m_vPreparedRenderEntries)
 		Entry.m_VisibleWorldRect = VisibleWorldRectFor(*Entry.m_pView);
 
-	if(m_Menus.CanDisplayWarning())
+	if(m_pFrontend != nullptr && m_pFrontend->CanDisplayWarning())
 	{
 		std::optional<SWarning> Warning = Graphics()->CurrentWarning();
 		if(!Warning.has_value())
@@ -1609,7 +1656,7 @@ void CGameClient::PrepareScreenRender(bool VideoOutput)
 		if(Warning.has_value())
 		{
 			const SWarning &TheWarning = Warning.value();
-			m_Menus.PopupWarning(TheWarning.m_aWarningTitle[0] == '\0' ? Localize("Warning") : TheWarning.m_aWarningTitle, TheWarning.m_aWarningMsg, Localize("Ok"), TheWarning.m_AutoHide ? 10s : 0s);
+			m_pFrontend->PopupWarning(TheWarning.m_aWarningTitle[0] == '\0' ? Localize("Warning") : TheWarning.m_aWarningTitle, TheWarning.m_aWarningMsg, Localize("Ok"), TheWarning.m_AutoHide ? 10s : 0s);
 		}
 	}
 }
@@ -1688,7 +1735,7 @@ void CGameClient::OnRenderFinalize()
 #if defined(CONF_VIDEORECORDER)
 bool CGameClient::OnRenderVideoProgress(bool Overlay)
 {
-	return m_Menus.RenderVideoProgress(Overlay);
+	return m_pFrontend != nullptr && m_pFrontend->RenderVideoProgress(Overlay);
 }
 #endif
 
@@ -2172,8 +2219,6 @@ void CGameClient::OnShutdown()
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnShutdown();
 	m_SessionPresentations.UnloadAll();
-
-	m_LocalServer.KillServer();
 }
 
 void CGameClient::OnEnterGame(CSessionId SessionId)
@@ -2280,12 +2325,14 @@ void CGameClient::ProcessDemoSnapshot(CSnapshot *pSnap)
 
 void CGameClient::OnRconType(bool UsernameReq)
 {
-	m_GameConsole.RequireUsername(UsernameReq);
+	if(m_pFrontend != nullptr)
+		m_pFrontend->OnRconType(UsernameReq);
 }
 
 void CGameClient::OnRconLine(const char *pLine)
 {
-	m_GameConsole.PrintLine(CGameConsole::CONSOLETYPE_REMOTE, pLine);
+	if(m_pFrontend != nullptr)
+		m_pFrontend->OnRconLine(pLine);
 }
 
 void CGameClient::ProcessEvents(CSessionId SessionId, int Conn)
@@ -4853,7 +4900,7 @@ void CGameClient::RefreshSkins(int SkinDescriptorFlags)
 		// if skin refreshing takes to long, swap to a loading screen
 		if(time_get_nanoseconds() - SkinStartLoadTime > 500ms)
 		{
-			m_Menus.RenderLoading(Localize("Loading skin files"), "", 0);
+			RenderLoading(Localize("Loading skin files"), "", 0);
 		}
 	};
 	if(SkinDescriptorFlags & CSkinDescriptor::FLAG_SIX)
@@ -4961,7 +5008,7 @@ void CGameClient::ConchainRefreshSkins(IConsole::IResult *pResult, void *pUserDa
 {
 	CGameClient *pThis = static_cast<CGameClient *>(pUserData);
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments() && pThis->m_Menus.IsInit())
+	if(pResult->NumArguments() && pThis->m_InitComplete)
 	{
 		pThis->RefreshSkins(CSkinDescriptor::FLAG_SIX);
 	}
@@ -4971,7 +5018,7 @@ void CGameClient::ConchainRefreshEventSkins(IConsole::IResult *pResult, void *pU
 {
 	CGameClient *pThis = static_cast<CGameClient *>(pUserData);
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments() && pThis->m_Menus.IsInit())
+	if(pResult->NumArguments() && pThis->m_InitComplete)
 	{
 		pThis->m_Skins.RefreshEventSkins();
 		pThis->RefreshSkins(CSkinDescriptor::FLAG_SIX);
@@ -4994,23 +5041,6 @@ void CGameClient::ConMapbug(IConsole::IResult *pResult, void *pUserData)
 	static_cast<CGameClient *>(pUserData)->MapContext().EnableMapBug(pResult->GetString(0));
 }
 
-void CGameClient::ConchainMenuMap(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
-{
-	CGameClient *pSelf = (CGameClient *)pUserData;
-	if(pResult->NumArguments())
-	{
-		if(str_comp(g_Config.m_ClMenuMap, pResult->GetString(0)) != 0)
-		{
-			str_copy(g_Config.m_ClMenuMap, pResult->GetString(0));
-			pSelf->m_MenuBackground.LoadMenuBackground();
-		}
-	}
-	else
-	{
-		pfnCallback(pResult, pCallbackUserData);
-	}
-}
-
 void CGameClient::DummyResetInput()
 {
 	if(!DummyConnected())
@@ -5031,7 +5061,7 @@ void CGameClient::DummyResetInput()
 
 bool CGameClient::CanDisplayWarning() const
 {
-	return m_Menus.CanDisplayWarning();
+	return m_pFrontend != nullptr && m_pFrontend->CanDisplayWarning();
 }
 
 CNetObjHandler *CGameClient::GetNetObjHandler()

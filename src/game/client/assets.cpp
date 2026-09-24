@@ -1,3 +1,4 @@
+#include "frontend.h"
 #include "gameclient.h"
 
 #include <base/log.h>
@@ -53,13 +54,14 @@ void CGameClient::FinishLoadingCoreImages()
 	if(m_vStartupImageLoads.empty() && m_vAssetPackLoads.empty())
 	{
 		m_CoreImagesPending = false;
-		m_Menus.FinishLoading();
+		if(m_pFrontend != nullptr)
+			m_pFrontend->FinishLoading();
 	}
 }
 
 void CGameClient::TryFinishStartupAssets()
 {
-	if(!m_StartupAssetsPending || m_CoreImagesPending || !m_Sounds.StartupAssetsLoaded() || !m_Skins.StartupAssetsLoaded() || !m_Skins7.StartupAssetsLoaded() || !m_Menus.StartupAssetsLoaded() || !m_CountryFlags.StartupAssetsLoaded() || !m_Scoreboard.StartupAssetsLoaded())
+	if(!m_StartupAssetsPending || m_CoreImagesPending || !m_Sounds.StartupAssetsLoaded() || !m_Skins.StartupAssetsLoaded() || !m_Skins7.StartupAssetsLoaded() || (m_pFrontend != nullptr && !m_pFrontend->StartupAssetsLoaded()) || !m_CountryFlags.StartupAssetsLoaded() || !m_Scoreboard.StartupAssetsLoaded())
 		return;
 	m_StartupAssetsPending = false;
 	log_info("asset_loader", "Client startup assets complete: wall=%.2fms", (time_get() - m_StartupAssetsStart) * 1000.0 / time_freq());

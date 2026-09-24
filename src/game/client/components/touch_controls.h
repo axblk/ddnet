@@ -704,7 +704,7 @@ public:
 	};
 
 	// These things must be set before opening the menu for calling the popup.
-	// After setting these, use GameClient()->m_Menus.SetActive(true), then the popup could be called automatically if EPopupType is not NUM_POPUPS.
+	// After setting these, use GameClient()->SetMenuActive(true), then the popup could be called automatically if EPopupType is not NUM_POPUPS.
 	class CPopupParam
 	{
 	public:

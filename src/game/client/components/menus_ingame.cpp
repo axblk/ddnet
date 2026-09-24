@@ -31,6 +31,7 @@
 
 #include <game/client/animstate.h>
 #include <game/client/components/countryflags.h>
+#include <game/client/components/frontend.h>
 #include <game/client/components/touch_controls.h>
 #include <game/client/gameclient.h>
 #include <game/client/ui.h>
@@ -63,7 +64,7 @@ void CMenus::RenderGame(CUIRect MainView)
 	{
 		if((GameClient()->CurrentRaceTime() / 60 >= g_Config.m_ClConfirmDisconnectTime && g_Config.m_ClConfirmDisconnectTime >= 0) ||
 			GameClient()->m_TouchControls.HasEditingChanges() ||
-			GameClient()->m_Menus.m_MenusIngameTouchControls.UnsavedChanges())
+			Frontend()->m_Menus.m_MenusIngameTouchControls.UnsavedChanges())
 		{
 			char aBuf[256] = {'\0'};
 			if(GameClient()->CurrentRaceTime() / 60 >= g_Config.m_ClConfirmDisconnectTime && g_Config.m_ClConfirmDisconnectTime >= 0)
@@ -71,7 +72,7 @@ void CMenus::RenderGame(CUIRect MainView)
 				str_copy(aBuf, Localize("Are you sure that you want to disconnect?"));
 			}
 			if(GameClient()->m_TouchControls.HasEditingChanges() ||
-				GameClient()->m_Menus.m_MenusIngameTouchControls.UnsavedChanges())
+				Frontend()->m_Menus.m_MenusIngameTouchControls.UnsavedChanges())
 			{
 				if(aBuf[0] != '\0')
 				{
@@ -444,7 +445,7 @@ void CMenus::PopupConfirmSelectedNotVisible()
 	else
 	{
 		m_MenusIngameTouchControls.ResetButtonPointers();
-		GameClient()->m_Menus.SetActive(false);
+		Frontend()->m_Menus.SetActive(false);
 	}
 }
 
@@ -477,7 +478,7 @@ void CMenus::PopupCancelChangeSelectedButton()
 		m_MenusIngameTouchControls.ResetButtonPointers();
 	}
 	if(m_MenusIngameTouchControls.m_CloseMenu)
-		GameClient()->m_Menus.SetActive(false);
+		Frontend()->m_Menus.SetActive(false);
 }
 
 void CMenus::PopupConfirmTurnOffEditor()
@@ -1014,7 +1015,7 @@ void CMenus::RenderServerControl(CUIRect MainView)
 		Ui()->SetActiveItem(&m_FilterInput);
 		m_FilterInput.SelectAll();
 	}
-	bool Searching = Ui()->DoEditBox_Search(&m_FilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !GameClient()->m_GameConsole.IsActive());
+	bool Searching = Ui()->DoEditBox_Search(&m_FilterInput, &QuickSearch, 14.0f, !Ui()->IsPopupOpen() && !Frontend()->m_GameConsole.IsActive());
 
 	// vote menu
 	bool Call = false;
@@ -1253,162 +1254,6 @@ void CMenus::RenderInGameNetwork(CUIRect MainView)
 	RenderServerbrowser(MainView);
 }
 
-// ghost stuff
-CMenus::CGhostlistScanJob::CGhostlistScanJob(IStorage *pStorage, std::unique_ptr<CGhostLoader> pGhostLoader, const char *pGhostDir, const char *pMapName, const SHA256_DIGEST &MapSha256, unsigned MapCrc) :
-	m_pStorage(pStorage), m_pGhostLoader(std::move(pGhostLoader)), m_MapSha256(MapSha256), m_MapCrc(MapCrc)
-{
-	str_copy(m_aGhostDir, pGhostDir);
-	str_copy(m_aMapName, pMapName);
-}
-
-int CMenus::CGhostlistScanJob::FetchCallback(const CFsFileInfo *pInfo, int IsDir, int StorageType, void *pUser)
-{
-	CGhostlistScanJob *pSelf = static_cast<CGhostlistScanJob *>(pUser);
-	if(IsDir || !str_endswith(pInfo->m_pName, ".gho") || !str_startswith(pInfo->m_pName, pSelf->m_aMapName))
-		return 0;
-
-	char aFilename[IO_MAX_PATH_LENGTH];
-	str_format(aFilename, sizeof(aFilename), "%s/%s", pSelf->m_aGhostDir, pInfo->m_pName);
-
-	CGhostInfo Info;
-	if(!pSelf->m_pGhostLoader->GetGhostInfo(aFilename, &Info, pSelf->m_aMapName, pSelf->m_MapSha256, pSelf->m_MapCrc))
-		return 0;
-
-	CGhostItem Item;
-	str_copy(Item.m_aFilename, aFilename);
-	str_copy(Item.m_aPlayer, Info.m_aOwner);
-	Item.m_Date = pInfo->m_TimeModified;
-	Item.m_Time = Info.m_Time;
-	if(Item.m_Time > 0)
-		pSelf->m_vGhosts.push_back(Item);
-
-	return 0;
-}
-
-void CMenus::CGhostlistScanJob::Run()
-{
-	m_pStorage->ListDirectoryInfo(IStorage::TYPE_ALL, m_aGhostDir, FetchCallback, this);
-}
-
-void CMenus::GhostlistPopulate()
-{
-	if(m_pGhostlistScanJob)
-		m_pGhostlistScanJob->Abort();
-	m_vGhosts.clear();
-
-	auto pGhostLoader = std::make_unique<CGhostLoader>();
-	pGhostLoader->Init(Storage());
-	m_pGhostlistScanJob = std::make_shared<CGhostlistScanJob>(Storage(), std::move(pGhostLoader),
-		GameClient()->m_Ghost.GetGhostDir(), GameClient()->Map()->BaseName(),
-		GameClient()->Map()->Sha256(), GameClient()->Map()->Crc());
-	Engine()->AddJob(m_pGhostlistScanJob);
-}
-
-void CMenus::UpdateGhostlistScan()
-{
-	if(!m_pGhostlistScanJob || !m_pGhostlistScanJob->Done())
-		return;
-
-	const bool Aborted = m_pGhostlistScanJob->State() != IJob::STATE_DONE;
-	std::shared_ptr<CGhostlistScanJob> pJob = std::move(m_pGhostlistScanJob);
-	if(Aborted)
-		return;
-
-	m_vGhosts = std::move(pJob->Ghosts());
-	SortGhostlist();
-
-	CGhostItem *pOwnGhost = nullptr;
-	for(auto &Ghost : m_vGhosts)
-	{
-		Ghost.m_Failed = false;
-		if(str_comp(Ghost.m_aPlayer, Client()->PlayerName()) == 0 && (!pOwnGhost || Ghost < *pOwnGhost))
-			pOwnGhost = &Ghost;
-	}
-
-	if(pOwnGhost)
-	{
-		pOwnGhost->m_Own = true;
-		pOwnGhost->m_Slot = GameClient()->m_Ghost.Load(pOwnGhost->m_aFilename);
-	}
-}
-
-void CMenus::OnGhostLoadFailed(int Slot)
-{
-	for(CGhostItem &Ghost : m_vGhosts)
-	{
-		if(Ghost.m_Slot == Slot)
-		{
-			Ghost.m_Slot = -1;
-			Ghost.m_Failed = true;
-		}
-	}
-}
-
-CMenus::CGhostItem *CMenus::GetOwnGhost()
-{
-	for(auto &Ghost : m_vGhosts)
-		if(Ghost.m_Own)
-			return &Ghost;
-	return nullptr;
-}
-
-void CMenus::UpdateOwnGhost(CGhostItem Item)
-{
-	int Own = -1;
-	for(size_t i = 0; i < m_vGhosts.size(); i++)
-		if(m_vGhosts[i].m_Own)
-			Own = i;
-
-	if(Own == -1)
-	{
-		Item.m_Own = true;
-	}
-	else if(g_Config.m_ClRaceGhostSaveBest && (Item.HasFile() || !m_vGhosts[Own].HasFile()))
-	{
-		Item.m_Own = true;
-		DeleteGhostItem(Own);
-	}
-	else if(m_vGhosts[Own].m_Time > Item.m_Time)
-	{
-		Item.m_Own = true;
-		m_vGhosts[Own].m_Own = false;
-		m_vGhosts[Own].m_Slot = -1;
-	}
-	else
-	{
-		Item.m_Own = false;
-		Item.m_Slot = -1;
-	}
-
-	Item.m_Date = std::time(nullptr);
-	Item.m_Failed = false;
-	m_vGhosts.insert(std::lower_bound(m_vGhosts.begin(), m_vGhosts.end(), Item), Item);
-	SortGhostlist();
-}
-
-void CMenus::DeleteGhostItem(int Index)
-{
-	if(m_vGhosts[Index].HasFile())
-		Storage()->RemoveFile(m_vGhosts[Index].m_aFilename, IStorage::TYPE_SAVE);
-	m_vGhosts.erase(m_vGhosts.begin() + Index);
-}
-
-void CMenus::SortGhostlist()
-{
-	if(g_Config.m_GhSort == GHOST_SORT_NAME)
-		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostItem &Left, const CGhostItem &Right) {
-			return g_Config.m_GhSortOrder ? (str_comp(Left.m_aPlayer, Right.m_aPlayer) > 0) : (str_comp(Left.m_aPlayer, Right.m_aPlayer) < 0);
-		});
-	else if(g_Config.m_GhSort == GHOST_SORT_TIME)
-		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostItem &Left, const CGhostItem &Right) {
-			return g_Config.m_GhSortOrder ? (Left.m_Time > Right.m_Time) : (Left.m_Time < Right.m_Time);
-		});
-	else if(g_Config.m_GhSort == GHOST_SORT_DATE)
-		std::stable_sort(m_vGhosts.begin(), m_vGhosts.end(), [](const CGhostItem &Left, const CGhostItem &Right) {
-			return g_Config.m_GhSortOrder ? (Left.m_Date > Right.m_Date) : (Left.m_Date < Right.m_Date);
-		});
-}
-
 void CMenus::RenderGhost(CUIRect MainView)
 {
 	// render background
@@ -1448,11 +1293,11 @@ void CMenus::RenderGhost(CUIRect MainView)
 	};
 
 	static CColumn s_aCols[] = {
-		{"", -1, GHOST_SORT_NONE, 2.0f, {0}},
-		{"", COL_ACTIVE, GHOST_SORT_NONE, 30.0f, {0}},
-		{Localizable("Name"), COL_NAME, GHOST_SORT_NAME, 200.0f, {0}},
-		{Localizable("Time"), COL_TIME, GHOST_SORT_TIME, 90.0f, {0}},
-		{Localizable("Date"), COL_DATE, GHOST_SORT_DATE, 150.0f, {0}},
+		{"", -1, CGhost::GHOST_SORT_NONE, 2.0f, {0}},
+		{"", COL_ACTIVE, CGhost::GHOST_SORT_NONE, 30.0f, {0}},
+		{Localizable("Name"), COL_NAME, CGhost::GHOST_SORT_NAME, 200.0f, {0}},
+		{Localizable("Time"), COL_TIME, CGhost::GHOST_SORT_TIME, 90.0f, {0}},
+		{Localizable("Date"), COL_DATE, CGhost::GHOST_SORT_DATE, 150.0f, {0}},
 	};
 
 	int NumCols = std::size(s_aCols);
@@ -1471,7 +1316,7 @@ void CMenus::RenderGhost(CUIRect MainView)
 	{
 		if(DoButton_GridHeader(&Col.m_Id, Localize(Col.m_pCaption), g_Config.m_GhSort == Col.m_Sort, &Col.m_Rect))
 		{
-			if(Col.m_Sort != GHOST_SORT_NONE)
+			if(Col.m_Sort != CGhost::GHOST_SORT_NONE)
 			{
 				if(g_Config.m_GhSort == Col.m_Sort)
 					g_Config.m_GhSortOrder ^= 1;
@@ -1479,17 +1324,18 @@ void CMenus::RenderGhost(CUIRect MainView)
 					g_Config.m_GhSortOrder = 0;
 				g_Config.m_GhSort = Col.m_Sort;
 
-				SortGhostlist();
+				GameClient()->m_Ghost.SortGhostlist();
 			}
 		}
 	}
 
 	View.Draw(ColorRGBA(0, 0, 0, 0.15f), 0, 0);
 
-	if(m_pGhostlistScanJob)
+	if(GameClient()->m_Ghost.GhostlistScanning())
 		Ui()->DoLabel(&View, Localize("Loading ghost files"), 16.0f, TEXTALIGN_MC);
 
-	const int NumGhosts = m_vGhosts.size();
+	std::vector<CGhost::CGhostListItem> &vGhosts = GameClient()->m_Ghost.Ghostlist();
+	const int NumGhosts = vGhosts.size();
 	int NumFailed = 0;
 	int NumActivated = 0;
 	static int s_SelectedIndex = 0;
@@ -1498,7 +1344,7 @@ void CMenus::RenderGhost(CUIRect MainView)
 
 	for(int i = 0; i < NumGhosts; i++)
 	{
-		const CGhostItem *pGhost = &m_vGhosts[i];
+		const CGhost::CGhostListItem *pGhost = &vGhosts[i];
 		const CListboxItem Item = s_ListBox.DoNextItem(pGhost);
 
 		if(pGhost->m_Failed)
@@ -1578,7 +1424,7 @@ void CMenus::RenderGhost(CUIRect MainView)
 	if(Ui()->DoButton_FontIcon(&s_ReloadButton, FontIcon::ARROW_ROTATE_RIGHT, 0, &Button, BUTTONFLAG_LEFT) || Input()->KeyPress(KEY_F5) || (Input()->KeyPress(KEY_R) && Input()->ModifierIsPressed()))
 	{
 		GameClient()->m_Ghost.UnloadAll();
-		GhostlistPopulate();
+		GameClient()->m_Ghost.GhostlistPopulate();
 	}
 
 	Status.VSplitLeft(5.0f, &Button, &Status);
@@ -1602,7 +1448,7 @@ void CMenus::RenderGhost(CUIRect MainView)
 		{
 			for(int i = 0; i < NumGhosts; i++)
 			{
-				CGhostItem *pGhost = &m_vGhosts[i];
+				CGhost::CGhostListItem *pGhost = &vGhosts[i];
 				if(pGhost->m_Failed || (ActivateAll && pGhost->m_Slot != -1))
 					continue;
 
@@ -1624,12 +1470,12 @@ void CMenus::RenderGhost(CUIRect MainView)
 		}
 	}
 
-	if(s_SelectedIndex == -1 || s_SelectedIndex >= (int)m_vGhosts.size())
+	if(s_SelectedIndex == -1 || s_SelectedIndex >= (int)vGhosts.size())
 		return;
 
-	CGhostItem *pGhost = &m_vGhosts[s_SelectedIndex];
+	CGhost::CGhostListItem *pGhost = &vGhosts[s_SelectedIndex];
 
-	CGhostItem *pOwnGhost = GetOwnGhost();
+	CGhost::CGhostListItem *pOwnGhost = GameClient()->m_Ghost.GetOwnGhost();
 	int ReservedSlots = !pGhost->m_Own && !(pOwnGhost && pOwnGhost->Active());
 	if(!pGhost->m_Failed && pGhost->HasFile() && (pGhost->Active() || GameClient()->m_Ghost.FreeSlots() > ReservedSlots))
 	{
@@ -1661,8 +1507,8 @@ void CMenus::RenderGhost(CUIRect MainView)
 	{
 		if(pGhost->Active())
 			GameClient()->m_Ghost.Unload(pGhost->m_Slot);
-		DeleteGhostItem(s_SelectedIndex);
-		s_SelectedIndex = std::min(s_SelectedIndex, (int)m_vGhosts.size() - 1);
+		GameClient()->m_Ghost.DeleteGhostItem(s_SelectedIndex);
+		s_SelectedIndex = std::min(s_SelectedIndex, (int)vGhosts.size() - 1);
 		return;
 	}
 

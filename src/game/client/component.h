@@ -25,6 +25,12 @@ protected:
 	class CGameClient *GameClient() const { return m_pClient; }
 
 	/**
+	 * Get the front end the game runs under. Only for the components of the
+	 * front end: it is defined with them, and a program without one has none.
+	 */
+	class CGameFrontend *Frontend() const;
+
+	/**
 	 * Get the client interface.
 	 */
 	class IClient *Client() const;

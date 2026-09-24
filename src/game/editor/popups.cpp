@@ -13,7 +13,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
-#include <game/client/gameclient.h>
+#include <game/client/components/frontend.h>
 #include <game/client/ui_scrollregion.h>
 #include <game/editor/mapitems/image.h>
 #include <game/editor/mapitems/sound.h>
@@ -1856,8 +1856,8 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 		pTitle = "Restarting server";
 		pMessage = "Local server is restarting. Please wait…";
 
-		CGameClient *pGameClient = (CGameClient *)pEditor->Kernel()->RequestInterface<IGameClient>();
-		if(!pGameClient->m_LocalServer.IsServerRunning())
+		CGameFrontend *pFrontend = static_cast<CGameFrontend *>(pEditor->Kernel()->RequestInterface<IGameFrontend>());
+		if(!pFrontend->m_LocalServer.IsServerRunning())
 		{
 			pEditor->TestMapLocally();
 			return CUi::POPUP_CLOSE_CURRENT;
@@ -1959,8 +1959,8 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 		}
 		else if(pEditor->m_PopupEventType == POPEVENT_RESTART_SERVER)
 		{
-			CGameClient *pGameClient = (CGameClient *)pEditor->Kernel()->RequestInterface<IGameClient>();
-			pGameClient->m_LocalServer.KillServer();
+			CGameFrontend *pFrontend = static_cast<CGameFrontend *>(pEditor->Kernel()->RequestInterface<IGameFrontend>());
+			pFrontend->m_LocalServer.KillServer();
 			pEditor->m_PopupEventType = CEditor::POPEVENT_RESTARTING_SERVER;
 			pEditor->m_PopupEventActivated = true;
 		}

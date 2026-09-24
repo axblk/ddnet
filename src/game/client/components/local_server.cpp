@@ -11,6 +11,7 @@
 #include <engine/serverbrowser.h>
 #include <engine/storage.h>
 
+#include <game/client/components/frontend.h>
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
@@ -48,7 +49,7 @@ void CLocalServer::WaitForPort()
 void CLocalServer::OnServerStarted()
 {
 	WaitForPort();
-	GameClient()->m_Menus.ForceRefreshLanPage();
+	Frontend()->m_Menus.ForceRefreshLanPage();
 }
 
 bool CLocalServer::RunServer(const std::vector<const char *> &vpArguments)
@@ -118,12 +119,12 @@ void CLocalServer::KillServer()
 {
 #if defined(CONF_PLATFORM_ANDROID)
 	ExecuteAndroidServerCommand("shutdown");
-	GameClient()->m_Menus.ForceRefreshLanPage();
+	Frontend()->m_Menus.ForceRefreshLanPage();
 #else
 	if(m_Process != INVALID_PROCESS && process_kill(m_Process))
 	{
 		m_Process = INVALID_PROCESS;
-		GameClient()->m_Menus.ForceRefreshLanPage();
+		Frontend()->m_Menus.ForceRefreshLanPage();
 	}
 #endif
 	Reset();
@@ -230,7 +231,7 @@ void CLocalServer::Update()
 			m_ConnectRequested = false;
 			char aAddress[32];
 			str_format(aAddress, sizeof(aAddress), "localhost:%d", m_Port);
-			GameClient()->m_Menus.Connect(aAddress);
+			Frontend()->m_Menus.Connect(aAddress);
 		}
 	}
 }

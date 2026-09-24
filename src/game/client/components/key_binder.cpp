@@ -11,6 +11,26 @@
 #include <game/client/ui.h>
 #include <game/localization.h>
 
+void CKeyBinder::OnInit()
+{
+	// The back button of the menus aborts a key reader that waits for a key
+	// instead of acting as the escape key it stands for.
+	Ui()->SetOnBackButtonPressedCallback([this]() {
+		m_BackButtonHandled = HasPendingKeyReader();
+		if(m_BackButtonHandled)
+			AbortPendingKey();
+	});
+	Ui()->SetDispatchInputCallback([this](const IInput::CEvent &Event) {
+		if(m_BackButtonHandled)
+		{
+			if(Event.m_Flags & IInput::FLAG_RELEASE)
+				m_BackButtonHandled = false;
+			return;
+		}
+		GameClient()->OnInput(Event);
+	});
+}
+
 bool CKeyBinder::OnInput(const IInput::CEvent &Event)
 {
 	if(!m_TakeKey)

@@ -2774,6 +2774,8 @@ if(CLIENT)
     assets.cpp
     component.cpp
     component.h
+    components/backdrop.cpp
+    components/backdrop.h
     components/background.cpp
     components/background.h
     components/binds.cpp
@@ -2806,6 +2808,8 @@ if(CLIENT)
     components/envelope_state.h
     components/freezebars.cpp
     components/freezebars.h
+    components/frontend.cpp
+    components/frontend.h
     components/ghost.cpp
     components/ghost.h
     components/hud.cpp
@@ -2835,7 +2839,6 @@ if(CLIENT)
     components/menus_ingame.cpp
     components/menus_ingame_touch_controls.cpp
     components/menus_ingame_touch_controls.h
-    components/menus_null.cpp
     components/menus_settings.cpp
     components/menus_settings_appearance.cpp
     components/menus_settings_assets.cpp
@@ -2881,6 +2884,7 @@ if(CLIENT)
     components/touch_controls.h
     components/voting.cpp
     components/voting.h
+    frontend.h
     game_state.cpp
     game_state.h
     game_view.cpp
@@ -2954,6 +2958,10 @@ if(CLIENT)
     ui_scrollregion.h
     # tidy-alphabetical-end
   )
+  # The front end of the client on top of the game (see
+  # game/client/frontend.h): the menus, the consoles, the key binder, the theme
+  # behind the menus and the local server.
+  set(GAME_FRONTEND_REGEX "src/game/client/(match_journal|match_stats_export|components/(community_icons|console|frontend|key_binder|local_server|menu_background|menus(_[a-z0-9_]*)?))\\.(cpp|h)$")
   set_src(GAME_EDITOR GLOB_RECURSE src/game/editor
     # tidy-alphabetical-start
     auto_map.cpp
@@ -3189,7 +3197,6 @@ if(CLIENT)
   set_source_files_properties("${EMBEDDED_SHADERS_SRC}" PROPERTIES GENERATED TRUE)
 
   set(CLIENT_SRC ${ENGINE_CLIENT} ${PLATFORM_CLIENT} ${GAME_CLIENT} ${GAME_EDITOR} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-  list(FILTER CLIENT_SRC EXCLUDE REGEX "src/game/client/components/menus_null\\.cpp$")
 
   set(DEPS_CLIENT ${DEPS} ${GLEW_DEP})
 
@@ -3421,14 +3428,13 @@ if(CLIENT)
   )
 
   # What the programs that only show a demo are built from: the game on
-  # CDemoClientBase instead of CClient, with the menus as a stand-in (see
-  # menus_null.cpp), and none of the network, the server browser, the editor or
-  # the platform integrations.
+  # CDemoClientBase instead of CClient, without the front end (see
+  # game/client/frontend.h), and none of the network, the server browser, the
+  # editor or the platform integrations.
   set(DEMO_CLIENT_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|steam|updater)\\.(cpp|h)$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
-  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/components/(community_icons|menus(_[a-z0-9_]*)?)\\.cpp$")
-  list(APPEND DEMO_CLIENT_SRC src/game/client/components/menus_null.cpp)
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
   # These and the map viewer leave the updater and the platform integrations
   # out.
   set(STANDALONE_CLIENT_TARGETS demo-renderer demo-viewer map-viewer)
@@ -3458,7 +3464,6 @@ if(CLIENT)
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${PNG_LIBRARIES}
-      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       # tidy-alphabetical-end
@@ -3513,7 +3518,6 @@ if(CLIENT)
       ${GLEW_LIBRARIES}
       ${PNG_LIBRARIES}
       ${SDL2_LIBRARIES}
-      ${SQLite3_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       # tidy-alphabetical-end

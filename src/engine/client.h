@@ -94,8 +94,6 @@ public:
 	typedef std::function<void(ELoadingCallbackDetail Detail)> TLoadingCallback;
 
 protected:
-	// quick access to state of the client
-	EClientState m_State = IClient::STATE_OFFLINE;
 	ELoadingStateDetail m_LoadingStateDetail = LOADING_STATE_DETAIL_INITIAL;
 	int64_t m_StateStartTime;
 
@@ -130,7 +128,11 @@ public:
 	virtual int ActiveConnection(CSessionId SessionId) const = 0;
 
 	//
-	EClientState State() const { return m_State; }
+	/**
+	 * The state of the session in focus, or that the client is quitting or
+	 * restarting.
+	 */
+	virtual EClientState State() const = 0;
 	virtual bool IsOnline() const = 0;
 	virtual bool IsDemoPlayback() const = 0;
 	ELoadingStateDetail LoadingStateDetail() const { return m_LoadingStateDetail; }

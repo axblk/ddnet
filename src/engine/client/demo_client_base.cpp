@@ -158,7 +158,7 @@ void CDemoClientBase::StopDemoSession(const char *pReason)
 		str_copy(m_aError, pReason);
 	CDemoSessionSource &Source = DemoSource(m_DemoSessionId);
 	Source.m_DemoPlayer.Stop(pReason == nullptr ? "" : pReason);
-	if(m_State < IClient::STATE_QUITTING)
+	if(State() < IClient::STATE_QUITTING)
 		GameClient()->OnSessionClosed(m_DemoSessionId);
 	Source.SetState(ESessionState::OFFLINE);
 	Source.m_Connection.ResetSnapshots();

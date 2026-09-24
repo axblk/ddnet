@@ -28,6 +28,12 @@ void FormatMapDownloadFilename(const char *pName, const std::optional<SHA256_DIG
 class CClientCore : public IClient, public CSessionRuntime
 {
 protected:
+	// The client state is that of the focused session, except once the client
+	// quits or restarts. The game is told of every change; this is what it was
+	// told last.
+	std::optional<EClientState> m_ExitState;
+	EClientState m_AnnouncedState = IClient::STATE_OFFLINE;
+
 	int64_t m_LocalStartTime = 0;
 	int64_t m_GlobalStartTime = 0;
 
@@ -45,9 +51,24 @@ protected:
 	 */
 	const char *LoadDemo(CSessionId SessionId, const char *pFilename, int StorageType);
 
+	/**
+	 * Focuses the session a state belongs to and puts it into that state.
+	 * Quitting and restarting are for good.
+	 */
 	void SetState(EClientState State);
+	/**
+	 * Puts the focused session into a state.
+	 *
+	 * @param State The state the focused session is put into.
+	 * @param ResetSession Whether the game drops what it has of the session
+	 * when the state goes back below online.
+	 */
 	void SetFocusedState(EClientState State, bool ResetSession);
 	void FocusSession(CSessionId SessionId);
+	/**
+	 * Tells the game when `State()` has changed since it was told last.
+	 */
+	void AnnounceState();
 	/**
 	 * Called after the state of the focused session changed.
 	 */
@@ -64,6 +85,7 @@ public:
 	using IClient::ActiveConnection;
 	int ActiveConnection(CSessionId SessionId) const override { return SessionType(SessionId) == ESessionSourceType::DEMO ? CONN_MAIN : m_ActiveConnection; }
 
+	EClientState State() const override;
 	bool IsOnline() const override;
 	bool IsDemoPlayback() const override;
 

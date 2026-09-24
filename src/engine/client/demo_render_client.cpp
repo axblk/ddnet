@@ -80,7 +80,7 @@ int CDemoRenderClient::Run()
 			// Nobody is at a keyboard here, so an interrupt is the only way out.
 			// It has to reach the encoder, which removes the unfinished file.
 			CatchVideoExportInterrupt();
-			while(m_State != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
+			while(State() != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
 			{
 				if(VideoExportInterrupted())
 				{

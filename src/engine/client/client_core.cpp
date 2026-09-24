@@ -53,6 +53,27 @@ float CClientCore::DemoPlaybackLocalTime(CSessionId SessionId) const
 	return LocalTime();
 }
 
+IClient::EClientState CClientCore::State() const
+{
+	if(m_ExitState.has_value())
+		return *m_ExitState;
+	const CSessionId SessionId = FocusedSessionId();
+	switch(SessionState(SessionId))
+	{
+	case ESessionState::CONNECTING:
+		return IClient::STATE_CONNECTING;
+	case ESessionState::LOADING_MAP:
+		return IClient::STATE_LOADING;
+	case ESessionState::READY:
+		return SessionType(SessionId) == ESessionSourceType::DEMO ? IClient::STATE_DEMOPLAYBACK : IClient::STATE_ONLINE;
+	case ESessionState::OFFLINE:
+	case ESessionState::STOPPING:
+	case ESessionState::ERROR:
+		break;
+	}
+	return IClient::STATE_OFFLINE;
+}
+
 bool CClientCore::IsOnline() const
 {
 	return m_NetworkSessionId.IsValid() && FocusedSessionId() == m_NetworkSessionId && SessionState(m_NetworkSessionId) == ESessionState::READY;
@@ -95,7 +116,7 @@ const char *CClientCore::LoadDemo(CSessionId SessionId, const char *pFilename, i
 
 void CClientCore::SetState(EClientState State)
 {
-	if(m_State == IClient::STATE_QUITTING || m_State == IClient::STATE_RESTARTING)
+	if(m_ExitState.has_value())
 		return;
 	if(State == IClient::STATE_CONNECTING || State == IClient::STATE_ONLINE)
 		m_SessionManager.SetFocused(m_NetworkSessionId);
@@ -106,17 +127,14 @@ void CClientCore::SetState(EClientState State)
 
 void CClientCore::SetFocusedState(EClientState State, bool ResetSession)
 {
-	const bool StateChanged = m_State != State;
-
-	if(StateChanged && g_Config.m_Debug)
+	if(State == IClient::STATE_QUITTING || State == IClient::STATE_RESTARTING)
 	{
-		char aBuf[64];
-		str_format(aBuf, sizeof(aBuf), "state change. last=%d current=%d", m_State, State);
-		m_pConsole->Print(IConsole::OUTPUT_LEVEL_DEBUG, "client", aBuf);
+		m_ExitState = State;
+		AnnounceState();
+		return;
 	}
 
-	const EClientState OldState = m_State;
-	if(StateChanged && ResetSession && State < IClient::STATE_ONLINE)
+	if(ResetSession && State != m_AnnouncedState && State < IClient::STATE_ONLINE)
 		GameClient()->OnSessionClosed(m_SessionManager.FocusedId());
 
 	CSessionSource &FocusedSession = *m_SessionManager.Focused();
@@ -139,38 +157,32 @@ void CClientCore::SetFocusedState(EClientState State, bool ResetSession)
 	case IClient::STATE_RESTARTING:
 		break;
 	}
-	if(!StateChanged)
-		return;
-	m_State = State;
+	AnnounceState();
+}
 
+void CClientCore::AnnounceState()
+{
+	const EClientState State = this->State();
+	if(State == m_AnnouncedState)
+		return;
+	const EClientState OldState = m_AnnouncedState;
+	if(g_Config.m_Debug)
+	{
+		char aBuf[64];
+		str_format(aBuf, sizeof(aBuf), "state change. last=%d current=%d", OldState, State);
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_DEBUG, "client", aBuf);
+	}
+	m_AnnouncedState = State;
 	m_StateStartTime = time_get();
-	GameClient()->OnStateChange(m_State, OldState);
-	OnStateChanged(m_State, OldState);
+	GameClient()->OnStateChange(State, OldState);
+	OnStateChanged(State, OldState);
 }
 
 void CClientCore::FocusSession(CSessionId SessionId)
 {
 	if(!m_SessionManager.SetFocused(SessionId))
 		return;
-	const CSessionSource &Session = SessionSource(SessionId);
-	EClientState State = IClient::STATE_OFFLINE;
-	switch(Session.State())
-	{
-	case ESessionState::CONNECTING:
-		State = IClient::STATE_CONNECTING;
-		break;
-	case ESessionState::LOADING_MAP:
-		State = IClient::STATE_LOADING;
-		break;
-	case ESessionState::READY:
-		State = Session.Type() == ESessionSourceType::DEMO ? IClient::STATE_DEMOPLAYBACK : IClient::STATE_ONLINE;
-		break;
-	case ESessionState::OFFLINE:
-	case ESessionState::STOPPING:
-	case ESessionState::ERROR:
-		break;
-	}
-	SetFocusedState(State, false);
+	AnnounceState();
 	GameClient()->OnSessionFocused(SessionId);
 }
 

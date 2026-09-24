@@ -501,6 +501,13 @@ function(set_own_rpath TARGET)
   endif()
 endfunction()
 
+# The name a browser build exports its factory under, one per program.
+function(set_web_export_name target name)
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(${target} PRIVATE "-sEXPORT_NAME=${name}")
+  endif()
+endfunction()
+
 ########################################################################
 # INITIALIZE TARGET LISTS
 ########################################################################
@@ -948,7 +955,9 @@ elseif(TARGET_OS STREQUAL "emscripten")
   find_package(OpenGL)
   set(PLATFORM_CLIENT_LIBS GL)
   set(PLATFORM_CLIENT_INCLUDE_DIRS "")
-  set(CMAKE_EXECUTABLE_SUFFIX ".html")
+  # Programs are scripts loaded by pages of their own, so emscripten's shell is
+  # not used.
+  set(CMAKE_EXECUTABLE_SUFFIX ".js")
   set(PLATFORM_CLIENT)
   set(PLATFORM_LIBS)
   list(APPEND PLATFORM_LIBS rt) # clock_gettime for glibc < 2.17
@@ -2203,12 +2212,50 @@ if(WEBGPU_NATIVE_BACKEND)
   list(APPEND COPY_FILES ${WGPU_NATIVE_RUNTIME_RELATIVE})
 endif()
 if(TARGET_OS STREQUAL "emscripten")
-  list(APPEND COPY_FILES other/emscripten/background.png)
-  list(APPEND COPY_FILES other/emscripten/coi-serviceworker.js)
-  list(APPEND COPY_FILES other/emscripten/index.html)
-  list(APPEND COPY_FILES other/icons/DDNet.ico)
+  # The client's page and what it loads. The other pages belong to the site,
+  # see the `web-site` target.
+  set(WEB_CLIENT_PAGE_FILES
+    # tidy-alphabetical-start
+    other/emscripten/coi-serviceworker.js
+    other/emscripten/ddnet-base.js
+    other/emscripten/ddnet-page.css
+    other/emscripten/index.html
+    other/icons/DDNet.ico
+    # tidy-alphabetical-end
+  )
+  set(WEB_SITE_PAGE_FILES
+    # tidy-alphabetical-start
+    other/emscripten/ddnet-render.css
+    other/emscripten/ddnet-viewer.css
+    other/emscripten/demo.html
+    other/emscripten/map.html
+    other/emscripten/packages/demo-player/demo-player.js
+    other/emscripten/packages/demo-renderer/demo-renderer.js
+    other/emscripten/packages/map-viewer/map-viewer.js
+    other/emscripten/render.html
+    # tidy-alphabetical-end
+  )
+  set(WEB_PAGE_FILES ${WEB_CLIENT_PAGE_FILES} ${WEB_SITE_PAGE_FILES})
+  list(APPEND COPY_FILES ${WEB_PAGE_FILES})
 endif()
 file(COPY ${COPY_FILES} DESTINATION .)
+
+if(TARGET_OS STREQUAL "emscripten")
+  # Build rules as well, so that an edited page does not need a reconfigure.
+  set(WEB_PAGE_COPY_OUTPUTS)
+  set(WEB_PAGE_NAMES)
+  foreach(pagefile ${WEB_PAGE_FILES})
+    get_filename_component(PAGE_NAME ${pagefile} NAME)
+    list(APPEND WEB_PAGE_NAMES ${PAGE_NAME})
+    add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROJECT_SOURCE_DIR}/${pagefile} ${PROJECT_BINARY_DIR}/${PAGE_NAME}
+      DEPENDS ${PROJECT_SOURCE_DIR}/${pagefile}
+      COMMENT ""
+      VERBATIM)
+    list(APPEND WEB_PAGE_COPY_OUTPUTS ${PROJECT_BINARY_DIR}/${PAGE_NAME})
+  endforeach()
+  add_custom_target(copy_web_page_files ALL DEPENDS ${WEB_PAGE_COPY_OUTPUTS})
+endif()
 
 set(COPY_DIRS ${SDL2_COPY_DIRS})
 file(COPY ${COPY_DIRS} DESTINATION .)
@@ -3427,6 +3474,11 @@ if(CLIENT)
   set_property(TARGET game-client
       PROPERTY OUTPUT_NAME ${CLIENT_EXECUTABLE}
   )
+  set_web_export_name(game-client DDNetClient)
+  # Only the client keeps files, so only it mounts IndexedDB over its home.
+  if(TARGET_OS STREQUAL "emscripten")
+    target_link_options(game-client PRIVATE "-lidbfs.js" "-sEXPORTED_RUNTIME_METHODS=callMain,ccall,FS,IDBFS")
+  endif()
   target_link_libraries(game-client ${LIBS_CLIENT})
 
   if(WEBGPU_BACKEND_PROTOTYPE AND TARGET_OS STREQUAL "emscripten")
@@ -3494,8 +3546,10 @@ if(CLIENT)
   # out.
   set(STANDALONE_CLIENT_TARGETS demo-player demo-renderer map-viewer)
 
-  if(VIDEORECORDER AND (VULKAN OR WEBGPU_NATIVE_BACKEND) AND NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "emscripten"))
-    # Draws into a surface without a window, so no SDL and the null input.
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android")
+    # Draws into a surface without a window, so no SDL and the null input. In
+    # the browser, WebGPU draws into render targets without a canvas and the
+    # encoder behind `IVideo` is WebCodecs instead of FFmpeg.
     set(DEMO_RENDERER_SRC ${DEMO_CLIENT_SRC} src/engine/client/demo_render_client.cpp src/engine/client/demo_render_client.h)
     list(FILTER DEMO_RENDERER_SRC EXCLUDE REGEX "src/engine/client/(input|window_sdl)\\.(cpp|h)$")
     # A developer tool, not part of the game, and not shipped with the release.
@@ -3513,6 +3567,7 @@ if(CLIENT)
     )
     ddnet_graphics_program(demo-renderer)
     set_property(TARGET demo-renderer PROPERTY OUTPUT_NAME ddnet-demo-render)
+    set_web_export_name(demo-renderer DDNetDemoRenderer)
     target_compile_definitions(demo-renderer PRIVATE CONF_DEMO_RENDER_TOOL)
     target_link_libraries(demo-renderer
       # tidy-alphabetical-start
@@ -3566,6 +3621,7 @@ if(CLIENT)
     )
     ddnet_graphics_program(demo-player)
     set_property(TARGET demo-player PROPERTY OUTPUT_NAME ddnet-demo-player)
+    set_web_export_name(demo-player DDNetDemoPlayer)
     target_compile_definitions(demo-player PRIVATE CONF_DEMO_PLAYER_TOOL)
     target_link_libraries(demo-player
       # tidy-alphabetical-start
@@ -3638,6 +3694,12 @@ if(CLIENT)
     )
     ddnet_graphics_program(map-viewer)
     set_property(TARGET map-viewer PROPERTY OUTPUT_NAME ddnet-map-viewer)
+    set_web_export_name(map-viewer DDNetMapViewer)
+    if(TARGET_OS STREQUAL "emscripten")
+      # The browser's own fetch, so that the map's images are fetched beside
+      # each other.
+      target_sources(map-viewer PRIVATE src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+    endif()
     # No `${LIBS}` and no FreeType: nothing here talks to the network, and
     # nothing here draws a letter.
     target_link_libraries(map-viewer
@@ -3663,6 +3725,30 @@ if(CLIENT)
       ${PLATFORM_CLIENT_INCLUDE_DIRS}
       ${VULKAN_INCLUDE_DIRS}
     )
+  endif()
+
+  if(TARGET_OS STREQUAL "emscripten")
+    # Four programs, three pages and one data directory. The render tool has no
+    # page of its own. The build says what a server needs.
+    add_custom_target(web-site
+      COMMAND ${CMAKE_COMMAND}
+        -DBUILD_DIR=${PROJECT_BINARY_DIR}
+        -DSITE_DIR=${PROJECT_BINARY_DIR}/site
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
+        "-DPAGE_FILES=$<JOIN:${WEB_PAGE_NAMES},$<SEMICOLON>>"
+        -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
+      DEPENDS
+        # tidy-alphabetical-start
+        copy_data
+        copy_web_page_files
+        demo-player
+        demo-renderer
+        game-client
+        map-viewer
+        web_data_index
+        # tidy-alphabetical-end
+      COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
+      VERBATIM)
   endif()
 
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)
@@ -4687,6 +4773,8 @@ set(CPACK_FILES
 )
 if(NOT TARGET_OS STREQUAL "emscripten")
   list(APPEND CPACK_FILES storage.cfg)
+else()
+  list(REMOVE_ITEM CPACK_FILES ${WEB_SITE_PAGE_FILES})
 endif()
 set(CPACK_GEN_FILES)
 

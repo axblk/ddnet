@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+		<meta name="description" content="Look at a DDNet map in a web browser.">
+		<title>DDNet Map Viewer</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
+		<!-- The packages by the names they are published under. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"@ddnet/base": "./ddnet-base.js",
+				"@ddnet/map-viewer": "./map-viewer.js"
+			}
+		}
+		</script>
+		<link rel="preload" as="script" href="ddnet-map-viewer.js" crossorigin>
+	</head>
+	<body>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<!-- `link` keeps the address in step with the view: map.html#map=<url>&x=<tile>&y=<tile>&tiles=<across> -->
+		<ddnet-map id="viewer" controls="html" link>
+			<div id="open" class="viewer-open" slot="controls" hidden>
+				<div class="viewer-panel viewer-open-panel">
+					<div class="viewer-panel-title">Open a map</div>
+					<p class="viewer-open-hint">Choose a <code>.map</code> file, or drop one onto this page.</p>
+					<div class="viewer-panel-actions">
+						<button id="open-button" class="viewer-text-button" disabled>Choose a map</button>
+					</div>
+				</div>
+			</div>
+		</ddnet-map>
+		<script type="module">
+			import "@ddnet/map-viewer";
+
+			const element = document.getElementById('viewer');
+			const opener = document.getElementById('open');
+			const openButton = document.getElementById('open-button');
+			opener.hidden = element.hasAttribute('src');
+			element.ready.then(() => {
+				openButton.disabled = false;
+				element.focus();
+			}, () => {});
+			element.addEventListener('load', () => { opener.hidden = true; });
+			element.addEventListener('error', () => { opener.hidden = element.program?.loaded() === true; });
+			openButton.addEventListener('click', () => element.open());
+		</script>
+	</body>
+</html>

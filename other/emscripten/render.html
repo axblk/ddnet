@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta name="description" content="Render DDNet demos into videos in a web browser.">
+		<title>DDNet Demo Renderer</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-render.css">
+		<!-- The packages by the names they are published under. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"@ddnet/base": "./ddnet-base.js",
+				"@ddnet/demo-renderer": "./demo-renderer.js"
+			}
+		}
+		</script>
+		<link rel="preload" as="script" href="ddnet-demo-render.js" crossorigin>
+	</head>
+	<body>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<div id="error" hidden></div>
+		<div id="render">
+			<h2>Render demos to video</h2>
+			<div id="drop">
+				Drop demos here, or
+				<label><input id="files" type="file" accept=".demo" multiple hidden><button id="choose" type="button">choose files</button></label>
+			</div>
+			<!-- Filled by `exportSettingsForm`, the same form the demo player uses. -->
+			<div id="settings">
+				<label id="follow-choice" title="A demo a server recorded has nobody who recorded it, so without this the camera stands still.">Follow <input id="follow" type="text" placeholder="player or id" size="10"></label>
+				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
+			</div>
+			<div id="actions">
+				<button id="start" disabled>Render</button>
+				<button id="stop" hidden>Stop</button>
+				<button id="save-all" hidden>Save all as zip</button>
+				<span id="summary"></span>
+			</div>
+			<ul id="queue"></ul>
+		</div>
+		<script type="module">
+			import { setUrlParameters, supportError, exportSettingsForm, urlParameter } from "@ddnet/base";
+			import { renderDemo, zip } from "@ddnet/demo-renderer";
+
+			// Demos are queued and rendered one after the other in a worker: a
+			// render takes the whole machine.
+			const $ = id => document.getElementById(id);
+			const queueList = $('queue');
+			const startButton = $('start');
+			const stopButton = $('stop');
+			const saveAllButton = $('save-all');
+			const summary = $('summary');
+			const followInput = $('follow');
+			const folderCheckbox = $('folder');
+			const settingsBox = $('settings');
+			const settingsForm = exportSettingsForm(settingsBox);
+			settingsBox.append($('follow-choice'), $('folder-choice'));
+			// Writing into a folder needs no download per video and nothing in
+			// memory, where the browser can be asked for one.
+			$('folder-choice').hidden = !window.showDirectoryPicker;
+			const jobs = [];
+			let running = false;
+			let stopping = false;
+			let problem = null;
+
+			const say = (element, text) => { element.textContent = text; };
+			function formatTime(seconds) {
+				const total = Math.round(seconds);
+				return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+			}
+
+			// The queue outlives a reload in IndexedDB, as the files themselves:
+			// a page loses the files it was handed when it goes.
+			const QUEUE_LIMIT = 512 * 1024 * 1024;
+			let queueBytes = 0;
+			let queueOrder = 0;
+			async function withQueue(mode, work) {
+				try {
+					const database = await new Promise((resolve, reject) => {
+						const request = indexedDB.open("ddnet-render-queue", 1);
+						request.onupgradeneeded = () => request.result.createObjectStore("demos", { keyPath: "id" });
+						request.onsuccess = () => resolve(request.result);
+						request.onerror = () => reject(request.error);
+					});
+					const request = work(database.transaction("demos", mode).objectStore("demos"));
+					const result = await new Promise((resolve, reject) => {
+						request.onsuccess = () => resolve(request.result);
+						request.onerror = () => reject(request.error);
+					});
+					database.close();
+					return result;
+				} catch (error) {
+					// Without storage the queue lives as long as the page.
+					return null;
+				}
+			}
+
+			function remember(job) {
+				if (queueBytes + job.file.size > QUEUE_LIMIT) {
+					return;
+				}
+				queueBytes += job.file.size;
+				job.remembered = true;
+				withQueue("readwrite", store => store.put({ id: job.id, order: queueOrder++, file: job.file }));
+			}
+
+			function forget(job) {
+				if (job.remembered) {
+					job.remembered = false;
+					queueBytes -= job.file.size;
+					withQueue("readwrite", store => store.delete(job.id));
+				}
+			}
+
+			async function restoreJobs() {
+				const kept = await withQueue("readonly", store => store.getAll()) ?? [];
+				for (const entry of kept.sort((left, right) => left.order - right.order)) {
+					if (addJob(entry.file, entry.id) !== null) {
+						queueOrder = Math.max(queueOrder, entry.order + 1);
+						queueBytes += entry.file.size;
+					}
+				}
+			}
+
+			function addJob(file, id) {
+				if (!file.name.endsWith(".demo") || jobs.some(job => job.file === file)) {
+					return null;
+				}
+				const row = document.createElement('li');
+				const name = Object.assign(document.createElement('span'), { className: "name", textContent: file.name });
+				const progress = Object.assign(document.createElement('progress'), { max: 1, value: 0 });
+				progress.style.visibility = "hidden";
+				const status = Object.assign(document.createElement('span'), { className: "status", textContent: "Waiting" });
+				const remove = Object.assign(document.createElement('button'), { textContent: "×", title: "Take off the list" });
+				remove.setAttribute('aria-label', `Take ${file.name} off the list`);
+				row.append(name, progress, status, remove);
+				queueList.append(row);
+				const job = { file, row, progress, status, id: id ?? crypto.randomUUID(), remembered: id !== undefined };
+				// The job being rendered is stopped; what it wrote stays.
+				remove.addEventListener('click', () => {
+					jobs.splice(jobs.indexOf(job), 1);
+					row.remove();
+					forget(job);
+					job.stop?.abort();
+					updateSummary();
+				});
+				jobs.push(job);
+				if (id === undefined) {
+					remember(job);
+				}
+				updateSummary();
+				return job;
+			}
+
+			function updateSummary() {
+				const waiting = jobs.filter(job => !job.done).length;
+				startButton.disabled = running || waiting === 0 || problem !== null;
+				const finished = jobs.filter(job => job.video);
+				saveAllButton.hidden = finished.length < 2;
+				say(saveAllButton, `Save all ${finished.length} as zip`);
+				say(summary, jobs.length === 0 ? "" : `${jobs.length} ${jobs.length === 1 ? "demo" : "demos"}, ${waiting} to go`);
+			}
+
+			const settings = () => ({ ...settingsForm.values(), follow: followInput.value.trim() });
+			// A link can carry the settings; only what differs from the
+			// default is written into it.
+			const defaults = settings();
+			const LINK_SETTINGS = ["width", "height", "fps", "crf", "codec", "audio", "hud", "chat", "follow"];
+			function applyLink() {
+				const value = name => urlParameter(name);
+				const number = name => parseFloat(value(name)) || undefined;
+				const flag = name => value(name) === null ? undefined : value(name) === "1";
+				settingsForm.setValues({
+					width: number("width"), height: number("height"), fps: number("fps"), crf: number("crf"),
+					codec: value("codec") || undefined, audio: flag("audio"), hud: flag("hud"), chat: flag("chat"),
+				});
+				followInput.value = value("follow") ?? followInput.value;
+			}
+			function updateLink() {
+				const chosen = settings();
+				setUrlParameters(Object.fromEntries(LINK_SETTINGS.map(name => {
+					const same = chosen[name] === defaults[name] || (chosen[name] == null && defaults[name] == null);
+					return [name, same ? null : typeof chosen[name] === "boolean" ? Number(chosen[name]) : chosen[name]];
+				})));
+			}
+
+			async function renderJob(job, options, directory) {
+				say(job.status, "Starting…");
+				job.progress.style.visibility = "visible";
+				const name = `${job.file.name.replace(/\.demo$/, "")}.mp4`;
+				const handle = directory === null ? null : await directory.getFileHandle(name, { create: true });
+				job.stop = new AbortController();
+				const started = performance.now();
+				const video = await renderDemo({
+					...options,
+					demo: job.file,
+					name: job.file.name,
+					output: name,
+					videoSink: handle === null ? undefined : { stream: await handle.createWritable(), done: () => null },
+					signal: job.stop.signal,
+					onOutput: (message, kind) => {
+						if (kind.error) {
+							console.warn(message);
+						}
+					},
+					onProgress: status => {
+						job.progress.value = status.progress;
+						const left = status.progress > 0.01 ? (performance.now() - started) / 1000 * (1 - status.progress) / status.progress : NaN;
+						say(job.status, `${Math.round(status.progress * 100)} % · ${Math.round(status.encodedFrames)} frames · ${status.framesPerSecond.toFixed(1)} fps` + (isFinite(left) ? ` · ${formatTime(left)} left` : ""));
+					},
+				});
+				job.progress.value = 1;
+				if (handle !== null) {
+					say(job.status, `Saved as ${name}`);
+					return;
+				}
+				// A browser refuses downloads nobody asked for, so each is a link.
+				job.video = video;
+				job.name = name;
+				const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(video), download: name, textContent: `Save ${name}` });
+				job.status.replaceChildren(link);
+			}
+
+			async function runQueue() {
+				let directory = null;
+				if (window.showDirectoryPicker && folderCheckbox.checked) {
+					// Asked while the click is still the browser's user gesture.
+					try {
+						directory = await window.showDirectoryPicker({ mode: "readwrite", id: "ddnet-videos" });
+					} catch (error) {
+						say(summary, "No folder was chosen");
+						return;
+					}
+				}
+				running = true;
+				stopping = false;
+				stopButton.hidden = false;
+				const options = settings();
+				updateSummary();
+				for (const job of [...jobs]) {
+					if (stopping) {
+						break;
+					}
+					if (job.done || !jobs.includes(job)) {
+						continue;
+					}
+					try {
+						await renderJob(job, options, directory);
+						forget(job);
+					} catch (error) {
+						if (jobs.includes(job)) {
+							say(job.status, job.stop.signal.aborted ? "Stopped" : `Failed: ${error?.message ?? error}`);
+							job.status.className = "status failed";
+							job.progress.style.visibility = "hidden";
+						}
+					}
+					job.done = true;
+					updateSummary();
+				}
+				running = false;
+				stopButton.hidden = true;
+				updateSummary();
+			}
+
+			saveAllButton.addEventListener('click', async () => {
+				const finished = jobs.filter(job => job.video);
+				saveAllButton.disabled = true;
+				say(saveAllButton, "Packing…");
+				try {
+					const archive = await zip(finished.map(job => ({ name: job.name, blob: job.video })));
+					const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(archive), download: "videos.zip" });
+					link.click();
+					setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+					updateSummary();
+				} catch (error) {
+					updateSummary();
+					say(summary, error?.message ?? String(error));
+				}
+				saveAllButton.disabled = false;
+			});
+			startButton.addEventListener('click', () => {
+				if (!running) {
+					runQueue();
+				}
+			});
+			stopButton.addEventListener('click', () => {
+				stopping = true;
+				for (const job of jobs) {
+					job.stop?.abort();
+				}
+			});
+			$('choose').addEventListener('click', () => $('files').click());
+			$('files').addEventListener('change', event => {
+				for (const file of event.target.files) {
+					addJob(file);
+				}
+				event.target.value = "";
+			});
+			const dropZone = $('drop');
+			for (const type of ["dragenter", "dragover"]) {
+				dropZone.addEventListener(type, event => {
+					event.preventDefault();
+					dropZone.classList.add("over");
+				});
+			}
+			for (const type of ["dragleave", "drop"]) {
+				dropZone.addEventListener(type, () => dropZone.classList.remove("over"));
+			}
+			dropZone.addEventListener('drop', event => {
+				for (const file of event.dataTransfer.files) {
+					addJob(file);
+				}
+			});
+			// A demo dropped next to the zone is not for the browser to open.
+			for (const type of ["dragover", "drop"]) {
+				document.addEventListener(type, event => event.preventDefault());
+			}
+
+			applyLink();
+			settingsBox.addEventListener('change', updateLink);
+			restoreJobs();
+			problem = typeof VideoEncoder === "undefined" ? "This browser has no video encoder." : (await supportError(true))?.message ?? null;
+			if (problem !== null) {
+				say($('error'), problem);
+				$('error').hidden = false;
+			}
+			updateSummary();
+		</script>
+	</body>
+</html>

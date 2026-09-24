@@ -1,0 +1,37 @@
+{
+	"name": "@ddnet/demo-player",
+	"version": "1.0.0",
+	"description": "Watch a DDNet demo in a browser: a canvas, a demo, and an interface that reads like a <video>.",
+	"license": "Zlib",
+	"type": "module",
+	"exports": {
+		".": {
+			"types": "./demo-player.d.ts",
+			"default": "./demo-player.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"types": "./demo-player.d.ts",
+	"files": [
+		"README.md",
+		"demo-player.d.ts",
+		"demo-player.js",
+		"ddnet-demo-player.js",
+		"ddnet-demo-player.wasm"
+	],
+	"dependencies": {
+		"@ddnet/base": "^1.0.0"
+	},
+	"keywords": [
+		"ddnet",
+		"teeworlds",
+		"webassembly",
+		"emscripten"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ddnet/ddnet.git",
+		"directory": "other/emscripten/packages/demo-player"
+	},
+	"homepage": "https://ddnet.org/"
+}

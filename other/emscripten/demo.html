@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+		<meta name="description" content="Watch a DDNet demo in a web browser.">
+		<title>DDNet Demo Player</title>
+		<link rel="icon" type="image/x-icon" href="DDNet.ico">
+		<script src="coi-serviceworker.js"></script>
+		<link rel="stylesheet" href="ddnet-page.css">
+		<link rel="stylesheet" href="ddnet-viewer.css">
+		<!-- The packages by the names they are published under. -->
+		<script type="importmap">
+		{
+			"imports": {
+				"@ddnet/base": "./ddnet-base.js",
+				"@ddnet/demo-player": "./demo-player.js"
+			}
+		}
+		</script>
+		<link rel="preload" as="script" href="ddnet-demo-player.js" crossorigin>
+	</head>
+	<body>
+		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
+		<!-- `link` keeps the address in step with the demo: demo.html#demo=<url>&t=<seconds> -->
+		<ddnet-demo id="viewer" controls="html" link>
+			<div id="open" class="viewer-open" slot="controls" hidden>
+				<div class="viewer-panel viewer-open-panel">
+					<div class="viewer-panel-title">Open a demo</div>
+					<p class="viewer-open-hint">Choose a <code>.demo</code> file, or drop one onto this page.</p>
+					<div class="viewer-panel-actions">
+						<button id="open-button" class="viewer-text-button" disabled>Choose a demo</button>
+					</div>
+				</div>
+			</div>
+		</ddnet-demo>
+		<script type="module">
+			import "@ddnet/demo-player";
+
+			const element = document.getElementById('viewer');
+			const opener = document.getElementById('open');
+			const openButton = document.getElementById('open-button');
+			opener.hidden = element.hasAttribute('src');
+			element.ready.then(() => {
+				openButton.disabled = false;
+				element.focus();
+			}, () => {});
+			element.addEventListener('loadedmetadata', () => { opener.hidden = true; });
+			element.addEventListener('error', () => { opener.hidden = element.duration > 0; });
+			openButton.addEventListener('click', () => element.open());
+		</script>
+	</body>
+</html>

@@ -1,0 +1,3 @@
+# Files read on the main thread in the browser, which stalls the page; the
+# headless job in `build.yml` fails on any not listed. Keep it empty: startup
+# files go through the asset loader. Sorted, one path per line.

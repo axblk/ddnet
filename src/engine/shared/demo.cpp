@@ -390,6 +390,10 @@ int CDemoRecorder::Stop(IDemoRecorder::EStopMode Mode, const char *pTargetFilena
 		}
 	}
 
+	// The browser keeps what was written in memory until it is told to put it
+	// away, so a demo that was just recorded would be gone with the page.
+	m_pStorage->SyncPersistentStorage();
+
 	log_info_color(DEMO_PRINT_COLOR, "demo_recorder", "Stopped recording to '%s'", m_aCurrentFilename);
 	return 0;
 }

@@ -40,14 +40,19 @@ class CTypedAssetResource;
 enum class EAssetPriority
 {
 	/**
-	 * Entering a map waits for it: it is read and made ahead of every queued
-	 * asset that is not urgent.
+	 * Entering a map waits for it: it is fetched as soon as it is submitted,
+	 * and read and made ahead of every queued asset that is not urgent.
 	 */
 	URGENT,
 	/**
-	 * Somebody waits for it, but it takes its turn.
+	 * Somebody waits for it: it is fetched as soon as it is submitted.
 	 */
 	NORMAL,
+	/**
+	 * Nobody waits for it. Only a few are fetched at a time, so that they do
+	 * not take every connection a browser opens to a host.
+	 */
+	BACKGROUND,
 };
 
 /**
@@ -72,6 +77,7 @@ class CAssetJob : public IJob
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
 	bool m_Success = false;
+	bool m_Background = false;
 	bool m_Urgent = false;
 
 	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData);
@@ -91,7 +97,8 @@ protected:
 	 */
 	std::span<const uint8_t> Data() const;
 	/**
-	 * Takes over the bytes of a job that read a file.
+	 * Takes over the bytes of a job that read a file. The bytes of a fetched
+	 * response stay with the request, so the caller gets a copy of them.
 	 */
 	std::vector<uint8_t> TakeData();
 
@@ -106,15 +113,26 @@ public:
 
 /**
  * Loads assets without blocking the main thread. Files are read one after the
- * other by a reader thread, then at most `MaxConcurrentJobs` jobs run on the
- * job pool.
+ * other by a reader thread, or fetched where the storage gives them an
+ * address, then at most `MaxConcurrentJobs` jobs run on the job pool.
  */
 class CAssetLoader
 {
+	class CDeferredFetch
+	{
+	public:
+		std::shared_ptr<CAssetJob> m_pJob;
+		std::string m_Url;
+	};
+
 	IEngine *m_pEngine = nullptr;
+	IHttp *m_pHttp = nullptr;
 	size_t m_MaxConcurrentJobs = 0;
 	bool m_Shutdown = false;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpFetchingJobs;
+	// Background jobs waiting for their turn to be fetched
+	std::deque<CDeferredFetch> m_vDeferredFetches;
+	size_t m_BackgroundFetchCount = 0;
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
@@ -131,6 +149,9 @@ class CAssetLoader
 	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
 	void Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
+	bool StartFetching(const std::shared_ptr<CAssetJob> &pJob);
+	void Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUrl);
+	void StartDeferredFetches();
 	void UpdateFetchingJobs() REQUIRES(!m_ReaderLock);
 	void UpdateReadJobs() REQUIRES(!m_ReaderLock);
 	void StartPendingJobs();
@@ -138,7 +159,13 @@ class CAssetLoader
 public:
 	~CAssetLoader() NO_THREAD_SAFETY_ANALYSIS { Shutdown(); }
 
-	void Init(IEngine *pEngine, size_t MaxConcurrentJobs);
+	/**
+	 * @param pEngine Engine whose job pool makes the assets.
+	 * @param MaxConcurrentJobs How many assets are made at once.
+	 * @param pHttp Fetches the files the storage has an address for, which
+	 * are those of the browser's data directory. Without it every file is read.
+	 */
+	void Init(IEngine *pEngine, size_t MaxConcurrentJobs, IHttp *pHttp = nullptr);
 	template<typename TJob>
 	CTypedAssetResource<TJob> Load(std::shared_ptr<TJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	CTypedAssetResource<CFileAssetJob> LoadFile(IStorage *pStorage, const char *pPath, int StorageType) REQUIRES(!m_ReaderLock);

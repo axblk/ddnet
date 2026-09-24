@@ -48,6 +48,7 @@
 #include <base/math.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 #include <base/vmath.h>
 
@@ -87,7 +88,6 @@
 
 #include <chrono>
 #include <limits>
-#include <thread>
 #include <utility>
 
 using namespace std::chrono_literals;
@@ -274,8 +274,9 @@ static TInterface *ToolOptionalInterface(IKernel *pKernel)
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
+	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
-	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
+	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs, m_pHttp);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pSessions = Kernel()->RequestInterface<ISessions>();
 	m_pClientNetwork = ToolOptionalInterface<IClientNetwork>(Kernel());
@@ -308,7 +309,6 @@ void CGameClient::OnConsoleInit()
 #if defined(CONF_AUTOUPDATE)
 	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
-	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	m_pFrontend = ToolOptionalInterface<IGameFrontend>(Kernel());
 
 	// make a list of all the systems, make sure to add them in the correct render order
@@ -1003,8 +1003,9 @@ void CGameClient::OnConnected(CSessionId SessionId)
 		// screen draws at most 60 times a second (not at all while an export
 		// runs in the background). Asking again right away would keep a
 		// processor from those threads - on one core, or under a scheduler
-		// that runs one thread at a time, for as long as it keeps asking.
-		std::this_thread::sleep_for(1ms);
+		// that runs one thread at a time, for as long as it keeps asking. In a
+		// browser the fetches only finish while the page has its turn.
+		thread_sleep_idle(std::chrono::milliseconds(1));
 	}
 
 	if(SessionId == NetworkSessionId())

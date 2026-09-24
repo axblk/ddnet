@@ -58,8 +58,10 @@ bool CHttpRequestEmscripten::ConfigureAndRun()
 		return false;
 	}
 
-	if(!str_startswith(m_aUrl, "https://") &&
-		(!g_Config.m_HttpAllowInsecure || !str_startswith(m_aUrl, "http://")))
+	// Whether a plaintext request is acceptable is the browser's decision: a
+	// page served over https may not make http requests at all, and one served
+	// over http has to reach the server it was loaded from.
+	if(!str_startswith(m_aUrl, "https://") && !str_startswith(m_aUrl, "http://"))
 	{
 		log_error("http", "unsupported protocol: %s", m_aUrl);
 		return false;

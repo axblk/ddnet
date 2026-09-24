@@ -7,6 +7,7 @@
 #include "detect.h"
 #include "fs.h"
 #include "mem.h"
+#include "webfs.h"
 #include "windows.h"
 
 #include <cstdio>
@@ -22,6 +23,13 @@
 IOHANDLE io_open(const char *filename, int flags)
 {
 	dbg_assert(flags == IOFLAG_READ || flags == IOFLAG_WRITE || flags == IOFLAG_APPEND, "flags must be read, write or append");
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// The data directory of a page is not on any disk; it is fetched and read
+	// out of memory, and a handle over memory reads, seeks and tells like any
+	// other. Writing into it was never possible and still is not.
+	if(flags == IOFLAG_READ && webfs_owns(filename))
+		return webfs_open(filename);
+#endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_filename = windows_utf8_to_wide(filename);
 	DWORD desired_access;

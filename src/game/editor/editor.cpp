@@ -144,6 +144,9 @@ bool CEditor::CallbackSaveMap(const char *pFilename, int StorageType, void *pUse
 		pEditor->Map()->m_Modified = false;
 		pEditor->UpdateMapDisplayNames();
 		pEditor->Map()->m_CloseOnSave = CloseAfterSave;
+		// Where the save folder is not reachable, as in the browser, the map is
+		// handed over as a download as well, once it is written.
+		pEditor->m_WriterFinishJobs.back()->HandOutWhenDone();
 	}
 	else
 	{
@@ -175,6 +178,8 @@ bool CEditor::CallbackSaveCopyMap(const char *pFilename, int StorageType, void *
 
 	if(pEditor->Save(pFilename))
 	{
+		// Handed over once it is written, as by `CallbackSaveMap`.
+		pEditor->m_WriterFinishJobs.back()->HandOutWhenDone();
 		pEditor->OnDialogClose();
 		return true;
 	}
@@ -4828,6 +4833,13 @@ void CEditor::HandleWriterFinishJobs()
 		ShowFileDialogError("%s", pErrorMessage);
 		return;
 	}
+
+	// The browser keeps what was written in memory until it is told to put it
+	// away, so a map that was just saved would be gone with the page.
+	Storage()->SyncPersistentStorage();
+	// Not before: until now the file was not there, or was the one saved before.
+	if(pJob->HandOut())
+		Storage()->SendFileToUser(pJob->RealFilename(), IStorage::TYPE_SAVE);
 
 	auto MapIt = std::find_if(m_vpMaps.begin(), m_vpMaps.end(), [&](const std::unique_ptr<CEditorMap> &pMap) {
 		return str_comp(pMap->m_aFilename, pJob->RealFilename()) == 0;

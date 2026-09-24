@@ -49,6 +49,7 @@ class CDataFileWriterFinishJob : public IJob
 	char m_aTempFilename[IO_MAX_PATH_LENGTH];
 	char m_aErrorMessage[2 * IO_MAX_PATH_LENGTH + 128];
 	CDataFileWriter m_Writer;
+	bool m_HandOut = false;
 
 	void Run() override;
 
@@ -56,6 +57,12 @@ public:
 	CDataFileWriterFinishJob(IStorage *pStorage, const char *pRealFilename, const char *pTempFilename, CDataFileWriter &&Writer);
 	const char *RealFilename() const { return m_aRealFilename; }
 	const char *ErrorMessage() const { return m_aErrorMessage; }
+	/**
+	 * Has the file handed to the user once it is written, see
+	 * `IStorage::SendFileToUser`. Only from the thread that waits for the job.
+	 */
+	void HandOutWhenDone() { m_HandOut = true; }
+	bool HandOut() const { return m_HandOut; }
 };
 
 using FErrorHandler = std::function<void(const char *pErrorMessage)>;

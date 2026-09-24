@@ -104,6 +104,17 @@ static unsigned char NormalizeColorComponent(float ColorComponent)
 
 void IGraphics::AddVertices(int Count)
 {
+	if(m_ScreenTexCoords)
+	{
+		// Inside a viewport, the mapped screen only covers that part of the
+		// picture.
+		const CScreenRect Screen = GetScreen();
+		const vec2 Size = Screen.m_BottomRight - Screen.m_TopLeft;
+		const vec2 Offset = m_DrawViewportWidth > 0 ? vec2(m_DrawViewportX, m_DrawViewportY) / ScreenSize() : vec2(0.0f, 0.0f);
+		const vec2 Scale = ViewportSize() / ScreenSize();
+		for(int i = m_NumVertices; i < m_NumVertices + Count; ++i)
+			m_aVertices[i].m_Tex = Offset + (m_aVertices[i].m_Pos - Screen.m_TopLeft) / Size * Scale;
+	}
 	m_NumVertices += Count;
 	if((m_NumVertices + Count) >= MAX_VERTICES)
 		FlushVertices();
@@ -196,6 +207,7 @@ void IGraphics::QuadsBegin()
 	m_Drawing = EDrawing::QUADS;
 
 	QuadsSetSubset(0, 0, 1, 1);
+	m_ScreenTexCoords = false;
 	QuadsSetRotation(0);
 	SetColor(1, 1, 1, 1);
 }
@@ -225,6 +237,7 @@ void IGraphics::TrianglesBegin()
 	m_Drawing = EDrawing::TRIANGLES;
 
 	QuadsSetSubset(0, 0, 1, 1);
+	m_ScreenTexCoords = false;
 	QuadsSetRotation(0);
 	SetColor(1, 1, 1, 1);
 }

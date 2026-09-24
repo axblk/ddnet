@@ -40,8 +40,7 @@ class CChat : public CComponent
 
 		uint64_t m_LineId = 0;
 		uint64_t m_Revision = 0;
-		CViewBinding m_Binding;
-		CViewport m_Viewport;
+		CLayoutKey m_LayoutKey;
 		bool m_ScoreboardOpen = false;
 		bool m_ShowLargeArea = false;
 		float m_YOffset = -1.0f;

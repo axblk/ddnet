@@ -27,14 +27,16 @@ void CBroadcast::OnWindowResize()
 	InvalidateRenderCache();
 }
 
+void CBroadcast::ClearLayout(CLayout &Layout)
+{
+	Layout.m_RenderOffset = -1.0f;
+	TextRender()->DeleteTextContainer(Layout.m_TextContainerIndex);
+	Layout.m_Revision = 0;
+}
+
 void CBroadcast::InvalidateRenderCache()
 {
-	m_BroadcastRenderOffset = -1.0f;
-	TextRender()->DeleteTextContainer(m_TextContainerIndex);
-	m_RenderedSessionId = CSessionId();
-	m_pRenderedView = nullptr;
-	m_RenderedViewportWidth = 0;
-	m_RenderedViewportHeight = 0;
+	m_Layouts.ClearAll([this](CLayout &Layout) { ClearLayout(Layout); });
 }
 
 void CBroadcast::OnRender(const CRenderContext &Context)
@@ -46,20 +48,14 @@ void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 {
 	const CGameSessionContext &Session = Context.m_Session;
 	const CSessionBroadcastState &Broadcast = Session.m_Broadcast;
-	const CViewport &Viewport = Context.m_View.Viewport();
-	if(m_RenderedSessionId != Session.Id() || m_RenderedRevision != Broadcast.Revision() ||
-		m_pRenderedView != &Context.m_View ||
-		m_RenderedViewportWidth != Viewport.m_Width || m_RenderedViewportHeight != Viewport.m_Height)
+	CLayout &Layout = m_Layouts.Find(Context.LayoutKey(false), [this](CLayout &Old) { ClearLayout(Old); });
+	if(Layout.m_Revision != Broadcast.Revision())
 	{
-		InvalidateRenderCache();
-		m_RenderedSessionId = Session.Id();
-		m_RenderedRevision = Broadcast.Revision();
-		m_pRenderedView = &Context.m_View;
-		m_RenderedViewportWidth = Viewport.m_Width;
-		m_RenderedViewportHeight = Viewport.m_Height;
+		ClearLayout(Layout);
+		Layout.m_Revision = Broadcast.Revision();
 	}
 
-	if(GameClient()->m_Scoreboard.IsActive() ||
+	if(GameClient()->m_Scoreboard.IsActive(Context) ||
 		Context.m_View.m_Motd.IsActive(Session.Id(), Session.m_Motd.Revision(), time()) ||
 		GameClient()->m_ImportantAlert.IsActive() ||
 		!g_Config.m_ClShowBroadcasts)
@@ -70,7 +66,7 @@ void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 	const int GameTick = Context.m_Time.m_GameTick;
 	if(!Broadcast.IsActiveAt(GameTick))
 	{
-		TextRender()->DeleteTextContainer(m_TextContainerIndex);
+		TextRender()->DeleteTextContainer(Layout.m_TextContainerIndex);
 		return;
 	}
 	const float SecondsRemaining = (Broadcast.ExpireTick() - GameTick) / (float)Context.m_Time.m_GameTickSpeed;
@@ -79,25 +75,25 @@ void CBroadcast::RenderServerBroadcast(const CRenderContext &Context)
 	const float Width = Height * Context.AspectRatio(Graphics()->ScreenAspect());
 	Graphics()->MapScreenToSize(Width, Height);
 
-	if(m_BroadcastRenderOffset < 0.0f)
-		m_BroadcastRenderOffset = Width / 2.0f - TextRender()->TextWidth(12.0f, Broadcast.Text(), -1, Width) / 2.0f;
+	if(Layout.m_RenderOffset < 0.0f)
+		Layout.m_RenderOffset = Width / 2.0f - TextRender()->TextWidth(12.0f, Broadcast.Text(), -1, Width) / 2.0f;
 
-	if(!m_TextContainerIndex.Valid())
+	if(!Layout.m_TextContainerIndex.Valid())
 	{
 		CTextCursor Cursor;
-		Cursor.SetPosition(vec2(m_BroadcastRenderOffset, 40.0f));
+		Cursor.SetPosition(vec2(Layout.m_RenderOffset, 40.0f));
 		Cursor.m_FontSize = 12.0f;
 		Cursor.m_LineWidth = Width;
-		TextRender()->CreateTextContainer(m_TextContainerIndex, &Cursor, Broadcast.Text());
+		TextRender()->CreateTextContainer(Layout.m_TextContainerIndex, &Cursor, Broadcast.Text());
 	}
-	if(m_TextContainerIndex.Valid())
+	if(Layout.m_TextContainerIndex.Valid())
 	{
 		const float Alpha = SecondsRemaining >= 1.0f ? 1.0f : SecondsRemaining;
 		ColorRGBA TextColor = TextRender()->DefaultTextColor();
 		TextColor.a *= Alpha;
 		ColorRGBA OutlineColor = TextRender()->DefaultTextOutlineColor();
 		OutlineColor.a *= Alpha;
-		TextRender()->RenderTextContainer(m_TextContainerIndex, TextColor, OutlineColor);
+		TextRender()->RenderTextContainer(Layout.m_TextContainerIndex, TextColor, OutlineColor);
 	}
 }
 

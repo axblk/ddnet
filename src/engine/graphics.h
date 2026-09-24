@@ -396,6 +396,7 @@ public:
 	// The size in pixels of what drawing currently lands on: the viewport a view
 	// was given, or else the whole screen.
 	vec2 ViewportSize() const { return m_DrawViewportWidth > 0 ? vec2(m_DrawViewportWidth, m_DrawViewportHeight) : ScreenSize(); }
+	float ViewportAspect() const { return ViewportSize().x / ViewportSize().y; }
 	float ScreenHiDPIScale() const { return m_ScreenHiDPIScale; }
 	int WindowWidth() const { return m_ScreenWidth / m_ScreenHiDPIScale; }
 	int WindowHeight() const { return m_ScreenHeight / m_ScreenHiDPIScale; }

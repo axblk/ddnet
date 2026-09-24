@@ -625,20 +625,12 @@ public:
 class CNamePlates::CNamePlatesData
 {
 public:
-	CNamePlate m_aNamePlates[MAX_CLIENTS];
-	CViewBinding m_Binding;
-	CViewport m_Viewport;
-
-	bool Matches(const CRenderContext &Context) const
+	class CLayout
 	{
-		return m_Binding == Context.m_View.Binding() && m_Viewport == Context.m_View.Viewport();
-	}
-
-	void Bind(const CRenderContext &Context)
-	{
-		m_Binding = Context.m_View.Binding();
-		m_Viewport = Context.m_View.Viewport();
-	}
+	public:
+		CNamePlate m_aNamePlates[MAX_CLIENTS];
+	};
+	CLayoutCache<CLayout> m_Layouts;
 };
 
 void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Position, int ClientId, const CClientPresentation &Client, float Alpha)
@@ -762,13 +754,12 @@ void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Positi
 		}
 	}
 
-	// Check if the nameplate is actually on screen
-	if(!m_pData->Matches(Context))
-	{
-		ResetNamePlates();
-		m_pData->Bind(Context);
-	}
-	CNamePlate &NamePlate = m_pData->m_aNamePlates[ClientId];
+	// Whose name plate is the local one differs between the seats.
+	CNamePlatesData::CLayout &Layout = m_pData->m_Layouts.Find(Context.LayoutKey(true), [this](CNamePlatesData::CLayout &Old) {
+		for(CNamePlate &OldNamePlate : Old.m_aNamePlates)
+			OldNamePlate.Reset(*GameClient());
+	});
+	CNamePlate &NamePlate = Layout.m_aNamePlates[ClientId];
 	NamePlate.Update(*GameClient(), Data);
 	NamePlate.Render(*GameClient(), Position - vec2(0.0f, (float)g_Config.m_ClNamePlatesOffset));
 }
@@ -856,9 +847,10 @@ void CNamePlates::RenderNamePlatePreview(vec2 Position, int Dummy)
 
 void CNamePlates::ResetNamePlates()
 {
-	for(CNamePlate &NamePlate : m_pData->m_aNamePlates)
-		NamePlate.Reset(*GameClient());
-	m_pData->m_Binding = {};
+	m_pData->m_Layouts.ClearAll([this](CNamePlatesData::CLayout &Layout) {
+		for(CNamePlate &NamePlate : Layout.m_aNamePlates)
+			NamePlate.Reset(*GameClient());
+	});
 }
 
 void CNamePlates::OnRender(const CRenderContext &Context)

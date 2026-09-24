@@ -83,12 +83,12 @@ namespace
 
 CGameView::CSpectatorSelectorState &CSpectator::Selector()
 {
-	return GameClient()->LegacyGameView().m_SpectatorSelector;
+	return GameClient()->InputView().m_SpectatorSelector;
 }
 
 const CGameView::CSpectatorSelectorState &CSpectator::Selector() const
 {
-	return GameClient()->LegacyGameView().m_SpectatorSelector;
+	return GameClient()->InputView().m_SpectatorSelector;
 }
 
 bool CSpectator::CanChangeSpectatorId()
@@ -163,7 +163,7 @@ void CSpectator::ConKeySpectator(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->GameClient()->m_Scoreboard.IsActive())
 		return;
 
-	CGameView &View = pSelf->GameClient()->LegacyGameView();
+	CGameView &View = pSelf->GameClient()->InputView();
 	CGameView::CSpectatorSelectorState &Selector = View.m_SpectatorSelector;
 	if(pResult->GetInteger(0) == 0)
 	{
@@ -701,7 +701,7 @@ void CSpectator::Spectate(int SpectatorId)
 	Target.m_OriginDemo = Client()->State() == IClient::STATE_DEMOPLAYBACK;
 	Target.m_OriginSessionId = Target.m_OriginDemo ? Sessions()->DemoSessionId() : GameClient()->SeatSessionId(g_Config.m_ClDummy);
 	Target.m_OriginSixup = Sessions()->IsSixup(Target.m_OriginSessionId);
-	Spectate(GameClient()->LegacyGameView(), Target, SpectatorId);
+	Spectate(GameClient()->InputView(), Target, SpectatorId);
 }
 
 void CSpectator::SpectateClosest()

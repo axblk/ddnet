@@ -218,6 +218,7 @@ private:
 	// The session shown: a server, the dummy on it, or a demo.
 	CSessionId m_SessionId;
 	CViewport m_Viewport;
+	bool m_Inset = false;
 	vec2 m_CursorPosition = vec2(0.0f, 0.0f);
 	bool m_Spectating = false;
 	int m_SpectatorId = -1;
@@ -246,7 +247,16 @@ public:
 		m_SessionId = SessionId;
 	}
 	const CViewport &Viewport() const { return m_Viewport; }
-	void SetViewport(CViewport Viewport) { m_Viewport = Viewport; }
+	/**
+	 * An inset is a small picture over another view. It shows the world
+	 * alone, without the HUD and boards that belong to the view it sits on.
+	 */
+	bool IsInset() const { return m_Inset; }
+	void SetViewport(CViewport Viewport, bool Inset = false)
+	{
+		m_Viewport = Viewport;
+		m_Inset = Inset;
+	}
 	/**
 	 * Where a point given as a fraction of the whole screen lies, as a
 	 * fraction of this view.

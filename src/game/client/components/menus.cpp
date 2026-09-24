@@ -1196,6 +1196,19 @@ void CMenus::Render()
 	Ui()->MapScreen();
 	Ui()->SetMouseSlow(false);
 
+	// A click on the picture in picture brings what it shows to the front.
+	// Checked before everything else, so that anything the menu draws over the
+	// picture keeps its clicks.
+	if(GameClient()->InsetRect().w > 0.0f)
+	{
+		static CButtonContainer s_InsetButton;
+		if(Ui()->DoButtonLogic(&s_InsetButton, 0, &GameClient()->InsetRect(), BUTTONFLAG_LEFT))
+		{
+			ClientFrontend()->SwitchSessionFocus();
+			SetActive(false);
+		}
+	}
+
 	static int s_Frame = 0;
 	if(s_Frame == 0)
 	{
@@ -1337,7 +1350,12 @@ void CMenus::Render()
 			if(m_GamePage == PAGE_GAME)
 			{
 				RenderGame(MainView);
-				RenderIngameHint();
+				// The game page leaves the screen below its buttons free, which
+				// is where a demo playing in the corner gets its controls.
+				if(Sessions()->SessionState(Sessions()->DemoSessionId()) == ESessionState::READY)
+					RenderDemoPlayer(*Ui()->Screen());
+				else
+					RenderIngameHint();
 			}
 			else if(m_GamePage == PAGE_PLAYERS)
 			{

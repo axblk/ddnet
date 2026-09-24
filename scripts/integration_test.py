@@ -1225,6 +1225,58 @@ def client_demo_plays_beside_the_server(test_env):
 	server.wait_for_exit()
 
 
+@test(timeout=180)
+def client_demo_plays_while_another_exports(test_env):
+	# The export draws into offscreen targets, which the legacy OpenGL
+	# fallback of a window without a display does not have.
+	client = test_env.client(["gfx_backend OpenGL", "gfx_gl_major 3", "gfx_gl_minor 3", "cl_auto_demo_record 0", "cl_video_sound_enable 0", "cl_video_width 320", "cl_video_height 240"])
+	server = test_env.server()
+	wait_for_startup([client, server])
+	server.command("record exported")
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	wait_for_sessions(client, lambda s: int(s[0]["tick"]) > 100, "the server session did not run")
+	server.command("stoprecord")
+	client.command("disconnect")
+	wait_for_sessions(client, lambda s: s[0]["state"] == "0", "the client did not disconnect")
+
+	client.command("render_demo demos/exported.demo")
+	started = client.wait_for_log(lambda l: l.line.startswith("videorecorder: Recording to") or l.line.startswith("videorecorder: Could not") or "render_demo" in l.line and "No such command" in l.line, description="the export to start", timeout=30)
+	if "No such command" in started.line or "offscreen targets" in started.line:
+		# Built without the video recorder, or drawing where nothing can be
+		# drawn offscreen.
+		client.exit()
+		server.exit()
+		client.wait_for_exit()
+		server.wait_for_exit()
+		return
+	assert started.line.startswith("videorecorder: Recording to"), started.line
+
+	# The export has a session of its own, so the demo that is watched plays
+	# beside it instead of waiting for it.
+	client.command("play demos/exported.demo")
+	sessions = wait_for_sessions(client, lambda s: demo_session(s)["state"] == "3" and demo_session(s)["input"] == "1", "the demo did not play while another one is exported")
+	exports = [fields for key, fields in sessions.items() if key < 0 and fields["type"] == "1" and fields is not demo_session(sessions)]
+	assert len(exports) == 1 and exports[0]["state"] == "3" and exports[0]["input"] == "0", sessions
+
+	for _ in range(600):
+		sessions = dump_sessions(client)
+		if all(fields["state"] == "0" for key, fields in sessions.items() if key < 0 and fields is not demo_session(sessions)):
+			break
+		sleep(0.1)
+	else:
+		raise AssertionError(f"the export did not finish: {sessions}")
+	assert demo_session(sessions)["state"] == "3" and demo_session(sessions)["input"] == "1", sessions
+
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+	# A headless client has no frames to read back, and the export stops.
+	if not any("Video frame readback failed" in line for line in client.full_stdout):
+		assert os.path.isfile(os.path.join(test_env.tmp_dir, "videos", "exported.mp4")), os.listdir(os.path.join(test_env.tmp_dir, "videos"))
+
+
 def vanilla_dm_client_can_connect_impl(test_env, address, expected_sixup):
 	client = test_env.client()
 	# Tutorial ships in both maps/ and maps7/, unlike the classic DM maps.

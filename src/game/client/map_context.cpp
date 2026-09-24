@@ -6,7 +6,27 @@
 
 #include <game/mapitems.h>
 
+CMapData::CMapData() :
+	m_pMap(CreateMap())
+{
+}
+
+CMapData::~CMapData()
+{
+	m_Layers.Unload();
+	m_pMap->Unload();
+}
+
+void CMapData::InitLayers()
+{
+	if(m_LayersInitialized)
+		return;
+	m_Layers.Init(m_pMap.get(), false, true);
+	m_LayersInitialized = true;
+}
+
 CMapContext::CMapContext() :
+	m_pData(std::make_shared<CMapData>()),
 	m_GameConfig(g_Config)
 {
 	IConsole *pConsole = m_GameConfig.Console();
@@ -14,11 +34,6 @@ CMapContext::CMapContext() :
 	pConsole->Register("tune_zone", "i[zone] s[tuning] f[value]", CFGFLAG_GAME, ConTuneZone, this, "Tune in zone a variable to value");
 	pConsole->Register("mapbug", "s[mapbug]", CFGFLAG_GAME, ConMapbug, this, "Enable map compatibility mode using the specified bug");
 	ResetSettings(g_Config);
-}
-
-void CMapContext::Init()
-{
-	m_pMap = CreateMap();
 }
 
 void CMapContext::Load(const CConfig &BaseConfig)
@@ -68,7 +83,13 @@ void CMapContext::ResetSettings(const CConfig &BaseConfig)
 void CMapContext::Unload()
 {
 	m_Collision.Unload();
-	m_Layers.Unload();
+	m_pData = std::make_shared<CMapData>();
+}
+
+void CMapContext::Share(const CMapContext &Other)
+{
+	m_Collision.Unload();
+	m_pData = Other.m_pData;
 }
 
 void CMapContext::SetTuning(int TuneZone, const char *pName, float Value)

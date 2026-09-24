@@ -58,7 +58,6 @@ static void RunParity(const std::string &Name)
 		Fail("invalid parity scenario: " + Name);
 
 	CMapContext MapContext;
-	MapContext.Init();
 	ParityMap::CTiles aTiles{};
 	ParityMap::Install(*MapContext.Collision(), aTiles);
 

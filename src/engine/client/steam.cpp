@@ -7,7 +7,6 @@
 
 #include <steam/steam_api_flat.h>
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
 class CSteam : public ISteam
 {
 	HSteamPipe m_SteamPipe;
@@ -131,7 +130,6 @@ public:
 		SteamAPI_ISteamFriends_SetRichPresence(m_pSteamFriends, "steam_display", "#Status");
 	}
 };
-#endif
 
 class CSteamStub : public ISteam
 {
@@ -145,13 +143,9 @@ class CSteamStub : public ISteam
 
 ISteam *CreateSteam()
 {
-#if defined(CONF_DEMO_RENDER_TOOL)
-	return new CSteamStub();
-#else
 	if(!SteamAPI_Init())
 	{
 		return new CSteamStub();
 	}
 	return new CSteam();
-#endif
 }

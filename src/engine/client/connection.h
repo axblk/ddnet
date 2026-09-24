@@ -7,7 +7,6 @@
 #include "smooth_time.h"
 
 #include <engine/client.h>
-#include <engine/shared/network.h>
 #include <engine/shared/protocol.h>
 #include <engine/shared/snapshot.h>
 
@@ -24,8 +23,6 @@ public:
 		int64_t m_PredictionMargin = 0;
 		int64_t m_Time = 0;
 	};
-
-	CNetClient m_NetClient;
 
 	uint64_t m_SnapshotParts = 0;
 	int m_AckGameTick = -1;

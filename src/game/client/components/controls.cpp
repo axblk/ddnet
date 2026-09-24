@@ -202,7 +202,7 @@ void CControls::ConTpDummyToCursor(IConsole::IResult *pResult, void *pUserData)
 	if(pSelf->Client()->State() != IClient::STATE_ONLINE)
 		return;
 
-	if(!pSelf->ClientNetwork()->DummyConnected())
+	if(!pSelf->GameClient()->DummyConnected())
 	{
 		pSelf->GameClient()->Echo(Localize("Dummy is not connected"));
 		return;

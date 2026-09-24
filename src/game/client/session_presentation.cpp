@@ -5,6 +5,7 @@
 
 #include <game/client/game_view.h>
 #include <game/client/gameclient.h>
+#include <game/client/map_context.h>
 #include <game/client/prediction/entities/character.h>
 #include <game/client/session_context.h>
 
@@ -18,9 +19,40 @@ CStateClientPresentation::CStateClientPresentation()
 	m_aClientsByDDTeamScore.fill(-1);
 }
 
-CSessionPresentation::CSessionPresentation(CSessionId SessionId, CMapImages &SharedMapImages) :
-	m_SessionId(SessionId),
-	m_MapImages(SharedMapImages)
+CMapPresentation::CMapPresentation(std::shared_ptr<CMapData> pData, bool Sixup, CMapImages &SharedMapImages) :
+	m_pData(std::move(pData)),
+	m_Sixup(Sixup),
+	m_Images(SharedMapImages)
+{
+}
+
+CMapPresentation::~CMapPresentation()
+{
+	m_LayersBackground.Unload();
+	m_LayersForeground.Unload();
+	m_LayersBackgroundForce.Unload();
+	m_Images.Unload();
+}
+
+void CMapPresentation::OnInterfacesInit(CGameClient *pClient)
+{
+	CComponentInterfaces::OnInterfacesInit(pClient);
+	m_Images.OnInterfacesInit(pClient);
+	m_LayersBackground.OnInterfacesInit(pClient);
+	m_LayersForeground.OnInterfacesInit(pClient);
+	m_LayersBackgroundForce.OnInterfacesInit(pClient);
+}
+
+void CMapPresentation::Load()
+{
+	m_Images.Load(m_pData->Layers(), m_pData->Map(), m_Sixup);
+	m_LayersBackground.Load(m_pData->Layers(), &m_Images);
+	m_LayersForeground.Load(m_pData->Layers(), &m_Images);
+	m_LayersBackgroundForce.Load(m_pData->Layers(), &m_Images);
+}
+
+CSessionPresentation::CSessionPresentation(CSessionId SessionId) :
+	m_SessionId(SessionId)
 {
 }
 
@@ -29,25 +61,15 @@ CSessionPresentation::~CSessionPresentation() = default;
 void CSessionPresentation::OnInterfacesInit(CGameClient *pClient)
 {
 	CComponentInterfaces::OnInterfacesInit(pClient);
-	m_MapImages.OnInterfacesInit(pClient);
-	m_MapLayersBackground.OnInterfacesInit(pClient);
-	m_MapLayersForeground.OnInterfacesInit(pClient);
-	m_MapLayersBackgroundForce.OnInterfacesInit(pClient);
 	m_MapSounds.OnInterfacesInit(pClient);
 }
 
-void CSessionPresentation::Load(CGameSessionContext &Session)
+void CSessionPresentation::Load(CGameSessionContext &Session, std::shared_ptr<CMapPresentation> pMap)
 {
 	dbg_assert(Session.Id() == m_SessionId, "session presentation loaded for wrong session");
 	Unload();
-
-	CMapContext &MapContext = Session.m_MapContext;
-	m_MapImages.Load(MapContext.Layers(), MapContext.Map(), Session.Protocol() == EGameProtocol::SIXUP);
-	m_MapLayersBackground.Load(MapContext.Layers(), &m_MapImages);
-	m_MapLayersForeground.Load(MapContext.Layers(), &m_MapImages);
-	m_MapLayersBackgroundForce.Load(MapContext.Layers(), &m_MapImages);
-	m_MapSounds.Load(MapContext.Map(), MapContext.Layers());
-	m_Loaded = true;
+	m_pMap = std::move(pMap);
+	m_MapSounds.Load(Session.m_MapContext.Map(), Session.m_MapContext.Layers());
 }
 
 void CSessionPresentation::Unload()
@@ -56,11 +78,7 @@ void CSessionPresentation::Unload()
 	m_aChatIgnored.fill(false);
 	m_aEmoticonIgnored.fill(false);
 	m_MapSounds.Unload();
-	m_MapLayersBackground.Unload();
-	m_MapLayersForeground.Unload();
-	m_MapLayersBackgroundForce.Unload();
-	m_MapImages.Unload();
-	m_Loaded = false;
+	m_pMap.reset();
 }
 
 bool CSessionPresentation::GetClientSkinDescriptor(const CGameState &State, int ClientId, char *pSkinName, int SkinNameSize, CSkinDescriptor &SkinDescriptor) const
@@ -406,19 +424,19 @@ int CSessionPresentation::TeamSize(int Seat, int Team) const
 void CSessionPresentation::PrepareRender(const CRenderContext &Context, bool UsePredictedTime)
 {
 	dbg_assert(Context.m_Session.Id() == m_SessionId, "render context does not match session presentation");
-	dbg_assert(m_Loaded, "session presentation must be loaded before rendering");
-	m_MapImages.Update();
-	m_MapImages.SetGameInfo(Context.m_State.CoreGameInfo());
-	m_MapLayersBackground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
-	m_MapLayersForeground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
-	m_MapLayersBackgroundForce.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
+	dbg_assert(IsLoaded(), "session presentation must be loaded before rendering");
+	m_pMap->m_Images.Update();
+	m_pMap->m_Images.SetGameInfo(Context.m_State.CoreGameInfo());
+	m_pMap->m_LayersBackground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
+	m_pMap->m_LayersForeground.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
+	m_pMap->m_LayersBackgroundForce.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
 }
 
 void CSessionPresentation::UpdateMapSounds(const CGameState &State, const CGameTickInfo &Time, vec2 ListenerPosition, bool UsePredictedTime, bool Offline)
 {
-	dbg_assert(m_Loaded, "session presentation must be loaded before updating map sounds");
-	m_MapLayersBackground.EnvEvaluator().SetOnlineTime(State, Time, UsePredictedTime);
-	m_MapSounds.Update(State, Time, ListenerPosition, Time.m_IsDemoPlaybackPaused, m_MapLayersBackground.EnvEvaluator(), Offline);
+	dbg_assert(IsLoaded(), "session presentation must be loaded before updating map sounds");
+	m_pMap->m_LayersBackground.EnvEvaluator().SetOnlineTime(State, Time, UsePredictedTime);
+	m_MapSounds.Update(State, Time, ListenerPosition, Time.m_IsDemoPlaybackPaused, m_pMap->m_LayersBackground.EnvEvaluator(), Offline);
 }
 
 CSessionPresentationManager::CSessionPresentationManager(CMapImages &SharedMapImages) :
@@ -438,11 +456,24 @@ CSessionPresentation *CSessionPresentationManager::Create(CSessionId SessionId)
 	if(!SessionId.IsValid() || Find(SessionId) != nullptr)
 		return nullptr;
 
-	auto pPresentation = std::make_unique<CSessionPresentation>(SessionId, m_SharedMapImages);
+	auto pPresentation = std::make_unique<CSessionPresentation>(SessionId);
 	if(m_pGameClient != nullptr)
 		pPresentation->OnInterfacesInit(m_pGameClient);
 	m_vpPresentations.push_back(std::move(pPresentation));
 	return m_vpPresentations.back().get();
+}
+
+std::shared_ptr<CMapPresentation> CSessionPresentationManager::MapPresentation(const std::shared_ptr<CMapData> &pData, bool Sixup)
+{
+	for(const auto &pPresentation : m_vpPresentations)
+	{
+		if(pPresentation->IsLoaded() && pPresentation->MapPresentation()->Draws(pData.get(), Sixup))
+			return pPresentation->MapPresentation();
+	}
+	auto pMap = std::make_shared<CMapPresentation>(pData, Sixup, m_SharedMapImages);
+	pMap->OnInterfacesInit(m_pGameClient);
+	pMap->Load();
+	return pMap;
 }
 
 void CSessionPresentationManager::StopMapSounds()

@@ -42,6 +42,7 @@
 #include "render.h"
 
 #include <base/dbg.h>
+#include <base/fs.h>
 #include <base/io.h>
 #include <base/log.h>
 #include <base/math.h>
@@ -308,8 +309,6 @@ void CGameClient::OnConsoleInit()
 #endif
 	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	m_pFrontend = ToolOptionalInterface<IGameFrontend>(Kernel());
-	for(const auto &pContext : m_vpSessionContexts)
-		pContext->m_MapContext.Init();
 
 	// make a list of all the systems, make sure to add them in the correct render order
 	m_vpAll.insert(m_vpAll.end(), {&m_Skins,
@@ -951,6 +950,25 @@ int CGameClient::OnSnapInput(CSessionId SessionId, int *pData, bool Force)
 	}
 }
 
+bool CGameClient::ShareLoadedMap(CSessionId SessionId, const char *pName, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	CGameSessionContext &Session = SessionContext(SessionId);
+	// A map is never loaded into data another session still plays.
+	Session.m_MapContext.Unload();
+	for(const auto &pOther : m_vpSessionContexts)
+	{
+		const IMap *pMap = pOther->m_MapContext.Map();
+		if(pOther.get() == &Session || !pMap->IsLoaded() || str_comp(pMap->BaseName(), fs_filename(pName)) != 0)
+			continue;
+		if(WantedSha256.has_value() ? pMap->Sha256() == WantedSha256.value() : pMap->Crc() == WantedCrc)
+		{
+			Session.m_MapContext.Share(pOther->m_MapContext);
+			return true;
+		}
+	}
+	return false;
+}
+
 void CGameClient::OnConnected(CSessionId SessionId)
 {
 	CGameSessionContext &Session = SessionContext(SessionId);
@@ -960,7 +978,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	const char *pLoadMapContent = Localize("Initializing map logic");
 	if(Focused)
 		RenderLoading(pConnectCaption, pLoadMapContent, 0);
-	MapContext.Layers()->Init(MapContext.Map(), false, true);
+	MapContext.Data()->InitLayers();
 	MapContext.Collision()->Init(MapContext.Layers());
 	Session.SetDescriptor(MapContext.Map()->BaseName(), Sessions()->IsSixup(SessionId) ? EGameProtocol::SIXUP : EGameProtocol::SIX);
 	Session.SetServerCapAnyPlayerFlag(Sessions()->SessionType(SessionId) == ESessionSourceType::NETWORK && ClientNetwork()->ServerCapAnyPlayerFlag(SessionId));
@@ -968,7 +986,7 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	for(CGameState &SessionState : Session.GameStates())
 		SessionState.InitPrediction(MapContext);
 	CSessionPresentation &Presentation = SessionPresentation(SessionId);
-	Presentation.Load(Session);
+	Presentation.Load(Session, m_SessionPresentations.MapPresentation(MapContext.Data(), Sessions()->IsSixup(SessionId)));
 
 	// The map images are fetched asynchronously. Their layers were built with
 	// texture coordinates and would draw untextured until they arrive, so the
@@ -1066,7 +1084,6 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	}
 #endif
 	Session.m_MapContext.Unload();
-	Session.m_MapContext.Map()->Unload();
 	if(SessionId == NetworkSessionId())
 	{
 		m_RaceDemo.OnNetworkSessionClosed();
@@ -1456,13 +1473,13 @@ void CGameClient::OnRender()
 		if(!m_Background.UsesCurrentMap())
 			m_Background.EnvEvaluator().SetOnlineTime(Context.m_State, Context.m_Time, UsePredictedTime);
 		const std::array<std::pair<CComponent *, const SRenderComponentInfo *>, 13> aWorldComponents = {{
-			{&Presentation.MapLayersBackground(), &m_MapBackgroundRenderInfo},
+			{Presentation.MapLayersBackground(), &m_MapBackgroundRenderInfo},
 			{&m_Particles.m_RenderTrail, &RenderInfo(&m_Particles.m_RenderTrail)},
 			{&m_Particles.m_RenderTrailExtra, &RenderInfo(&m_Particles.m_RenderTrailExtra)},
 			{&m_Items, &RenderInfo(&m_Items)},
 			{&m_Ghost, &RenderInfo(&m_Ghost)},
 			{&m_Players, &RenderInfo(&m_Players)},
-			{&Presentation.MapLayersForeground(), &m_MapForegroundRenderInfo},
+			{Presentation.MapLayersForeground(), &m_MapForegroundRenderInfo},
 			{&m_Particles.m_RenderExplosions, &RenderInfo(&m_Particles.m_RenderExplosions)},
 			{&m_NamePlates, &RenderInfo(&m_NamePlates)},
 			{&m_Particles.m_RenderExtra, &RenderInfo(&m_Particles.m_RenderExtra)},
@@ -1486,14 +1503,17 @@ void CGameClient::OnRender()
 			if(g_Config.m_ClOverlayEntities == 100)
 			{
 				RenderTraced(RenderInfo(&m_Background), [&]() {
-					if(m_Background.UsesCurrentMap())
-						Presentation.MapLayersBackgroundForce().OnRender(Context);
-					else
+					if(!m_Background.UsesCurrentMap())
 						m_Background.OnRender(Context);
+					else if(Presentation.IsLoaded())
+						Presentation.MapLayersBackgroundForce()->OnRender(Context);
 				});
 			}
 			for(const auto &Component : aWorldComponents)
-				RenderTraced(*Component.second, [&]() { Component.first->OnRender(Context); });
+			{
+				if(Component.first != nullptr)
+					RenderTraced(*Component.second, [&]() { Component.first->OnRender(Context); });
+			}
 			if(Context.m_View.IsInset())
 			{
 				// A frame, so that the picture does not run into what it covers.

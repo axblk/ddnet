@@ -669,6 +669,7 @@ public:
 		dbg_assert(pSession != nullptr, "missing game session context");
 		return pSession->m_MapContext.Map();
 	}
+	bool ShareLoadedMap(CSessionId SessionId, const char *pName, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc) override;
 	CNetObjHandler *GetNetObjHandler() override;
 	protocol7::CNetObjHandler *GetNetObjHandler7() override;
 

@@ -464,6 +464,13 @@ public:
 	virtual const IMap *Map() const = 0;
 	virtual IMap *Map(CSessionId SessionId) = 0;
 	virtual const IMap *Map(CSessionId SessionId) const = 0;
+	/**
+	 * Lets the session play the map another session already loaded instead
+	 * of reading it again.
+	 *
+	 * @return Whether the map was shared.
+	 */
+	virtual bool ShareLoadedMap(CSessionId SessionId, const char *pName, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc) = 0;
 	virtual CNetObjHandler *GetNetObjHandler() = 0;
 	virtual protocol7::CNetObjHandler *GetNetObjHandler7() = 0;
 

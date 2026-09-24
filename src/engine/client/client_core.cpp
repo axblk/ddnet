@@ -206,9 +206,16 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 
 	// Unload the current map and reset all snapshots before loading a new map,
 	// because the snapshots are only valid for the old map.
-	IMap *pMap = GameClient()->Map(SessionId);
 	SessionSource(SessionId).m_Connection.ResetSnapshots();
 	GameClient()->InvalidateSnapshot(SessionId);
+	if(GameClient()->ShareLoadedMap(SessionId, pName, WantedSha256, WantedCrc))
+	{
+		char aBuf[256];
+		str_format(aBuf, sizeof(aBuf), "shared loaded map '%s'", pName);
+		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
+		return nullptr;
+	}
+	IMap *pMap = GameClient()->Map(SessionId);
 
 	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
 	{

@@ -1180,7 +1180,7 @@ def client_dummy_plays_in_its_own_session_7(test_env):
 
 @test
 def client_demo_plays_beside_the_server(test_env):
-	client = test_env.client(["cl_auto_demo_record 0"])
+	client = test_env.client(["cl_auto_demo_record 0", "stdout_output_level 1"])
 	server = test_env.server()
 	wait_for_startup([client, server])
 	server.command("record beside")
@@ -1189,8 +1189,10 @@ def client_demo_plays_beside_the_server(test_env):
 	wait_for_sessions(client, lambda s: int(s[0]["tick"]) > 50 and s[0]["input"] == "1", "the server session did not get the input")
 	server.command("stoprecord")
 
-	# The demo takes the focus, the server keeps running beside it.
+	# The demo takes the focus, the server keeps running beside it. It plays
+	# the map the server already loaded.
 	client.command("play demos/beside.demo")
+	client.wait_for_log_prefix("client: shared loaded map", timeout=10)
 	sessions = wait_for_sessions(client, lambda s: demo_session(s)["state"] == "3" and demo_session(s)["input"] == "1" and s[0]["state"] == "3" and s[0]["input"] == "0", "the demo did not start beside the server")
 	server_tick = int(sessions[0]["tick"])
 	wait_for_sessions(client, lambda s: int(s[0]["tick"]) > server_tick, "the server stopped while the demo has the focus")

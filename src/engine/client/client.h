@@ -182,7 +182,6 @@ class CClient : public CClientCore, public IClientNetwork, public IClientFronten
 	std::deque<CVideoExportJob> m_VideoExportQueue;
 	std::optional<CVideoExportJob> m_ActiveVideoExport;
 	bool m_VideoExportQueueRunning = false;
-	bool m_LoadingQueuedVideoExport = false;
 	// The active export's demo is loaded and holds its first tick until the
 	// game has everything its frames show; the recording starts after that.
 	bool m_VideoExportWaitingForAssets = false;

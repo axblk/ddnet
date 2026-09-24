@@ -92,6 +92,18 @@ bool webfs_owns(const char *pPath);
  */
 IOHANDLE webfs_open(const char *pPath);
 
+/**
+ * The URL of a file below the data directory, for fetching it without
+ * waiting. It holds the file's hash, so it can be cached for good.
+ *
+ * @param pPath Path of the file, as `webfs_owns` accepts it.
+ * @param pBuffer Receives the address.
+ * @param BufferSize Size of `pBuffer`.
+ *
+ * @return `false` when the index has no such file, and then `pBuffer` is empty.
+ */
+bool webfs_url(const char *pPath, char *pBuffer, size_t BufferSize);
+
 bool webfs_is_file(const char *pPath);
 bool webfs_is_dir(const char *pPath);
 /**

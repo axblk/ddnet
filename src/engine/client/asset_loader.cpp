@@ -18,6 +18,14 @@
 #include <limits>
 #include <utility>
 
+namespace
+{
+	// How many files nobody waits for are fetched at once. A browser opens six
+	// connections to a host and queues the rest, so a few at a time keep the
+	// way free for urgent ones.
+	constexpr size_t MAX_CONCURRENT_BACKGROUND_FETCHES = 6;
+} // namespace
+
 class CImageAssetJob final : public CAssetJob
 {
 	// Compressed pixels of a map image
@@ -65,8 +73,11 @@ std::span<const uint8_t> CAssetJob::Data() const
 
 std::vector<uint8_t> CAssetJob::TakeData()
 {
-	dbg_assert(!m_UseResponse, "Cannot take over the bytes of a response");
-	return std::move(m_vData);
+	if(!m_UseResponse)
+		return std::move(m_vData);
+	// The request owns the response, so the caller gets a copy
+	const std::span<const uint8_t> Response = Data();
+	return std::vector<uint8_t>(Response.begin(), Response.end());
 }
 
 bool CAssetJob::ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData)
@@ -105,12 +116,13 @@ bool CAssetJob::Abort()
 	return true;
 }
 
-void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs)
+void CAssetLoader::Init(IEngine *pEngine, size_t MaxConcurrentJobs, IHttp *pHttp)
 {
 	dbg_assert(m_pEngine == nullptr, "Asset loader already initialized");
 	dbg_assert(MaxConcurrentJobs > 0, "Asset loader needs at least one concurrent job");
 	m_pEngine = pEngine;
 	m_MaxConcurrentJobs = MaxConcurrentJobs;
+	m_pHttp = pHttp;
 }
 
 void CAssetLoader::ReaderThread(void *pUser)
@@ -140,7 +152,7 @@ void CAssetLoader::ReadLoop()
 	}
 }
 
-void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
+void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority)
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	if(m_Shutdown)
@@ -148,10 +160,47 @@ void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob)
 		pJob->Abort();
 		return;
 	}
+	pJob->m_Background = Priority == EAssetPriority::BACKGROUND;
 	if(pJob->m_pRequest != nullptr)
 		m_vpFetchingJobs.push_back(std::move(pJob));
-	else
+	else if(!StartFetching(pJob))
 		Enqueue(std::move(pJob));
+}
+
+bool CAssetLoader::StartFetching(const std::shared_ptr<CAssetJob> &pJob)
+{
+	if(m_pHttp == nullptr || pJob->m_pStorage == nullptr)
+		return false;
+	char aUrl[512];
+	if(!pJob->m_pStorage->FetchUrl(pJob->Path(), pJob->m_StorageType, aUrl, sizeof(aUrl)))
+		return false;
+	if(pJob->m_Background && m_BackgroundFetchCount >= MAX_CONCURRENT_BACKGROUND_FETCHES)
+		m_vDeferredFetches.push_back({pJob, aUrl});
+	else
+		Fetch(pJob, aUrl);
+	return true;
+}
+
+void CAssetLoader::Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUrl)
+{
+	std::shared_ptr<IHttpRequest> pRequest = m_pHttp->CreateRequest(pUrl);
+	pRequest->LogProgress(HTTPLOG::FAILURE);
+	pJob->m_pRequest = pRequest;
+	if(pJob->m_Background)
+		++m_BackgroundFetchCount;
+	m_vpFetchingJobs.push_back(pJob);
+	m_pHttp->Run(std::move(pRequest));
+}
+
+void CAssetLoader::StartDeferredFetches()
+{
+	while(!m_vDeferredFetches.empty() && m_BackgroundFetchCount < MAX_CONCURRENT_BACKGROUND_FETCHES)
+	{
+		CDeferredFetch Deferred = std::move(m_vDeferredFetches.front());
+		m_vDeferredFetches.pop_front();
+		if(!Deferred.m_pJob->Done())
+			Fetch(Deferred.m_pJob, Deferred.m_Url.c_str());
+	}
 }
 
 void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
@@ -183,6 +232,11 @@ void CAssetLoader::UpdateFetchingJobs()
 			continue;
 		}
 		It = m_vpFetchingJobs.erase(It);
+		if(pJob->m_Background)
+		{
+			dbg_assert(m_BackgroundFetchCount > 0, "Background fetch count underflow");
+			--m_BackgroundFetchCount;
+		}
 		if(pJob->Done())
 			continue;
 
@@ -260,6 +314,7 @@ void CAssetLoader::Update()
 {
 	dbg_assert(m_pEngine != nullptr, "Asset loader not initialized");
 	UpdateFetchingJobs();
+	StartDeferredFetches();
 	UpdateReadJobs();
 	m_vpRunningJobs.erase(
 		std::remove_if(m_vpRunningJobs.begin(), m_vpRunningJobs.end(), [](const auto &pJob) { return pJob->Done(); }),
@@ -296,11 +351,15 @@ void CAssetLoader::Shutdown()
 	}
 	for(const auto &pJob : m_vpFetchingJobs)
 		pJob->Abort();
+	for(const auto &Deferred : m_vDeferredFetches)
+		Deferred.m_pJob->Abort();
 	for(const auto &pJob : m_vpPendingJobs)
 		pJob->Abort();
 	for(const auto &pJob : m_vpRunningJobs)
 		pJob->Abort();
 	m_vpFetchingJobs.clear();
+	m_vDeferredFetches.clear();
+	m_BackgroundFetchCount = 0;
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }

@@ -659,6 +659,35 @@ public:
 		}
 	}
 
+	bool FetchUrl(const char *pFilename, int Type, char *pBuffer, int BufferSize) override
+	{
+		dbg_assert(pBuffer != nullptr && BufferSize > 0, "FetchUrl needs a buffer");
+		pBuffer[0] = '\0';
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(Type == TYPE_ABSOLUTE)
+			return false;
+		if(str_startswith(pFilename, "mapres/../skins/"))
+			pFilename = pFilename + str_length("mapres/../");
+		if(pFilename[0] == '/' || pFilename[0] == '\\' || str_find(pFilename, "../") != nullptr || str_find(pFilename, "..\\") != nullptr)
+			return false;
+		// The first file in `OpenFile`'s order, so that a saved file wins over a
+		// delivered one. Files outside the data directory have no address.
+		bool Found = false;
+		GenericExists(pFilename, Type, [&](const char *pPath) {
+			if(!fs_is_file(pPath))
+				return false;
+			Found = webfs_url(pPath, pBuffer, BufferSize);
+			return true;
+		});
+		return Found;
+#else
+		// Everywhere else a file is a file and is read where it lies.
+		(void)pFilename;
+		(void)Type;
+		return false;
+#endif
+	}
+
 	template<typename F>
 	bool GenericExists(const char *pFilename, int Type, F &&CheckFunction) const
 	{

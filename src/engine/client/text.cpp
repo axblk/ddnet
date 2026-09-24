@@ -8,11 +8,13 @@
 #include <base/math.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 
 #include <engine/console.h>
 #include <engine/engine.h>
 #include <engine/graphics.h>
+#include <engine/http.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -29,7 +31,6 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -1370,7 +1371,8 @@ public:
 			log_info("textrender", "Freetype version %d.%d.%d (compiled = %d.%d.%d)", LMajor, LMinor, LPatch, FREETYPE_MAJOR, FREETYPE_MINOR, FREETYPE_PATCH);
 		}
 
-		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8));
+		// Where the fonts can be fetched, beside each other, in the browser.
+		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8), Kernel()->TryGetInterface<IHttp>());
 		LoadFontsAsync();
 
 		m_FirstFreeTextContainerIndex = -1;
@@ -1428,7 +1430,7 @@ public:
 			if(Pump)
 				Pump();
 			if(m_FontsLoading)
-				std::this_thread::sleep_for(1ms);
+				thread_sleep_idle(1ms);
 		}
 		return m_FontsSuccess;
 	}

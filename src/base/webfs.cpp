@@ -280,6 +280,10 @@ EM_JS(double, WebFsNow, (), {
 		}
 
 		// Fetched without the lock, so that other threads can read what is here.
+		// On the main thread the page stands still for the length of the
+		// request; `main-thread-reads.txt` lists the ones that may.
+		if(emscripten_is_main_runtime_thread())
+			log_warn("webfs", "'%s' was fetched on the main thread", pEntry->m_Path.c_str());
 		std::vector<uint8_t> vData;
 		if(!WebFsFetch(WebFsUrl(*pEntry), vData))
 			return nullptr;
@@ -351,6 +355,21 @@ IOHANDLE webfs_open(const char *pPath)
 	if(pBytes == nullptr)
 		return nullptr;
 	return fmemopen(const_cast<uint8_t *>(pBytes->data()), pBytes->size(), "rb");
+}
+
+bool webfs_url(const char *pPath, char *pBuffer, size_t BufferSize)
+{
+	if(pBuffer == nullptr || BufferSize == 0)
+		return false;
+	pBuffer[0] = '\0';
+	const char *pRelativePath = WebFsRelativePath(pPath);
+	if(pRelativePath == nullptr)
+		return false;
+	const CWebDataIndex::CEntry *pEntry = g_WebFsIndex.Find(pRelativePath);
+	if(pEntry == nullptr || pEntry->m_IsDirectory)
+		return false;
+	str_copy(pBuffer, WebFsUrl(*pEntry).c_str(), BufferSize);
+	return true;
 }
 
 bool webfs_is_file(const char *pPath)

@@ -3469,6 +3469,10 @@ if(CLIENT)
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_render_client|demo_viewer_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
+  if(TARGET_OS STREQUAL "emscripten")
+    # The browser's own fetch, which the assets are fetched with.
+    list(APPEND DEMO_CLIENT_SRC src/engine/shared/http_emscripten.cpp src/engine/shared/http_emscripten.h)
+  endif()
   # These and the map viewer leave the updater and the platform integrations
   # out.
   set(STANDALONE_CLIENT_TARGETS demo-renderer demo-viewer map-viewer)

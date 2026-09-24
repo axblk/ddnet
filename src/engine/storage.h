@@ -68,6 +68,18 @@ public:
 	virtual bool CreateFolder(const char *pFoldername, int Type) = 0;
 	virtual void GetCompletePath(int Type, const char *pDir, char *pBuffer, unsigned BufferSize) = 0;
 	/**
+	 * The address a file can be fetched from, in the browser, where everything
+	 * below the data directory comes over HTTP. Always `false` elsewhere.
+	 *
+	 * @param pFilename File, looked up in the same order as `OpenFile`.
+	 * @param Type Storage type to look in.
+	 * @param pBuffer Receives the address.
+	 * @param BufferSize Size of `pBuffer`.
+	 *
+	 * @return `false` when the file cannot be fetched, and then `pBuffer` is empty.
+	 */
+	virtual bool FetchUrl(const char *pFilename, int Type, char *pBuffer, int BufferSize) = 0;
+	/**
 	 * Schedules synchronization of persistent storage where required by the platform.
 	 */
 	virtual void SyncPersistentStorage() = 0;

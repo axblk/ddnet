@@ -14,6 +14,7 @@
 #include <engine/engine.h>
 #include <engine/graphics.h>
 #include <engine/graphics_window.h>
+#include <engine/http.h>
 #include <engine/input.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
@@ -249,6 +250,10 @@ int DemoClientMain(CDemoClientBase *pClient, int ArgumentCount, const char **ppA
 	// The engine goes before the graphics, and the client before the kernel,
 	// which owns the graphics the client still points to.
 	const auto Cleanup = [&]() {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		if(IEngineHttp *pHttp = pKernel->TryGetInterface<IEngineHttp>(); pHttp != nullptr)
+			pHttp->Shutdown();
+#endif
 		delete pEngine;
 		pKernel->Shutdown();
 		delete pClient;
@@ -283,9 +288,24 @@ int DemoClientMain(CDemoClientBase *pClient, int ArgumentCount, const char **ppA
 	pKernel->RegisterInterface(pEngineTextRender); // IEngineTextRender
 	pKernel->RegisterInterface(static_cast<ITextRender *>(pEngineTextRender), false);
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// In the browser the demo's assets are fetched beside each other.
+	IEngineHttp *pEngineHttp = CreateEngineHttp();
+	pKernel->RegisterInterface(pEngineHttp); // IEngineHttp
+	pKernel->RegisterInterface(static_cast<IHttp *>(pEngineHttp), false);
+#endif
+
 	pKernel->RegisterInterface(CreateGameClient());
 
 	pEngine->Init();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	if(!pEngineHttp->Init(std::chrono::seconds{1}))
+	{
+		log_error("client", "Failed to initialize the HTTP client");
+		Cleanup();
+		return -1;
+	}
+#endif
 	pConsole->Init();
 	pConfigManager->Init();
 	pKernel->RequestInterface<IGameClient>()->OnConsoleInit();

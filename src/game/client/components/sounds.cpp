@@ -116,7 +116,7 @@ void CSounds::OnInit()
 				for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
 				{
 					const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
-					m_vSoundLoads.push_back({SetId, SoundId, GameClient()->AssetLoader().Load(std::make_shared<CSoundAssetJob>(Sound(), Storage(), pFilename))});
+					m_vSoundLoads.push_back({SetId, SoundId, GameClient()->AssetLoader().Load(std::make_shared<CSoundAssetJob>(Sound(), Storage(), pFilename), EAssetPriority::BACKGROUND)});
 				}
 			}
 		}

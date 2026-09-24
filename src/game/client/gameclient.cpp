@@ -48,6 +48,7 @@
 #include <base/math.h>
 #include <base/mem.h>
 #include <base/str.h>
+#include <base/thread.h>
 #include <base/time.h>
 #include <base/vmath.h>
 
@@ -273,8 +274,9 @@ static TInterface *ToolOptionalInterface(IKernel *pKernel)
 void CGameClient::OnConsoleInit()
 {
 	m_pEngine = Kernel()->RequestInterface<IEngine>();
+	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	const size_t MaxConcurrentAssetJobs = std::clamp(m_pEngine->JobThreadCount(), size_t{2}, size_t{16});
-	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs);
+	m_AssetLoader.Init(m_pEngine, MaxConcurrentAssetJobs, m_pHttp);
 	m_pClient = Kernel()->RequestInterface<IClient>();
 	m_pSessions = Kernel()->RequestInterface<ISessions>();
 	m_pClientNetwork = ToolOptionalInterface<IClientNetwork>(Kernel());
@@ -307,7 +309,6 @@ void CGameClient::OnConsoleInit()
 #if defined(CONF_AUTOUPDATE)
 	m_pUpdater = ToolOptionalInterface<IUpdater>(Kernel());
 #endif
-	m_pHttp = ToolOptionalInterface<IHttp>(Kernel());
 	m_pFrontend = ToolOptionalInterface<IGameFrontend>(Kernel());
 
 	// make a list of all the systems, make sure to add them in the correct render order
@@ -998,6 +999,9 @@ void CGameClient::OnConnected(CSessionId SessionId)
 		// the loader only starts the next jobs when it is updated
 		m_AssetLoader.Update();
 		RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
+		// a program without a loading screen would spin here, and in a browser
+		// the fetches only finish while the page has its turn
+		thread_sleep_idle(std::chrono::milliseconds(1));
 	}
 
 	if(SessionId == NetworkSessionId())

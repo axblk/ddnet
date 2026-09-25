@@ -138,6 +138,9 @@ option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
+option(WEB_GLYPHS "Draw the glyphs of text with the browser instead of FreeType (emscripten only)" ON)
+option(WEB_PNG "Read and write PNGs with zlib alone instead of libpng (emscripten only)" ON)
+option(WEB_OPUS "Decode Opus sounds with the browser instead of libopusfile (emscripten only)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -840,6 +843,43 @@ if(CLIENT AND NOT(OPUSFILE_FOUND))
 endif()
 if(CLIENT AND NOT(SDL2_FOUND))
   message(SEND_ERROR "You must install SDL2 to compile the ${CMAKE_PROJECT_NAME} client")
+endif()
+
+# What the browser does itself in a browser build, each behind a switch of its
+# own: the library that does it elsewhere is replaced by the browser's side,
+# a JavaScript library, so that whatever links the one links the other.
+if(TARGET_OS STREQUAL "emscripten")
+  function(add_web_library NAME JS)
+    add_library(${NAME} INTERFACE)
+    target_link_options(${NAME} INTERFACE "SHELL:--js-library ${PROJECT_SOURCE_DIR}/${JS}")
+    set_property(TARGET ${NAME} PROPERTY INTERFACE_LINK_DEPENDS ${PROJECT_SOURCE_DIR}/${JS})
+  endfunction()
+  if(WEB_GLYPHS)
+    # The text renderer's glyphs come from the browser's text drawing, see
+    # src/engine/client/glyph_rasterizer_web.cpp.
+    add_web_library(web-glyphs src/engine/client/glyph_rasterizer_web.js)
+    set(FREETYPE_LIBRARIES web-glyphs)
+    set(FREETYPE_INCLUDE_DIRS)
+  endif()
+  if(WEB_PNG)
+    # PNGs are read and written with zlib alone, see
+    # src/engine/gfx/png_decode_zlib.cpp and png_encode_zlib.cpp.
+    set(PNG_LIBRARIES)
+    set(PNG_INCLUDE_DIRS)
+  endif()
+  if(WEB_OPUS)
+    # Opus sounds are decoded by the browser's audio decoder in the worker of
+    # web-decoder, see src/engine/client/opus_decoder_web.cpp, which reads
+    # the Ogg container itself: no libopusfile, libopus or libogg.
+    add_library(web-opus INTERFACE)
+    target_link_libraries(web-opus INTERFACE web-decoder)
+    set(OPUSFILE_LIBRARIES web-opus)
+    set(OPUS_LIBRARIES)
+    set(OGG_LIBRARIES)
+    set(OPUSFILE_INCLUDE_DIRS)
+    set(OPUS_INCLUDE_DIRS)
+    set(OGG_INCLUDE_DIRS)
+  endif()
 endif()
 if(TARGET_OS STREQUAL "android" AND NOT(CRYPTO_FOUND))
   message(SEND_ERROR "You must install BoringSSL to compile ${CMAKE_PROJECT_NAME} for Android")
@@ -2589,6 +2629,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   uuid_manager.h
   video.cpp
   video.h
+  web_decoder.cpp
+  web_decoder.h
   websockets.cpp
   websockets.h
   # tidy-alphabetical-end
@@ -2600,6 +2642,11 @@ set_src(ENGINE_GFX GLOB src/engine/gfx
   image_loader.h
   image_manipulation.cpp
   image_manipulation.h
+  png_decode_libpng.cpp
+  png_decode_zlib.cpp
+  png_decode_zlib.h
+  png_encode_libpng.cpp
+  png_encode_zlib.cpp
   # tidy-alphabetical-end
 )
 set_src(GAME_SHARED GLOB src/game
@@ -2697,11 +2744,32 @@ set(LIBS
 )
 
 # Targets
+# How PNGs are read, see WEB_PNG.
+if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_(decode|encode)_libpng\\.cpp$")
+else()
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_(decode|encode)_zlib\\.")
+endif()
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
+if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)
+  target_compile_definitions(engine-gfx PRIVATE CONF_WEB_PNG)
+endif()
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 set(ENGINE_QUIC ${ENGINE_SHARED})
 list(FILTER ENGINE_QUIC INCLUDE REGEX "src/engine/shared/quic_transport")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/quic_transport")
+# The browser's decoders in a worker, for what WEB_OPUS leaves to the browser.
+# A library of its own, linked by those who use it, so that only programs that
+# decode with it carry its JavaScript side.
+set(WEB_DECODER ${ENGINE_SHARED})
+list(FILTER WEB_DECODER INCLUDE REGEX "src/engine/shared/web_decoder")
+list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/web_decoder")
+if(TARGET web-opus)
+  add_library(web-decoder EXCLUDE_FROM_ALL STATIC ${WEB_DECODER})
+  target_link_options(web-decoder INTERFACE "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/shared/web_decoder.js")
+  set_property(TARGET web-decoder PROPERTY INTERFACE_LINK_DEPENDS ${PROJECT_SOURCE_DIR}/src/engine/shared/web_decoder.js)
+  list(APPEND TARGETS_OWN web-decoder)
+endif()
 add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
@@ -2798,10 +2866,15 @@ if(CLIENT)
     favorites.cpp
     font_loading.cpp
     font_loading.h
+    font_tables.cpp
+    font_tables.h
     friends.cpp
     friends.h
     ghost.cpp
     ghost.h
+    glyph_rasterizer.h
+    glyph_rasterizer_freetype.cpp
+    glyph_rasterizer_web.cpp
     graph.cpp
     graph.h
     graphics_backend.h
@@ -2818,6 +2891,9 @@ if(CLIENT)
     local_seats.h
     notifications.cpp
     notifications.h
+    opus_decoder.h
+    opus_decoder_opusfile.cpp
+    opus_decoder_web.cpp
     presentation_surface.h
     render_command_queue.cpp
     render_command_queue.h
@@ -3265,6 +3341,18 @@ if(CLIENT)
   set(ENGINE_CLIENT_WEB ${ENGINE_CLIENT})
   list(FILTER ENGINE_CLIENT_WEB INCLUDE REGEX "src/engine/client/web/")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_WEB})
+  # What draws the glyphs of text, see WEB_GLYPHS.
+  if(TARGET_OS STREQUAL "emscripten" AND WEB_GLYPHS)
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/glyph_rasterizer_freetype\\.cpp$")
+  else()
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/(font_tables|glyph_rasterizer_web)\\.(cpp|h)$")
+  endif()
+  # What decodes Opus, see WEB_OPUS.
+  if(TARGET_OS STREQUAL "emscripten" AND WEB_OPUS)
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/opus_decoder_opusfile\\.cpp$")
+  else()
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/opus_decoder_web\\.cpp$")
+  endif()
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
@@ -4362,6 +4450,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     network_test.cpp
     os_test.cpp
     packer_test.cpp
+    png_decode_zlib_test.cpp
     prng_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp
@@ -4403,6 +4492,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/ghost.h
     src/engine/client/graph.cpp
     src/engine/client/local_seats.h
+    src/engine/client/opus_decoder.h
+    src/engine/client/opus_decoder_opusfile.cpp
     src/engine/client/render_trace.cpp
     src/engine/client/render_trace.h
     src/engine/client/serverbrowser.cpp
@@ -4436,6 +4527,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/map/tile_run_store.h
     # tidy-alphabetical-end
   )
+  # Where libpng reads PNGs, the tests compare it with the zlib reader of
+  # browser builds (WEB_PNG).
+  if(NOT TARGET_OS STREQUAL "emscripten" OR NOT WEB_PNG)
+    list(APPEND TESTS_EXTRA src/engine/gfx/png_decode_zlib.cpp src/engine/gfx/png_decode_zlib.h)
+  endif()
 
   list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
   set(CLIENT_GAME_STATE_TEST_SOURCES
@@ -4536,6 +4632,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${OGG_INCLUDE_DIRS}
     ${OPUSFILE_INCLUDE_DIRS}
     ${OPUS_INCLUDE_DIRS}
+    ${PNG_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
     ${WAVPACK_INCLUDE_DIRS}
   )

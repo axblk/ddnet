@@ -31,6 +31,11 @@ extend-ignore-re = [
 	# MP4 box names in the WebCodecs muxer
 	'trak',
 	'trun',
+	# A filter of PNG, named after Alan W. Paeth
+	'Paeth',
+	'PAETH',
+	# A chunk of PNG, the histogram of the palette
+	'hIST',
 	'cl_nameplates_ids_seperate_line',
 	'LWS_.*_WRITEABLE',
 	'0x510E527FUL',

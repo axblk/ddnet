@@ -2,6 +2,8 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "sound.h"
 
+#include "opus_decoder.h"
+
 #include <base/bytes.h>
 #include <base/dbg.h>
 #include <base/log.h>
@@ -24,7 +26,6 @@
 #endif
 
 extern "C" {
-#include <opusfile.h>
 #include <wavpack.h>
 }
 
@@ -531,83 +532,27 @@ void CSound::RateConvert(CSample &Sample) const
 
 bool CSound::DecodeOpus(CSample &Sample, const void *pData, unsigned DataSize, const char *pContextName) const
 {
-	int OpusError = 0;
-	OggOpusFile *pOpusFile = op_open_memory((const unsigned char *)pData, DataSize, &OpusError);
-	if(pOpusFile)
-	{
-		const int NumChannels = op_channel_count(pOpusFile, -1);
-		if(NumChannels > 2)
-		{
-			op_free(pOpusFile);
-			log_error("sound/opus", "File is not mono or stereo. Filename='%s'", pContextName);
-			return false;
-		}
-
-		const int NumSamples = op_pcm_total(pOpusFile, -1); // per channel!
-		if(NumSamples < 0)
-		{
-			op_free(pOpusFile);
-			log_error("sound/opus", "Failed to get number of samples, error %d. Filename='%s'", NumSamples, pContextName);
-			return false;
-		}
-
-		short *pSampleData = (short *)calloc((size_t)NumSamples * NumChannels, sizeof(short));
-
-		int Pos = 0;
-		while(Pos < NumSamples)
-		{
-			const int Read = op_read(pOpusFile, pSampleData + Pos * NumChannels, (NumSamples - Pos) * NumChannels, nullptr);
-			if(Read < 0)
-			{
-				free(pSampleData);
-				op_free(pOpusFile);
-				log_error("sound/opus", "op_read error %d at %d. Filename='%s'", Read, Pos, pContextName);
-				return false;
-			}
-			else if(Read == 0) // EOF
-				break;
-			Pos += Read;
-		}
-
-		Sample.m_pData = pSampleData;
-		Sample.m_NumFrames = Pos;
-		Sample.m_Rate = 48000;
-		Sample.m_Channels = NumChannels;
-		Sample.m_LoopStart = 0;
-		Sample.m_PausedAt = 0;
-
-		const OpusTags *pTags = op_tags(pOpusFile, -1);
-		if(pTags)
-		{
-			for(int i = 0; i < pTags->comments; ++i)
-			{
-				const char *pComment = pTags->user_comments[i];
-				if(!pComment)
-					continue;
-				if(!str_startswith(pComment, "LOOP_START="))
-					continue;
-				int LoopStart = -1;
-				if(!str_toint(pComment + str_length("LOOP_START="), &LoopStart))
-				{
-					log_error("sound/opus", "Invalid LOOP_START tag. Value='%s' Filename='%s'", pComment + str_length("LOOP_START="), pContextName);
-					break;
-				}
-				if(LoopStart < 0 || LoopStart >= Sample.m_NumFrames)
-				{
-					log_error("sound/opus", "Tag LOOP_START out of range. Value=%d Min=0 Max=%d Filename='%s'", LoopStart, Sample.m_NumFrames - 1, pContextName);
-					break;
-				}
-				Sample.m_LoopStart = LoopStart;
-				break;
-			}
-		}
-
-		op_free(pOpusFile);
-	}
-	else
-	{
-		log_error("sound/opus", "Failed to decode sample, error %d. Filename='%s'", OpusError, pContextName);
+	COpusSound Sound;
+	if(!::DecodeOpus(pData, DataSize, pContextName, Sound))
 		return false;
+
+	Sample.m_pData = Sound.m_pData;
+	Sample.m_NumFrames = Sound.m_NumFrames;
+	Sample.m_Rate = 48000;
+	Sample.m_Channels = Sound.m_Channels;
+	Sample.m_LoopStart = 0;
+	Sample.m_PausedAt = 0;
+
+	if(Sound.m_LoopStart.has_value())
+	{
+		const char *pLoopStart = Sound.m_LoopStart->c_str();
+		int LoopStart = -1;
+		if(!str_toint(pLoopStart, &LoopStart))
+			log_error("sound/opus", "Invalid LOOP_START tag. Value='%s' Filename='%s'", pLoopStart, pContextName);
+		else if(LoopStart < 0 || LoopStart >= Sample.m_NumFrames)
+			log_error("sound/opus", "Tag LOOP_START out of range. Value=%d Min=0 Max=%d Filename='%s'", LoopStart, Sample.m_NumFrames - 1, pContextName);
+		else
+			Sample.m_LoopStart = LoopStart;
 	}
 
 	return true;

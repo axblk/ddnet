@@ -2800,6 +2800,8 @@ if(CLIENT)
     friends.h
     ghost.cpp
     ghost.h
+    glyph_rasterizer.h
+    glyph_rasterizer_freetype.cpp
     graph.cpp
     graph.h
     graphics_backend.h

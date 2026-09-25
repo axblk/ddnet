@@ -2,6 +2,7 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "asset_loader.h"
 #include "font_loading.h"
+#include "glyph_rasterizer.h"
 
 #include <base/dbg.h>
 #include <base/log.h>
@@ -17,10 +18,6 @@
 #include <engine/http.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
-
-// ft2 texture
-#include <ft2build.h>
-#include FT_FREETYPE_H
 
 #include <algorithm>
 #include <chrono>
@@ -55,9 +52,9 @@ struct SGlyph
 	EState m_State = EState::UNINITIALIZED;
 
 	int m_FontSize;
-	FT_Face m_Face;
+	const CFontFace *m_pFace;
 	int m_Chr;
-	FT_UInt m_GlyphIndex;
+	unsigned m_GlyphIndex;
 
 	// these values are scaled to the font size
 	// width * font_size == real_size
@@ -74,10 +71,10 @@ struct SGlyph
 
 struct SGlyphKeyHash
 {
-	size_t operator()(const std::tuple<FT_Face, int, int> &Key) const
+	size_t operator()(const std::tuple<const CFontFace *, int, int> &Key) const
 	{
 		size_t Hash = 17;
-		Hash = Hash * 31 + std::hash<FT_Face>()(std::get<0>(Key));
+		Hash = Hash * 31 + std::hash<const CFontFace *>()(std::get<0>(Key));
 		Hash = Hash * 31 + std::hash<int>()(std::get<1>(Key));
 		Hash = Hash * 31 + std::hash<int>()(std::get<2>(Key));
 		return Hash;
@@ -86,7 +83,7 @@ struct SGlyphKeyHash
 
 struct SGlyphKeyEquals
 {
-	bool operator()(const std::tuple<FT_Face, int, int> &Lhs, const std::tuple<FT_Face, int, int> &Rhs) const
+	bool operator()(const std::tuple<const CFontFace *, int, int> &Lhs, const std::tuple<const CFontFace *, int, int> &Rhs) const
 	{
 		return std::get<0>(Lhs) == std::get<0>(Rhs) && std::get<1>(Lhs) == std::get<1>(Rhs) && std::get<2>(Lhs) == std::get<2>(Rhs);
 	}
@@ -327,6 +324,7 @@ private:
 
 	IGraphics *m_pGraphics;
 	IGraphics *Graphics() { return m_pGraphics; }
+	IGlyphRasterizer *m_pRasterizer;
 
 	// Atlas textures and data
 	IGraphics::CTextureHandle m_Texture;
@@ -336,42 +334,60 @@ private:
 	uint8_t *m_pTextureData = nullptr;
 	std::vector<IGraphics::CTextureHandle> m_vPendingTextureDestroys;
 	CAtlas m_TextureAtlas;
-	std::unordered_map<std::tuple<FT_Face, int, int>, SGlyph, SGlyphKeyHash, SGlyphKeyEquals> m_Glyphs;
+	std::unordered_map<std::tuple<const CFontFace *, int, int>, SGlyph, SGlyphKeyHash, SGlyphKeyEquals> m_Glyphs;
+
+	/**
+	 * A glyph that has its place in the atlas but not its pixels yet, see
+	 * `IGlyphRasterizer::RasterizesInBatches`.
+	 */
+	struct SPendingGlyph
+	{
+		CGlyphRaster m_Raster;
+		std::vector<uint8_t> m_vPixels;
+		int m_AtlasX;
+		int m_AtlasY;
+		// The glyph's box in the atlas: its pixels and the room for the outline
+		unsigned m_Width;
+		unsigned m_Height;
+		int m_Padding;
+		int m_OutlineThickness;
+	};
+	std::vector<SPendingGlyph> m_vPendingGlyphs;
 
 	// Font faces
-	FT_Face m_DefaultFace = nullptr;
-	FT_Face m_IconFace = nullptr;
-	FT_Face m_VariantFace = nullptr;
-	FT_Face m_SelectedFace = nullptr;
-	std::vector<FT_Face> m_vFallbackFaces;
+	const CFontFace *m_pDefaultFace = nullptr;
+	const CFontFace *m_pIconFace = nullptr;
+	const CFontFace *m_pVariantFace = nullptr;
+	const CFontFace *m_pSelectedFace = nullptr;
+	std::vector<const CFontFace *> m_vpFallbackFaces;
 	std::function<void()> m_GlyphMissingCallback;
-	std::vector<FT_Face> m_vFtFaces;
+	std::vector<const CFontFace *> m_vpFaces;
 
-	FT_Face GetFaceByName(const char *pFamilyName)
+	const CFontFace *GetFaceByName(const char *pFamilyName)
 	{
 		if(pFamilyName == nullptr || pFamilyName[0] == '\0')
 			return nullptr;
 
-		FT_Face FamilyNameMatch = nullptr;
+		const CFontFace *pFamilyNameMatch = nullptr;
 		char aFamilyStyleName[FONT_NAME_SIZE];
 
-		for(const auto &CurrentFace : m_vFtFaces)
+		for(const CFontFace *pCurrentFace : m_vpFaces)
 		{
 			// Best match: font face with matching family and style name
-			str_format(aFamilyStyleName, sizeof(aFamilyStyleName), "%s %s", CurrentFace->family_name, CurrentFace->style_name);
+			str_format(aFamilyStyleName, sizeof(aFamilyStyleName), "%s %s", pCurrentFace->FamilyName(), pCurrentFace->StyleName());
 			if(str_comp(pFamilyName, aFamilyStyleName) == 0)
 			{
-				return CurrentFace;
+				return pCurrentFace;
 			}
 
 			// Second best match: font face with matching family
-			if(!FamilyNameMatch && str_comp(pFamilyName, CurrentFace->family_name) == 0)
+			if(!pFamilyNameMatch && str_comp(pFamilyName, pCurrentFace->FamilyName()) == 0)
 			{
-				FamilyNameMatch = CurrentFace;
+				pFamilyNameMatch = pCurrentFace;
 			}
 		}
 
-		return FamilyNameMatch;
+		return pFamilyNameMatch;
 	}
 
 	bool IncreaseGlyphMapSize()
@@ -443,31 +459,28 @@ private:
 		return !m_Texture.IsValid();
 	}
 
-	FT_UInt GetCharGlyph(int Chr, FT_Face *pFace, bool AllowReplacementCharacter)
+	unsigned GetCharGlyph(int Chr, const CFontFace **ppFace, bool AllowReplacementCharacter)
 	{
-		for(FT_Face Face : {m_SelectedFace, m_DefaultFace, m_VariantFace})
+		for(const CFontFace *pFace : {m_pSelectedFace, m_pDefaultFace, m_pVariantFace})
 		{
-			if(Face && Face->charmap)
+			if(pFace)
 			{
-				FT_UInt GlyphIndex = FT_Get_Char_Index(Face, (FT_ULong)Chr);
+				const unsigned GlyphIndex = pFace->GlyphIndex(Chr);
 				if(GlyphIndex)
 				{
-					*pFace = Face;
+					*ppFace = pFace;
 					return GlyphIndex;
 				}
 			}
 		}
 
-		for(const auto &FallbackFace : m_vFallbackFaces)
+		for(const CFontFace *pFallbackFace : m_vpFallbackFaces)
 		{
-			if(FallbackFace->charmap)
+			const unsigned GlyphIndex = pFallbackFace->GlyphIndex(Chr);
+			if(GlyphIndex)
 			{
-				FT_UInt GlyphIndex = FT_Get_Char_Index(FallbackFace, (FT_ULong)Chr);
-				if(GlyphIndex)
-				{
-					*pFace = FallbackFace;
-					return GlyphIndex;
-				}
+				*ppFace = pFallbackFace;
+				return GlyphIndex;
 			}
 		}
 
@@ -476,14 +489,14 @@ private:
 			m_GlyphMissingCallback();
 		}
 
-		if(!m_DefaultFace || !m_DefaultFace->charmap || !AllowReplacementCharacter)
+		if(!m_pDefaultFace || !AllowReplacementCharacter)
 		{
-			*pFace = nullptr;
+			*ppFace = nullptr;
 			return 0;
 		}
 
-		FT_UInt GlyphIndex = FT_Get_Char_Index(m_DefaultFace, (FT_ULong)REPLACEMENT_CHARACTER);
-		*pFace = m_DefaultFace;
+		const unsigned GlyphIndex = m_pDefaultFace->GlyphIndex(REPLACEMENT_CHARACTER);
+		*ppFace = m_pDefaultFace;
 
 		if(GlyphIndex == 0)
 		{
@@ -559,29 +572,38 @@ private:
 		return m_TextureAtlas.Add(Width, Height, PosX, PosY);
 	}
 
+	// Puts the pixels of a glyph into its box in the atlas, with its outline.
+	bool UploadPendingGlyph(const SPendingGlyph &Pending)
+	{
+		const CGlyphMetrics &Metrics = Pending.m_Raster.m_Metrics;
+		const size_t GlyphDataSize = (size_t)Pending.m_Width * Pending.m_Height * sizeof(uint8_t);
+		uint8_t *pGlyphDataFill = static_cast<uint8_t *>(malloc(GlyphDataSize));
+		uint8_t *pGlyphDataOutline = static_cast<uint8_t *>(malloc(GlyphDataSize));
+		mem_zero(pGlyphDataFill, GlyphDataSize);
+		for(int py = 0; py < Metrics.m_Height; ++py)
+		{
+			mem_copy(&pGlyphDataFill[(py + Pending.m_Padding) * Pending.m_Width + Pending.m_Padding], &Pending.m_vPixels[py * Metrics.m_Width], Metrics.m_Width);
+		}
+		Grow(pGlyphDataFill, pGlyphDataOutline, Pending.m_Width, Pending.m_Height, Pending.m_OutlineThickness);
+
+		const bool Uploaded = UploadGlyph(Pending.m_AtlasX, Pending.m_AtlasY, Pending.m_Width, Pending.m_Height, pGlyphDataFill, pGlyphDataOutline);
+		free(pGlyphDataFill);
+		free(pGlyphDataOutline);
+		return Uploaded;
+	}
+
 	bool RenderGlyph(SGlyph &Glyph)
 	{
 		RetryPendingTextureDestroys();
 		if(!m_Texture.IsValid() && !UploadTexture())
 			return false;
 
-		FT_Set_Pixel_Sizes(Glyph.m_Face, 0, Glyph.m_FontSize);
-
-		if(FT_Load_Glyph(Glyph.m_Face, Glyph.m_GlyphIndex, FT_LOAD_RENDER | FT_LOAD_NO_BITMAP))
-		{
-			log_debug("textrender", "Error loading glyph. Chr=%d GlyphIndex=%u", Glyph.m_Chr, Glyph.m_GlyphIndex);
+		CGlyphMetrics Metrics;
+		if(!m_pRasterizer->Measure(Glyph.m_pFace, Glyph.m_GlyphIndex, Glyph.m_Chr, Glyph.m_FontSize, Metrics))
 			return false;
-		}
 
-		const FT_Bitmap *pBitmap = &Glyph.m_Face->glyph->bitmap;
-		if(pBitmap->pixel_mode != FT_PIXEL_MODE_GRAY)
-		{
-			log_debug("textrender", "Error loading glyph, unsupported pixel mode. Chr=%d GlyphIndex=%u PixelMode=%d", Glyph.m_Chr, Glyph.m_GlyphIndex, pBitmap->pixel_mode);
-			return false;
-		}
-
-		const unsigned RealWidth = pBitmap->width;
-		const unsigned RealHeight = pBitmap->rows;
+		const unsigned RealWidth = Metrics.m_Width;
+		const unsigned RealHeight = Metrics.m_Height;
 
 		// adjust spacing
 		int OutlineThickness = 0;
@@ -612,22 +634,16 @@ private:
 				}
 			}
 
-			// prepare glyph data
-			const size_t GlyphDataSize = (size_t)Width * Height * sizeof(uint8_t);
-			uint8_t *pGlyphDataFill = static_cast<uint8_t *>(malloc(GlyphDataSize));
-			uint8_t *pGlyphDataOutline = static_cast<uint8_t *>(malloc(GlyphDataSize));
-			mem_zero(pGlyphDataFill, GlyphDataSize);
-			for(unsigned py = 0; py < pBitmap->rows; ++py)
-			{
-				mem_copy(&pGlyphDataFill[(py + y) * Width + x], &pBitmap->buffer[py * pBitmap->width], pBitmap->width);
-			}
-			Grow(pGlyphDataFill, pGlyphDataOutline, Width, Height, OutlineThickness);
-
-			// upload the glyph
-			const bool Uploaded = UploadGlyph(X, Y, Width, Height, pGlyphDataFill, pGlyphDataOutline);
-			free(pGlyphDataFill);
-			free(pGlyphDataOutline);
-			if(!Uploaded)
+			SPendingGlyph &Pending = m_vPendingGlyphs.emplace_back();
+			Pending.m_vPixels.resize((size_t)RealWidth * RealHeight);
+			Pending.m_Raster = {Glyph.m_pFace, Glyph.m_GlyphIndex, Glyph.m_Chr, Glyph.m_FontSize, Metrics, nullptr};
+			Pending.m_AtlasX = X;
+			Pending.m_AtlasY = Y;
+			Pending.m_Width = Width;
+			Pending.m_Height = Height;
+			Pending.m_Padding = x;
+			Pending.m_OutlineThickness = OutlineThickness;
+			if(!m_pRasterizer->RasterizesInBatches() && !RasterizePendingGlyphs())
 				return false;
 		}
 
@@ -637,9 +653,9 @@ private:
 			Glyph.m_Width = Width;
 			Glyph.m_CharHeight = RealHeight;
 			Glyph.m_CharWidth = RealWidth;
-			Glyph.m_OffsetX = (Glyph.m_Face->glyph->metrics.horiBearingX >> 6);
-			Glyph.m_OffsetY = -((Glyph.m_Face->glyph->metrics.height >> 6) - (Glyph.m_Face->glyph->metrics.horiBearingY >> 6));
-			Glyph.m_AdvanceX = (Glyph.m_Face->glyph->advance.x >> 6);
+			Glyph.m_OffsetX = Metrics.m_OffsetX;
+			Glyph.m_OffsetY = Metrics.m_OffsetY;
+			Glyph.m_AdvanceX = Metrics.m_AdvanceX;
 
 			Glyph.m_aUVs[0] = X;
 			Glyph.m_aUVs[1] = Y;
@@ -652,9 +668,10 @@ private:
 	}
 
 public:
-	CGlyphMap(IGraphics *pGraphics)
+	CGlyphMap(IGraphics *pGraphics, IGlyphRasterizer *pRasterizer)
 	{
 		m_pGraphics = pGraphics;
+		m_pRasterizer = pRasterizer;
 		m_pTextureData = new uint8_t[m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS];
 		mem_zero(m_pTextureData, m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS);
 
@@ -677,29 +694,29 @@ public:
 		m_GlyphMissingCallback = std::move(Callback);
 	}
 
-	FT_Face DefaultFace() const
+	const CFontFace *DefaultFace() const
 	{
-		return m_DefaultFace;
+		return m_pDefaultFace;
 	}
 
-	FT_Face IconFace() const
+	const CFontFace *IconFace() const
 	{
-		return m_IconFace;
+		return m_pIconFace;
 	}
 
-	void AddFace(FT_Face Face)
+	void AddFace(const CFontFace *pFace)
 	{
-		m_vFtFaces.push_back(Face);
+		m_vpFaces.push_back(pFace);
 	}
 
 	bool SetDefaultFaceByName(const char *pFamilyName)
 	{
-		m_DefaultFace = GetFaceByName(pFamilyName);
-		if(!m_DefaultFace)
+		m_pDefaultFace = GetFaceByName(pFamilyName);
+		if(!m_pDefaultFace)
 		{
-			if(!m_vFtFaces.empty())
+			if(!m_vpFaces.empty())
 			{
-				m_DefaultFace = m_vFtFaces.front();
+				m_pDefaultFace = m_vpFaces.front();
 			}
 			log_error("textrender", "The default font face '%s' could not be found", pFamilyName);
 			return false;
@@ -709,8 +726,8 @@ public:
 
 	bool SetIconFaceByName(const char *pFamilyName)
 	{
-		m_IconFace = GetFaceByName(pFamilyName);
-		if(!m_IconFace)
+		m_pIconFace = GetFaceByName(pFamilyName);
+		if(!m_pIconFace)
 		{
 			log_error("textrender", "The icon font face '%s' could not be found", pFamilyName);
 			return false;
@@ -725,34 +742,42 @@ public:
 
 	void ClearFallbackFaces()
 	{
-		m_vFallbackFaces.clear();
+		m_vpFallbackFaces.clear();
 	}
 
 	bool AddFallbackFaceByName(const char *pFamilyName)
 	{
-		FT_Face Face = GetFaceByName(pFamilyName);
-		if(!Face)
+		const CFontFace *pFace = GetFaceByName(pFamilyName);
+		if(!pFace)
 		{
 			log_error("textrender", "The fallback font face '%s' could not be found", pFamilyName);
 			return false;
 		}
-		if(std::find(m_vFallbackFaces.begin(), m_vFallbackFaces.end(), Face) != m_vFallbackFaces.end())
+		if(std::find(m_vpFallbackFaces.begin(), m_vpFallbackFaces.end(), pFace) != m_vpFallbackFaces.end())
 		{
 			log_warn("textrender", "The fallback font face '%s' was specified multiple times", pFamilyName);
 			return true;
 		}
-		m_vFallbackFaces.push_back(Face);
+		m_vpFallbackFaces.push_back(pFace);
 		return true;
+	}
+
+	/**
+	 * Adds the face that is asked for a character after all others.
+	 */
+	void AddLastFallbackFace(const CFontFace *pFace)
+	{
+		m_vpFallbackFaces.push_back(pFace);
 	}
 
 	bool SetVariantFaceByName(const char *pFamilyName)
 	{
-		FT_Face Face = GetFaceByName(pFamilyName);
-		if(m_VariantFace != Face)
+		const CFontFace *pFace = GetFaceByName(pFamilyName);
+		if(m_pVariantFace != pFace)
 		{
-			m_VariantFace = Face;
+			m_pVariantFace = pFace;
 			Clear(); // rebuild atlas after changing variant font
-			if(!Face && pFamilyName != nullptr)
+			if(!pFace && pFamilyName != nullptr)
 			{
 				log_error("textrender", "The variant font face '%s' could not be found", pFamilyName);
 				return false;
@@ -766,16 +791,17 @@ public:
 		switch(FontPreset)
 		{
 		case EFontPreset::DEFAULT_FONT:
-			m_SelectedFace = nullptr;
+			m_pSelectedFace = nullptr;
 			break;
 		case EFontPreset::ICON_FONT:
-			m_SelectedFace = m_IconFace;
+			m_pSelectedFace = m_pIconFace;
 			break;
 		}
 	}
 
 	void Clear()
 	{
+		m_vPendingGlyphs.clear();
 		mem_zero(m_pTextureData, m_TextureDimension * m_TextureDimension * ATLAS_CHANNELS);
 		Graphics()->UpdateTexture(m_Texture, {0, 0, m_TextureDimension, m_TextureDimension}, IGraphics::ETextureFormat::RG8_UNORM, m_pTextureData);
 
@@ -783,13 +809,40 @@ public:
 		m_Glyphs.clear();
 	}
 
+	/**
+	 * Gives the glyphs that have their place in the atlas their pixels, all at
+	 * once. Called before text is drawn.
+	 *
+	 * @return `true` if every glyph arrived in the atlas.
+	 */
+	bool RasterizePendingGlyphs()
+	{
+		if(m_vPendingGlyphs.empty())
+			return true;
+		std::vector<CGlyphRaster> vRasters;
+		vRasters.reserve(m_vPendingGlyphs.size());
+		for(SPendingGlyph &Pending : m_vPendingGlyphs)
+		{
+			Pending.m_Raster.m_pPixels = Pending.m_vPixels.data();
+			vRasters.push_back(Pending.m_Raster);
+		}
+		bool Success = m_pRasterizer->Rasterize(vRasters);
+		for(const SPendingGlyph &Pending : m_vPendingGlyphs)
+		{
+			if(!UploadPendingGlyph(Pending))
+				Success = false;
+		}
+		m_vPendingGlyphs.clear();
+		return Success;
+	}
+
 	const SGlyph *GetGlyph(int Chr, int FontSize)
 	{
 		FontSize = std::clamp(FontSize, MIN_FONT_SIZE, MAX_FONT_SIZE);
 
 		// Find glyph index and most appropriate font face.
-		FT_Face Face;
-		FT_UInt GlyphIndex = GetCharGlyph(Chr, &Face, false);
+		const CFontFace *pFace;
+		const unsigned GlyphIndex = GetCharGlyph(Chr, &pFace, false);
 		if(GlyphIndex == 0)
 		{
 			// Use replacement character if glyph could not be found,
@@ -798,7 +851,7 @@ public:
 		}
 
 		// Check if glyph for this (font face, character, font size)-combination was already rendered.
-		SGlyph &Glyph = m_Glyphs[std::make_tuple(Face, Chr, FontSize)];
+		SGlyph &Glyph = m_Glyphs[std::make_tuple(pFace, Chr, FontSize)];
 		if(Glyph.m_State == SGlyph::EState::RENDERED)
 			return &Glyph;
 		else if(Glyph.m_State == SGlyph::EState::ERROR)
@@ -806,7 +859,7 @@ public:
 
 		// Else, render it.
 		Glyph.m_FontSize = FontSize;
-		Glyph.m_Face = Face;
+		Glyph.m_pFace = pFace;
 		Glyph.m_Chr = Chr;
 		Glyph.m_GlyphIndex = GlyphIndex;
 		if(RenderGlyph(Glyph))
@@ -829,12 +882,9 @@ public:
 
 	vec2 Kerning(const SGlyph *pLeft, const SGlyph *pRight) const
 	{
-		if(pLeft != nullptr && pRight != nullptr && pLeft->m_Face == pRight->m_Face && pLeft->m_FontSize == pRight->m_FontSize)
+		if(pLeft != nullptr && pRight != nullptr && pLeft->m_pFace == pRight->m_pFace && pLeft->m_FontSize == pRight->m_FontSize)
 		{
-			FT_Vector Kerning = {0, 0};
-			FT_Set_Pixel_Sizes(pLeft->m_Face, 0, pLeft->m_FontSize);
-			FT_Get_Kerning(pLeft->m_Face, pLeft->m_Chr, pRight->m_Chr, FT_KERNING_DEFAULT, &Kerning);
-			return vec2(Kerning.x >> 6, Kerning.y >> 6);
+			return m_pRasterizer->Kerning(pLeft->m_pFace, pLeft->m_FontSize, pLeft->m_Chr, pRight->m_Chr);
 		}
 		return vec2(0.0f, 0.0f);
 	}
@@ -848,6 +898,7 @@ public:
 		const char *pCurrent = pText;
 		const char *pEnd = pCurrent + Length;
 		int WidthLastChars = 0;
+		std::vector<uint8_t> vPixels;
 
 		while(pCurrent < pEnd)
 		{
@@ -856,33 +907,34 @@ public:
 
 			if(NextCharacter)
 			{
-				FT_Face Face;
-				FT_UInt GlyphIndex = GetCharGlyph(NextCharacter, &Face, true);
+				const CFontFace *pFace;
+				const unsigned GlyphIndex = GetCharGlyph(NextCharacter, &pFace, true);
 				if(GlyphIndex == 0)
 				{
 					pCurrent = pTmp;
 					continue;
 				}
 
-				FT_Set_Pixel_Sizes(Face, 0, FontSize);
-				if(FT_Load_Char(Face, NextCharacter, FT_LOAD_RENDER | FT_LOAD_NO_BITMAP))
+				// The character itself, whose glyph the face may lack
+				CGlyphRaster Raster = {pFace, pFace->GlyphIndex(NextCharacter), NextCharacter, FontSize, {}, nullptr};
+				if(!m_pRasterizer->Measure(pFace, Raster.m_GlyphIndex, NextCharacter, FontSize, Raster.m_Metrics))
 				{
-					log_debug("textrender", "Error loading glyph. Chr=%d GlyphIndex=%u", NextCharacter, GlyphIndex);
+					pCurrent = pTmp;
+					continue;
+				}
+				const int Width = Raster.m_Metrics.m_Width;
+				const int Height = Raster.m_Metrics.m_Height;
+				vPixels.assign((size_t)Width * Height, 0);
+				Raster.m_pPixels = vPixels.data();
+				if(!m_pRasterizer->Rasterize({&Raster, 1}))
+				{
 					pCurrent = pTmp;
 					continue;
 				}
 
-				const FT_Bitmap *pBitmap = &Face->glyph->bitmap;
-				if(pBitmap->pixel_mode != FT_PIXEL_MODE_GRAY)
+				for(int OffY = 0; OffY < Height; ++OffY)
 				{
-					log_debug("textrender", "Error loading glyph, unsupported pixel mode. Chr=%d GlyphIndex=%u PixelMode=%d", NextCharacter, GlyphIndex, pBitmap->pixel_mode);
-					pCurrent = pTmp;
-					continue;
-				}
-
-				for(unsigned OffY = 0; OffY < pBitmap->rows; ++OffY)
-				{
-					for(unsigned OffX = 0; OffX < pBitmap->width; ++OffX)
+					for(int OffX = 0; OffX < Width; ++OffX)
 					{
 						const int ImgOffX = std::clamp(x + OffX + WidthLastChars, x, (x + TexSubWidth) - 1);
 						const int ImgOffY = std::clamp(y + OffY, y, (y + TexSubHeight) - 1);
@@ -891,11 +943,11 @@ public:
 						{
 							TextImage.m_pData[ImageOffset + i] = 255;
 						}
-						TextImage.m_pData[ImageOffset + PixelSize - 1] = pBitmap->buffer[OffY * pBitmap->width + OffX];
+						TextImage.m_pData[ImageOffset + PixelSize - 1] = vPixels[OffY * Width + OffX];
 					}
 				}
 
-				WidthLastChars += (pBitmap->width + 1);
+				WidthLastChars += (Width + 1);
 			}
 			pCurrent = pTmp;
 		}
@@ -1034,8 +1086,8 @@ class CTextRender : public IEngineTextRender
 	IGraphics *Graphics() { return m_pGraphics; }
 	IStorage *Storage() { return m_pStorage; }
 
+	std::unique_ptr<IGlyphRasterizer> m_pRasterizer;
 	CGlyphMap *m_pGlyphMap;
-	std::vector<std::vector<uint8_t>> m_vFontData;
 
 	CAssetLoader m_FontLoader;
 	CFontIndex m_FontIndex;
@@ -1053,8 +1105,6 @@ class CTextRender : public IEngineTextRender
 	ColorRGBA m_Color;
 	ColorRGBA m_OutlineColor;
 	ColorRGBA m_SelectionColor;
-
-	FT_Library m_FTLibrary;
 
 	std::vector<STextContainer *> m_vpTextContainers;
 	std::vector<int> m_vTextContainerIndices;
@@ -1186,46 +1236,11 @@ class CTextRender : public IEngineTextRender
 			log_error("textrender", "Failed to open/read font file '%s'", Resource.Path());
 			return false;
 		}
-		// The faces point into the data
-		m_vFontData.push_back(Resource.Result().TakeBytes());
-		return AddFontFaces(m_vFontData.back(), Resource.Path());
-	}
-
-	bool AddFontFaces(const std::vector<uint8_t> &vFontData, const char *pPath)
-	{
-		const FT_Byte *pFontData = vFontData.data();
-		const FT_Long FontDataLength = (FT_Long)vFontData.size();
-
-		// Face -1 returns the number of faces in the collection
-		FT_Face FtFace;
-		const FT_Error CollectionLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataLength, -1, &FtFace);
-		if(CollectionLoadError)
-		{
-			log_error("textrender", "Failed to load font file '%s': %s", pPath, FT_Error_String(CollectionLoadError));
-			return false;
-		}
-		const FT_Long NumFaces = FtFace->num_faces;
-		FT_Done_Face(FtFace);
-
-		bool Any = false;
-		for(FT_Long FaceIndex = 0; FaceIndex < NumFaces; ++FaceIndex)
-		{
-			const FT_Error FaceLoadError = FT_New_Memory_Face(m_FTLibrary, pFontData, FontDataLength, FaceIndex, &FtFace);
-			if(FaceLoadError)
-			{
-				log_error("textrender", "Failed to load font face %ld from font file '%s': %s", FaceIndex, pPath, FT_Error_String(FaceLoadError));
-				FT_Done_Face(FtFace);
-				continue;
-			}
-			m_pGlyphMap->AddFace(FtFace);
-			Any = true;
-			log_debug("textrender", "Loaded font face %ld '%s %s' from font file '%s'", FaceIndex, FtFace->family_name, FtFace->style_name, pPath);
-		}
-		if(!Any)
-		{
-			log_error("textrender", "Failed to load font file '%s': no font faces could be loaded", pPath);
-		}
-		return Any;
+		std::vector<CFontFace *> vpFaces;
+		const bool Loaded = m_pRasterizer->LoadFaces(Resource.Result().TakeBytes(), Resource.Path(), vpFaces);
+		for(const CFontFace *pFace : vpFaces)
+			m_pGlyphMap->AddFace(pFace);
+		return Loaded;
 	}
 
 	void CommitFonts()
@@ -1249,6 +1264,9 @@ class CTextRender : public IEngineTextRender
 
 	void RequestFallbackFonts()
 	{
+		// The system's fonts stand in for the fallback files
+		if(m_pRasterizer->SystemFace() != nullptr)
+			return;
 		for(const std::string &FallbackFamilyName : m_FontIndex.m_vFallbackFamilyNames)
 		{
 			RequestFontFamily(FallbackFamilyName.c_str());
@@ -1272,6 +1290,13 @@ class CTextRender : public IEngineTextRender
 
 	void SelectLanguageVariant()
 	{
+		// The system's fonts draw what the default font lacks, in the
+		// language the system chooses them for, instead of the variant files.
+		if(m_pRasterizer->SystemFace() != nullptr)
+		{
+			m_pGlyphMap->SetVariantFaceByName(nullptr);
+			return;
+		}
 		for(const auto &Variant : m_FontIndex.m_vLanguageVariants)
 		{
 			if(str_comp(m_aLanguageFile, Variant.m_LanguageFile.c_str()) == 0)
@@ -1309,6 +1334,8 @@ class CTextRender : public IEngineTextRender
 				Success = false;
 			}
 		}
+		if(const CFontFace *pSystemFace = m_pRasterizer->SystemFace())
+			m_pGlyphMap->AddLastFallbackFace(pSystemFace);
 		if(!m_FontIndex.m_IconFamilyName.empty() &&
 			(AllFontsHere || m_pGlyphMap->HasFaceByName(m_FontIndex.m_IconFamilyName.c_str())) &&
 			!m_pGlyphMap->SetIconFaceByName(m_FontIndex.m_IconFamilyName.c_str()))
@@ -1348,8 +1375,6 @@ public:
 		m_OutlineColor = DefaultTextOutlineColor();
 		m_SelectionColor = DefaultTextSelectionColor();
 
-		m_FTLibrary = nullptr;
-
 		m_RenderFlags = 0;
 		m_CursorRenderTime = time_get_nanoseconds();
 	}
@@ -1360,16 +1385,10 @@ public:
 		m_pEngine = Kernel()->RequestInterface<IEngine>();
 		m_pGraphics = Kernel()->RequestInterface<IGraphics>();
 		m_pStorage = Kernel()->RequestInterface<IStorage>();
-		FT_Init_FreeType(&m_FTLibrary);
-		m_pGlyphMap = new CGlyphMap(m_pGraphics);
+		m_pRasterizer = CreateGlyphRasterizer();
+		m_pGlyphMap = new CGlyphMap(m_pGraphics, m_pRasterizer.get());
 		m_pGlyphMap->SetGlyphMissingCallback([this]() { RequestFallbackFonts(); });
-
-		// print freetype version
-		{
-			int LMajor, LMinor, LPatch;
-			FT_Library_Version(m_FTLibrary, &LMajor, &LMinor, &LPatch);
-			log_info("textrender", "Freetype version %d.%d.%d (compiled = %d.%d.%d)", LMajor, LMinor, LPatch, FREETYPE_MAJOR, FREETYPE_MINOR, FREETYPE_PATCH);
-		}
+		m_pRasterizer->LogVersion();
 
 		// Where the fonts can be fetched, beside each other, in the browser.
 		m_FontLoader.Init(Engine(), std::clamp<size_t>(Engine()->JobThreadCount(), 1, 8), Kernel()->TryGetInterface<IHttp>());
@@ -1410,11 +1429,7 @@ public:
 		delete m_pGlyphMap;
 		m_pGlyphMap = nullptr;
 
-		if(m_FTLibrary != nullptr)
-			FT_Done_FreeType(m_FTLibrary);
-		m_FTLibrary = nullptr;
-
-		m_vFontData.clear();
+		m_pRasterizer.reset();
 
 		m_pConsole = nullptr;
 		m_pEngine = nullptr;
@@ -2304,6 +2319,8 @@ public:
 		// still belong on it.
 		if(!TextContainer.m_StringInfo.m_vCharacterQuads.empty() && TextContainer.m_StringInfo.m_UploadedQuadCount != 0)
 		{
+			// The glyphs laid out since text was last drawn get their pixels now
+			m_pGlyphMap->RasterizePendingGlyphs();
 			Graphics()->TextureClear();
 			// render buffered text
 			Graphics()->RenderText(TextContainer.m_StringInfo.m_QuadBufferObjectIndex, TextContainer.m_StringInfo.m_UploadedQuadCount, m_pGlyphMap->TextureDimension(), m_pGlyphMap->Texture(), TextColor, TextOutlineColor);
@@ -2392,24 +2409,15 @@ public:
 		if(m_pGlyphMap->DefaultFace() == nullptr)
 			return -1.0f;
 
-		FT_Set_Pixel_Sizes(m_pGlyphMap->DefaultFace(), 0, FontSize);
 		const char *pTmp = &TextCharacter;
 		const int NextCharacter = str_utf8_decode(&pTmp);
 
 		if(NextCharacter)
 		{
-#if FREETYPE_MAJOR >= 2 && FREETYPE_MINOR >= 7 && (FREETYPE_MINOR > 7 || FREETYPE_PATCH >= 1)
-			const FT_Int32 FTFlags = FT_LOAD_BITMAP_METRICS_ONLY | FT_LOAD_NO_BITMAP;
-#else
-			const FT_Int32 FTFlags = FT_LOAD_RENDER | FT_LOAD_NO_BITMAP;
-#endif
-			if(FT_Load_Char(m_pGlyphMap->DefaultFace(), NextCharacter, FTFlags))
-			{
-				log_debug("textrender", "Error loading glyph. Chr=%d", NextCharacter);
+			int Width, BearingX;
+			if(!m_pRasterizer->InkBox(m_pGlyphMap->DefaultFace(), NextCharacter, 0, FontSize, Width, BearingX))
 				return -1.0f;
-			}
-
-			return (float)(m_pGlyphMap->DefaultFace()->glyph->metrics.horiBearingX >> 6);
+			return (float)BearingX;
 		}
 		return 0.0f;
 	}
@@ -2423,26 +2431,20 @@ public:
 		const char *pEnd = pCurrent + TextLength;
 
 		int WidthOfText = 0;
-		FT_Set_Pixel_Sizes(m_pGlyphMap->DefaultFace(), FontWidth, FontHeight);
 		while(pCurrent < pEnd)
 		{
 			const char *pTmp = pCurrent;
 			const int NextCharacter = str_utf8_decode(&pTmp);
 			if(NextCharacter)
 			{
-#if FREETYPE_MAJOR >= 2 && FREETYPE_MINOR >= 7 && (FREETYPE_MINOR > 7 || FREETYPE_PATCH >= 1)
-				const FT_Int32 FTFlags = FT_LOAD_BITMAP_METRICS_ONLY | FT_LOAD_NO_BITMAP;
-#else
-				const FT_Int32 FTFlags = FT_LOAD_RENDER | FT_LOAD_NO_BITMAP;
-#endif
-				if(FT_Load_Char(m_pGlyphMap->DefaultFace(), NextCharacter, FTFlags))
+				int Width, BearingX;
+				if(!m_pRasterizer->InkBox(m_pGlyphMap->DefaultFace(), NextCharacter, FontWidth, FontHeight, Width, BearingX))
 				{
-					log_debug("textrender", "Error loading glyph. Chr=%d", NextCharacter);
 					pCurrent = pTmp;
 					continue;
 				}
 
-				WidthOfText += (m_pGlyphMap->DefaultFace()->glyph->metrics.width >> 6) + 1;
+				WidthOfText += Width + 1;
 			}
 			pCurrent = pTmp;
 		}

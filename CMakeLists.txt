@@ -2861,6 +2861,8 @@ if(CLIENT)
     local_seats.h
     notifications.cpp
     notifications.h
+    opus_decoder.h
+    opus_decoder_opusfile.cpp
     presentation_surface.h
     render_command_queue.cpp
     render_command_queue.h
@@ -4450,6 +4452,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/engine/client/ghost.h
     src/engine/client/graph.cpp
     src/engine/client/local_seats.h
+    src/engine/client/opus_decoder.h
+    src/engine/client/opus_decoder_opusfile.cpp
     src/engine/client/render_trace.cpp
     src/engine/client/render_trace.h
     src/engine/client/serverbrowser.cpp

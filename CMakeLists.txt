@@ -3444,6 +3444,9 @@ if(CLIENT)
     target_link_options(${NAME} PRIVATE
       "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js"
       -sOFFSCREENCANVAS_SUPPORT=1
+      # In workers a wait is a real one, so the program needs no Asyncify
+      # to give the page its turn, unlike those on the page's thread.
+      -sASYNCIFY=0
     )
     set_property(TARGET ${NAME} APPEND PROPERTY LINK_DEPENDS ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js)
   endfunction()

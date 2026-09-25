@@ -1042,6 +1042,12 @@ public:
 	int RequestFilesFromUser([[maybe_unused]] const char *pFolder, [[maybe_unused]] const char *pAccept) override
 	{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The picker is awaited on the page's thread, which takes Asyncify.
+		if(!emscripten_has_asyncify())
+		{
+			log_error("storage", "files can only be asked for on the page's thread");
+			return 0;
+		}
 		CreateFolder(pFolder, TYPE_SAVE);
 		char aPath[IO_MAX_PATH_LENGTH];
 		GetCompletePath(TYPE_SAVE, pFolder, aPath, sizeof(aPath));

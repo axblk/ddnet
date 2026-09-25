@@ -13,6 +13,7 @@
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
+#include <emscripten/threading.h>
 #endif
 
 #if defined(CONF_FAMILY_UNIX)
@@ -124,6 +125,13 @@ void *thread_init(void (*threadfunc)(void *), void *u, const char *name)
 void thread_wait(void *thread)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Only the page's thread must not block. A program that runs in workers
+	// has no Asyncify to wait on it with.
+	if(!emscripten_is_main_runtime_thread())
+	{
+		dbg_assert(pthread_join((pthread_t)thread, nullptr) == 0, "pthread_join failure");
+		return;
+	}
 	// TODO: Remove this workaround when https://github.com/emscripten-core/emscripten/issues/9910 is fixed.
 	while(true)
 	{
@@ -227,6 +235,17 @@ CWebYieldScope::~CWebYieldScope()
 
 void web_yield(int64_t milliseconds)
 {
+	// A program built without Asyncify runs in workers, whose waits are real
+	// ones: the page's thread goes on meanwhile.
+	if(!emscripten_has_asyncify())
+	{
+		dbg_assert(!emscripten_is_main_runtime_thread(), "The page's thread cannot wait without Asyncify");
+		if(milliseconds > 0)
+			std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+		else
+			std::this_thread::yield();
+		return;
+	}
 	CWebYieldScope Scope;
 	emscripten_sleep(milliseconds > 0 ? (int)milliseconds : 0);
 }

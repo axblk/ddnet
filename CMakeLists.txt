@@ -138,6 +138,7 @@ option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
+option(WEB_GLYPHS "Draw the glyphs of text with the browser instead of FreeType (emscripten only)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -839,6 +840,24 @@ if(CLIENT AND NOT(OPUSFILE_FOUND))
 endif()
 if(CLIENT AND NOT(SDL2_FOUND))
   message(SEND_ERROR "You must install SDL2 to compile the ${CMAKE_PROJECT_NAME} client")
+endif()
+
+# What the browser does itself in a browser build, each behind a switch of its
+# own: the library that does it elsewhere is replaced by the browser's side,
+# a JavaScript library, so that whatever links the one links the other.
+if(TARGET_OS STREQUAL "emscripten")
+  function(add_web_library NAME JS)
+    add_library(${NAME} INTERFACE)
+    target_link_options(${NAME} INTERFACE "SHELL:--js-library ${PROJECT_SOURCE_DIR}/${JS}")
+    set_property(TARGET ${NAME} PROPERTY INTERFACE_LINK_DEPENDS ${PROJECT_SOURCE_DIR}/${JS})
+  endfunction()
+  if(WEB_GLYPHS)
+    # The text renderer's glyphs come from the browser's text drawing, see
+    # src/engine/client/glyph_rasterizer_web.cpp.
+    add_web_library(web-glyphs src/engine/client/glyph_rasterizer_web.js)
+    set(FREETYPE_LIBRARIES web-glyphs)
+    set(FREETYPE_INCLUDE_DIRS)
+  endif()
 endif()
 if(TARGET_OS STREQUAL "android" AND NOT(CRYPTO_FOUND))
   message(SEND_ERROR "You must install BoringSSL to compile ${CMAKE_PROJECT_NAME} for Android")
@@ -2796,12 +2815,15 @@ if(CLIENT)
     favorites.cpp
     font_loading.cpp
     font_loading.h
+    font_tables.cpp
+    font_tables.h
     friends.cpp
     friends.h
     ghost.cpp
     ghost.h
     glyph_rasterizer.h
     glyph_rasterizer_freetype.cpp
+    glyph_rasterizer_web.cpp
     graph.cpp
     graph.h
     graphics_backend.h
@@ -3265,6 +3287,12 @@ if(CLIENT)
   set(ENGINE_CLIENT_WEB ${ENGINE_CLIENT})
   list(FILTER ENGINE_CLIENT_WEB INCLUDE REGEX "src/engine/client/web/")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_WEB})
+  # What draws the glyphs of text, see WEB_GLYPHS.
+  if(TARGET_OS STREQUAL "emscripten" AND WEB_GLYPHS)
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/glyph_rasterizer_freetype\\.cpp$")
+  else()
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/(font_tables|glyph_rasterizer_web)\\.(cpp|h)$")
+  endif()
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.

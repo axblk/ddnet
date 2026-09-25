@@ -2617,6 +2617,8 @@ set_src(ENGINE_GFX GLOB src/engine/gfx
   image_loader.h
   image_manipulation.cpp
   image_manipulation.h
+  png_decode_libpng.cpp
+  png_encode_libpng.cpp
   # tidy-alphabetical-end
 )
 set_src(GAME_SHARED GLOB src/game

@@ -2,8 +2,12 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "demo_player_client.h"
 
+#if defined(CONF_WEB_PLATFORM)
+#include "web/window_web.h"
+#else
 #include "viewer_fullscreen.h"
 #include "window_sdl.h"
+#endif
 
 #include <base/fs.h>
 #include <base/log.h>
@@ -479,9 +483,11 @@ bool CDemoPlayerClient::HandleInput()
 			case KEY_M: SetMuted(!Muted()); break;
 			case KEY_I: MarkClip(true); break;
 			case KEY_O: MarkClip(false); break;
+#if !defined(CONF_WEB_PLATFORM)
 			// Called from the frame that read the press, which in a browser
 			// still counts as the user's action.
 			case KEY_F: ViewerFullscreen::Toggle(Window()); break;
+#endif
 			// Back to whoever recorded the demo, where there is one.
 			case KEY_V: ChooseSpectate(Spectating() == SPEC_FREEVIEW ? SPEC_FOLLOW : SPEC_FREEVIEW); break;
 			case KEY_N:
@@ -505,14 +511,21 @@ bool CDemoPlayerClient::HandleInput()
 		if(m_ZoomEnabled)
 			ScaleZoom(Gesture.m_Zoom);
 		MoveFreeView(-Gesture.m_Move * WorldPerPixel());
+#if !defined(CONF_WEB_PLATFORM)
 		m_Controls.Show();
+#endif
 	}
 
 	// Dragging moves the free view, in drawn pixels so that the world keeps up
 	// with the pointer on high density screens. Presses on the bar and pinches
 	// are not drags.
 	const vec2 MousePos = m_pInput->NativeMousePos() * Graphics()->ScreenHiDPIScale();
-	if(m_pInput->NativeMousePressed(1) && !m_Controls.Hovered() && !Gesture.m_Active)
+#if defined(CONF_WEB_PLATFORM)
+	const bool OverControls = false;
+#else
+	const bool OverControls = m_Controls.Hovered();
+#endif
+	if(m_pInput->NativeMousePressed(1) && !OverControls && !Gesture.m_Active)
 	{
 		if(m_Dragging)
 			MoveFreeView((m_LastMousePos - MousePos) * WorldPerPixel());
@@ -547,6 +560,7 @@ void CDemoPlayerClient::UpdateOverlays()
 	Hold(m_StatboardShown, KEY_EQUALS, "+statboard");
 }
 
+#if !defined(CONF_WEB_PLATFORM)
 void CDemoPlayerClient::RenderControls()
 {
 	// No pointer without a window.
@@ -822,6 +836,7 @@ void CDemoPlayerClient::RenderControls()
 	default: break;
 	}
 }
+#endif
 
 void CDemoPlayerClient::RenderWindowFrame()
 {
@@ -839,8 +854,10 @@ void CDemoPlayerClient::RenderWindowFrame()
 	GameClient()->OnRenderPrepare();
 	GameClient()->OnRender();
 	GameClient()->OnRenderFinalize();
+#if !defined(CONF_WEB_PLATFORM)
 	// Over everything else, before the frame goes out.
 	RenderControls();
+#endif
 	Graphics()->Swap();
 	// The clock the camera and the zoom ease on; without it they never arrive.
 	m_LocalTime = (time_get() - m_LocalStartTime) / (float)time_freq();
@@ -1070,12 +1087,19 @@ int CDemoPlayerClient::Run()
 	// a player fills the window, which matters most on a phone held upright.
 	g_Config.m_GfxWholeWindow = 1;
 	int ExitCode = 1;
-	if(InitGame(m_Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow(), m_pInput))
+#if defined(CONF_WEB_PLATFORM)
+	IEngineGraphicsWindow *pWindow = m_Surfaceless ? CreateOffscreenGraphicsWindow() : CreateWebGraphicsWindow();
+#else
+	IEngineGraphicsWindow *pWindow = m_Surfaceless ? CreateOffscreenGraphicsWindow() : CreateSdlGraphicsWindow();
+#endif
+	if(InitGame(pWindow, m_pInput))
 	{
 		// The input grabs the pointer for aiming; a player leaves it free.
 		if(m_pInput != nullptr)
 			m_pInput->MouseModeAbsolute();
+#if !defined(CONF_WEB_PLATFORM)
 		m_Controls.Init(Graphics(), TextRender());
+#endif
 
 		// Without a demo, a window waits for one to be dropped on it. A
 		// surface has nobody to drop one.

@@ -136,6 +136,7 @@ public:
 	class CTouchFinger
 	{
 		friend class CInput;
+		friend class CWebInput;
 
 		int64_t m_DeviceId;
 		int64_t m_FingerId;

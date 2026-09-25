@@ -7,9 +7,14 @@
 #include <base/thread.h>
 #include <base/time.h>
 
+#include <engine/client/viewer_gestures.h>
+#if defined(CONF_WEB_PLATFORM)
+#include <engine/client/web/window_web.h>
+#else
 #include <engine/client/viewer_controls.h>
 #include <engine/client/viewer_fullscreen.h>
 #include <engine/client/window_sdl.h>
+#endif
 #include <engine/config.h>
 #include <engine/console.h>
 #include <engine/graphics.h>
@@ -91,7 +96,10 @@ namespace
 		CStandaloneMapView &m_View;
 		IEngineInput *m_pInput;
 		std::string m_OutputFile;
+#if !defined(CONF_WEB_PLATFORM)
+		// In a browser the page draws the controls, next to the canvas.
 		CViewerControls m_Controls;
+#endif
 		CViewerGestures m_Gestures;
 		vec2 m_LastMousePos = vec2(0.0f, 0.0f);
 		bool m_Dragging = false;
@@ -158,13 +166,20 @@ namespace
 			{
 				m_RenderParams.m_Zoom = std::clamp(m_RenderParams.m_Zoom * Gesture.m_Zoom, MIN_ZOOM, MAX_ZOOM);
 				m_RenderParams.m_Center -= Gesture.m_Move * WorldPerPixel;
+#if !defined(CONF_WEB_PLATFORM)
 				m_Controls.Show();
+#endif
 			}
 
 			// In drawn pixels, so that the map keeps up with the pointer on high
 			// density screens. Presses on the controls and pinches are not drags.
 			const vec2 MousePos = m_pInput->NativeMousePos() * pGraphics->ScreenHiDPIScale();
-			if(m_pInput->NativeMousePressed(1) && !m_Controls.Hovered() && !Gesture.m_Active)
+#if defined(CONF_WEB_PLATFORM)
+			const bool OverControls = false;
+#else
+			const bool OverControls = m_Controls.Hovered();
+#endif
+			if(m_pInput->NativeMousePressed(1) && !OverControls && !Gesture.m_Active)
 			{
 				if(m_Dragging)
 					m_RenderParams.m_Center -= (MousePos - m_LastMousePos) * WorldPerPixel;
@@ -189,6 +204,7 @@ namespace
 			return true;
 		}
 
+#if !defined(CONF_WEB_PLATFORM)
 		// A map is not played, so there is no bar: what the view does sits in a
 		// corner, and the rest in a menu behind it.
 		void RenderControls()
@@ -266,6 +282,7 @@ namespace
 				break;
 			}
 		}
+#endif
 
 		// Pictures go to the downloads in a browser and to the file named on
 		// the command line elsewhere, the whole map beside it under its own
@@ -333,8 +350,10 @@ namespace
 		{
 			// Only shapes, no letters: a font would be the one thing needed
 			// from `data/`.
+#if !defined(CONF_WEB_PLATFORM)
 			m_Controls.Init(m_View.Graphics(), nullptr);
 			m_Controls.SetPlacement(CViewerControls::EPlacement::CORNER);
+#endif
 		}
 
 		CStandaloneMapView &View() { return m_View; }
@@ -364,8 +383,10 @@ namespace
 				// client runs and shows the map as it would look in it.
 				m_RenderParams.m_TimeOffsetMillis = std::chrono::duration_cast<std::chrono::milliseconds>(Now - StartTime).count();
 				m_View.Render(m_RenderParams);
+#if !defined(CONF_WEB_PLATFORM)
 				if(m_ShowControls && m_View.MapLoaded())
 					RenderControls();
+#endif
 				// Until cleared, a wheel notch stays pressed and keeps zooming.
 				m_pInput->Clear();
 				m_View.Graphics()->Swap();
@@ -584,7 +605,12 @@ int main(int argc, const char **argv)
 	pConsole->Init();
 	pConfigManager->Init();
 
-	if(!View.OpenWindow(Width, Height, CreateSdlGraphicsWindow(), true))
+#if defined(CONF_WEB_PLATFORM)
+	IEngineGraphicsWindow *pWindow = CreateWebGraphicsWindow();
+#else
+	IEngineGraphicsWindow *pWindow = CreateSdlGraphicsWindow();
+#endif
+	if(!View.OpenWindow(Width, Height, pWindow, true))
 		return 1;
 
 	IEngineInput *pInput = CreateEngineInput();

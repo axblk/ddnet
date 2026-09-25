@@ -4,7 +4,11 @@
 #define ENGINE_CLIENT_DEMO_PLAYER_CLIENT_H
 
 #include "demo_client_base.h"
+#include "viewer_gestures.h"
+
+#if !defined(CONF_WEB_PLATFORM)
 #include "viewer_controls.h"
+#endif
 
 #include <chrono>
 #include <functional>
@@ -42,7 +46,10 @@ private:
 	// During an export the window is drawn on a clock of its own.
 	int64_t m_LastWindowRenderTime = 0;
 	std::chrono::nanoseconds m_LastExportScreenRender{0};
+#if !defined(CONF_WEB_PLATFORM)
+	// In a browser the page draws the controls, next to the canvas.
 	CViewerControls m_Controls;
+#endif
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
 	bool m_ZoomEnabled = true;
@@ -116,10 +123,12 @@ private:
 	 */
 	float WorldPerPixel() const;
 	void RenderWindowFrame();
+#if !defined(CONF_WEB_PLATFORM)
 	/**
 	 * Draws the bar over the demo and does what was pressed in it.
 	 */
 	void RenderControls();
+#endif
 	/**
 	 * Opens the demo dropped on the window in place of the one that plays.
 	 */

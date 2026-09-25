@@ -7,7 +7,14 @@
 
 #include <engine/sound.h>
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+// Where the sound goes: an SDL audio device, the page's audio worklet in the
+// web tools, and nowhere in the render tool, which mixes for the video alone.
+#if defined(CONF_DEMO_RENDER_TOOL)
+#elif defined(CONF_WEB_PLATFORM)
+#define SOUND_OUTPUT_WEB
+#include "web/audio_web.h"
+#else
+#define SOUND_OUTPUT_SDL
 #include <SDL_audio.h>
 #include <SDL_events.h>
 #endif
@@ -77,9 +84,11 @@ class CSound : public IEngineSound
 	};
 
 	bool m_SoundEnabled = false;
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	SDL_AudioSpec m_AudioSpec = {};
 	SDL_AudioDeviceID m_Device = 0;
+#elif defined(SOUND_OUTPUT_WEB)
+	CWebAudioOutput m_WebOutput;
 #endif
 	bool m_DevicePaused = false;
 	std::atomic<bool> m_DeviceChanged = false;
@@ -109,7 +118,7 @@ class CSound : public IEngineSound
 	CSample *AllocSample() REQUIRES(!m_SoundLock);
 	void RateConvert(CSample &Sample) const;
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	static int SDLCALL HandleAudioDeviceEvent(void *pUser, SDL_Event *pEvent);
 	bool OpenDevice(bool AllowFrequencyChange);
 	void CloseDevice();

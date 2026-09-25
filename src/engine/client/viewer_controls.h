@@ -16,38 +16,6 @@
 class ITextRender;
 
 /**
- * Pinching and dragging with two fingers, for the viewers. One finger is a
- * tap or a drag and left to the caller.
- */
-class CViewerGestures
-{
-public:
-	struct SResult
-	{
-		/** What to multiply the zoom by. Above one shows more of the world. */
-		float m_Zoom = 1.0f;
-		/** How far the picture was dragged, in the pixels that are drawn. */
-		vec2 m_Move = vec2(0.0f, 0.0f);
-		/**
-		 * Whether two fingers are down. The first one is also reported as a
-		 * pointer, which should then not move the view as well.
-		 */
-		bool m_Active = false;
-	};
-
-	/**
-	 * @param vFingers The fingers on the screen, as the input reports them.
-	 * @param ScreenSize How big the picture is, in the pixels that are drawn.
-	 */
-	SResult Update(const std::vector<IInput::CTouchFingerState> &vFingers, vec2 ScreenSize);
-
-private:
-	bool m_Pinching = false;
-	float m_Distance = 0.0f;
-	vec2 m_Middle = vec2(0.0f, 0.0f);
-};
-
-/**
  * The controls the native viewers draw over their picture, like a video
  * player's: they fade out while nothing happens and a tap on the picture
  * toggles them. Drawn with quads, and with text where there is a text render

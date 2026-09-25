@@ -710,6 +710,8 @@ export class Program extends EventTarget {
 
 	// The audio outlives the runtime unless it is stopped here.
 	stopAudio() {
+		// The tools' own output, see `src/engine/client/web/web_platform.js`.
+		this.module?.ddnetStopAudio?.();
 		const SDL2 = this.module?.SDL2;
 		if (SDL2 === undefined) {
 			return;
@@ -780,6 +782,9 @@ export class Program extends EventTarget {
 			canvas: this.canvas ?? undefined,
 			mainScriptUrlOrBlob: program?.script,
 			locateFile: program === null ? undefined : path => new URL(path, program.base).href,
+			// Read by `src/engine/client/web/web_platform.js`: without zoom
+			// the wheel scrolls the page.
+			ddnetWheel: options.zoom !== false,
 			// Read by `src/engine/client/viewer_fullscreen.cpp`.
 			ddnetFullscreen: {
 				supported: fullscreenSupported,
@@ -1116,13 +1121,14 @@ export class ViewerElement extends ELEMENT_BASE {
 		return {};
 	}
 
+	// The programs draw no controls of their own in a browser; the page's
+	// are the only ones, whatever `controls` names.
 	wantsProgramControls() {
-		const asked = this.getAttribute("controls");
-		return asked !== null && asked !== "html";
+		return false;
 	}
 
 	applyControlsKind() {
-		const wanted = this.getAttribute("controls") === "html" && this.constructor.bar !== null;
+		const wanted = this.hasAttribute("controls") && this.constructor.bar !== null;
 		if (wanted === (this.barInstance !== null)) {
 			return;
 		}

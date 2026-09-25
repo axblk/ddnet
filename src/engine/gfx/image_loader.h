@@ -6,6 +6,7 @@
 
 #include <engine/image.h>
 
+#include <memory>
 #include <vector>
 
 class CByteBufferReader
@@ -49,7 +50,7 @@ public:
 class CPngRowWriter
 {
 public:
-	CPngRowWriter() = default;
+	CPngRowWriter();
 	~CPngRowWriter();
 
 	CPngRowWriter(const CPngRowWriter &) = delete;
@@ -83,9 +84,10 @@ public:
 private:
 	void Close();
 
-	// The libpng handles, kept opaque so that libpng stays out of this header.
-	void *m_pPngStruct = nullptr;
-	void *m_pPngInfo = nullptr;
+	// What writes the file: libpng's handles or the encoder of browser builds
+	// (png_encode_libpng.cpp, png_encode_zlib.cpp), kept out of this header.
+	class CImpl;
+	std::unique_ptr<CImpl> m_pImpl;
 	IOHANDLE m_File = nullptr;
 	char m_aFilename[IO_MAX_PATH_LENGTH] = {};
 	size_t m_Height = 0;

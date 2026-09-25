@@ -46,6 +46,15 @@ static void PngFileFlushCallback(png_structp pPngStruct)
 	io_flush(static_cast<IOHANDLE>(png_get_io_ptr(pPngStruct)));
 }
 
+class CPngRowWriter::CImpl
+{
+public:
+	png_structp m_pPngStruct = nullptr;
+	png_infop m_pPngInfo = nullptr;
+};
+
+CPngRowWriter::CPngRowWriter() = default;
+
 CPngRowWriter::~CPngRowWriter()
 {
 	Close();
@@ -53,7 +62,7 @@ CPngRowWriter::~CPngRowWriter()
 
 bool CPngRowWriter::Begin(IOHANDLE File, const char *pFilename, size_t Width, size_t Height, CImageInfo::EImageFormat Format)
 {
-	dbg_assert(m_pPngStruct == nullptr, "PNG row writer already begun");
+	dbg_assert(m_pImpl == nullptr, "PNG row writer already begun");
 	str_copy(m_aFilename, pFilename);
 	if(!File)
 	{
@@ -84,8 +93,9 @@ bool CPngRowWriter::Begin(IOHANDLE File, const char *pFilename, size_t Width, si
 		m_Failed = true;
 		return false;
 	}
-	m_pPngStruct = pPngStruct;
-	m_pPngInfo = pPngInfo;
+	m_pImpl = std::make_unique<CImpl>();
+	m_pImpl->m_pPngStruct = pPngStruct;
+	m_pImpl->m_pPngInfo = pPngInfo;
 
 	png_set_write_fn(pPngStruct, m_File, PngFileWriteDataCallback, PngFileFlushCallback);
 	png_set_IHDR(pPngStruct, pPngInfo, Width, Height, 8, PngColorTypeFromFormat(Format), PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
@@ -99,7 +109,7 @@ bool CPngRowWriter::Begin(IOHANDLE File, const char *pFilename, size_t Width, si
 
 bool CPngRowWriter::WriteRows(const uint8_t *pRows, size_t RowCount)
 {
-	if(m_Failed || m_pPngStruct == nullptr)
+	if(m_Failed || m_pImpl == nullptr)
 		return false;
 	if(m_RowsWritten + RowCount > m_Height)
 	{
@@ -107,7 +117,7 @@ bool CPngRowWriter::WriteRows(const uint8_t *pRows, size_t RowCount)
 		m_Failed = true;
 		return false;
 	}
-	png_structp pPngStruct = static_cast<png_structp>(m_pPngStruct);
+	png_structp pPngStruct = m_pImpl->m_pPngStruct;
 	for(size_t Row = 0; Row < RowCount; ++Row)
 	{
 		// libpng does not write through the row it is given, but its interface
@@ -120,7 +130,7 @@ bool CPngRowWriter::WriteRows(const uint8_t *pRows, size_t RowCount)
 
 bool CPngRowWriter::End()
 {
-	if(m_Failed || m_pPngStruct == nullptr)
+	if(m_Failed || m_pImpl == nullptr)
 	{
 		Close();
 		return false;
@@ -131,21 +141,18 @@ bool CPngRowWriter::End()
 		Close();
 		return false;
 	}
-	png_write_end(static_cast<png_structp>(m_pPngStruct), static_cast<png_infop>(m_pPngInfo));
+	png_write_end(m_pImpl->m_pPngStruct, m_pImpl->m_pPngInfo);
 	Close();
 	return true;
 }
 
 void CPngRowWriter::Close()
 {
-	if(m_pPngStruct != nullptr)
+	if(m_pImpl != nullptr)
 	{
-		png_structp pPngStruct = static_cast<png_structp>(m_pPngStruct);
-		png_infop pPngInfo = static_cast<png_infop>(m_pPngInfo);
-		png_destroy_info_struct(pPngStruct, &pPngInfo);
-		png_destroy_write_struct(&pPngStruct, nullptr);
-		m_pPngStruct = nullptr;
-		m_pPngInfo = nullptr;
+		png_destroy_info_struct(m_pImpl->m_pPngStruct, &m_pImpl->m_pPngInfo);
+		png_destroy_write_struct(&m_pImpl->m_pPngStruct, nullptr);
+		m_pImpl.reset();
 	}
 	if(m_File)
 	{

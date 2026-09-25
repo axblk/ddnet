@@ -139,7 +139,7 @@ option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
 option(WEB_GLYPHS "Draw the glyphs of text with the browser instead of FreeType (emscripten only)" ON)
-option(WEB_PNG "Read PNGs with zlib alone instead of libpng (emscripten only)" ON)
+option(WEB_PNG "Read and write PNGs with zlib alone instead of libpng (emscripten only)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -858,6 +858,12 @@ if(TARGET_OS STREQUAL "emscripten")
     add_web_library(web-glyphs src/engine/client/glyph_rasterizer_web.js)
     set(FREETYPE_LIBRARIES web-glyphs)
     set(FREETYPE_INCLUDE_DIRS)
+  endif()
+  if(WEB_PNG)
+    # PNGs are read and written with zlib alone, see
+    # src/engine/gfx/png_decode_zlib.cpp and png_encode_zlib.cpp.
+    set(PNG_LIBRARIES)
+    set(PNG_INCLUDE_DIRS)
   endif()
 endif()
 if(TARGET_OS STREQUAL "android" AND NOT(CRYPTO_FOUND))
@@ -2622,6 +2628,7 @@ set_src(ENGINE_GFX GLOB src/engine/gfx
   png_decode_zlib.cpp
   png_decode_zlib.h
   png_encode_libpng.cpp
+  png_encode_zlib.cpp
   # tidy-alphabetical-end
 )
 set_src(GAME_SHARED GLOB src/game
@@ -2721,9 +2728,9 @@ set(LIBS
 # Targets
 # How PNGs are read, see WEB_PNG.
 if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)
-  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_decode_libpng\\.cpp$")
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_(decode|encode)_libpng\\.cpp$")
 else()
-  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_decode_zlib\\.")
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_(decode|encode)_zlib\\.")
 endif()
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
 if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)

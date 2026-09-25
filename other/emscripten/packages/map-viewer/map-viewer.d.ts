@@ -11,6 +11,7 @@ export declare class MapViewer extends Program {
 	/** The URL of the map, `""` for a file. */
 	readonly src: string;
 	loaded(): boolean;
+	/** The canvas's size in CSS pixels, which the page cannot set on the canvas itself. */
 	setSize(width: number, height: number): void;
 	/** Shows the whole map. */
 	fit(): void;
@@ -24,7 +25,10 @@ export declare class MapViewer extends Program {
 	/** Each of these answers without an argument and sets with one. */
 	highDetail(on?: boolean): boolean;
 	entities(on?: boolean): boolean;
-	/** Whether the program draws its own buttons. */
+	/**
+	 * Whether the program is asked to draw its own buttons, which it does not
+	 * in a browser.
+	 */
 	controls(show?: boolean): boolean;
 	/** Saves the view, or the whole map, as a PNG. */
 	exportView(): void;

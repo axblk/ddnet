@@ -13,7 +13,10 @@ const video = await renderDemo({
 ```
 
 The demo is drawn without a window in a worker and encoded by the browser,
-which needs WebGPU and WebCodecs. A `videoSink` from `showSaveFilePicker`
+which needs WebCodecs; it is drawn with WebGPU, or with WebGL 2 where the
+browser has no WebGPU adapter. The program is the demo player's
+(`ddnet-demo-player.js` and its `.wasm`), which renders when it is started
+for it, so a site with both serves it once. A `videoSink` from `showSaveFilePicker`
 writes the video as it is made instead of keeping it in memory; `zip` puts
 several videos into one file. The types are in `demo-renderer.d.ts`.
 

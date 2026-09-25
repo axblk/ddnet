@@ -20,13 +20,25 @@ const client = await Program.open({ module: DDNetClient, canvas });
 client.addEventListener("output", event => console.log(event.detail.message));
 ```
 
-`viewer.css` dresses the bars the packages build (`controls="html"`). The
-element itself keeps its picture in a shadow root; `::part(picture)` and
+`viewer.css` dresses the bars the packages build (`controls`). The element
+itself keeps its picture in a shadow root; `::part(picture)` and
 `::part(message)` style it from outside.
+
+The demo player, the map viewer and the renderer run in workers (the full
+client does not yet): the program on a thread of its own, and its drawing,
+with WebGPU or with WebGL 2 where the browser has no WebGPU adapter, on a
+thread the canvas is handed to (`transferControlToOffscreen`). The page's
+thread only passes events on and is never made to wait. Once a program has
+the canvas, the page can neither size it through its `width` and `height`
+nor draw on it: the size goes through the program (`setSize`, or
+`followSize`, which the elements use), and a canvas serves one program. The
+canvas needs no id. The sound goes to an AudioWorklet whose module is made
+from a blob, so that nothing but the program is served for it; a page with a
+Content Security Policy has to allow `blob:` worklets.
 
 The page has to be cross-origin isolated (`Cross-Origin-Opener-Policy:
 same-origin`, `Cross-Origin-Embedder-Policy: require-corp`), because the
-programs use threads. A page that cannot send headers loads
+programs use threads and shared memory. A page that cannot send headers loads
 `coi-serviceworker.js` first. `supportError()` says what a browser lacks.
 
 The types, and with them the documentation of the API, are in

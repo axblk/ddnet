@@ -45,6 +45,7 @@ export declare class DemoPlayer extends Program {
 	play(): Promise<void>;
 	pause(): void;
 
+	/** The canvas's size in CSS pixels, which the page cannot set on the canvas itself. */
 	setSize(width: number, height: number): void;
 	/** How far it has played, between 0 and 1. */
 	progress(): number | null;
@@ -91,7 +92,10 @@ export declare class DemoPlayer extends Program {
 	recordedCameraAvailable(): boolean;
 	/** Whether the view zooms as the recorded one did. */
 	recordedCamera(use?: boolean): boolean;
-	/** Whether the program draws its own bar. */
+	/**
+	 * Whether the program is asked to draw its own bar, which it does not in a
+	 * browser.
+	 */
 	controls(show?: boolean): boolean;
 }
 

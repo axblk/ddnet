@@ -139,6 +139,7 @@ option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
 option(WEB_GLYPHS "Draw the glyphs of text with the browser instead of FreeType (emscripten only)" ON)
+option(WEB_PNG "Read PNGs with zlib alone instead of libpng (emscripten only)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -2618,6 +2619,8 @@ set_src(ENGINE_GFX GLOB src/engine/gfx
   image_manipulation.cpp
   image_manipulation.h
   png_decode_libpng.cpp
+  png_decode_zlib.cpp
+  png_decode_zlib.h
   png_encode_libpng.cpp
   # tidy-alphabetical-end
 )
@@ -2716,7 +2719,16 @@ set(LIBS
 )
 
 # Targets
+# How PNGs are read, see WEB_PNG.
+if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_decode_libpng\\.cpp$")
+else()
+  list(FILTER ENGINE_GFX EXCLUDE REGEX "src/engine/gfx/png_decode_zlib\\.")
+endif()
 add_library(engine-gfx EXCLUDE_FROM_ALL OBJECT ${ENGINE_GFX})
+if(TARGET_OS STREQUAL "emscripten" AND WEB_PNG)
+  target_compile_definitions(engine-gfx PRIVATE CONF_WEB_PNG)
+endif()
 target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 set(ENGINE_QUIC ${ENGINE_SHARED})
 list(FILTER ENGINE_QUIC INCLUDE REGEX "src/engine/shared/quic_transport")
@@ -4389,6 +4401,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     network_test.cpp
     os_test.cpp
     packer_test.cpp
+    png_decode_zlib_test.cpp
     prng_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp
@@ -4463,6 +4476,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     src/game/map/tile_run_store.h
     # tidy-alphabetical-end
   )
+  # Where libpng reads PNGs, the tests compare it with the zlib reader of
+  # browser builds (WEB_PNG).
+  if(NOT TARGET_OS STREQUAL "emscripten" OR NOT WEB_PNG)
+    list(APPEND TESTS_EXTRA src/engine/gfx/png_decode_zlib.cpp src/engine/gfx/png_decode_zlib.h)
+  endif()
 
   list(REMOVE_ITEM TESTS ${PROJECT_SOURCE_DIR}/src/test/game_state_test.cpp)
   set(CLIENT_GAME_STATE_TEST_SOURCES
@@ -4563,6 +4581,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     ${OGG_INCLUDE_DIRS}
     ${OPUSFILE_INCLUDE_DIRS}
     ${OPUS_INCLUDE_DIRS}
+    ${PNG_INCLUDE_DIRS}
     ${SDL2_INCLUDE_DIRS}
     ${WAVPACK_INCLUDE_DIRS}
   )

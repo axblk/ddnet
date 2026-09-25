@@ -55,6 +55,13 @@ void ddnet_web_audio_close();
  */
 int ddnet_web_render_thread_attach();
 /**
+ * Makes a canvas nobody sees findable as `#canvas` on the render thread, for
+ * drawing without a page. Runs on the render thread.
+ *
+ * @return 0 where the browser has no OffscreenCanvas.
+ */
+int ddnet_web_render_thread_make_canvas(int Width, int Height);
+/**
  * Runs `pfnTask(pUser)` on the calling thread at its next animation frame, or
  * after a short timeout where there is none. Runs on the render thread.
  *

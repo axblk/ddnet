@@ -137,7 +137,7 @@ option(CLIENT "Compile client" ON)
 option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
-option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL (emscripten only)" ON)
+option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -3607,7 +3607,9 @@ if(CLIENT)
   # out.
   set(STANDALONE_CLIENT_TARGETS demo-player demo-renderer map-viewer)
 
-  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android")
+  # In the browser on the web platform layer the demo player is the render
+  # tool as well, see below.
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android" AND NOT WEB_TOOLS_PLATFORM)
     # Draws into a surface without a window, so no SDL and the null input. In
     # the browser, WebGPU draws into render targets without a canvas and the
     # encoder behind `IVideo` is WebCodecs instead of FFmpeg.
@@ -3671,6 +3673,10 @@ if(CLIENT)
       # The key names stay: the binds of the game name their keys.
       set(DEMO_PLAYER_EXCLUDE_REGEX "src/engine/client/(input|input_null|viewer_controls|viewer_fullscreen|window_sdl)\\.(cpp|h)$")
       list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "${DEMO_PLAYER_EXCLUDE_REGEX}")
+      # One program for both in a page: with `--render-demo` it renders the
+      # demo into a video without a page, which is what `@ddnet/demo-renderer`
+      # runs in a worker of its own.
+      list(APPEND DEMO_PLAYER_SRC src/engine/client/demo_render_client.cpp src/engine/client/demo_render_client.h)
     endif()
     add_executable(demo-player EXCLUDE_FROM_ALL
       ${DEMO_PLAYER_SRC}
@@ -3804,25 +3810,32 @@ if(CLIENT)
   endif()
 
   if(TARGET_OS STREQUAL "emscripten")
-    # Four programs, three pages and one data directory. The render tool has no
-    # page of its own. The build says what a server needs.
+    # Three programs, three pages and one data directory: the demo player is
+    # the render tool as well, which has no page of its own. Without the web
+    # platform layer the render tool is a program of its own. The build says
+    # what a server needs.
+    if(WEB_TOOLS_PLATFORM)
+      set(WEB_TOOL_PROGRAMS ddnet-demo-player ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player map-viewer)
+    else()
+      set(WEB_TOOL_PROGRAMS ddnet-demo-render ddnet-demo-player ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player demo-renderer map-viewer)
+    endif()
     add_custom_target(web-site
       COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
-        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>$<JOIN:${WEB_TOOL_PROGRAMS},$<SEMICOLON>>"
         "-DPAGE_FILES=$<JOIN:${WEB_PAGE_NAMES},$<SEMICOLON>>"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
         copy_data
         copy_web_page_files
-        demo-player
-        demo-renderer
         game-client
-        map-viewer
         web_data_index
         # tidy-alphabetical-end
+        ${WEB_TOOL_TARGETS}
       COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
       VERBATIM)
   endif()

@@ -1,7 +1,7 @@
 {
 	"name": "@ddnet/demo-renderer",
 	"version": "1.0.0",
-	"description": "Turn a DDNet demo into an MP4 in a browser, in a worker of its own.",
+	"description": "Turn a DDNet demo into an MP4 in a browser.",
 	"license": "Zlib",
 	"type": "module",
 	"exports": {
@@ -16,8 +16,8 @@
 		"README.md",
 		"demo-renderer.d.ts",
 		"demo-renderer.js",
-		"ddnet-demo-render.js",
-		"ddnet-demo-render.wasm"
+		"ddnet-demo-player.js",
+		"ddnet-demo-player.wasm"
 	],
 	"dependencies": {
 		"@ddnet/base": "^1.0.0"

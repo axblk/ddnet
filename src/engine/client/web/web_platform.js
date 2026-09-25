@@ -257,6 +257,17 @@ registerProcessor('ddnet-output', DDNetOutput);
 		return 1;
 	},
 
+	// A canvas nobody sees, for a render thread that draws without a page,
+	// registered as `#canvas` like the page's.
+	ddnet_web_render_thread_make_canvas__deps: ['$specialHTMLTargets'],
+	ddnet_web_render_thread_make_canvas: (Width, Height) => {
+		if (typeof OffscreenCanvas === 'undefined') {
+			return 0;
+		}
+		specialHTMLTargets['#canvas'] = new OffscreenCanvas(Width, Height);
+		return 1;
+	},
+
 	// The render thread paces itself on the page's frames: a dedicated worker
 	// has animation frames of its own. A hidden page paints none, and would
 	// not come back if nothing ran, so a timeout races the frame.

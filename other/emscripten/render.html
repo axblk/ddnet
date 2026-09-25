@@ -18,7 +18,7 @@
 			}
 		}
 		</script>
-		<link rel="preload" as="script" href="ddnet-demo-render.js" crossorigin>
+		<link rel="preload" as="script" href="ddnet-demo-player.js" crossorigin>
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
@@ -46,8 +46,8 @@
 			import { setUrlParameters, supportError, exportSettingsForm, urlParameter } from "@ddnet/base";
 			import { renderDemo, zip } from "@ddnet/demo-renderer";
 
-			// Demos are queued and rendered one after the other in a worker: a
-			// render takes the whole machine.
+			// Demos are queued and rendered one after the other: a render takes
+			// the whole machine.
 			const $ = id => document.getElementById(id);
 			const queueList = $('queue');
 			const startButton = $('start');
@@ -323,7 +323,7 @@
 			applyLink();
 			settingsBox.addEventListener('change', updateLink);
 			restoreJobs();
-			problem = typeof VideoEncoder === "undefined" ? "This browser has no video encoder." : (await supportError(true))?.message ?? null;
+			problem = typeof VideoEncoder === "undefined" ? "This browser has no video encoder." : (await supportError())?.message ?? null;
 			if (problem !== null) {
 				say($('error'), problem);
 				$('error').hidden = false;

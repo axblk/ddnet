@@ -216,19 +216,31 @@ int CSound::Init()
 		m_aSamples[std::size(m_aSamples) - 1].m_NextFreeSampleIndex = SAMPLE_INDEX_FULL;
 	}
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
-	if(!g_Config.m_SndEnable)
-		return 0;
+	// The render tool mixes for its video alone, whatever the settings say,
+	// and so does the web demo player where it renders without a page.
+#if defined(CONF_DEMO_RENDER_TOOL)
+	const bool VideoOnly = true;
+#elif defined(SOUND_OUTPUT_WEB)
+	const bool VideoOnly = !CWebAudioOutput::Wanted();
+#else
+	const bool VideoOnly = false;
 #endif
+	if(!VideoOnly && !g_Config.m_SndEnable)
+		return 0;
+	if(VideoOnly)
+	{
+		m_MixingRate = g_Config.m_SndRate;
+		m_MaxFrames = 2048;
+		m_pMixBuffer = static_cast<int *>(calloc(m_MaxFrames * 2, sizeof(int)));
+		if(m_pMixBuffer == nullptr)
+			return -1;
+		m_SoundEnabled = true;
+		Update();
+		return 0;
+	}
 
 #if defined(CONF_DEMO_RENDER_TOOL)
-	m_MixingRate = g_Config.m_SndRate;
-	m_MaxFrames = 2048;
-	m_pMixBuffer = static_cast<int *>(calloc(m_MaxFrames * 2, sizeof(int)));
-	if(m_pMixBuffer == nullptr)
-		return -1;
-	m_SoundEnabled = true;
-	Update();
+	// Mixed for the video alone, above.
 	return 0;
 #elif defined(SOUND_OUTPUT_WEB)
 	m_MaxFrames = std::max(g_Config.m_SndBufferSize * 2, 1024 * 2);

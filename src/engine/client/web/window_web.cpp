@@ -31,6 +31,9 @@ namespace
 
 class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSurface
 {
+	// Draws into a canvas of its own that nobody sees instead of the page's,
+	// for a program that renders a video without a page.
+	const bool m_Offscreen;
 	SGraphicsSurfaceInfo m_Surface;
 	float m_Scale = 1.0f;
 	EBackendType m_BackendType = BACKEND_TYPE_AUTO;
@@ -151,20 +154,19 @@ class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSu
 		return pBackend;
 	}
 
-public:
-	IGraphicsBackend *Open(bool Hidden) override
+	// The page's canvas, which the render thread is handed, at the size the
+	// page laid it out at.
+	bool OpenPageCanvas(int &Width, int &Height)
 	{
-		int Width = 0;
-		int Height = 0;
 		float Scale = 1.0f;
 		if(!ddnet_web_canvas_prepare(&Width, &Height, &Scale))
 		{
 			log_error("gfx", "The page handed over no canvas to draw into");
-			return nullptr;
+			return false;
 		}
 		m_Scale = Scale > 0.0f ? Scale : 1.0f;
 		if(!m_RenderThread.Running() && !m_RenderThread.Start(true))
-			return nullptr;
+			return false;
 		// A canvas the page has not laid out yet gets the size the settings
 		// ask for until the page says otherwise.
 		if(Width <= 0 || Height <= 0)
@@ -172,6 +174,37 @@ public:
 			Width = g_Config.m_GfxScreenWidth > 0 ? g_Config.m_GfxScreenWidth : DEFAULT_WIDTH;
 			Height = g_Config.m_GfxScreenHeight > 0 ? g_Config.m_GfxScreenHeight : DEFAULT_HEIGHT;
 		}
+		return true;
+	}
+
+	// A canvas the render thread makes for itself, at the size the settings
+	// ask for.
+	bool OpenOwnCanvas(int &Width, int &Height)
+	{
+		Width = g_Config.m_GfxScreenWidth > 0 ? g_Config.m_GfxScreenWidth : DEFAULT_WIDTH;
+		Height = g_Config.m_GfxScreenHeight > 0 ? g_Config.m_GfxScreenHeight : DEFAULT_HEIGHT;
+		m_Scale = 1.0f;
+		if(!m_RenderThread.Running() && !m_RenderThread.Start(false))
+			return false;
+		bool Made = false;
+		m_RenderThread.Call([&] { Made = ddnet_web_render_thread_make_canvas(Width, Height) != 0; });
+		if(!Made)
+			log_error("gfx", "This browser cannot draw without a page: it has no OffscreenCanvas");
+		return Made;
+	}
+
+public:
+	explicit CGraphicsWindow_Web(bool Offscreen) :
+		m_Offscreen(Offscreen)
+	{
+	}
+
+	IGraphicsBackend *Open(bool Hidden) override
+	{
+		int Width = 0;
+		int Height = 0;
+		if(!(m_Offscreen ? OpenOwnCanvas(Width, Height) : OpenPageCanvas(Width, Height)))
+			return nullptr;
 		m_Surface = {};
 		m_Surface.m_Presentable = true;
 		SetSize(Width, Height);
@@ -261,7 +294,7 @@ public:
 		// The pixel ratio changes with the page's zoom and between screens.
 		int CssWidth, CssHeight;
 		float Scale = 0.0f;
-		if(!ddnet_web_canvas_prepare(&CssWidth, &CssHeight, &Scale))
+		if(m_Offscreen || !ddnet_web_canvas_prepare(&CssWidth, &CssHeight, &Scale))
 			Scale = 0.0f;
 		w = std::max(w, 1);
 		h = std::max(h, 1);
@@ -285,7 +318,7 @@ public:
 	void SetWindowGrab(bool Grab) override {}
 	void NotifyWindow() override {}
 	void Minimize() override {}
-	int WindowActive() override { return WebPageVisible() ? 1 : 0; }
+	int WindowActive() override { return m_Offscreen || WebPageVisible() ? 1 : 0; }
 	int WindowOpen() override { return 1; }
 	void AddWindowPropChangeListener(WINDOW_PROPS_CHANGED_FUNC pFunc) override {}
 	// A page has its own ways of saying what went wrong.
@@ -294,7 +327,12 @@ public:
 
 IEngineGraphicsWindow *CreateWebGraphicsWindow()
 {
-	return new CGraphicsWindow_Web();
+	return new CGraphicsWindow_Web(false);
+}
+
+IEngineGraphicsWindow *CreateWebOffscreenGraphicsWindow()
+{
+	return new CGraphicsWindow_Web(true);
 }
 
 // Nothing is shown before or after the window either.

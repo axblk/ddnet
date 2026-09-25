@@ -11,4 +11,11 @@
  */
 IEngineGraphicsWindow *CreateWebGraphicsWindow();
 
+/**
+ * The same with a canvas of its own that nobody sees, as big as the settings
+ * say, for a program that renders a video without a page. It needs no page's
+ * thread with a document, so it also works in a worker of the page's.
+ */
+IEngineGraphicsWindow *CreateWebOffscreenGraphicsWindow();
+
 #endif

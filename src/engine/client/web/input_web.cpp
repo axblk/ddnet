@@ -13,6 +13,7 @@
 #include <engine/graphics_window.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/shared/video.h>
 
 #include <emscripten/emscripten.h>
 
@@ -115,6 +116,9 @@ void EmscriptenCallbackDropFile(const char *pFile)
 void EmscriptenCallbackQuit()
 {
 	gs_Quit.store(true);
+	// A render without a page reads no input; its export stops the way an
+	// interrupt stops it, which removes the unfinished file.
+	InterruptVideoExport();
 }
 
 void EmscriptenCallbackQuitForce()

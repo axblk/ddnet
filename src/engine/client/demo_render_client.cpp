@@ -13,6 +13,16 @@
 #include <algorithm>
 #include <cinttypes>
 
+#if defined(CONF_WEB_PLATFORM)
+#include "web/audio_web.h"
+#include "web/window_web.h"
+
+#include <emscripten/proxying.h>
+#include <emscripten/threading.h>
+
+#include <memory>
+#endif
+
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 #include <emscripten/emscripten.h>
 
@@ -23,6 +33,32 @@ EM_JS(void, BrowserRenderProgress, (float Progress, double EncodedFrames, double
 		Module.ddnetRenderProgress({progress: Progress, encodedFrames: EncodedFrames, submittedFrames: SubmittedFrames, framesPerSecond: FramesPerSecond});
 });
 // clang-format on
+
+namespace
+{
+	struct SRenderProgress
+	{
+		float m_Progress;
+		double m_EncodedFrames;
+		double m_SubmittedFrames;
+		float m_FramesPerSecond;
+	};
+
+	void ReportRenderProgress(const SRenderProgress &Progress)
+	{
+#if defined(CONF_WEB_PLATFORM)
+		// The page's hook is on the page's thread, which is not waited for.
+		if(!emscripten_is_main_runtime_thread())
+		{
+			emscripten_proxy_async(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(), [](void *pUser) {
+				const std::unique_ptr<SRenderProgress> pProgress(static_cast<SRenderProgress *>(pUser));
+				ReportRenderProgress(*pProgress); }, new SRenderProgress(Progress));
+			return;
+		}
+#endif
+		BrowserRenderProgress(Progress.m_Progress, Progress.m_EncodedFrames, Progress.m_SubmittedFrames, Progress.m_FramesPerSecond);
+	}
+} // namespace
 #endif
 
 std::optional<int> CDemoRenderClient::ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments)
@@ -102,14 +138,22 @@ void CDemoRenderClient::OnExportFrame()
 	log_info("videorecorder", "Rendering %.1f%% (%" PRIu64 " / %" PRIu64 " frames encoded, %.0f per second)",
 		Progress * 100.0f, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	BrowserRenderProgress(Progress, Status.m_EncodedFrames, Status.m_SubmittedFrames, Status.m_FramesPerSecond);
+	ReportRenderProgress({Progress, (double)Status.m_EncodedFrames, (double)Status.m_SubmittedFrames, Status.m_FramesPerSecond});
 #endif
 }
 
 int CDemoRenderClient::Run()
 {
 	int ExitCode = 1;
-	if(InitGame(CreateOffscreenGraphicsWindow(), nullptr))
+#if defined(CONF_WEB_PLATFORM)
+	// In a browser the renderer is the demo player without a page: its own
+	// canvas, no input and nothing to play the sound on.
+	CWebAudioOutput::SetWanted(false);
+	IEngineGraphicsWindow *pWindow = CreateWebOffscreenGraphicsWindow();
+#else
+	IEngineGraphicsWindow *pWindow = CreateOffscreenGraphicsWindow();
+#endif
+	if(InitGame(pWindow, nullptr))
 	{
 		const char *pError = PlayDemo();
 		if(pError == nullptr)
@@ -158,7 +202,10 @@ int CDemoRenderClient::Run()
 	return ExitCode;
 }
 
+// The web demo player starts it, see its main().
+#if !defined(CONF_WEB_PLATFORM)
 int main(int argc, const char **argv)
 {
 	return DemoClientMain(new CDemoRenderClient, argc, argv);
 }
+#endif

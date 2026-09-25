@@ -50,6 +50,13 @@ public:
 	 */
 	int Open(int Rate, unsigned MaxFrames, FMix &&Mix);
 	/**
+	 * Whether the program plays sound at all. Where it renders a video
+	 * without a page, there is nothing to play it on, and the sound is mixed
+	 * for the video alone.
+	 */
+	static bool Wanted() { return ms_Wanted; }
+	static void SetWanted(bool Wanted) { ms_Wanted = Wanted; }
+	/**
 	 * Stops the mixing thread and the page's output. `Mix` is not called
 	 * afterwards.
 	 */
@@ -59,6 +66,7 @@ public:
 
 private:
 	static constexpr int CAPACITY = 8192;
+	static inline bool ms_Wanted = true;
 
 	SWebAudioRing *m_pRing = nullptr;
 	void *m_pThread = nullptr;

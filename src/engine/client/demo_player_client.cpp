@@ -3,6 +3,7 @@
 #include "demo_player_client.h"
 
 #if defined(CONF_WEB_PLATFORM)
+#include "demo_render_client.h"
 #include "web/program_thread_web.h"
 #include "web/window_web.h"
 #else
@@ -1234,8 +1235,15 @@ int CDemoPlayerClient::Run()
 #if defined(CONF_WEB_PLATFORM)
 int main(int argc, const char **argv)
 {
-	// In a worker, where it may wait; see `WebRunProgram`.
+	// In a worker, where it may wait; see `WebRunProgram`. In a browser the
+	// player is the demo renderer as well, which renders the demo that
+	// `--render-demo` names into a video without a page.
 	return WebRunProgram([](int ArgumentCount, const char **ppArguments) {
+		for(int i = 1; i < ArgumentCount; ++i)
+		{
+			if(str_comp(ppArguments[i], "--render-demo") == 0)
+				return DemoClientMain(new CDemoRenderClient, ArgumentCount, ppArguments);
+		}
 		return DemoClientMain(new CDemoPlayerClient, ArgumentCount, ppArguments);
 	},
 		argc, argv);

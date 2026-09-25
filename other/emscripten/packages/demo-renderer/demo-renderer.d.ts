@@ -15,7 +15,7 @@ export interface RenderOptions extends VideoSettings {
 	settings?: string[];
 	/** Where the video is written; kept in memory and answered otherwise. */
 	videoSink?: VideoSink | WritableStream;
-	/** Where `ddnet-demo-render.js` is, beside this module by default. */
+	/** Where `ddnet-demo-player.js` is, beside this module by default. */
 	scriptUrl?: string;
 	/** Where `data` is, beside the script by default. */
 	dataBase?: string;

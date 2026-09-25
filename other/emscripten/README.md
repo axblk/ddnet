@@ -8,7 +8,7 @@ of.
 |---|---|
 | [`@ddnet/demo-player`](packages/demo-player) | `<ddnet-demo>`, a demo player that answers like a `<video>` |
 | [`@ddnet/map-viewer`](packages/map-viewer) | `<ddnet-map>`, a map viewer that speaks in tiles |
-| [`@ddnet/demo-renderer`](packages/demo-renderer) | `renderDemo`, a demo into an MP4 in a worker |
+| [`@ddnet/demo-renderer`](packages/demo-renderer) | `renderDemo`, a demo into an MP4 |
 
 A program without a package of its own, such as the full client, is started
 directly:

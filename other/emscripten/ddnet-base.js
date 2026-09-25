@@ -490,9 +490,9 @@ async function videoScratchSink(info) {
 	return { stream: await handle.createWritable(), done: () => handle.getFile() };
 }
 
-// Scratch videos of earlier visits were never taken. Swept once per page, and
-// by the page rather than by render workers: a second worker of a batch would
-// otherwise delete the first one's video while it is still being offered.
+// Scratch videos of earlier visits were never taken. Swept once per page: a
+// second render of a batch would otherwise delete the first one's video while
+// it is still being offered.
 let sweptVideoScratch = false;
 export async function sweepVideoScratch() {
 	if (sweptVideoScratch) {
@@ -929,7 +929,7 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 .message[hidden] { display: none; }
 `;
 
-// A worker has no `HTMLElement`, and the render worker imports this module.
+// A worker that imports this module has no `HTMLElement`.
 const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
 
 export class ViewerElement extends ELEMENT_BASE {

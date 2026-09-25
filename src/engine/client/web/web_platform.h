@@ -46,6 +46,24 @@ void ddnet_web_input_uninstall();
 int ddnet_web_audio_open(int Rate, void *pRing, int Capacity);
 void ddnet_web_audio_pause(int Paused);
 void ddnet_web_audio_close();
+
+/**
+ * Makes the canvas the render thread was handed findable as `#canvas` on it.
+ * Runs on the render thread.
+ *
+ * @return 0 when the thread was handed no canvas.
+ */
+int ddnet_web_render_thread_attach();
+/**
+ * Runs `pfnTask(pUser)` on the calling thread at its next animation frame, or
+ * after a short timeout where there is none. Runs on the render thread.
+ *
+ * @param Visible Whether the page is shown; a hidden page paints nothing, so
+ * it gets the timeout.
+ * @param pfnTask A `void (*)(void *)` to run.
+ * @param pUser What `pfnTask` is given.
+ */
+void ddnet_web_render_thread_at_frame(int Visible, void *pfnTask, void *pUser);
 }
 
 #endif

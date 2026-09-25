@@ -243,4 +243,35 @@ registerProcessor('ddnet-output', DDNetOutput);
 		}
 		audio.context.close().catch(() => {});
 	},
+
+	// The canvas a render thread was handed arrives in GL.offscreenCanvases
+	// under its id; it is registered as `#canvas` as on the page's thread, so
+	// that WebGPU and WebGL find it whatever the page called it.
+	ddnet_web_render_thread_attach__deps: ['$GL', '$specialHTMLTargets'],
+	ddnet_web_render_thread_attach: () => {
+		const record = Object.values(GL.offscreenCanvases).find(Boolean);
+		if (!record) {
+			return 0;
+		}
+		specialHTMLTargets['#canvas'] = record.offscreenCanvas ?? record.canvas;
+		return 1;
+	},
+
+	// The render thread paces itself on the page's frames: a dedicated worker
+	// has animation frames of its own. A hidden page paints none, and would
+	// not come back if nothing ran, so a timeout races the frame.
+	ddnet_web_render_thread_at_frame__deps: ['WebRenderThreadRun', '$callUserCallback'],
+	ddnet_web_render_thread_at_frame: (Visible, Task, User) => {
+		let done = false;
+		const run = () => {
+			if (!done) {
+				done = true;
+				callUserCallback(() => _WebRenderThreadRun(Task, User));
+			}
+		};
+		if (Visible && typeof requestAnimationFrame === 'function') {
+			requestAnimationFrame(run);
+		}
+		setTimeout(run, 100);
+	},
 });

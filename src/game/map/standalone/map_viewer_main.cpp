@@ -9,6 +9,7 @@
 
 #include <engine/client/viewer_gestures.h>
 #if defined(CONF_WEB_PLATFORM)
+#include <engine/client/web/program_thread_web.h>
 #include <engine/client/web/window_web.h>
 #else
 #include <engine/client/viewer_controls.h>
@@ -29,10 +30,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <utility>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include <engine/client/web/page_bridge_web.h>
+
 #include <emscripten/emscripten.h>
 #endif
 
@@ -78,6 +82,24 @@ namespace
 		bool m_ExportFullMap = false;
 		EExportState m_ExportState = EExportState::IDLE;
 	};
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// What the page reads of the viewer, see `CWebPageBridge`.
+	struct SPageState
+	{
+		bool m_Controls = false;
+		bool m_HighDetail = false;
+		bool m_Entities = false;
+		vec2 m_Center = vec2(0.0f, 0.0f);
+		float m_Zoom = 1.0f;
+		float m_VisibleWidth = 0.0f;
+		vec2 m_MapSize = vec2(0.0f, 0.0f);
+		int m_LoadCount = 0;
+		EExportState m_ExportState = EExportState::IDLE;
+		float m_ExportProgress = 0.0f;
+	};
+	CWebPageBridge<SPageState> gs_PageBridge;
+#endif
 
 	void PrintUsage(const char *pProgramName)
 	{
@@ -363,6 +385,24 @@ namespace
 		 */
 		int LoadCount() const { return m_View.MapLoaded() ? m_LoadCount : 0; }
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		void PublishPageState()
+		{
+			SPageState State;
+			State.m_Controls = m_ShowControls;
+			State.m_HighDetail = m_RenderParams.m_HighDetail;
+			State.m_Entities = m_RenderParams.m_EntityOverlayVal > 0;
+			State.m_Center = m_RenderParams.m_Center;
+			State.m_Zoom = m_RenderParams.m_Zoom;
+			State.m_VisibleWidth = m_View.ViewSize().x * m_RenderParams.m_Zoom;
+			State.m_MapSize = m_View.MapWorldSize();
+			State.m_LoadCount = LoadCount();
+			State.m_ExportState = m_Requests.m_ExportState;
+			State.m_ExportProgress = m_View.FullImageRunning() ? m_View.FullImageProgress() : 0.0f;
+			gs_PageBridge.Publish(State);
+		}
+#endif
+
 		int Run(const std::string &InputMap)
 		{
 			if(!InputMap.empty() && !LoadMapPath(InputMap.c_str()))
@@ -377,6 +417,12 @@ namespace
 				const std::chrono::nanoseconds Now = time_get_nanoseconds();
 				const float FrameTime = std::chrono::duration_cast<std::chrono::duration<float>>(Now - LastFrameTime).count();
 				LastFrameTime = Now;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+				// What the page asked for since the last frame, see
+				// `CWebPageBridge`.
+				gs_PageBridge.RunActions();
+				PublishPageState();
+#endif
 				if(!HandleInput(FrameTime))
 					break;
 				// The envelopes of a map move, so the view runs the clock the
@@ -420,151 +466,181 @@ namespace
 } // namespace
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+namespace
+{
+	// The page calls on a thread of its own, so what it asks for is done by
+	// the viewer between two frames. See `CWebPageBridge`.
+	void FromPage(std::function<void()> &&Action)
+	{
+		gs_PageBridge.Post([Action = std::move(Action)] {
+			if(gs_pMapViewer != nullptr)
+				Action();
+		});
+	}
+
+	SPageState PageState()
+	{
+		return gs_PageBridge.State();
+	}
+
+	void ExportFromPage(bool FullMap)
+	{
+		bool Accepted = false;
+		gs_PageBridge.Change([&Accepted](SPageState &State) {
+			if(State.m_ExportState != EExportState::PENDING)
+			{
+				State.m_ExportState = EExportState::PENDING;
+				Accepted = true;
+			}
+		});
+		if(!Accepted)
+			return;
+		FromPage([FullMap] {
+			SRequests &Requests = gs_pMapViewer->m_Requests;
+			if(Requests.m_ExportState == EExportState::PENDING)
+				return;
+			(FullMap ? Requests.m_ExportFullMap : Requests.m_ExportView) = true;
+			Requests.m_ExportState = EExportState::PENDING;
+		});
+	}
+} // namespace
+
 // What the controls beside the canvas call. Safe to call before a map is
-// shown.
+// shown. What is read is what the viewer published after its last frame; what
+// is set is done before its next one, and reads back at once.
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE void MapViewerFit()
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_Requests.m_Fit = true;
+	FromPage([] { gs_pMapViewer->m_Requests.m_Fit = true; });
 }
 
 EMSCRIPTEN_KEEPALIVE void MapViewerExportView()
 {
-	if(gs_pMapViewer != nullptr && gs_pMapViewer->m_Requests.m_ExportState != EExportState::PENDING)
-	{
-		gs_pMapViewer->m_Requests.m_ExportView = true;
-		gs_pMapViewer->m_Requests.m_ExportState = EExportState::PENDING;
-	}
+	ExportFromPage(false);
 }
 
 EMSCRIPTEN_KEEPALIVE void MapViewerExportFullMap()
 {
-	if(gs_pMapViewer != nullptr && gs_pMapViewer->m_Requests.m_ExportState != EExportState::PENDING)
-	{
-		gs_pMapViewer->m_Requests.m_ExportFullMap = true;
-		gs_pMapViewer->m_Requests.m_ExportState = EExportState::PENDING;
-	}
+	ExportFromPage(true);
 }
 
-// For a viewer in a box of the page's own; one that fills the window follows it.
 EMSCRIPTEN_KEEPALIVE void MapViewerSetSize(int Width, int Height)
 {
-	if(gs_pMapViewer == nullptr || gs_pMapViewer->View().Window() == nullptr)
-		return;
-	gs_pMapViewer->View().Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
+	FromPage([Width, Height] {
+		if(gs_pMapViewer->View().Window() != nullptr)
+			gs_pMapViewer->View().Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
+	});
 }
 
 // Whether the viewer draws its own controls over the map.
 EMSCRIPTEN_KEEPALIVE void MapViewerSetControls(int Show)
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_ShowControls = Show != 0;
+	gs_PageBridge.Change([Show](SPageState &State) { State.m_Controls = Show != 0; });
+	FromPage([Show] { gs_pMapViewer->m_ShowControls = Show != 0; });
 }
 
 EMSCRIPTEN_KEEPALIVE int MapViewerControls()
 {
-	return gs_pMapViewer != nullptr && gs_pMapViewer->m_ShowControls ? 1 : 0;
+	return PageState().m_Controls ? 1 : 0;
 }
 
 // Where the view looks and how close, in world units - 32 to a tile. Only the
-// state the next frame is drawn from, so it is set right away.
+// state the next frame is drawn from.
 EMSCRIPTEN_KEEPALIVE void MapViewerSetCenter(float X, float Y)
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_RenderParams.m_Center = vec2(X, Y);
+	gs_PageBridge.Change([X, Y](SPageState &State) { State.m_Center = vec2(X, Y); });
+	FromPage([X, Y] { gs_pMapViewer->m_RenderParams.m_Center = vec2(X, Y); });
 }
 
 EMSCRIPTEN_KEEPALIVE void MapViewerSetZoom(float Zoom)
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_RenderParams.m_Zoom = std::clamp(Zoom, MIN_ZOOM, MAX_ZOOM);
+	Zoom = std::clamp(Zoom, MIN_ZOOM, MAX_ZOOM);
+	gs_PageBridge.Change([Zoom](SPageState &State) { State.m_Zoom = Zoom; });
+	FromPage([Zoom] { gs_pMapViewer->m_RenderParams.m_Zoom = Zoom; });
 }
 
 // The detail layers and the entity overlay.
 EMSCRIPTEN_KEEPALIVE void MapViewerSetHighDetail(int On)
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_RenderParams.m_HighDetail = On != 0;
+	gs_PageBridge.Change([On](SPageState &State) { State.m_HighDetail = On != 0; });
+	FromPage([On] { gs_pMapViewer->m_RenderParams.m_HighDetail = On != 0; });
 }
 
 EMSCRIPTEN_KEEPALIVE int MapViewerHighDetail()
 {
-	return gs_pMapViewer != nullptr && gs_pMapViewer->m_RenderParams.m_HighDetail ? 1 : 0;
+	return PageState().m_HighDetail ? 1 : 0;
 }
 
 // All of it or none.
 EMSCRIPTEN_KEEPALIVE void MapViewerSetEntities(int On)
 {
-	if(gs_pMapViewer != nullptr)
-		gs_pMapViewer->m_RenderParams.m_EntityOverlayVal = On != 0 ? 100 : 0;
+	gs_PageBridge.Change([On](SPageState &State) { State.m_Entities = On != 0; });
+	FromPage([On] { gs_pMapViewer->m_RenderParams.m_EntityOverlayVal = On != 0 ? 100 : 0; });
 }
 
 EMSCRIPTEN_KEEPALIVE int MapViewerEntities()
 {
-	return gs_pMapViewer != nullptr && gs_pMapViewer->m_RenderParams.m_EntityOverlayVal > 0 ? 1 : 0;
+	return PageState().m_Entities ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE float MapViewerCenterX()
 {
-	return gs_pMapViewer == nullptr ? 0.0f : gs_pMapViewer->m_RenderParams.m_Center.x;
+	return PageState().m_Center.x;
 }
 
 EMSCRIPTEN_KEEPALIVE float MapViewerCenterY()
 {
-	return gs_pMapViewer == nullptr ? 0.0f : gs_pMapViewer->m_RenderParams.m_Center.y;
+	return PageState().m_Center.y;
 }
 
 EMSCRIPTEN_KEEPALIVE float MapViewerZoom()
 {
-	return gs_pMapViewer == nullptr ? 1.0f : gs_pMapViewer->m_RenderParams.m_Zoom;
+	return PageState().m_Zoom;
 }
 
 // How wide the piece of the world on the screen is, which unlike the zoom
 // means the same in every window.
 EMSCRIPTEN_KEEPALIVE float MapViewerVisibleWidth()
 {
-	return gs_pMapViewer == nullptr ? 0.0f : gs_pMapViewer->View().ViewSize().x * gs_pMapViewer->m_RenderParams.m_Zoom;
+	return PageState().m_VisibleWidth;
 }
 
 // The size of the map, or of the screen where it has no game layer.
 EMSCRIPTEN_KEEPALIVE float MapViewerMapWidth()
 {
-	return gs_pMapViewer == nullptr ? 0.0f : gs_pMapViewer->View().MapWorldSize().x;
+	return PageState().m_MapSize.x;
 }
 
 EMSCRIPTEN_KEEPALIVE float MapViewerMapHeight()
 {
-	return gs_pMapViewer == nullptr ? 0.0f : gs_pMapViewer->View().MapWorldSize().y;
+	return PageState().m_MapSize.y;
 }
 
 // Tells a page that asked for another map when it is there.
 EMSCRIPTEN_KEEPALIVE int MapViewerLoadCount()
 {
-	return gs_pMapViewer == nullptr ? 0 : gs_pMapViewer->LoadCount();
+	return PageState().m_LoadCount;
 }
 
 // 0 while nothing was ever asked for, 1 while a picture is being made, 2 when
 // the last one was handed over and 3 when it failed.
 EMSCRIPTEN_KEEPALIVE int MapViewerExportState()
 {
-	return gs_pMapViewer == nullptr ? 0 : (int)gs_pMapViewer->m_Requests.m_ExportState;
+	return (int)PageState().m_ExportState;
 }
 
 // How far a picture of the whole map has got, from 0 to 1.
 EMSCRIPTEN_KEEPALIVE float MapViewerExportProgress()
 {
-	if(gs_pMapViewer == nullptr || !gs_pMapViewer->View().FullImageRunning())
-		return 0.0f;
-	return gs_pMapViewer->View().FullImageProgress();
+	return PageState().m_ExportProgress;
 }
 }
 #endif
 
-int main(int argc, const char **argv)
+static int ViewerMain(int ArgumentCount, const char **ppArguments)
 {
-	CCmdlineFix CmdlineFix(&argc, &argv);
+	CCmdlineFix CmdlineFix(&ArgumentCount, &ppArguments);
 	log_set_global_logger_default();
 
 	int Width = DEFAULT_WIDTH;
@@ -572,27 +648,27 @@ int main(int argc, const char **argv)
 	std::string OutputFile = "output.png";
 	std::string InputMap;
 	bool ShowControls = true;
-	for(int i = 1; i < argc; i++)
+	for(int i = 1; i < ArgumentCount; i++)
 	{
-		if(str_comp(argv[i], "-w") == 0 && i + 1 < argc)
-			Width = std::max(1, atoi(argv[++i]));
-		else if(str_comp(argv[i], "-h") == 0 && i + 1 < argc)
-			Height = std::max(1, atoi(argv[++i]));
-		else if(str_comp(argv[i], "-o") == 0 && i + 1 < argc)
-			OutputFile = argv[++i];
-		else if(str_comp(argv[i], "--no-controls") == 0)
+		if(str_comp(ppArguments[i], "-w") == 0 && i + 1 < ArgumentCount)
+			Width = std::max(1, atoi(ppArguments[++i]));
+		else if(str_comp(ppArguments[i], "-h") == 0 && i + 1 < ArgumentCount)
+			Height = std::max(1, atoi(ppArguments[++i]));
+		else if(str_comp(ppArguments[i], "-o") == 0 && i + 1 < ArgumentCount)
+			OutputFile = ppArguments[++i];
+		else if(str_comp(ppArguments[i], "--no-controls") == 0)
 			ShowControls = false;
-		else if(argv[i][0] != '-' && InputMap.empty())
-			InputMap = argv[i];
+		else if(ppArguments[i][0] != '-' && InputMap.empty())
+			InputMap = ppArguments[i];
 		else
 		{
-			PrintUsage(argv[0]);
+			PrintUsage(ppArguments[0]);
 			return 1;
 		}
 	}
 
 	CStandaloneMapView View(TOOL_NAME);
-	if(!View.Init(argc, argv))
+	if(!View.Init(ArgumentCount, ppArguments))
 		return 1;
 
 	// The input reads the settings and talks to the console, so both are in
@@ -630,9 +706,20 @@ int main(int argc, const char **argv)
 #endif
 	const int ExitCode = Viewer.Run(InputMap);
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+	gs_PageBridge.Reset();
 	gs_pMapViewer = nullptr;
 #endif
 	pInput->Shutdown();
 	View.Shutdown();
 	return ExitCode;
+}
+
+int main(int argc, const char **argv)
+{
+#if defined(CONF_WEB_PLATFORM)
+	// In a worker, where it may wait; see `WebRunProgram`.
+	return WebRunProgram(ViewerMain, argc, argv);
+#else
+	return ViewerMain(argc, argv);
+#endif
 }

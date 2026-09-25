@@ -1,10 +1,10 @@
 #include "window_web.h"
 
+#include "render_thread_web.h"
 #include "web_platform.h"
 
 #include <base/log.h>
 #include <base/math.h>
-#include <base/thread.h>
 
 #include <engine/client/backend/webgpu/backend_webgpu.h>
 #include <engine/client/graphics_backend.h>
@@ -37,6 +37,8 @@ class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSu
 	EMSCRIPTEN_WEBGL_CONTEXT_HANDLE m_GlContext = 0;
 	SWebGpuNativeWindow m_WebGpuNativeWindow;
 	IEngineGraphics *m_pGraphics = nullptr;
+	// Owns the canvas, and every context and device made for it.
+	CWebRenderThread m_RenderThread;
 
 	IEngineGraphics *Graphics()
 	{
@@ -60,10 +62,22 @@ class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSu
 		m_Surface.m_DrawableHeight = std::max(round_to_int(m_Surface.m_WindowHeight * m_Scale), 1);
 		g_Config.m_GfxScreenWidth = m_Surface.m_WindowWidth;
 		g_Config.m_GfxScreenHeight = m_Surface.m_WindowHeight;
-		emscripten_set_canvas_element_size("#canvas", m_Surface.m_DrawableWidth, m_Surface.m_DrawableHeight);
+		// The canvas belongs to the render thread, which sizes it between
+		// the frames it draws.
+		const int DrawableWidth = m_Surface.m_DrawableWidth;
+		const int DrawableHeight = m_Surface.m_DrawableHeight;
+		m_RenderThread.Call([DrawableWidth, DrawableHeight] { emscripten_set_canvas_element_size("#canvas", DrawableWidth, DrawableHeight); });
 	}
 
+	// On the render thread, like everything done with the context.
 	bool CreateGlContext()
+	{
+		bool Created = false;
+		m_RenderThread.Call([&] { Created = CreateGlContextOnThread(); });
+		return Created;
+	}
+
+	bool CreateGlContextOnThread()
 	{
 		EmscriptenWebGLContextAttributes Attributes;
 		emscripten_webgl_init_context_attributes(&Attributes);
@@ -90,9 +104,11 @@ class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSu
 	{
 		if(m_GlContext == 0)
 			return;
-		if(emscripten_webgl_get_current_context() == m_GlContext)
-			emscripten_webgl_make_context_current(0);
-		emscripten_webgl_destroy_context(m_GlContext);
+		m_RenderThread.Call([this] {
+			if(emscripten_webgl_get_current_context() == m_GlContext)
+				emscripten_webgl_make_context_current(0);
+			emscripten_webgl_destroy_context(m_GlContext);
+		});
 		m_GlContext = 0;
 	}
 
@@ -105,6 +121,7 @@ class CGraphicsWindow_Web : public IEngineGraphicsWindow, public IPresentationSu
 		Init.m_Height = m_Surface.m_DrawableHeight;
 		Init.m_VSync = g_Config.m_GfxVsync != 0;
 		Init.m_pStorage = Kernel()->RequestInterface<IStorage>();
+		Init.m_pRenderThread = &m_RenderThread;
 		if(BackendType == BACKEND_TYPE_WEBGPU)
 		{
 			g_Config.m_GfxFsaaSamples = static_cast<int>(WebGpuMultiSamplingCount(std::max(g_Config.m_GfxFsaaSamples, 0)));
@@ -146,6 +163,8 @@ public:
 			return nullptr;
 		}
 		m_Scale = Scale > 0.0f ? Scale : 1.0f;
+		if(!m_RenderThread.Running() && !m_RenderThread.Start(true))
+			return nullptr;
 		// A canvas the page has not laid out yet gets the size the settings
 		// ask for until the page says otherwise.
 		if(Width <= 0 || Height <= 0)
@@ -197,6 +216,7 @@ public:
 	{
 		DestroyGlContext();
 		m_WebGpuNativeWindow = {};
+		m_RenderThread.Stop();
 	}
 
 	// IPresentationSurface, asked on the render thread.
@@ -214,9 +234,9 @@ public:
 		if(m_GlContext != 0 && emscripten_webgl_get_current_context() == m_GlContext)
 			emscripten_webgl_make_context_current(0);
 	}
-	// The browser shows what was drawn once the thread hands it its turn,
-	// which is here, as SDL's swap did.
-	void SwapGlBuffers() override { web_yield(0); }
+	// The browser shows what was drawn once the render thread returns to
+	// it, which it does after every swap.
+	void SwapGlBuffers() override {}
 	// The browser draws at the display's pace and cannot be asked otherwise.
 	bool SetGlSwapInterval(bool VSync) override { return false; }
 	bool VulkanInstanceExtensions(std::vector<std::string> &vExtensions) override { return false; }
@@ -239,7 +259,10 @@ public:
 	bool Resize(int w, int h, int RefreshRate) override
 	{
 		// The pixel ratio changes with the page's zoom and between screens.
-		const float Scale = emscripten_get_device_pixel_ratio();
+		int CssWidth, CssHeight;
+		float Scale = 0.0f;
+		if(!ddnet_web_canvas_prepare(&CssWidth, &CssHeight, &Scale))
+			Scale = 0.0f;
 		w = std::max(w, 1);
 		h = std::max(h, 1);
 		if(w == m_Surface.m_WindowWidth && h == m_Surface.m_WindowHeight && (Scale <= 0.0f || Scale == m_Scale))

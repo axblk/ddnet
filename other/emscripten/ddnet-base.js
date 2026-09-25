@@ -960,6 +960,8 @@ export class ViewerElement extends ELEMENT_BASE {
 		this.programInstance = null;
 		this.barInstance = null;
 		this.stopping = null;
+		// Whether a program was handed the canvas, which is then its for good.
+		this.canvasTaken = false;
 		// The attributes the program was started with, applied again only
 		// once a file replaces the first one.
 		this.startedWith = [];
@@ -1060,7 +1062,7 @@ export class ViewerElement extends ELEMENT_BASE {
 		const signal = this.stopping.signal;
 		const program = new Class({
 			...options,
-			canvas: this.canvasElement,
+			canvas: this.takeCanvas(),
 			controls: this.wantsProgramControls(),
 			fullscreenElement: this,
 			// An embedded viewer leaves nothing in the visitor's storage.
@@ -1104,6 +1106,19 @@ export class ViewerElement extends ELEMENT_BASE {
 			this.applyAttribute("src", asked);
 		}
 		return program;
+	}
+
+	// The program hands the canvas to the thread it draws on, after which
+	// nothing else can draw on it, so a program started again, such as after
+	// the element moved, gets a new one.
+	takeCanvas() {
+		if (this.canvasTaken) {
+			const canvas = this.canvasElement.cloneNode(false);
+			this.canvasElement.replaceWith(canvas);
+			this.canvasElement = canvas;
+		}
+		this.canvasTaken = true;
+		return this.canvasElement;
 	}
 
 	loaded() {

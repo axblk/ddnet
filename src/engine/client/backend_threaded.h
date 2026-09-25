@@ -9,7 +9,12 @@
 #include <engine/client/render_command_queue.h>
 
 #include <atomic>
+#include <memory>
 #include <mutex>
+
+#if defined(CONF_WEB_PLATFORM)
+class CWebRenderThread;
+#endif
 
 // A renderer of the given type on the render thread, drawing into the surface
 // it is initialized with, or into render targets alone without one. Besides
@@ -97,7 +102,43 @@ private:
 	mutable std::mutex m_ProcessorErrorMutex;
 	SGfxErrorContainer m_ProcessorError;
 	CRenderCommandQueue m_CommandQueue;
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(CONF_WEB_PLATFORM)
+	// The web tools' render thread returns to the browser after every piece
+	// of work instead of waiting for the next buffer: it is woken when there
+	// is one, and a command that waits for the browser is picked up again
+	// where it stopped.
+	enum class EProcessResult
+	{
+		// The buffer ran to its end.
+		DONE,
+		// A command waits for the browser.
+		PENDING,
+		// A frame was presented; the browser shows it once the thread lets
+		// it.
+		PRESENTED,
+	};
+
+	CWebRenderThread *m_pRenderThread = nullptr;
+	std::unique_ptr<CWebRenderThread> m_pOwnRenderThread;
+	std::atomic<bool> m_PumpPosted{false};
+	// Owned by the render thread.
+	CRenderCommandQueue::SEntry m_Current;
+	bool m_HasCurrent = false;
+	bool m_CanProcessCurrent = false;
+	CCommandBuffer::SCommand *m_pResume = nullptr;
+	bool m_WaitingForFrame = false;
+	bool m_PaceNextFrame = false;
+
+	void WakeUp();
+	static void PumpTask(void *pUser);
+	static void FrameTask(void *pUser);
+	void Pump();
+	void FinishCurrent();
+	EProcessResult ProcessCommands(CCommandBuffer *pBuffer, CCommandBuffer::SCommand *&pCommand);
+	// Runs a buffer the caller keeps on the render thread and returns when
+	// it has.
+	void ProcessBufferOnRenderThread(CCommandBuffer *pBuffer);
+#elif !defined(CONF_PLATFORM_EMSCRIPTEN)
 	CSemaphore m_ThreadStarted;
 	void *m_pThread = nullptr;
 	static void ThreadFunc(void *pUser);
@@ -114,6 +155,14 @@ private:
 	void RunBuffer(CCommandBuffer *pBuffer);
 	// Runs the commands of a buffer on the calling thread.
 	void ProcessBuffer(CCommandBuffer *pBuffer);
+	// Runs one command. Answers whether the buffer goes on after it.
+	enum class ECommandResult
+	{
+		NEXT,
+		STOP,
+		PENDING,
+	};
+	ECommandResult ProcessCommand(CCommandBuffer *pBuffer, CCommandBuffer::SCommand *pCommand);
 	bool RunPlatformCommand(const CCommandBuffer::SCommand *pCommand);
 };
 

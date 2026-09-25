@@ -26,9 +26,21 @@
 #include <engine/client/backend/webgpu/backend_webgpu.h>
 #endif
 
+#include <chrono>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <utility>
+
+#if defined(CONF_WEB_PLATFORM)
+#include <engine/client/web/render_thread_web.h>
+#endif
+
+// The browser client runs the renderer on its one thread, between the frames
+// of the game; see RunBuffer. The web tools have a render thread of their own.
+#if defined(CONF_PLATFORM_EMSCRIPTEN) && !defined(CONF_WEB_PLATFORM)
+#define BACKEND_ON_CALLING_THREAD
+#endif
 
 #if defined(CONF_PLATFORM_MACOS) || defined(CONF_PLATFORM_IOS)
 #include <objc/message.h>
@@ -121,7 +133,12 @@ void CGraphicsBackend_Threaded::StartProcessor()
 	m_RenderThreadError = {};
 	m_RenderThreadWarning = {};
 	m_CommandQueue.Start();
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(CONF_WEB_PLATFORM)
+	m_HasCurrent = false;
+	m_WaitingForFrame = false;
+	m_PumpPosted.store(false);
+	m_pRenderer->SetWakeUp([this] { WakeUp(); });
+#elif !defined(CONF_PLATFORM_EMSCRIPTEN)
 	m_pThread = thread_init(ThreadFunc, this, "Graphics thread");
 	m_ThreadStarted.Wait();
 #endif
@@ -133,14 +150,29 @@ void CGraphicsBackend_Threaded::StopProcessor()
 	WaitForIdle();
 	m_Warning = m_RenderThreadWarning;
 	m_CommandQueue.Stop();
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(CONF_WEB_PLATFORM)
+	// Nothing may be left on the render thread that still points here: a
+	// wake-up posted before the queue went idle, or a frame waited for.
+	while(true)
+	{
+		bool Waiting = false;
+		m_pRenderThread->Call([&] { Waiting = m_WaitingForFrame || m_PumpPosted.load(); });
+		if(!Waiting)
+			break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	if(m_pOwnRenderThread != nullptr)
+		m_pOwnRenderThread->Stop();
+	m_pOwnRenderThread = nullptr;
+	m_pRenderThread = nullptr;
+#elif !defined(CONF_PLATFORM_EMSCRIPTEN)
 	thread_wait(m_pThread);
 #endif
 }
 
 void CGraphicsBackend_Threaded::RunBuffer(CCommandBuffer *pBuffer)
 {
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(BACKEND_ON_CALLING_THREAD)
 	const SGfxErrorContainer Error = m_RenderThreadError;
 	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
 	{
@@ -156,6 +188,9 @@ void CGraphicsBackend_Threaded::RunBuffer(CCommandBuffer *pBuffer)
 	{
 		const bool Queued = m_CommandQueue.EnqueueBorrowed(pBuffer);
 		dbg_assert(Queued, "graphics: borrowed command buffer published while queue stopped");
+#if defined(CONF_WEB_PLATFORM)
+		WakeUp();
+#endif
 		WaitForIdle();
 		pBuffer->Reset();
 		return;
@@ -168,13 +203,21 @@ void CGraphicsBackend_Threaded::RunBuffer(CCommandBuffer *pBuffer)
 bool CGraphicsBackend_Threaded::RunBufferQueued(CCommandBuffer *pBuffer)
 {
 	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::RELIABLE, "graphics: reliable publish received a frame packet");
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(BACKEND_ON_CALLING_THREAD)
 	RunBuffer(pBuffer);
 	return true;
 #else
 	const SGfxErrorContainer Error = ProcessorError();
 	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
+	{
+#if defined(CONF_WEB_PLATFORM)
+		const bool Queued = m_CommandQueue.WaitEnqueueReliable(pBuffer);
+		WakeUp();
+		return Queued;
+#else
 		return m_CommandQueue.WaitEnqueueReliable(pBuffer);
+#endif
+	}
 
 	pBuffer->SignalCompletions();
 	pBuffer->FreeExternalData();
@@ -186,7 +229,7 @@ bool CGraphicsBackend_Threaded::RunBufferQueued(CCommandBuffer *pBuffer)
 bool CGraphicsBackend_Threaded::RunFramePacket(CCommandBuffer *pBuffer, bool WaitForCapacity)
 {
 	dbg_assert(pBuffer->SubmissionInfo().m_Channel == CCommandBuffer::ECommandChannel::FRAME, "graphics: frame publish received a reliable buffer");
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(BACKEND_ON_CALLING_THREAD)
 	(void)WaitForCapacity;
 	RunBuffer(pBuffer);
 	m_CommandQueue.RecordSynchronousFrame(true);
@@ -195,9 +238,23 @@ bool CGraphicsBackend_Threaded::RunFramePacket(CCommandBuffer *pBuffer, bool Wai
 	const SGfxErrorContainer Error = ProcessorError();
 	if(Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
 	{
+#if defined(CONF_WEB_PLATFORM)
+		// The game makes the next frame while this one is drawn and waits
+		// for the page to have shown it, instead of making frames nobody
+		// sees: the render thread takes one per animation frame.
+		m_CommandQueue.WaitForFramesDone();
+		bool Queued;
+		if(WaitForCapacity)
+			Queued = m_CommandQueue.WaitEnqueuePinnedFrame(pBuffer);
+		else
+			Queued = m_CommandQueue.EnqueueFrame(pBuffer) != CRenderCommandQueue::EFrameEnqueueResult::RETRY;
+		WakeUp();
+		return Queued;
+#else
 		if(WaitForCapacity)
 			return m_CommandQueue.WaitEnqueuePinnedFrame(pBuffer);
 		return m_CommandQueue.EnqueueFrame(pBuffer) != CRenderCommandQueue::EFrameEnqueueResult::RETRY;
+#endif
 	}
 
 	m_CommandQueue.DiscardFrame(pBuffer);
@@ -207,7 +264,7 @@ bool CGraphicsBackend_Threaded::RunFramePacket(CCommandBuffer *pBuffer, bool Wai
 
 bool CGraphicsBackend_Threaded::IsIdle() const
 {
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(BACKEND_ON_CALLING_THREAD)
 	return true;
 #else
 	return m_CommandQueue.IsIdle();
@@ -216,7 +273,7 @@ bool CGraphicsBackend_Threaded::IsIdle() const
 
 void CGraphicsBackend_Threaded::WaitForIdle()
 {
-#if !defined(CONF_PLATFORM_EMSCRIPTEN)
+#if !defined(BACKEND_ON_CALLING_THREAD)
 	m_CommandQueue.WaitForIdle();
 #endif
 }
@@ -278,51 +335,171 @@ bool CGraphicsBackend_Threaded::RunPlatformCommand(const CCommandBuffer::SComman
 	}
 }
 
+CGraphicsBackend_Threaded::ECommandResult CGraphicsBackend_Threaded::ProcessCommand(CCommandBuffer *pBuffer, CCommandBuffer::SCommand *pCommand)
+{
+	if(pCommand->m_Cmd == CCommandBuffer::CMD_SIGNAL)
+	{
+		static_cast<const CCommandBuffer::SCommand_Signal *>(pCommand)->Signal();
+		return ECommandResult::NEXT;
+	}
+
+	const ERunCommandReturnTypes Result = m_pRenderer->RunCommand(pCommand);
+	if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_HANDLED)
+	{
+		CCommandBuffer::FreeExternalData(pCommand);
+		return ECommandResult::NEXT;
+	}
+	if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_PENDING)
+		return ECommandResult::PENDING;
+	if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_ERROR)
+	{
+		m_RenderThreadError = m_pRenderer->GetError();
+		pBuffer->FreeExternalDataFrom(pCommand);
+		return ECommandResult::STOP;
+	}
+	if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_WARNING)
+	{
+		if(m_pRenderer->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
+			m_RenderThreadError = m_pRenderer->GetError();
+		else
+			m_RenderThreadWarning = m_pRenderer->GetWarning();
+		pBuffer->FreeExternalDataFrom(pCommand);
+		return ECommandResult::STOP;
+	}
+
+	if(RunPlatformCommand(pCommand))
+	{
+		CCommandBuffer::FreeExternalData(pCommand);
+		return ECommandResult::NEXT;
+	}
+
+	pBuffer->FreeExternalDataFrom(pCommand);
+	dbg_assert_failed("Unknown graphics command %d", pCommand->m_Cmd);
+}
+
 void CGraphicsBackend_Threaded::ProcessBuffer(CCommandBuffer *pBuffer)
 {
 	for(CCommandBuffer::SCommand *pCommand = pBuffer->Head(); pCommand; pCommand = pCommand->m_pNext)
 	{
-		if(pCommand->m_Cmd == CCommandBuffer::CMD_SIGNAL)
-		{
-			static_cast<const CCommandBuffer::SCommand_Signal *>(pCommand)->Signal();
-			continue;
-		}
-
-		const ERunCommandReturnTypes Result = m_pRenderer->RunCommand(pCommand);
-		if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_HANDLED)
-		{
-			CCommandBuffer::FreeExternalData(pCommand);
-			continue;
-		}
-		if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_ERROR)
-		{
-			m_RenderThreadError = m_pRenderer->GetError();
-			pBuffer->FreeExternalDataFrom(pCommand);
+		const ECommandResult Result = ProcessCommand(pBuffer, pCommand);
+		dbg_assert(Result != ECommandResult::PENDING, "graphics: a command waited for the browser outside the web tools");
+		if(Result == ECommandResult::STOP)
 			return;
-		}
-		if(Result == ERunCommandReturnTypes::RUN_COMMAND_COMMAND_WARNING)
-		{
-			if(m_pRenderer->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
-				m_RenderThreadError = m_pRenderer->GetError();
-			else
-				m_RenderThreadWarning = m_pRenderer->GetWarning();
-			pBuffer->FreeExternalDataFrom(pCommand);
-			return;
-		}
-
-		if(RunPlatformCommand(pCommand))
-		{
-			CCommandBuffer::FreeExternalData(pCommand);
-			continue;
-		}
-
-		pBuffer->FreeExternalDataFrom(pCommand);
-		dbg_assert_failed("Unknown graphics command %d", pCommand->m_Cmd);
 	}
 
 	if(m_pRenderer->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
 		m_RenderThreadError = m_pRenderer->GetError();
 }
+
+#if defined(CONF_WEB_PLATFORM)
+void CGraphicsBackend_Threaded::WakeUp()
+{
+	if(!m_PumpPosted.exchange(true))
+		m_pRenderThread->Post(PumpTask, this);
+}
+
+void CGraphicsBackend_Threaded::PumpTask(void *pUser)
+{
+	auto *pSelf = static_cast<CGraphicsBackend_Threaded *>(pUser);
+	pSelf->m_PumpPosted.store(false);
+	pSelf->Pump();
+}
+
+void CGraphicsBackend_Threaded::FrameTask(void *pUser)
+{
+	auto *pSelf = static_cast<CGraphicsBackend_Threaded *>(pUser);
+	pSelf->m_WaitingForFrame = false;
+	pSelf->Pump();
+}
+
+CGraphicsBackend_Threaded::EProcessResult CGraphicsBackend_Threaded::ProcessCommands(CCommandBuffer *pBuffer, CCommandBuffer::SCommand *&pCommand)
+{
+	while(pCommand != nullptr)
+	{
+		const ECommandResult Result = ProcessCommand(pBuffer, pCommand);
+		if(Result == ECommandResult::PENDING)
+			return EProcessResult::PENDING;
+		if(Result == ECommandResult::STOP)
+		{
+			pCommand = nullptr;
+			return EProcessResult::DONE;
+		}
+		CCommandBuffer::SCommand *pDone = pCommand;
+		pCommand = pCommand->m_pNext;
+		if(pDone->m_Cmd == CCommandBuffer::CMD_SWAP)
+		{
+			// Shown when the thread gives the browser its turn. A caller
+			// that paces itself, or an explicit refresh rate, does not wait
+			// for the page to paint.
+			m_PaceNextFrame = static_cast<const CCommandBuffer::SCommand_Swap *>(pDone)->m_PaceWithDisplay && g_Config.m_GfxRefreshRate == 0;
+			if(pCommand == nullptr && m_pRenderer->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
+				m_RenderThreadError = m_pRenderer->GetError();
+			return EProcessResult::PRESENTED;
+		}
+	}
+	if(m_pRenderer->GetError().m_ErrorType != GFX_ERROR_TYPE_NONE)
+		m_RenderThreadError = m_pRenderer->GetError();
+	return EProcessResult::DONE;
+}
+
+void CGraphicsBackend_Threaded::FinishCurrent()
+{
+	CCommandBuffer *pBuffer = m_Current.m_pBuffer;
+	pBuffer->SignalCompletions();
+	if(m_CanProcessCurrent && m_RenderThreadError.m_ErrorType != GFX_ERROR_TYPE_NONE)
+	{
+		std::unique_lock Lock(m_ProcessorErrorMutex);
+		if(m_ProcessorError.m_ErrorType == GFX_ERROR_TYPE_NONE)
+			m_ProcessorError = m_RenderThreadError;
+	}
+	m_HasCurrent = false;
+	m_CommandQueue.Recycle(std::move(m_Current), m_CanProcessCurrent);
+	m_Current = {};
+}
+
+void CGraphicsBackend_Threaded::Pump()
+{
+	if(m_WaitingForFrame)
+		return;
+	while(true)
+	{
+		if(!m_HasCurrent)
+		{
+			if(!m_CommandQueue.TryDequeue(m_Current))
+				return;
+			m_HasCurrent = true;
+			m_pResume = m_Current.m_pBuffer->Head();
+			m_CanProcessCurrent = ProcessorError().m_ErrorType == GFX_ERROR_TYPE_NONE;
+		}
+		EProcessResult Result = EProcessResult::DONE;
+		if(m_CanProcessCurrent)
+			Result = ProcessCommands(m_Current.m_pBuffer, m_pResume);
+		else
+			m_pResume = nullptr;
+		// Called again by the renderer's wake-up.
+		if(Result == EProcessResult::PENDING)
+			return;
+		if(m_pResume == nullptr)
+			FinishCurrent();
+		if(Result == EProcessResult::PRESENTED)
+		{
+			if(m_PaceNextFrame)
+			{
+				m_WaitingForFrame = true;
+				CWebRenderThread::PostAtFrame(FrameTask, this);
+			}
+			else
+				WakeUp();
+			return;
+		}
+	}
+}
+
+void CGraphicsBackend_Threaded::ProcessBufferOnRenderThread(CCommandBuffer *pBuffer)
+{
+	m_pRenderThread->Call([&] { ProcessBuffer(pBuffer); });
+}
+#endif
 
 CCommandProcessorFragment_Renderer *CGraphicsBackend_Threaded::CreateRenderer() const
 {
@@ -382,12 +559,25 @@ void CGraphicsBackend_Threaded::StopAndDeleteProcessor(bool RendererInitialized)
 
 	CCommandProcessorFragment_Renderer::SCommand_PostShutdown CmdPost;
 	CmdBuffer.AddCommandUnsafe(CmdPost);
+#if defined(CONF_WEB_PLATFORM)
+	ProcessBufferOnRenderThread(&CmdBuffer);
+	CmdBuffer.Reset();
+
+	// What the renderer holds lives on the render thread and goes there.
+	WaitForIdle();
+	m_pRenderThread->Call([&] {
+		delete m_pRenderer;
+		m_pRenderer = nullptr;
+	});
+	StopProcessor();
+#else
 	ProcessBuffer(&CmdBuffer);
 	CmdBuffer.Reset();
 
 	StopProcessor();
 	delete m_pRenderer;
 	m_pRenderer = nullptr;
+#endif
 	m_pSurface = nullptr;
 }
 
@@ -404,6 +594,23 @@ int CGraphicsBackend_Threaded::Init(const SGraphicsBackendInit &Params)
 		return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
 	}
 	m_pSurface = Params.m_pSurface;
+#if defined(CONF_WEB_PLATFORM)
+	// Drawing without a surface needs no canvas, so such a backend makes
+	// its thread itself.
+	m_pRenderThread = Params.m_pRenderThread;
+	if(m_pRenderThread == nullptr)
+	{
+		m_pOwnRenderThread = std::make_unique<CWebRenderThread>();
+		if(!m_pOwnRenderThread->Start(false))
+		{
+			m_pOwnRenderThread = nullptr;
+			delete m_pRenderer;
+			m_pRenderer = nullptr;
+			return EGraphicsBackendErrorCodes::GRAPHICS_BACKEND_ERROR_CODE_CONTEXT_FAILED;
+		}
+		m_pRenderThread = m_pOwnRenderThread.get();
+	}
+#endif
 	StartProcessor();
 
 	const CCommandProcessorFragment_Renderer::SPresentationSurface Surface = {Params.m_pSurface, static_cast<uint32_t>(std::max(Params.m_Width, 1)), static_cast<uint32_t>(std::max(Params.m_Height, 1))};
@@ -416,7 +623,11 @@ int CGraphicsBackend_Threaded::Init(const SGraphicsBackendInit &Params)
 	CmdPre.m_pRendererString = m_aRendererString;
 	CmdPre.m_pGpuList = &m_GpuList;
 	CmdBuffer.AddCommandUnsafe(CmdPre);
+#if defined(CONF_WEB_PLATFORM)
+	ProcessBufferOnRenderThread(&CmdBuffer);
+#else
 	ProcessBuffer(&CmdBuffer);
+#endif
 	CmdBuffer.Reset();
 
 	// The OpenGL context has to be bound to the render thread before the
@@ -497,8 +708,13 @@ int CGraphicsBackend_Threaded::Shutdown()
 
 void CGraphicsBackend_Threaded::ErroneousCleanup()
 {
-	if(m_pRenderer != nullptr)
-		m_pRenderer->ErroneousCleanup();
+	if(m_pRenderer == nullptr)
+		return;
+#if defined(CONF_WEB_PLATFORM)
+	m_pRenderThread->Call([&] { m_pRenderer->ErroneousCleanup(); });
+#else
+	m_pRenderer->ErroneousCleanup();
+#endif
 }
 
 // ------------ free functions

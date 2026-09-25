@@ -3,6 +3,7 @@
 #include "demo_player_client.h"
 
 #if defined(CONF_WEB_PLATFORM)
+#include "web/program_thread_web.h"
 #include "web/window_web.h"
 #else
 #include "viewer_fullscreen.h"
@@ -32,6 +33,8 @@
 #include <cstdlib>
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+#include "web/page_bridge_web.h"
+
 #include <emscripten/emscripten.h>
 #endif
 
@@ -50,6 +53,37 @@ namespace
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// The one player of the page, for the controls beside the canvas.
 	CDemoPlayerClient *gs_pDemoPlayer = nullptr;
+
+	// What the page reads of the player, see `CWebPageBridge`.
+	struct SPageState
+	{
+		bool m_Running = false;
+		int m_Spectating = SPEC_FREEVIEW;
+		bool m_ServerDemo = false;
+		std::string m_Players = "[]";
+		int m_LoadCount = 0;
+		float m_Volume = 0.0f;
+		bool m_Muted = false;
+		float m_ClipStart = 0.0f;
+		float m_ClipEnd = -1.0f;
+		float m_Zoom = 1.0f;
+		bool m_ZoomChanged = false;
+		bool m_ZoomEnabled = false;
+		bool m_Overlays = false;
+		bool m_KeyPresses = false;
+		bool m_HighDetail = false;
+		int m_RecordedCamera = 0;
+		bool m_Controls = false;
+		std::string m_ExportError;
+		int m_ExportState = 0;
+		float m_ExportSecondsLeft = -1.0f;
+		float m_ExportProgress = 0.0f;
+		bool m_Paused = false;
+		float m_Progress = 0.0f;
+		float m_Speed = 1.0f;
+		float m_Length = 0.0f;
+	};
+	CWebPageBridge<SPageState> gs_PageBridge;
 #endif
 
 	void PrintUsage()
@@ -143,18 +177,11 @@ void CDemoPlayerClient::SetSize(int Width, int Height)
 	Window()->Resize(std::max(Width, 1), std::max(Height, 1), g_Config.m_GfxScreenRefreshRate);
 }
 
-void CDemoPlayerClient::FromPage(std::function<void()> &&Action)
-{
-	if(!web_unwound())
-	{
-		Action();
-		return;
-	}
-	m_vPageActions.push_back(std::move(Action));
-}
-
 void CDemoPlayerClient::RunPageActions()
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	gs_PageBridge.RunActions();
+#endif
 	if(m_vPageActions.empty())
 		return;
 	std::vector<std::function<void()>> vActions;
@@ -162,6 +189,40 @@ void CDemoPlayerClient::RunPageActions()
 	for(const std::function<void()> &Action : vActions)
 		Action();
 }
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+void CDemoPlayerClient::PublishPageState()
+{
+	SPageState State;
+	State.m_Running = true;
+	State.m_Spectating = Spectating();
+	State.m_ServerDemo = LoadCount() > 0 && ServerDemo();
+	State.m_Players = Players();
+	State.m_LoadCount = LoadCount();
+	State.m_Volume = Volume();
+	State.m_Muted = Muted();
+	State.m_ClipStart = ClipStart();
+	State.m_ClipEnd = ClipEnd();
+	State.m_Zoom = Zoom();
+	State.m_ZoomChanged = ZoomChanged();
+	State.m_ZoomEnabled = ZoomEnabled();
+	State.m_Overlays = OverlaysEnabled();
+	State.m_KeyPresses = RenderOptions().m_ShowDirection != 0;
+	State.m_HighDetail = RenderOptions().m_HighDetail;
+	State.m_RecordedCamera = !RecordedCameraAvailable() ? 0 : RecordedCamera() ? 2 :
+										     1;
+	State.m_Controls = ShowControls();
+	State.m_ExportError = ExportError();
+	State.m_ExportState = (int)ExportState();
+	State.m_ExportSecondsLeft = ExportSecondsLeft();
+	State.m_ExportProgress = ExportProgress();
+	State.m_Paused = Paused();
+	State.m_Progress = Progress();
+	State.m_Speed = Speed();
+	State.m_Length = Length();
+	gs_PageBridge.Publish(std::move(State));
+}
+#endif
 
 void CDemoPlayerClient::SetPaused(bool Paused)
 {
@@ -1127,8 +1188,10 @@ int CDemoPlayerClient::Run()
 			}
 			while(State() != IClient::STATE_QUITTING)
 			{
-				// See `FromPage`.
 				RunPageActions();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+				PublishPageState();
+#endif
 				if(!HandleInput())
 					break;
 				const bool Playing = SessionState(m_DemoSessionId) == ESessionState::READY;
@@ -1162,34 +1225,62 @@ int CDemoPlayerClient::Run()
 	}
 	ShutdownGame();
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+	gs_PageBridge.Reset();
 	gs_pDemoPlayer = nullptr;
 #endif
 	return ExitCode;
 }
 
+#if defined(CONF_WEB_PLATFORM)
+int main(int argc, const char **argv)
+{
+	// In a worker, where it may wait; see `WebRunProgram`.
+	return WebRunProgram([](int ArgumentCount, const char **ppArguments) {
+		return DemoClientMain(new CDemoPlayerClient, ArgumentCount, ppArguments);
+	},
+		argc, argv);
+}
+#else
 int main(int argc, const char **argv)
 {
 	return DemoClientMain(new CDemoPlayerClient, argc, argv);
 }
+#endif
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 namespace
 {
-	// The page may call in while the player is unwound in a wait, where
-	// waiting again would take it down. See `CDemoPlayerClient::FromPage`.
+	// The page calls on a thread of its own, so what it asks for is done by
+	// the player between two frames. See `CWebPageBridge`.
 	void FromPage(std::function<void()> &&Action)
 	{
-		if(gs_pDemoPlayer != nullptr)
-			gs_pDemoPlayer->FromPage(std::move(Action));
+		gs_PageBridge.Post([Action = std::move(Action)] {
+			if(gs_pDemoPlayer != nullptr)
+				Action();
+		});
+	}
+
+	SPageState PageState()
+	{
+		return gs_PageBridge.State();
+	}
+
+	// Valid until the next call of the same function.
+	const char *PageString(std::string &Keep, std::string &&Value)
+	{
+		Keep = std::move(Value);
+		return Keep.c_str();
 	}
 } // namespace
 
 // What the page calls. Everything is safe to call before a demo plays and
-// after it stopped.
+// after it stopped. What is read is what the player published after its last
+// frame; what is set is done before its next one, and reads back at once
+// where that is simple to tell.
 extern "C" {
-
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetPaused(int Paused)
 {
+	gs_PageBridge.Change([Paused](SPageState &State) { State.m_Paused = Paused != 0; });
 	FromPage([Paused] {
 		if(Paused != 0)
 			gs_pDemoPlayer->SetPaused(true);
@@ -1233,7 +1324,7 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSpectateName(const char *pName)
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerSpectating()
 {
-	return gs_pDemoPlayer == nullptr ? SPEC_FREEVIEW : gs_pDemoPlayer->Spectating();
+	return PageState().m_Spectating;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSpectateStep(int Direction)
@@ -1246,24 +1337,25 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSpectateStep(int Direction)
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerServerDemo()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->LoadCount() > 0 && gs_pDemoPlayer->ServerDemo() ? 1 : 0;
+	return PageState().m_ServerDemo ? 1 : 0;
 }
 
 // Valid until the next call.
 EMSCRIPTEN_KEEPALIVE const char *DemoPlayerPlayers()
 {
-	return gs_pDemoPlayer == nullptr ? "[]" : gs_pDemoPlayer->Players();
+	static std::string s_Players;
+	return PageString(s_Players, std::move(PageState().m_Players));
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerLoadCount()
 {
-	return gs_pDemoPlayer == nullptr ? 0 : gs_pDemoPlayer->LoadCount();
+	return PageState().m_LoadCount;
 }
 
 // Between 0 and 1.
 EMSCRIPTEN_KEEPALIVE float DemoPlayerVolume()
 {
-	return gs_pDemoPlayer == nullptr ? 0.0f : gs_pDemoPlayer->Volume();
+	return PageState().m_Volume;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetVolume(float Volume)
@@ -1273,23 +1365,24 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSetVolume(float Volume)
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerMuted()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->Muted() ? 1 : 0;
+	return PageState().m_Muted ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetMuted(int Muted)
 {
+	gs_PageBridge.Change([Muted](SPageState &State) { State.m_Muted = Muted != 0; });
 	FromPage([Muted] { gs_pDemoPlayer->SetMuted(Muted != 0); });
 }
 
 // The marked piece in seconds, with a negative end where nothing is marked.
 EMSCRIPTEN_KEEPALIVE float DemoPlayerClipStart()
 {
-	return gs_pDemoPlayer == nullptr ? 0.0f : gs_pDemoPlayer->ClipStart();
+	return PageState().m_ClipStart;
 }
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerClipEnd()
 {
-	return gs_pDemoPlayer == nullptr ? -1.0f : gs_pDemoPlayer->ClipEnd();
+	return PageState().m_ClipEnd;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetClip(float Start, float End)
@@ -1310,7 +1403,7 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerZoomBy(float Factor)
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerZoom()
 {
-	return gs_pDemoPlayer == nullptr ? 1.0f : gs_pDemoPlayer->Zoom();
+	return PageState().m_Zoom;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerResetZoom()
@@ -1320,33 +1413,36 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerResetZoom()
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerZoomChanged()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->ZoomChanged() ? 1 : 0;
+	return PageState().m_ZoomChanged ? 1 : 0;
 }
 
 // Whether the wheel, the zoom keys and a pinch zoom; `DemoPlayerZoomBy` works
 // either way.
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetZoomEnabled(int Enabled)
 {
+	gs_PageBridge.Change([Enabled](SPageState &State) { State.m_ZoomEnabled = Enabled != 0; });
 	FromPage([Enabled] { gs_pDemoPlayer->SetZoomEnabled(Enabled != 0); });
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerZoomEnabled()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->ZoomEnabled() ? 1 : 0;
+	return PageState().m_ZoomEnabled ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetOverlays(int Enabled)
 {
+	gs_PageBridge.Change([Enabled](SPageState &State) { State.m_Overlays = Enabled != 0; });
 	FromPage([Enabled] { gs_pDemoPlayer->SetOverlaysEnabled(Enabled != 0); });
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerOverlays()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->OverlaysEnabled() ? 1 : 0;
+	return PageState().m_Overlays ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetKeyPresses(int Show)
 {
+	gs_PageBridge.Change([Show](SPageState &State) { State.m_KeyPresses = Show != 0; });
 	FromPage([Show] {
 		CViewRenderOptions Options = gs_pDemoPlayer->RenderOptions();
 		Options.m_ShowDirection = Show != 0 ? 1 : 0;
@@ -1356,11 +1452,12 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSetKeyPresses(int Show)
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerKeyPresses()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->RenderOptions().m_ShowDirection != 0 ? 1 : 0;
+	return PageState().m_KeyPresses ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetHighDetail(int On)
 {
+	gs_PageBridge.Change([On](SPageState &State) { State.m_HighDetail = On != 0; });
 	FromPage([On] {
 		CViewRenderOptions Options = gs_pDemoPlayer->RenderOptions();
 		Options.m_HighDetail = On != 0;
@@ -1370,16 +1467,14 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSetHighDetail(int On)
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerHighDetail()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->RenderOptions().m_HighDetail ? 1 : 0;
+	return PageState().m_HighDetail ? 1 : 0;
 }
 
 // 0 where the demo brought no view of its own, 1 where it did and it is not
 // followed, 2 where it is.
 EMSCRIPTEN_KEEPALIVE int DemoPlayerRecordedCamera()
 {
-	if(gs_pDemoPlayer == nullptr || !gs_pDemoPlayer->RecordedCameraAvailable())
-		return 0;
-	return gs_pDemoPlayer->RecordedCamera() ? 2 : 1;
+	return PageState().m_RecordedCamera;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetRecordedCamera(int Use)
@@ -1396,8 +1491,6 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerQuit()
 // had an encoder.
 EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat, int SpectatorId)
 {
-	if(gs_pDemoPlayer == nullptr)
-		return 0;
 	CVideoExportSettings Settings;
 	Settings.m_Width = Width;
 	Settings.m_Height = Height;
@@ -1407,7 +1500,22 @@ EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, i
 	str_copy(Settings.m_aVideoCodec, pCodec == nullptr ? "" : pCodec);
 	Settings.m_ShowHud = Hud != 0;
 	Settings.m_ShowChat = Chat != 0;
-	return gs_pDemoPlayer->RequestExport(Settings, SpectatorId) ? 1 : 0;
+	// Taken as the player would take it, which it does unless an export runs;
+	// one that runs already is what the page reads right away.
+	bool Accepted = false;
+	gs_PageBridge.Change([&Accepted](SPageState &State) {
+#if defined(CONF_VIDEORECORDER)
+		if(State.m_Running && State.m_ExportState != (int)CDemoPlayerClient::EExportState::RUNNING)
+		{
+			State.m_ExportState = (int)CDemoPlayerClient::EExportState::RUNNING;
+			State.m_ExportError.clear();
+			Accepted = true;
+		}
+#endif
+	});
+	if(Accepted)
+		FromPage([Settings, SpectatorId] { gs_pDemoPlayer->RequestExport(Settings, SpectatorId); });
+	return Accepted ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSize(int Width, int Height)
@@ -1417,61 +1525,62 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerSetSize(int Width, int Height)
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerSetControls(int Show)
 {
+	gs_PageBridge.Change([Show](SPageState &State) { State.m_Controls = Show != 0; });
 	FromPage([Show] { gs_pDemoPlayer->SetShowControls(Show != 0); });
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerControls()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->ShowControls() ? 1 : 0;
+	return PageState().m_Controls ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE void DemoPlayerCancelExport()
 {
-	if(gs_pDemoPlayer != nullptr)
-		gs_pDemoPlayer->RequestCancelExport();
+	FromPage([] { gs_pDemoPlayer->RequestCancelExport(); });
 }
 
 EMSCRIPTEN_KEEPALIVE const char *DemoPlayerExportError()
 {
-	return gs_pDemoPlayer == nullptr ? "" : gs_pDemoPlayer->ExportError();
+	static std::string s_Error;
+	return PageString(s_Error, std::move(PageState().m_ExportError));
 }
 
 // 0 while none was asked for, 1 while one is written, 2 when the last one was
 // handed over and 3 when it failed.
 EMSCRIPTEN_KEEPALIVE int DemoPlayerExportState()
 {
-	return gs_pDemoPlayer == nullptr ? 0 : (int)gs_pDemoPlayer->ExportState();
+	return PageState().m_ExportState;
 }
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerExportSecondsLeft()
 {
-	return gs_pDemoPlayer == nullptr ? -1.0f : gs_pDemoPlayer->ExportSecondsLeft();
+	return PageState().m_ExportSecondsLeft;
 }
 
 // Between 0 and 1, of the export rather than of the demo in the window.
 EMSCRIPTEN_KEEPALIVE float DemoPlayerExportProgress()
 {
-	return gs_pDemoPlayer == nullptr ? 0.0f : gs_pDemoPlayer->ExportProgress();
+	return PageState().m_ExportProgress;
 }
 
 EMSCRIPTEN_KEEPALIVE int DemoPlayerPaused()
 {
-	return gs_pDemoPlayer != nullptr && gs_pDemoPlayer->Paused() ? 1 : 0;
+	return PageState().m_Paused ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerProgress()
 {
-	return gs_pDemoPlayer == nullptr ? 0.0f : gs_pDemoPlayer->Progress();
+	return PageState().m_Progress;
 }
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerSpeed()
 {
-	return gs_pDemoPlayer == nullptr ? 1.0f : gs_pDemoPlayer->Speed();
+	return PageState().m_Speed;
 }
 
 EMSCRIPTEN_KEEPALIVE float DemoPlayerLength()
 {
-	return gs_pDemoPlayer == nullptr ? 0.0f : gs_pDemoPlayer->Length();
+	return PageState().m_Length;
 }
 }
 #endif

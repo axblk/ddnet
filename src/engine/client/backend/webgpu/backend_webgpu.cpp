@@ -37,7 +37,20 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// The web tools' render thread never waits inside a command: what waits for
+// the browser answers RUN_COMMAND_COMMAND_PENDING and is run again when the
+// browser's callback wakes the renderer. The browser client, which renders
+// on the page's thread, yields to the browser instead.
+#if defined(CONF_WEB_PLATFORM)
+#define WEBGPU_WAITS_PENDING
+// The mode of every callback: they arrive on the render thread's event loop
+// and wake the renderer.
+constexpr WGPUCallbackMode WEBGPU_CALLBACK_MODE = WGPUCallbackMode_AllowSpontaneous;
+#else
+constexpr WGPUCallbackMode WEBGPU_CALLBACK_MODE = WGPUCallbackMode_AllowProcessEvents;
+#endif
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN) && !defined(WEBGPU_WAITS_PENDING)
 // Defined below: hands control back to the browser.
 void YieldToBrowser(int WaitForFrame);
 #endif
@@ -445,7 +458,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		Result.m_Done = false;
 		Result.m_Status = WGPUMapAsyncStatus_Error;
 		WGPUBufferMapCallbackInfo CallbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-		CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+		CallbackInfo.mode = WEBGPU_CALLBACK_MODE;
 		CallbackInfo.callback = MapCallback;
 		CallbackInfo.userdata1 = &Result;
 		CallbackInfo.userdata2 = reinterpret_cast<void *>(static_cast<uintptr_t>(Result.m_Generation));
@@ -453,6 +466,17 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	}
 
 	static void QueueCallback(WGPUQueueWorkDoneStatus Status, WGPUStringView, void *pUserdata1, void *);
+
+	// The renderer on this thread whose callbacks wake the render thread's
+	// pump, see WEBGPU_WAITS_PENDING. The callbacks only know their results.
+	static thread_local CCommandProcessorFragment_WebGpu *ms_pActive;
+	static void WakeActive()
+	{
+#if defined(WEBGPU_WAITS_PENDING)
+		if(ms_pActive != nullptr)
+			ms_pActive->WakeUp();
+#endif
+	}
 
 	bool AdvanceUploadBufferSlot();
 
@@ -473,7 +497,9 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 				return true;
 			if(std::chrono::steady_clock::now() >= Deadline)
 				break;
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(WEBGPU_WAITS_PENDING)
+			dbg_assert_failed("WebGPU: %s waited on the web tools' render thread", pOperation);
+#elif defined(CONF_PLATFORM_EMSCRIPTEN)
 			// The browser has to run to resolve anything; a timer would be too slow.
 			YieldFrame();
 #else
@@ -680,6 +706,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	// waits for the upload rings.
 	bool CopyScreenToSurface();
 
+#if !defined(WEBGPU_WAITS_PENDING)
 	void YieldFrame()
 	{
 		// The browser may run here. What is encoded still has to be submitted, or
@@ -687,6 +714,7 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 		(void)SubmitCommands();
 		YieldToBrowser(0);
 	}
+#endif
 #endif
 
 	// The view a screen pass resolves into.
@@ -707,6 +735,34 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	void FinishReadback(SReadbackSlot &Slot);
 
 	bool FinishOldestReadback();
+
+	// Whether a readback has to wait for a slot, which in the web tools the
+	// browser frees: the command is then run again. Elsewhere the oldest is
+	// waited out in StartTextureReadback.
+	bool ReadbackSlotsFull() const
+	{
+#if defined(WEBGPU_WAITS_PENDING)
+		return m_ReadbackCount >= READBACK_SLOT_COUNT;
+#else
+		return false;
+#endif
+	}
+#if defined(WEBGPU_WAITS_PENDING)
+	// Whether the browser still owes a buffer map an answer. It calls back
+	// from the event loop whenever it has one, also after the buffer was let
+	// go of, so the fragment has to outlive every map it asked for.
+	bool MapsInFlight() const
+	{
+		for(size_t i = 0; i < m_ReadbackCount; ++i)
+		{
+			if(!m_aReadbackSlots[(m_ReadbackHead + i) % READBACK_SLOT_COUNT].m_MapResult.m_Done)
+				return true;
+		}
+		return std::any_of(m_aGpuTimestampSlots.begin(), m_aGpuTimestampSlots.end(), [](const SGpuTimestampSlot &Slot) {
+			return Slot.m_InFlight && !Slot.m_MapResult.m_Done;
+		});
+	}
+#endif
 
 	// Hands over every readback whose mapping has already arrived, without
 	// waiting for any that has not.
@@ -736,6 +792,24 @@ class CCommandProcessorFragment_WebGpu final : public CCommandProcessorFragment_
 	bool Cmd_Swap(const CCommandBuffer::SCommand_Swap *pCommand);
 
 	bool Cmd_Init(const SCommand_Init *pCommand);
+	// Cmd_Init in the three pieces between which it waits for the browser:
+	// up to asking for the adapter, up to asking for the device, and the
+	// rest. Each is only called once the previous one's answer is there.
+	bool InitStart(const SCommand_Init *pCommand);
+	bool InitAdapterArrived(const SCommand_Init *pCommand);
+	bool InitDeviceArrived(const SCommand_Init *pCommand);
+	// What InitStart named the backend, for the later pieces' messages.
+	const char *m_pInitBackendName = "auto";
+#if defined(WEBGPU_WAITS_PENDING)
+	enum class EInitPhase
+	{
+		START,
+		ADAPTER,
+		DEVICE,
+	};
+	EInitPhase m_InitPhase = EInitPhase::START;
+	ERunCommandReturnTypes RunInit(const SCommand_Init *pCommand);
+#endif
 
 	void Cmd_PreInit(const SCommand_PreInit *pCommand);
 
@@ -762,6 +836,8 @@ public:
 	~CCommandProcessorFragment_WebGpu() override
 	{
 		dbg_assert(m_Instance == nullptr, "WebGPU resources must be released on the graphics worker");
+		if(ms_pActive == this)
+			ms_pActive = nullptr;
 	}
 
 	ERunCommandReturnTypes RunCommand(const CCommandBuffer::SCommand *pBaseCommand) override;
@@ -772,7 +848,7 @@ public:
 // dispatch.
 // ---------------------------------------------------------------------------
 
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(CONF_PLATFORM_EMSCRIPTEN) && !defined(WEBGPU_WAITS_PENDING)
 // Hands control back to the browser: an animation frame for a whole frame,
 // otherwise a message channel task, which unlike a timer has no millisecond
 // floor. A hidden page gets neither, so it falls back to a slow timer
@@ -834,6 +910,8 @@ void YieldToBrowser(int WaitForFrame)
 }
 #endif
 
+thread_local CCommandProcessorFragment_WebGpu *CCommandProcessorFragment_WebGpu::ms_pActive = nullptr;
+
 void CCommandProcessorFragment_WebGpu::AdapterCallback(WGPURequestAdapterStatus Status, WGPUAdapter Adapter, WGPUStringView Message, void *pUserdata1, void *)
 {
 	auto *pResult = static_cast<SRequestAdapterResult *>(pUserdata1);
@@ -841,6 +919,7 @@ void CCommandProcessorFragment_WebGpu::AdapterCallback(WGPURequestAdapterStatus 
 	pResult->m_Adapter = Adapter;
 	pResult->m_Message = ToString(Message);
 	pResult->m_Done = true;
+	WakeActive();
 }
 
 void CCommandProcessorFragment_WebGpu::DeviceCallback(WGPURequestDeviceStatus Status, WGPUDevice Device, WGPUStringView Message, void *pUserdata1, void *)
@@ -850,6 +929,7 @@ void CCommandProcessorFragment_WebGpu::DeviceCallback(WGPURequestDeviceStatus St
 	pResult->m_Device = Device;
 	pResult->m_Message = ToString(Message);
 	pResult->m_Done = true;
+	WakeActive();
 }
 
 void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WGPUStringView, void *pUserdata1, void *pUserdata2)
@@ -859,6 +939,7 @@ void CCommandProcessorFragment_WebGpu::MapCallback(WGPUMapAsyncStatus Status, WG
 		return;
 	pResult->m_Status = Status;
 	pResult->m_Done = true;
+	WakeActive();
 }
 
 void CCommandProcessorFragment_WebGpu::QueueCallback(WGPUQueueWorkDoneStatus Status, WGPUStringView, void *pUserdata1, void *)
@@ -872,8 +953,15 @@ void CCommandProcessorFragment_WebGpu::DeviceLostCallback(WGPUDevice const *, WG
 {
 	if(Reason == WGPUDeviceLostReason_CallbackCancelled)
 		return;
+#if defined(CONF_WEB_PLATFORM)
+	// A device destroyed on purpose says so from the event loop, when the
+	// fragment that destroyed it is gone.
+	if(Reason == WGPUDeviceLostReason_Destroyed)
+		return;
+#endif
 	auto *pSelf = static_cast<CCommandProcessorFragment_WebGpu *>(pUserdata1);
 	pSelf->m_DeviceLost = true;
+	WakeActive();
 	log_error("gfx/webgpu", "device lost (%d): %.*s", static_cast<int>(Reason), static_cast<int>(Message.length), Message.data != nullptr ? Message.data : "");
 }
 
@@ -1169,6 +1257,47 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Clear(const CCommandBuffer::SCommand_
 
 bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 {
+	if(!InitStart(pCommand))
+		return false;
+	(void)ProcessUntilDone(m_AdapterResult, "request adapter");
+	if(!InitAdapterArrived(pCommand))
+		return false;
+	(void)ProcessUntilDone(m_DeviceResult, "request device");
+	return InitDeviceArrived(pCommand);
+}
+
+#if defined(WEBGPU_WAITS_PENDING)
+// Cmd_Init, returning to the browser while it looks for the adapter and the
+// device.
+ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunInit(const SCommand_Init *pCommand)
+{
+	if(m_InitPhase == EInitPhase::START)
+	{
+		ms_pActive = this;
+		if(!InitStart(pCommand))
+			return RUN_COMMAND_COMMAND_ERROR;
+		m_InitPhase = EInitPhase::ADAPTER;
+	}
+	if(m_InitPhase == EInitPhase::ADAPTER)
+	{
+		if(!m_AdapterResult.m_Done)
+			return RUN_COMMAND_COMMAND_PENDING;
+		m_InitPhase = EInitPhase::DEVICE;
+		if(!InitAdapterArrived(pCommand))
+		{
+			m_InitPhase = EInitPhase::START;
+			return RUN_COMMAND_COMMAND_ERROR;
+		}
+	}
+	if(!m_DeviceResult.m_Done)
+		return RUN_COMMAND_COMMAND_PENDING;
+	m_InitPhase = EInitPhase::START;
+	return InitDeviceArrived(pCommand) ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_ERROR;
+}
+#endif
+
+bool CCommandProcessorFragment_WebGpu::InitStart(const SCommand_Init *pCommand)
+{
 	m_Presentation = pCommand->m_Surface;
 	const SWebGpuNativeWindow &NativeWindow = this->NativeWindow();
 	m_pTextureMemoryUsage = pCommand->m_pTextureMemoryUsage;
@@ -1249,6 +1378,7 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 		Extras.displayHandle.data.wayland.display = NativeWindow.m_pDisplay;
 	}
 #endif
+	m_pInitBackendName = pBackendName;
 	log_info("gfx/webgpu", "requested backend=%s", pBackendName);
 	WGPUInstanceDescriptor InstanceDescriptor = WGPU_INSTANCE_DESCRIPTOR_INIT;
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
@@ -1274,11 +1404,17 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 	AdapterOptions.compatibleSurface = m_Presentation.IsPresentable() ? m_Surface : nullptr;
 	AdapterOptions.powerPreference = WGPUPowerPreference_HighPerformance;
 	WGPURequestAdapterCallbackInfo AdapterCallbackInfo = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-	AdapterCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	AdapterCallbackInfo.mode = WEBGPU_CALLBACK_MODE;
 	AdapterCallbackInfo.callback = AdapterCallback;
 	AdapterCallbackInfo.userdata1 = &m_AdapterResult;
 	wgpuInstanceRequestAdapter(m_Instance, &AdapterOptions, AdapterCallbackInfo);
-	if(!ProcessUntilDone(m_AdapterResult, "request adapter") || m_AdapterResult.m_Status != WGPURequestAdapterStatus_Success || m_AdapterResult.m_Adapter == nullptr)
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::InitAdapterArrived(const SCommand_Init *pCommand)
+{
+	const char *pBackendName = m_pInitBackendName;
+	if(!m_AdapterResult.m_Done || m_AdapterResult.m_Status != WGPURequestAdapterStatus_Success || m_AdapterResult.m_Adapter == nullptr)
 	{
 		if(!m_AdapterResult.m_Message.empty())
 			m_ErrorMessage = m_AdapterResult.m_Message;
@@ -1327,17 +1463,23 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Init(const SCommand_Init *pCommand)
 		DeviceDescriptor.requiredFeatures = GpuTimestampFeatures.data();
 	}
 #endif
-	DeviceDescriptor.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	DeviceDescriptor.deviceLostCallbackInfo.mode = WEBGPU_CALLBACK_MODE;
 	DeviceDescriptor.deviceLostCallbackInfo.callback = DeviceLostCallback;
 	DeviceDescriptor.deviceLostCallbackInfo.userdata1 = this;
 	DeviceDescriptor.uncapturedErrorCallbackInfo.callback = UncapturedErrorCallback;
 	DeviceDescriptor.uncapturedErrorCallbackInfo.userdata1 = this;
 	WGPURequestDeviceCallbackInfo DeviceCallbackInfo = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
-	DeviceCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	DeviceCallbackInfo.mode = WEBGPU_CALLBACK_MODE;
 	DeviceCallbackInfo.callback = DeviceCallback;
 	DeviceCallbackInfo.userdata1 = &m_DeviceResult;
 	wgpuAdapterRequestDevice(m_Adapter, &DeviceDescriptor, DeviceCallbackInfo);
-	if(!ProcessUntilDone(m_DeviceResult, "request device") || m_DeviceResult.m_Status != WGPURequestDeviceStatus_Success || m_DeviceResult.m_Device == nullptr)
+	return true;
+}
+
+bool CCommandProcessorFragment_WebGpu::InitDeviceArrived(const SCommand_Init *pCommand)
+{
+	const char *pBackendName = m_pInitBackendName;
+	if(!m_DeviceResult.m_Done || m_DeviceResult.m_Status != WGPURequestDeviceStatus_Success || m_DeviceResult.m_Device == nullptr)
 	{
 		if(!m_DeviceResult.m_Message.empty())
 			m_ErrorMessage = m_DeviceResult.m_Message;
@@ -1393,13 +1535,22 @@ void CCommandProcessorFragment_WebGpu::Cleanup()
 		wgpuInstanceProcessEvents(m_Instance);
 	// Whoever is waiting for a picture has to be told one way or the
 	// other, and after this there is nothing left to tell them with.
+#if defined(WEBGPU_WAITS_PENDING)
+	// Nothing waits here; what has arrived is handed over, the rest is
+	// told it will not come.
+	if(m_Instance != nullptr)
+		CollectFinishedReadbacks();
+#else
 	if(m_Instance != nullptr && m_Error.m_ErrorType == GFX_ERROR_TYPE_NONE)
 		(void)FinishReadbacks();
+#endif
 	AbandonReadbacks();
 	for(auto &Result : m_aUploadBufferResults)
 	{
+#if !defined(WEBGPU_WAITS_PENDING)
 		if(Result.m_Pending)
 			ProcessUntilDone(Result, "wait for WebGPU upload buffers during cleanup", FRAME_TIMEOUT);
+#endif
 		Result.m_Pending = false;
 	}
 	CollectGpuTimestampResults();
@@ -1564,8 +1715,14 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CMD_INIT:
 	{
 		const auto *pCommand = static_cast<const SCommand_Init *>(pBaseCommand);
+#if defined(WEBGPU_WAITS_PENDING)
+		const ERunCommandReturnTypes InitResult = RunInit(pCommand);
+		if(InitResult != RUN_COMMAND_COMMAND_ERROR)
+			return InitResult;
+#else
 		if(Cmd_Init(pCommand))
 			return RUN_COMMAND_COMMAND_HANDLED;
+#endif
 		*pCommand->m_pInitError = -1;
 		if(m_ErrorMessage.empty())
 			m_ErrorMessage = "WebGPU initialization failed";
@@ -1576,15 +1733,27 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 		return RUN_COMMAND_COMMAND_WARNING;
 	}
 	case CMD_SHUTDOWN:
+#if defined(WEBGPU_WAITS_PENDING)
+		if(MapsInFlight())
+			return RUN_COMMAND_COMMAND_PENDING;
+#endif
 		Cleanup();
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CMD_POST_SHUTDOWN: return RUN_COMMAND_COMMAND_HANDLED;
+#if defined(WEBGPU_WAITS_PENDING)
+	// What arrived is handed over at the top; the rest is waited for by
+	// the browser.
+	case CCommandBuffer::CMD_FINISH_READBACKS: return m_ReadbackCount == 0 ? RUN_COMMAND_COMMAND_HANDLED : RUN_COMMAND_COMMAND_PENDING;
+#else
 	case CCommandBuffer::CMD_FINISH_READBACKS: return CommandResult(FinishReadbacks());
+#endif
 	case CCommandBuffer::CMD_UPDATE_VIEWPORT:
 	case CCommandBuffer::CMD_DRAW_VIEWPORT: return CommandResult(Cmd_Update_Viewport(static_cast<const CCommandBuffer::SCommand_Update_Viewport *>(pBaseCommand)));
 	case CCommandBuffer::CMD_TEXTURE_CREATE: return CommandResult(Cmd_Texture_Create(static_cast<const CCommandBuffer::SCommand_Texture_Create *>(pBaseCommand)));
 	case CCommandBuffer::CMD_TEXTURE_UPDATE: return CommandResult(Cmd_Texture_Update(static_cast<const CCommandBuffer::SCommand_Texture_Update *>(pBaseCommand)));
 	case CCommandBuffer::CMD_TEXTURE_READBACK:
+		if(ReadbackSlotsFull())
+			return RUN_COMMAND_COMMAND_PENDING;
 		Cmd_Texture_Readback(static_cast<const CCommandBuffer::SCommand_Texture_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_TEXTURE_DESTROY:
@@ -1606,6 +1775,8 @@ ERunCommandReturnTypes CCommandProcessorFragment_WebGpu::RunCommand(const CComma
 	case CCommandBuffer::CMD_DRAW: return DrawResult(Cmd_Draw(static_cast<const CCommandBuffer::SCommand_Draw *>(pBaseCommand)), "WebGPU failed to record an immediate draw");
 	case CCommandBuffer::CMD_DRAW_INDEXED: return DrawResult(Cmd_DrawIndexed(static_cast<const CCommandBuffer::SCommand_DrawIndexed *>(pBaseCommand)), "WebGPU failed to record a transient draw");
 	case CCommandBuffer::CMD_PRESENTATION_TARGET_READBACK:
+		if(ReadbackSlotsFull())
+			return RUN_COMMAND_COMMAND_PENDING;
 		Cmd_PresentationTargetReadback(static_cast<const CCommandBuffer::SCommand_PresentationTarget_Readback *>(pBaseCommand));
 		return RUN_COMMAND_COMMAND_HANDLED;
 	case CCommandBuffer::CMD_SWAP:
@@ -2056,7 +2227,9 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_S
 	{
 		if(!SubmitCommands(true))
 			return false;
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(WEBGPU_WAITS_PENDING)
+		// The render thread returns to the browser after every swap.
+#elif defined(CONF_PLATFORM_EMSCRIPTEN)
 		YieldToBrowser(0);
 #else
 		wgpuDevicePoll(m_Device, WGPU_FALSE, nullptr);
@@ -2086,9 +2259,10 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_S
 		Status = wgpuSurfacePresent(m_Surface);
 #endif
 	ReleaseFrame();
-#if defined(CONF_PLATFORM_EMSCRIPTEN)
+#if defined(CONF_PLATFORM_EMSCRIPTEN) && !defined(WEBGPU_WAITS_PENDING)
 	// Wait for an animation frame by default. An explicit refresh rate or a
-	// caller that paces itself gets the short yield.
+	// caller that paces itself gets the short yield. The web tools' render
+	// thread does the same after the command, see the threaded backend.
 	YieldToBrowser(pCommand->m_PaceWithDisplay && g_Config.m_GfxRefreshRate == 0 ? 1 : 0);
 #endif
 	if(m_SurfaceSuboptimal)
@@ -2117,11 +2291,18 @@ bool CCommandProcessorFragment_WebGpu::Cmd_Swap(const CCommandBuffer::SCommand_S
 
 bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 {
+#if defined(WEBGPU_WAITS_PENDING)
+	// The browser copies what wgpuQueueWriteBuffer is given when it is
+	// called and orders the write after the work submitted before it, so a
+	// slot is never written under the GPU's feet and nothing waits.
+	m_UploadBufferSlot = (m_UploadBufferSlot + 1) % UPLOAD_BUFFER_SLOT_COUNT;
+	return true;
+#else
 	auto &Result = m_aUploadBufferResults[m_UploadBufferSlot];
 	Result = {};
 	Result.m_Pending = true;
 	WGPUQueueWorkDoneCallbackInfo CallbackInfo = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
-	CallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	CallbackInfo.mode = WEBGPU_CALLBACK_MODE;
 	CallbackInfo.callback = QueueCallback;
 	CallbackInfo.userdata1 = &Result;
 	wgpuQueueOnSubmittedWorkDone(m_Queue, CallbackInfo);
@@ -2137,6 +2318,7 @@ bool CCommandProcessorFragment_WebGpu::AdvanceUploadBufferSlot()
 	}
 	NextResult.m_Pending = false;
 	return true;
+#endif
 }
 
 void CCommandProcessorFragment_WebGpu::ReleaseBuffer(SBuffer &Buffer)

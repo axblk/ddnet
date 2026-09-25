@@ -2856,6 +2856,11 @@ if(CLIENT)
     web/audio_web.cpp
     web/audio_web.h
     web/input_web.cpp
+    web/page_bridge_web.h
+    web/program_thread_web.cpp
+    web/program_thread_web.h
+    web/render_thread_web.cpp
+    web/render_thread_web.h
     web/web_platform.h
     web/window_web.cpp
     web/window_web.h
@@ -3428,10 +3433,18 @@ if(CLIENT)
   # What SDL, the SDL input and the controls drawn over the picture are
   # replaced with; the page draws the controls.
   set(WEB_TOOLS_EXCLUDE_REGEX "src/engine/client/(input|input_null|keyboard|keynames|viewer_controls|viewer_fullscreen|window_sdl)\\.(cpp|h)$")
+  # A tool on the platform layer runs in workers: its main() on a thread of
+  # its own (`WebRunProgram`, like PROXY_TO_PTHREAD without the canvas), its
+  # drawing on a render thread that is handed the canvas
+  # (OFFSCREENCANVAS_SUPPORT), and nothing of it on the page's thread but the
+  # events and the page's own glue.
   function(use_web_platform NAME)
     target_sources(${NAME} PRIVATE ${ENGINE_CLIENT_WEB})
     target_compile_definitions(${NAME} PRIVATE CONF_WEB_PLATFORM)
-    target_link_options(${NAME} PRIVATE "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js")
+    target_link_options(${NAME} PRIVATE
+      "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js"
+      -sOFFSCREENCANVAS_SUPPORT=1
+    )
     set_property(TARGET ${NAME} APPEND PROPERTY LINK_DEPENDS ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js)
   endfunction()
 
@@ -3447,6 +3460,17 @@ if(CLIENT)
   list(FILTER ENGINE_CLIENT_GRAPHICS_HEADLESS EXCLUDE REGEX "/backend/opengl(es)?/")
   add_graphics_lib(engine-client-graphics-headless ${ENGINE_CLIENT_GRAPHICS_HEADLESS})
   target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_NO_OPENGL)
+
+  # The same for the tools on the web platform layer, whose renderer runs on
+  # a render thread that returns to the browser instead of waiting in it.
+  if(WEB_TOOLS_PLATFORM)
+    add_graphics_lib(engine-client-graphics-web ${ENGINE_CLIENT_GRAPHICS})
+    target_include_directories(engine-client-graphics-web SYSTEM PRIVATE ${GLEW_INCLUDE_DIRS})
+    target_compile_definitions(engine-client-graphics-web PRIVATE CONF_WEB_PLATFORM)
+    set(TOOLS_GRAPHICS_LIB engine-client-graphics-web)
+  else()
+    set(TOOLS_GRAPHICS_LIB engine-client-graphics)
+  endif()
 
   # Target
   if(TARGET_OS STREQUAL "android")
@@ -3650,7 +3674,7 @@ if(CLIENT)
       ${DEPS_CLIENT}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:${TOOLS_GRAPHICS_LIB}>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3732,7 +3756,7 @@ if(CLIENT)
       ${GAME_MAP_STANDALONE}
       ${MAP_VIEWER_SRC}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:${TOOLS_GRAPHICS_LIB}>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>

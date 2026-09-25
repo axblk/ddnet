@@ -11,11 +11,18 @@
 #include <engine/sound.h>
 
 #include <emscripten.h>
+#if defined(CONF_WEB_PLATFORM)
+#include <emscripten/proxying.h>
+#include <emscripten/threading.h>
+#endif
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <type_traits>
 
 // The browser encodes and writes the file, so nothing here holds a codec or a
 // thread. What is left is the same offscreen readback and the same audio
@@ -26,12 +33,22 @@
 namespace
 {
 
+	/**
+	 * Where an asynchronous part of the export says that it is over, and
+	 * what it returned.
+	 */
+	struct SBrowserCall
+	{
+		int32_t m_Done = 0;
+		int32_t m_Result = 0;
+	};
+
 	// clang-format off
-EM_JS(int, BrowserVideoSupported, (), {
+EM_JS(int, BrowserVideoSupportedImpl, (), {
 	return (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') ? 0 : 1;
 });
 
-EM_JS(void, BrowserVideoProbe, (), {
+EM_JS(void, BrowserVideoProbeImpl, (), {
 	if(Module.ddnetVideoProbe)
 		return;
 	const probe = {done: false, codecs: []};
@@ -66,688 +83,698 @@ EM_JS(void, BrowserVideoProbe, (), {
 		.then(() => { probe.done = true; });
 });
 
-EM_JS(int, BrowserVideoProbeDone, (), {
+EM_JS(int, BrowserVideoProbeDoneImpl, (), {
 	return Module.ddnetVideoProbe && Module.ddnetVideoProbe.done ? 1 : 0;
 });
 
-EM_JS(int, BrowserVideoProbeCount, (), {
+EM_JS(int, BrowserVideoProbeCountImpl, (), {
 	return Module.ddnetVideoProbe ? Module.ddnetVideoProbe.codecs.length : 0;
 });
 
-EM_JS(void, BrowserVideoProbeEntry, (int Index, char *pName, int NameCapacity, char *pDisplay, int DisplayCapacity), {
+EM_JS(void, BrowserVideoProbeEntryImpl, (int Index, char *pName, int NameCapacity, char *pDisplay, int DisplayCapacity), {
 	const entry = Module.ddnetVideoProbe.codecs[Index];
 	stringToUTF8(entry.name, pName, NameCapacity);
 	stringToUTF8(entry.display, pDisplay, DisplayCapacity);
 });
 
-EM_ASYNC_JS(int, BrowserVideoStart, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels, int ExpectedDurationMs), {
-	Module.ddnetVideoStartError = null;
-	if(typeof VideoEncoder === 'undefined') {
-		Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
-		return -1;
-	}
-	let codec = UTF8ToString(pCodec);
-	const fileName = UTF8ToString(pFileName);
+EM_JS(void, BrowserVideoStartImpl, (char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels, int ExpectedDurationMs, SBrowserCall *pCall), {
+	const run = async () => {
+		Module.ddnetVideoStartError = null;
+		if(typeof VideoEncoder === 'undefined') {
+			Module.ddnetVideoStartError = 'This browser has no VideoEncoder';
+			return -1;
+		}
+		let codec = UTF8ToString(pCodec);
+		const fileName = UTF8ToString(pFileName);
 
-	const u16 = value => [(value >>> 8) & 255, value & 255];
-	const u32 = value => [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
-	const u64 = value => u32(Math.floor(value / 4294967296)).concat(u32(value % 4294967296));
-	const tag = text => [text.charCodeAt(0), text.charCodeAt(1), text.charCodeAt(2), text.charCodeAt(3)];
-	const box = (type, ...parts) => {
-		let body = [];
-		for(const part of parts)
-			body = body.concat(Array.from(part));
-		return u32(body.length + 8).concat(tag(type), body);
-	};
-	const fullBox = (type, version, flags, ...parts) => box(type, [version].concat(u32(flags).slice(1)), ...parts);
-	// An MPEG-4 descriptor carries its length in seven-bit groups instead of a
-	// fixed field, with the high bit set on every group but the last.
-	const descriptor = (type, ...parts) => {
-		let body = [];
-		for(const part of parts)
-			body = body.concat(Array.from(part));
-		const length = [];
-		let left = body.length;
-		do {
-			length.unshift(left & 0x7F);
-			left >>>= 7;
-		} while(left);
-		for(let i = 0; i < length.length - 1; i++)
-			length[i] |= 0x80;
-		return [type].concat(length, body);
-	};
-	const bytesOf = value => ArrayBuffer.isView(value)
-		? new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
-		: new Uint8Array(value);
+		const u16 = value => [(value >>> 8) & 255, value & 255];
+		const u32 = value => [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
+		const u64 = value => u32(Math.floor(value / 4294967296)).concat(u32(value % 4294967296));
+		const tag = text => [text.charCodeAt(0), text.charCodeAt(1), text.charCodeAt(2), text.charCodeAt(3)];
+		const box = (type, ...parts) => {
+			let body = [];
+			for(const part of parts)
+				body = body.concat(Array.from(part));
+			return u32(body.length + 8).concat(tag(type), body);
+		};
+		const fullBox = (type, version, flags, ...parts) => box(type, [version].concat(u32(flags).slice(1)), ...parts);
+		// An MPEG-4 descriptor carries its length in seven-bit groups instead of a
+		// fixed field, with the high bit set on every group but the last.
+		const descriptor = (type, ...parts) => {
+			let body = [];
+			for(const part of parts)
+				body = body.concat(Array.from(part));
+			const length = [];
+			let left = body.length;
+			do {
+				length.unshift(left & 0x7F);
+				left >>>= 7;
+			} while(left);
+			for(let i = 0; i < length.length - 1; i++)
+				length[i] |= 0x80;
+			return [type].concat(length, body);
+		};
+		const bytesOf = value => ArrayBuffer.isView(value)
+			? new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength))
+			: new Uint8Array(value);
 
-	// H.264 and HEVC hand their decoder configuration over as metadata, AV1
-	// does not: its sequence header is an OBU inside the bitstream and the
-	// 'av1C' has to be built from it. What follows reads that one OBU out of a
-	// keyframe and takes the nine fields the record is made of; anything it
-	// cannot read gives nothing back, because a guessed configuration plays
-	// worse than no file at all.
-	const av1SequenceFields = payload => {
-		let bit = 0;
-		const f = count => {
-			let value = 0;
-			for(let i = 0; i < count; i++) {
-				if((bit >> 3) >= payload.length)
-					throw new Error('short');
-				value = value * 2 + ((payload[bit >> 3] >> (7 - (bit & 7))) & 1);
-				bit++;
-			}
-			return value;
-		};
-		const uvlc = () => {
-			let zeros = 0;
-			while(zeros < 32 && !f(1))
-				zeros++;
-			if(zeros < 32)
-				f(zeros);
-		};
-		const profile = f(3);
-		f(1); // still_picture
-		const reduced = f(1);
-		let level = 0;
-		let tier = 0;
-		if(reduced) {
-			level = f(5);
-		} else {
-			let delayBits = 0;
-			let decoderModel = 0;
-			if(f(1)) { // timing_info_present_flag
-				f(32); // num_units_in_display_tick
-				f(32); // time_scale
-				if(f(1)) // equal_picture_interval
-					uvlc();
-				decoderModel = f(1);
-				if(decoderModel) {
-					delayBits = f(5) + 1;
-					f(32); // num_units_in_decoding_tick
-					f(5); // buffer_removal_time_length_minus_1
-					f(5); // frame_presentation_time_length_minus_1
+		// H.264 and HEVC hand their decoder configuration over as metadata, AV1
+		// does not: its sequence header is an OBU inside the bitstream and the
+		// 'av1C' has to be built from it. What follows reads that one OBU out of a
+		// keyframe and takes the nine fields the record is made of; anything it
+		// cannot read gives nothing back, because a guessed configuration plays
+		// worse than no file at all.
+		const av1SequenceFields = payload => {
+			let bit = 0;
+			const f = count => {
+				let value = 0;
+				for(let i = 0; i < count; i++) {
+					if((bit >> 3) >= payload.length)
+						throw new Error('short');
+					value = value * 2 + ((payload[bit >> 3] >> (7 - (bit & 7))) & 1);
+					bit++;
+				}
+				return value;
+			};
+			const uvlc = () => {
+				let zeros = 0;
+				while(zeros < 32 && !f(1))
+					zeros++;
+				if(zeros < 32)
+					f(zeros);
+			};
+			const profile = f(3);
+			f(1); // still_picture
+			const reduced = f(1);
+			let level = 0;
+			let tier = 0;
+			if(reduced) {
+				level = f(5);
+			} else {
+				let delayBits = 0;
+				let decoderModel = 0;
+				if(f(1)) { // timing_info_present_flag
+					f(32); // num_units_in_display_tick
+					f(32); // time_scale
+					if(f(1)) // equal_picture_interval
+						uvlc();
+					decoderModel = f(1);
+					if(decoderModel) {
+						delayBits = f(5) + 1;
+						f(32); // num_units_in_decoding_tick
+						f(5); // buffer_removal_time_length_minus_1
+						f(5); // frame_presentation_time_length_minus_1
+					}
+				}
+				const displayDelay = f(1);
+				const operatingPoints = f(5) + 1;
+				for(let i = 0; i < operatingPoints; i++) {
+					f(12); // operating_point_idc
+					const idx = f(5);
+					const idxTier = idx > 7 ? f(1) : 0;
+					// The record describes the first operating point.
+					if(i === 0) {
+						level = idx;
+						tier = idxTier;
+					}
+					if(decoderModel && f(1)) {
+						f(delayBits);
+						f(delayBits);
+						f(1); // low_delay_mode_flag
+					}
+					if(displayDelay && f(1))
+						f(4); // initial_display_delay_minus_1
 				}
 			}
-			const displayDelay = f(1);
-			const operatingPoints = f(5) + 1;
-			for(let i = 0; i < operatingPoints; i++) {
-				f(12); // operating_point_idc
-				const idx = f(5);
-				const idxTier = idx > 7 ? f(1) : 0;
-				// The record describes the first operating point.
-				if(i === 0) {
-					level = idx;
-					tier = idxTier;
-				}
-				if(decoderModel && f(1)) {
-					f(delayBits);
-					f(delayBits);
-					f(1); // low_delay_mode_flag
-				}
-				if(displayDelay && f(1))
-					f(4); // initial_display_delay_minus_1
+			const widthBits = f(4) + 1;
+			const heightBits = f(4) + 1;
+			f(widthBits); // max_frame_width_minus_1
+			f(heightBits); // max_frame_height_minus_1
+			if(!reduced && f(1)) { // frame_id_numbers_present_flag
+				f(4);
+				f(3);
 			}
-		}
-		const widthBits = f(4) + 1;
-		const heightBits = f(4) + 1;
-		f(widthBits); // max_frame_width_minus_1
-		f(heightBits); // max_frame_height_minus_1
-		if(!reduced && f(1)) { // frame_id_numbers_present_flag
-			f(4);
-			f(3);
-		}
-		f(3); // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
-		if(!reduced) {
-			f(4); // interintra compound, masked compound, warped motion, dual filter
-			const orderHint = f(1);
-			if(orderHint)
-				f(2); // enable_jnt_comp, enable_ref_frame_mvs
-			let screenContent = 2;
-			if(!f(1)) // seq_choose_screen_content_tools
-				screenContent = f(1);
-			if(screenContent > 0 && !f(1)) // seq_choose_integer_mv
-				f(1);
-			if(orderHint)
-				f(3); // order_hint_bits_minus_1
-		}
-		f(3); // enable_superres, enable_cdef, enable_restoration
-		const highBitdepth = f(1);
-		const twelveBit = profile === 2 && highBitdepth ? f(1) : 0;
-		const bitDepth = profile === 2 && highBitdepth ? (twelveBit ? 12 : 10) : (highBitdepth ? 10 : 8);
-		const monochrome = profile === 1 ? 0 : f(1);
-		let primaries = 2; // CP_UNSPECIFIED
-		let transfer = 2; // TC_UNSPECIFIED
-		let matrix = 2; // MC_UNSPECIFIED
-		if(f(1)) { // color_description_present_flag
-			primaries = f(8);
-			transfer = f(8);
-			matrix = f(8);
-		}
-		let subsamplingX = 1;
-		let subsamplingY = 1;
-		let chromaPosition = 0; // CSP_UNKNOWN
-		if(monochrome) {
-			f(1); // color_range
-		} else if(primaries === 1 && transfer === 13 && matrix === 0) {
-			// CP_BT_709 with TC_SRGB and MC_IDENTITY is the one combination
-			// that says 4:4:4 without spending a bit on it.
-			subsamplingX = 0;
-			subsamplingY = 0;
-		} else {
-			f(1); // color_range
-			if(profile === 1) {
+			f(3); // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+			if(!reduced) {
+				f(4); // interintra compound, masked compound, warped motion, dual filter
+				const orderHint = f(1);
+				if(orderHint)
+					f(2); // enable_jnt_comp, enable_ref_frame_mvs
+				let screenContent = 2;
+				if(!f(1)) // seq_choose_screen_content_tools
+					screenContent = f(1);
+				if(screenContent > 0 && !f(1)) // seq_choose_integer_mv
+					f(1);
+				if(orderHint)
+					f(3); // order_hint_bits_minus_1
+			}
+			f(3); // enable_superres, enable_cdef, enable_restoration
+			const highBitdepth = f(1);
+			const twelveBit = profile === 2 && highBitdepth ? f(1) : 0;
+			const bitDepth = profile === 2 && highBitdepth ? (twelveBit ? 12 : 10) : (highBitdepth ? 10 : 8);
+			const monochrome = profile === 1 ? 0 : f(1);
+			let primaries = 2; // CP_UNSPECIFIED
+			let transfer = 2; // TC_UNSPECIFIED
+			let matrix = 2; // MC_UNSPECIFIED
+			if(f(1)) { // color_description_present_flag
+				primaries = f(8);
+				transfer = f(8);
+				matrix = f(8);
+			}
+			let subsamplingX = 1;
+			let subsamplingY = 1;
+			let chromaPosition = 0; // CSP_UNKNOWN
+			if(monochrome) {
+				f(1); // color_range
+			} else if(primaries === 1 && transfer === 13 && matrix === 0) {
+				// CP_BT_709 with TC_SRGB and MC_IDENTITY is the one combination
+				// that says 4:4:4 without spending a bit on it.
 				subsamplingX = 0;
 				subsamplingY = 0;
-			} else if(profile === 2) {
-				if(bitDepth === 12) {
-					subsamplingX = f(1);
-					subsamplingY = subsamplingX ? f(1) : 0;
-				} else {
-					subsamplingX = 1;
-					subsamplingY = 0;
-				}
-			}
-			if(subsamplingX && subsamplingY)
-				chromaPosition = f(2);
-		}
-		return [
-			0x81, // marker and version, both 1
-			(profile << 5) | level,
-			(tier << 7) | (highBitdepth << 6) | (twelveBit << 5) | (monochrome << 4) | (subsamplingX << 3) | (subsamplingY << 2) | chromaPosition,
-			0, // reserved, and no initial presentation delay
-		];
-	};
-
-	// Walks the OBUs of one keyframe for the sequence header and returns the
-	// whole 'av1C' payload: the record above and the header itself after it.
-	const av1Config = data => {
-		let at = 0;
-		while(at < data.length) {
-			const type = (data[at] >> 3) & 15;
-			const extension = (data[at] >> 2) & 1;
-			const hasSize = (data[at] >> 1) & 1;
-			const headerBytes = 1 + extension;
-			let start = at + headerBytes;
-			let size;
-			if(hasSize) {
-				size = 0;
-				for(let i = 0; ; i++) {
-					if(i === 8 || start >= data.length)
-						return null;
-					const byte = data[start++];
-					size += (byte & 0x7F) * Math.pow(128, i);
-					if(!(byte & 0x80))
-						break;
-				}
 			} else {
-				size = data.length - start;
-			}
-			if(start + size > data.length)
-				return null;
-			if(type === 1) { // OBU_SEQUENCE_HEADER
-				let record;
-				try {
-					record = av1SequenceFields(data.subarray(start, start + size));
-				} catch(error) {
-					return null;
+				f(1); // color_range
+				if(profile === 1) {
+					subsamplingX = 0;
+					subsamplingY = 0;
+				} else if(profile === 2) {
+					if(bitDepth === 12) {
+						subsamplingX = f(1);
+						subsamplingY = subsamplingX ? f(1) : 0;
+					} else {
+						subsamplingX = 1;
+						subsamplingY = 0;
+					}
 				}
-				// A stored OBU has to carry its own size, whether or not it did
-				// in the stream, so the header is written out again rather than
-				// copied.
-				const length = [];
-				let left = size;
-				do {
-					length.push((left & 0x7F) | (left > 127 ? 0x80 : 0));
-					left = Math.floor(left / 128);
-				} while(left);
-				const obu = [data[at] | 0x02].concat(extension ? [data[at + 1]] : [], length);
-				const config = new Uint8Array(record.length + obu.length + size);
-				config.set(record, 0);
-				config.set(obu, record.length);
-				config.set(data.subarray(start, start + size), record.length + obu.length);
-				return config;
+				if(subsamplingX && subsamplingY)
+					chromaPosition = f(2);
 			}
-			at = start + size;
-		}
-		return null;
-	};
+			return [
+				0x81, // marker and version, both 1
+				(profile << 5) | level,
+				(tier << 7) | (highBitdepth << 6) | (twelveBit << 5) | (monochrome << 4) | (subsamplingX << 3) | (subsamplingY << 2) | chromaPosition,
+				0, // reserved, and no initial presentation delay
+			];
+		};
 
-	const newTrack = (id, timescale) => ({id: id, timescale: timescale, samples: [], decodeTime: 0, sampleCount: 0, description: null});
-	const state = {
-		fps: Fps, width: Width, height: Height, fileName: fileName,
-		encoder: null, error: '',
-		video: newTrack(1, Fps), audio: null,
-		fragments: [], sequence: 1, firstTimestamp: 0,
-		submitted: 0, encoded: 0,
-		// With a destination the file is written as it is made, otherwise it is kept
-		// in `fragments`. `writes` keeps the writes in order and carries a failure
-		// back to the export.
-		sink: null, writer: null, writes: Promise.resolve(), headerWritten: false,
-		// The expected length in milliseconds, and where the header holds it.
-		expectedDuration: ExpectedDurationMs, seekable: false, durationFields: [],
-	};
-	const tracks = () => state.audio === null ? [state.video] : [state.video, state.audio];
-
-	const flush = () => {
-		// Both tracks go into one fragment, each with its own run, and the
-		// payload of the runs follows in the same order in a single 'mdat'. A
-		// track the encoder has not described yet waits, because it may still
-		// turn out not to be in the header at all, and a run in a fragment
-		// would then point at a track nothing declares.
-		const pending = tracks().filter(track => track.samples.length && track.description !== null);
-		if(!pending.length)
-			return;
-		let payloadSize = 0;
-		for(const track of pending)
-			for(const sample of track.samples)
-				payloadSize += sample.data.length;
-		const moofFor = dataOffsets => box('moof',
-			fullBox('mfhd', 0, 0, u32(state.sequence)),
-			...pending.map((track, index) => box('traf',
-				fullBox('tfhd', 0, 0x020000, u32(track.id)),
-				fullBox('tfdt', 1, 0, u64(track.decodeTime)),
-				// Frames the encoder has reordered say when they are shown,
-				// signed (version 1); runs without such frames stay as they were.
-				track.samples.some(sample => sample.offset)
-					? fullBox('trun', 1, 0x000F01, u32(track.samples.length), u32(dataOffsets[index]),
-						track.samples.reduce((entries, sample) => entries.concat(u32(sample.duration), u32(sample.data.length), u32(sample.key ? 0x02000000 : 0x01010000), u32(sample.offset >>> 0)), []))
-					: fullBox('trun', 0, 0x000701, u32(track.samples.length), u32(dataOffsets[index]),
-						track.samples.reduce((entries, sample) => entries.concat(u32(sample.duration), u32(sample.data.length), u32(sample.key ? 0x02000000 : 0x01010000)), [])))));
-		// The offsets are counted from the start of the 'moof', whose size does
-		// not depend on them because every offset is a fixed four bytes.
-		let offset = moofFor(pending.map(() => 0)).length + 8;
-		const dataOffsets = pending.map(track => {
-			const start = offset;
-			for(const sample of track.samples)
-				offset += sample.data.length;
-			return start;
-		});
-		const moof = moofFor(dataOffsets);
-		const fragment = new Uint8Array(moof.length + 8 + payloadSize);
-		fragment.set(moof, 0);
-		fragment.set(u32(payloadSize + 8).concat(tag('mdat')), moof.length);
-		offset = moof.length + 8;
-		for(const track of pending) {
-			for(const sample of track.samples) {
-				fragment.set(sample.data, offset);
-				offset += sample.data.length;
-				track.decodeTime += sample.duration;
+		// Walks the OBUs of one keyframe for the sequence header and returns the
+		// whole 'av1C' payload: the record above and the header itself after it.
+		const av1Config = data => {
+			let at = 0;
+			while(at < data.length) {
+				const type = (data[at] >> 3) & 15;
+				const extension = (data[at] >> 2) & 1;
+				const hasSize = (data[at] >> 1) & 1;
+				const headerBytes = 1 + extension;
+				let start = at + headerBytes;
+				let size;
+				if(hasSize) {
+					size = 0;
+					for(let i = 0; ; i++) {
+						if(i === 8 || start >= data.length)
+							return null;
+						const byte = data[start++];
+						size += (byte & 0x7F) * Math.pow(128, i);
+						if(!(byte & 0x80))
+							break;
+					}
+				} else {
+					size = data.length - start;
+				}
+				if(start + size > data.length)
+					return null;
+				if(type === 1) { // OBU_SEQUENCE_HEADER
+					let record;
+					try {
+						record = av1SequenceFields(data.subarray(start, start + size));
+					} catch(error) {
+						return null;
+					}
+					// A stored OBU has to carry its own size, whether or not it did
+					// in the stream, so the header is written out again rather than
+					// copied.
+					const length = [];
+					let left = size;
+					do {
+						length.push((left & 0x7F) | (left > 127 ? 0x80 : 0));
+						left = Math.floor(left / 128);
+					} while(left);
+					const obu = [data[at] | 0x02].concat(extension ? [data[at + 1]] : [], length);
+					const config = new Uint8Array(record.length + obu.length + size);
+					config.set(record, 0);
+					config.set(obu, record.length);
+					config.set(data.subarray(start, start + size), record.length + obu.length);
+					return config;
+				}
+				at = start + size;
 			}
-			track.sampleCount += track.samples.length;
-			track.samples = [];
-		}
-		state.sequence++;
-		if(state.writer === null) {
-			state.fragments.push(fragment);
-			return;
-		}
-		// The header describes the codecs, so the fragments wait for the encoders.
-		if(!state.headerWritten) {
-			if(state.audio !== null && state.audio.stopped && state.audio.description === null)
-				state.audio = null;
-			if(state.video.description === null || (state.audio !== null && state.audio.description === null)) {
+			return null;
+		};
+
+		const newTrack = (id, timescale) => ({id: id, timescale: timescale, samples: [], decodeTime: 0, sampleCount: 0, description: null});
+		const state = {
+			fps: Fps, width: Width, height: Height, fileName: fileName,
+			encoder: null, error: '',
+			video: newTrack(1, Fps), audio: null,
+			fragments: [], sequence: 1, firstTimestamp: 0,
+			submitted: 0, encoded: 0,
+			// With a destination the file is written as it is made, otherwise it is kept
+			// in `fragments`. `writes` keeps the writes in order and carries a failure
+			// back to the export.
+			sink: null, writer: null, writes: Promise.resolve(), headerWritten: false,
+			// The expected length in milliseconds, and where the header holds it.
+			expectedDuration: ExpectedDurationMs, seekable: false, durationFields: [],
+		};
+		const tracks = () => state.audio === null ? [state.video] : [state.video, state.audio];
+
+		const flush = () => {
+			// Both tracks go into one fragment, each with its own run, and the
+			// payload of the runs follows in the same order in a single 'mdat'. A
+			// track the encoder has not described yet waits, because it may still
+			// turn out not to be in the header at all, and a run in a fragment
+			// would then point at a track nothing declares.
+			const pending = tracks().filter(track => track.samples.length && track.description !== null);
+			if(!pending.length)
+				return;
+			let payloadSize = 0;
+			for(const track of pending)
+				for(const sample of track.samples)
+					payloadSize += sample.data.length;
+			const moofFor = dataOffsets => box('moof',
+				fullBox('mfhd', 0, 0, u32(state.sequence)),
+				...pending.map((track, index) => box('traf',
+					fullBox('tfhd', 0, 0x020000, u32(track.id)),
+					fullBox('tfdt', 1, 0, u64(track.decodeTime)),
+					// Frames the encoder has reordered say when they are shown,
+					// signed (version 1); runs without such frames stay as they were.
+					track.samples.some(sample => sample.offset)
+						? fullBox('trun', 1, 0x000F01, u32(track.samples.length), u32(dataOffsets[index]),
+							track.samples.reduce((entries, sample) => entries.concat(u32(sample.duration), u32(sample.data.length), u32(sample.key ? 0x02000000 : 0x01010000), u32(sample.offset >>> 0)), []))
+						: fullBox('trun', 0, 0x000701, u32(track.samples.length), u32(dataOffsets[index]),
+							track.samples.reduce((entries, sample) => entries.concat(u32(sample.duration), u32(sample.data.length), u32(sample.key ? 0x02000000 : 0x01010000)), [])))));
+			// The offsets are counted from the start of the 'moof', whose size does
+			// not depend on them because every offset is a fixed four bytes.
+			let offset = moofFor(pending.map(() => 0)).length + 8;
+			const dataOffsets = pending.map(track => {
+				const start = offset;
+				for(const sample of track.samples)
+					offset += sample.data.length;
+				return start;
+			});
+			const moof = moofFor(dataOffsets);
+			const fragment = new Uint8Array(moof.length + 8 + payloadSize);
+			fragment.set(moof, 0);
+			fragment.set(u32(payloadSize + 8).concat(tag('mdat')), moof.length);
+			offset = moof.length + 8;
+			for(const track of pending) {
+				for(const sample of track.samples) {
+					fragment.set(sample.data, offset);
+					offset += sample.data.length;
+					track.decodeTime += sample.duration;
+				}
+				track.sampleCount += track.samples.length;
+				track.samples = [];
+			}
+			state.sequence++;
+			if(state.writer === null) {
 				state.fragments.push(fragment);
 				return;
 			}
-			state.headerWritten = true;
-			const written = header(true);
-			state.durationFields = durationFields(written);
-			writeOut(written);
-			for(const waiting of state.fragments)
-				writeOut(waiting);
-			state.fragments = [];
-		}
-		writeOut(fragment);
-	};
-
-	// One write at a time, in order; a failure ends the export.
-	const writeOut = data => {
-		state.writes = state.writes.then(() => state.writer.write(data)).catch(error => {
-			if(!state.error)
-				state.error = 'the file could not be written: ' + String((error && error.message) || error).slice(0, 200);
-		});
-	};
-
-	// `Streaming` writes the header first, with the expected durations, so that
-	// the file plays with a seek bar from the first fragment. `patchDurations`
-	// corrects them at the end where the file can be written twice.
-	const header = (Streaming) => {
-		const list = tracks();
-		const expected = Streaming ? Math.max(state.expectedDuration, 0) : 0;
-		const trackDuration = track => Streaming ? expected : Math.round(track.decodeTime * 1000 / track.timescale);
-		const movieDuration = Streaming ? expected : Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
-		const trackBox = (track, media) => box('trak',
-			fullBox('tkhd', 0, 3, u32(0), u32(0), u32(track.id), u32(0), u32(trackDuration(track)),
-				u32(0), u32(0), u16(0), u16(0), u16(media.volume), u16(0),
-				u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
-				u32(media.width * 65536), u32(media.height * 65536)),
-			box('mdia',
-				fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale),
-					u32(Streaming ? Math.round(expected * track.timescale / 1000) : track.decodeTime), u16(0x55C4), u16(0)),
-				fullBox('hdlr', 0, 0, u32(0), tag(media.handler), u32(0), u32(0), u32(0), Array.from(new TextEncoder().encode(media.name)).concat([0])),
-				box('minf',
-					media.header,
-					box('dinf', fullBox('dref', 0, 0, u32(1), fullBox('url ', 0, 1))),
-					box('stbl',
-						fullBox('stsd', 0, 0, u32(1), media.entry),
-						fullBox('stts', 0, 0, u32(0)),
-						fullBox('stsc', 0, 0, u32(0)),
-						fullBox('stsz', 0, 0, u32(0), u32(0)),
-						fullBox('stco', 0, 0, u32(0))))));
-		const videoTrack = trackBox(state.video, {
-			volume: 0, width: Width, height: Height, handler: 'vide', name: 'VideoHandler',
-			header: fullBox('vmhd', 0, 1, u16(0), u16(0), u16(0), u16(0)),
-			entry: box(sampleEntryType,
-				[0, 0, 0, 0, 0, 0], u16(1),
-				u16(0), u16(0), u32(0), u32(0), u32(0),
-				u16(Width), u16(Height),
-				u32(0x00480000), u32(0x00480000),
-				u32(0), u16(1),
-				new Array(32).fill(0),
-				u16(0x0018), u16(0xFFFF),
-				box(configType, state.video.description)),
-		});
-		const audioTrack = state.audio === null ? [] : [trackBox(state.audio, {
-			volume: 0x0100, width: 0, height: 0, handler: 'soun', name: 'SoundHandler',
-			header: fullBox('smhd', 0, 0, u16(0), u16(0)),
-			// The elementary stream descriptor is where an MP4 keeps the audio
-			// specific config that the encoder handed over.
-			entry: box('mp4a',
-				[0, 0, 0, 0, 0, 0], u16(1),
-				u32(0), u32(0),
-				u16(state.audio.channels), u16(16), u16(0), u16(0),
-				u32(state.audio.timescale * 65536),
-				fullBox('esds', 0, 0,
-					descriptor(0x03, u16(state.audio.id), [0x00],
-						descriptor(0x04, [0x40, 0x15], [0, 0, 0], u32(0), u32(0),
-							descriptor(0x05, state.audio.description)),
-						descriptor(0x06, [0x02])))),
-		})];
-		const moov = box('moov',
-			fullBox('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(movieDuration),
-				u32(0x00010000), u16(0x0100), u16(0), u32(0), u32(0),
-				u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
-				u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(list.length + 1)),
-			videoTrack, ...audioTrack,
-			// `mehd` holds the length of a fragmented file as a whole.
-			box('mvex', fullBox('mehd', 0, 0, u32(movieDuration)),
-				...list.map(track => fullBox('trex', 0, 0, u32(track.id), u32(1), u32(0), u32(0), u32(0)))));
-		return new Uint8Array(box('ftyp', tag('isom'), u32(0x200), tag('isom'), tag('iso2'), tag(sampleEntryType), tag('mp41'), tag('iso5')).concat(moov));
-	};
-
-	// The file positions of the durations in the header, which comes first.
-	// `mvhd` and `tkhd` count in the movie's timescale, `mdhd` and `mehd` in their
-	// track's; version 0 layouts.
-	const durationFields = bytes => {
-		const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-		const typeOf = at => String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
-		const fields = [];
-		let trackIndex = -1;
-		const walk = (from, to) => {
-			let at = from;
-			while(at + 8 <= to) {
-				const size = view.getUint32(at);
-				if(size < 8 || at + size > to)
+			// The header describes the codecs, so the fragments wait for the encoders.
+			if(!state.headerWritten) {
+				if(state.audio !== null && state.audio.stopped && state.audio.description === null)
+					state.audio = null;
+				if(state.video.description === null || (state.audio !== null && state.audio.description === null)) {
+					state.fragments.push(fragment);
 					return;
-				const type = typeOf(at);
-				if(type === 'moov' || type === 'mdia' || type === 'mvex')
-					walk(at + 8, at + size);
-				else if(type === 'trak') {
-					trackIndex++;
-					walk(at + 8, at + size);
 				}
-				else if(type === 'mvhd')
-					fields.push({position: at + 24, track: -1, movieScale: true});
-				else if(type === 'mehd')
-					fields.push({position: at + 12, track: -1, movieScale: true});
-				else if(type === 'tkhd')
-					fields.push({position: at + 28, track: trackIndex, movieScale: true});
-				else if(type === 'mdhd')
-					fields.push({position: at + 24, track: trackIndex, movieScale: false});
-				at += size;
+				state.headerWritten = true;
+				const written = header(true);
+				state.durationFields = durationFields(written);
+				writeOut(written);
+				for(const waiting of state.fragments)
+					writeOut(waiting);
+				state.fragments = [];
+			}
+			writeOut(fragment);
+		};
+
+		// One write at a time, in order; a failure ends the export.
+		const writeOut = data => {
+			state.writes = state.writes.then(() => state.writer.write(data)).catch(error => {
+				if(!state.error)
+					state.error = 'the file could not be written: ' + String((error && error.message) || error).slice(0, 200);
+			});
+		};
+
+		// `Streaming` writes the header first, with the expected durations, so that
+		// the file plays with a seek bar from the first fragment. `patchDurations`
+		// corrects them at the end where the file can be written twice.
+		const header = (Streaming) => {
+			const list = tracks();
+			const expected = Streaming ? Math.max(state.expectedDuration, 0) : 0;
+			const trackDuration = track => Streaming ? expected : Math.round(track.decodeTime * 1000 / track.timescale);
+			const movieDuration = Streaming ? expected : Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
+			const trackBox = (track, media) => box('trak',
+				fullBox('tkhd', 0, 3, u32(0), u32(0), u32(track.id), u32(0), u32(trackDuration(track)),
+					u32(0), u32(0), u16(0), u16(0), u16(media.volume), u16(0),
+					u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
+					u32(media.width * 65536), u32(media.height * 65536)),
+				box('mdia',
+					fullBox('mdhd', 0, 0, u32(0), u32(0), u32(track.timescale),
+						u32(Streaming ? Math.round(expected * track.timescale / 1000) : track.decodeTime), u16(0x55C4), u16(0)),
+					fullBox('hdlr', 0, 0, u32(0), tag(media.handler), u32(0), u32(0), u32(0), Array.from(new TextEncoder().encode(media.name)).concat([0])),
+					box('minf',
+						media.header,
+						box('dinf', fullBox('dref', 0, 0, u32(1), fullBox('url ', 0, 1))),
+						box('stbl',
+							fullBox('stsd', 0, 0, u32(1), media.entry),
+							fullBox('stts', 0, 0, u32(0)),
+							fullBox('stsc', 0, 0, u32(0)),
+							fullBox('stsz', 0, 0, u32(0), u32(0)),
+							fullBox('stco', 0, 0, u32(0))))));
+			const videoTrack = trackBox(state.video, {
+				volume: 0, width: Width, height: Height, handler: 'vide', name: 'VideoHandler',
+				header: fullBox('vmhd', 0, 1, u16(0), u16(0), u16(0), u16(0)),
+				entry: box(sampleEntryType,
+					[0, 0, 0, 0, 0, 0], u16(1),
+					u16(0), u16(0), u32(0), u32(0), u32(0),
+					u16(Width), u16(Height),
+					u32(0x00480000), u32(0x00480000),
+					u32(0), u16(1),
+					new Array(32).fill(0),
+					u16(0x0018), u16(0xFFFF),
+					box(configType, state.video.description)),
+			});
+			const audioTrack = state.audio === null ? [] : [trackBox(state.audio, {
+				volume: 0x0100, width: 0, height: 0, handler: 'soun', name: 'SoundHandler',
+				header: fullBox('smhd', 0, 0, u16(0), u16(0)),
+				// The elementary stream descriptor is where an MP4 keeps the audio
+				// specific config that the encoder handed over.
+				entry: box('mp4a',
+					[0, 0, 0, 0, 0, 0], u16(1),
+					u32(0), u32(0),
+					u16(state.audio.channels), u16(16), u16(0), u16(0),
+					u32(state.audio.timescale * 65536),
+					fullBox('esds', 0, 0,
+						descriptor(0x03, u16(state.audio.id), [0x00],
+							descriptor(0x04, [0x40, 0x15], [0, 0, 0], u32(0), u32(0),
+								descriptor(0x05, state.audio.description)),
+							descriptor(0x06, [0x02])))),
+			})];
+			const moov = box('moov',
+				fullBox('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(movieDuration),
+					u32(0x00010000), u16(0x0100), u16(0), u32(0), u32(0),
+					u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000),
+					u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(list.length + 1)),
+				videoTrack, ...audioTrack,
+				// `mehd` holds the length of a fragmented file as a whole.
+				box('mvex', fullBox('mehd', 0, 0, u32(movieDuration)),
+					...list.map(track => fullBox('trex', 0, 0, u32(track.id), u32(1), u32(0), u32(0), u32(0)))));
+			return new Uint8Array(box('ftyp', tag('isom'), u32(0x200), tag('isom'), tag('iso2'), tag(sampleEntryType), tag('mp41'), tag('iso5')).concat(moov));
+		};
+
+		// The file positions of the durations in the header, which comes first.
+		// `mvhd` and `tkhd` count in the movie's timescale, `mdhd` and `mehd` in their
+		// track's; version 0 layouts.
+		const durationFields = bytes => {
+			const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+			const typeOf = at => String.fromCharCode(bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]);
+			const fields = [];
+			let trackIndex = -1;
+			const walk = (from, to) => {
+				let at = from;
+				while(at + 8 <= to) {
+					const size = view.getUint32(at);
+					if(size < 8 || at + size > to)
+						return;
+					const type = typeOf(at);
+					if(type === 'moov' || type === 'mdia' || type === 'mvex')
+						walk(at + 8, at + size);
+					else if(type === 'trak') {
+						trackIndex++;
+						walk(at + 8, at + size);
+					}
+					else if(type === 'mvhd')
+						fields.push({position: at + 24, track: -1, movieScale: true});
+					else if(type === 'mehd')
+						fields.push({position: at + 12, track: -1, movieScale: true});
+					else if(type === 'tkhd')
+						fields.push({position: at + 28, track: trackIndex, movieScale: true});
+					else if(type === 'mdhd')
+						fields.push({position: at + 24, track: trackIndex, movieScale: false});
+					at += size;
+				}
+			};
+			walk(0, bytes.length);
+			return fields;
+		};
+
+		// Writes the real durations over the expected ones where the destination can
+		// be written twice.
+		const patchDurations = () => {
+			if(!state.seekable || !state.headerWritten || state.durationFields.length === 0)
+				return;
+			const list = tracks();
+			const movieDuration = Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
+			for(const field of state.durationFields) {
+				const track = field.track < 0 ? null : list[field.track];
+				if(field.track >= 0 && !track)
+					continue;
+				const value = track === null ? movieDuration :
+					field.movieScale ? Math.round(track.decodeTime * 1000 / track.timescale) : track.decodeTime;
+				const data = new Uint8Array(4);
+				new DataView(data.buffer).setUint32(0, value);
+				writeOut({type: 'write', position: field.position, data: data});
 			}
 		};
-		walk(0, bytes.length);
-		return fields;
-	};
 
-	// Writes the real durations over the expected ones where the destination can
-	// be written twice.
-	const patchDurations = () => {
-		if(!state.seekable || !state.headerWritten || state.durationFields.length === 0)
-			return;
-		const list = tracks();
-		const movieDuration = Math.max(...list.map(track => Math.round(track.decodeTime * 1000 / track.timescale)));
-		for(const field of state.durationFields) {
-			const track = field.track < 0 ? null : list[field.track];
-			if(field.track >= 0 && !track)
-				continue;
-			const value = track === null ? movieDuration :
-				field.movieScale ? Math.round(track.decodeTime * 1000 / track.timescale) : track.decodeTime;
-			const data = new Uint8Array(4);
-			new DataView(data.buffer).setUint32(0, value);
-			writeOut({type: 'write', position: field.position, data: data});
-		}
-	};
-
-	// Says what kept the file from being written, and nothing when it was. A
-	// file the browser cannot describe its own tracks for does not play, so it
-	// is refused rather than handed over, and the reason travels back to the
-	// export instead of leaving it looking like it worked.
-	state.finish = async () => {
-		// A browser that turned out not to encode audio still gets its video,
-		// so the track is only kept once the encoder has described it. Where the
-		// file is already being written, that was decided with the header.
-		if(!state.headerWritten && state.audio !== null && state.audio.description === null)
-			state.audio = null;
-		flush();
-		// The two ways a video track can fail to be a track are worth telling
-		// apart: one is a codec configuration nobody could produce, the other a
-		// configuration that arrived too late for anything to be written with.
-		const Refused = !state.encoded ? 'the browser encoded no frames' :
-			state.video.description === null ? 'the video codec configuration could not be read' :
-			!state.video.sampleCount ? 'no video frame was written to the file' : null;
-		if(state.writer !== null) {
-			if(Refused !== null) {
-				// Nothing playable was written, so nothing is handed over.
-				try { await state.writer.abort(); } catch(error) {}
-				return Refused;
-			}
-			patchDurations();
-			await state.writes;
-			if(state.error)
-				return state.error;
-			try {
-				await state.writer.close();
-			} catch(error) {
-				return 'the file could not be closed: ' + String((error && error.message) || error).slice(0, 200);
-			}
-			// A destination that answers with the file has it offered; one that stored it
-			// answers with nothing.
-			const written = state.sink !== null && typeof state.sink.done === 'function' ? await state.sink.done() : null;
-			if(written)
-				state.offer(written);
-			return null;
-		}
-		if(Refused !== null)
-			return Refused;
-		// Without a destination the file is assembled in memory.
-		state.offer(new Blob([header(false)].concat(state.fragments), {type: 'video/mp4'}));
-		return null;
-	};
-
-	state.offer = file => {
-		// A page that takes the file answers true.
-		if(typeof Module.ddnetVideoOutput === 'function' && Module.ddnetVideoOutput(file, state.fileName))
-			return;
-		const url = URL.createObjectURL(file);
-		const link = document.createElement('a');
-		link.href = url;
-		link.download = state.fileName;
-		link.textContent = 'Save ' + state.fileName;
-		link.style.cssText = 'background:#1b1b1b;color:#fff;border:1px solid #555;border-radius:4px;padding:6px 10px;text-decoration:none;white-space:nowrap';
-		// A page is allowed to start a download by itself once, and after that
-		// the browser drops the attempt without telling anyone: the second
-		// export renders in full, builds its file, and simply never arrives.
-		// So the file is also put on screen as something to click, which no
-		// policy refuses. The click below still fires and still works the first
-		// time; what it cannot do is report that it was ignored.
-		let shelf = document.getElementById('ddnet-video-shelf');
-		if(!shelf) {
-			shelf = document.createElement('div');
-			shelf.id = 'ddnet-video-shelf';
-			shelf.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;flex-direction:column;gap:4px;font:14px sans-serif';
-			document.body.appendChild(shelf);
-		}
-		shelf.appendChild(link);
-		// Only a real click means the file has been taken. The one below is not
-		// trusted and may have been dropped, so it must not clear the offer -
-		// and a video nobody has saved is never taken off the screen.
-		link.addEventListener('click', event => {
-			if(!event.isTrusted)
-				return;
-			setTimeout(() => {
-				link.remove();
-				if(!shelf.childElementCount)
-					shelf.remove();
-				URL.revokeObjectURL(url);
-			}, 1000);
-		});
-		link.click();
-	};
-
-	try {
-		state.encoder = new VideoEncoder({
-			output: (chunk, metadata) => {
-				// The frames are written in the order they arrive, which is the order
-				// they are decoded in. An encoder that reorders them (B-frames, as
-				// Firefox's H.264 encoder makes them) hands them over out of the
-				// order they are shown in, which each frame's offset from its place
-				// in the file puts right: one frame is one unit of the track.
-				const shown = Math.round((chunk.timestamp - state.firstTimestamp) * state.fps / 1000000);
-				const offset = shown - state.encoded;
-				const data = new Uint8Array(chunk.byteLength);
-				chunk.copyTo(data);
-				if(state.video.description === null) {
-					if(metadata && metadata.decoderConfig && metadata.decoderConfig.description)
-						state.video.description = bytesOf(metadata.decoderConfig.description);
-					else if(configType === 'av1C' && chunk.type === 'key')
-						state.video.description = av1Config(data);
+		// Says what kept the file from being written, and nothing when it was. A
+		// file the browser cannot describe its own tracks for does not play, so it
+		// is refused rather than handed over, and the reason travels back to the
+		// export instead of leaving it looking like it worked.
+		state.finish = async () => {
+			// A browser that turned out not to encode audio still gets its video,
+			// so the track is only kept once the encoder has described it. Where the
+			// file is already being written, that was decided with the header.
+			if(!state.headerWritten && state.audio !== null && state.audio.description === null)
+				state.audio = null;
+			flush();
+			// The two ways a video track can fail to be a track are worth telling
+			// apart: one is a codec configuration nobody could produce, the other a
+			// configuration that arrived too late for anything to be written with.
+			const Refused = !state.encoded ? 'the browser encoded no frames' :
+				state.video.description === null ? 'the video codec configuration could not be read' :
+				!state.video.sampleCount ? 'no video frame was written to the file' : null;
+			if(state.writer !== null) {
+				if(Refused !== null) {
+					// Nothing playable was written, so nothing is handed over.
+					try { await state.writer.abort(); } catch(error) {}
+					return Refused;
 				}
-				state.video.samples.push({data: data, key: chunk.type === 'key', duration: 1, offset: offset});
-				state.encoded++;
-				if(state.video.samples.length >= state.fps)
-					flush();
-			},
-			error: error => { state.error = String((error && error.message) || error).slice(0, 255); },
-		});
-	} catch(error) {
-		Module.ddnetVideoStartError = String((error && error.message) || error).slice(0, 255);
-		return -1;
-	}
-	// The probe only asks whether a family is supported somewhere, and the
-	// answer may well come from a hardware encoder that 'quality' then rules
-	// out: what is left of H.264 in Chrome is Constrained Baseline. So every
-	// profile of the family is offered, each of them once on the quality path
-	// and once with the browser left to pick the encoder.
-	const familyEntry = (Module.ddnetVideoFamilies || []).find(entry => entry[1].includes(codec));
-	let configured = null;
-	for(const candidate of familyEntry ? familyEntry[1] : [codec]) {
-		for(const quality of [true, false]) {
-			const config = {codec: candidate, width: Width, height: Height, bitrate: Bitrate, framerate: Fps};
-			if(quality)
-				config.latencyMode = 'quality';
-			if(candidate.startsWith('avc1') || candidate.startsWith('avc3'))
-				config.avc = {format: 'avc'};
-			else if(candidate.startsWith('hvc1') || candidate.startsWith('hev1'))
-				// 'hevc', not 'hvc1': the enum names the bitstream format and not
-				// the sample entry the file carries it in. A name it does not know
-				// makes configure() throw while reading the dictionary, before it
-				// has looked at the codec at all - which is why passing this for
-				// every codec broke H.264 as well.
-				config.hevc = {format: 'hevc'};
-			try {
-				state.encoder.configure(config);
-				configured = candidate;
-				break;
-			} catch(error) {
-				Module.ddnetVideoStartError = candidate + ': ' + String((error && error.message) || error).slice(0, 200);
+				patchDurations();
+				await state.writes;
+				if(state.error)
+					return state.error;
+				try {
+					await state.writer.close();
+				} catch(error) {
+					return 'the file could not be closed: ' + String((error && error.message) || error).slice(0, 200);
+				}
+				// A destination that answers with the file has it offered; one that stored it
+				// answers with nothing.
+				const written = state.sink !== null && typeof state.sink.done === 'function' ? await state.sink.done() : null;
+				if(written)
+					state.offer(written);
+				return null;
 			}
-		}
-		if(configured)
-			break;
-	}
-	if(!configured) {
-		try { state.encoder.close(); } catch(error) {}
-		return -1;
-	}
-	codec = configured;
-	stringToUTF8(codec, pCodec, CodecCapacity);
-	// Every candidate that was turned down left its reason behind; the one that
-	// was taken makes all of them stale.
-	Module.ddnetVideoStartError = null;
+			if(Refused !== null)
+				return Refused;
+			// Without a destination the file is assembled in memory.
+			state.offer(new Blob([header(false)].concat(state.fragments), {type: 'video/mp4'}));
+			return null;
+		};
 
-	// The sample entry and the configuration box only differ by name between
-	// the families; what goes into the configuration box is whatever the
-	// encoder handed over as its decoder description.
-	const family = codec.slice(0, 4);
-	const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
-	const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
+		state.offer = file => {
+			// A page that takes the file answers true.
+			if(typeof Module.ddnetVideoOutput === 'function' && Module.ddnetVideoOutput(file, state.fileName))
+				return;
+			const url = URL.createObjectURL(file);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = state.fileName;
+			link.textContent = 'Save ' + state.fileName;
+			link.style.cssText = 'background:#1b1b1b;color:#fff;border:1px solid #555;border-radius:4px;padding:6px 10px;text-decoration:none;white-space:nowrap';
+			// A page is allowed to start a download by itself once, and after that
+			// the browser drops the attempt without telling anyone: the second
+			// export renders in full, builds its file, and simply never arrives.
+			// So the file is also put on screen as something to click, which no
+			// policy refuses. The click below still fires and still works the first
+			// time; what it cannot do is report that it was ignored.
+			let shelf = document.getElementById('ddnet-video-shelf');
+			if(!shelf) {
+				shelf = document.createElement('div');
+				shelf.id = 'ddnet-video-shelf';
+				shelf.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;flex-direction:column;gap:4px;font:14px sans-serif';
+				document.body.appendChild(shelf);
+			}
+			shelf.appendChild(link);
+			// Only a real click means the file has been taken. The one below is not
+			// trusted and may have been dropped, so it must not clear the offer -
+			// and a video nobody has saved is never taken off the screen.
+			link.addEventListener('click', event => {
+				if(!event.isTrusted)
+					return;
+				setTimeout(() => {
+					link.remove();
+					if(!shelf.childElementCount)
+						shelf.remove();
+					URL.revokeObjectURL(url);
+				}, 1000);
+			});
+			link.click();
+		};
 
-	if(SampleRate > 0) {
-		// Audio is AAC because that is what an MP4 carries everywhere. A
-		// browser that cannot encode it loses the sound, not the export.
-		const audio = newTrack(2, SampleRate);
-		audio.channels = Channels;
-		audio.stopped = false;
 		try {
-			audio.encoder = new AudioEncoder({
+			state.encoder = new VideoEncoder({
 				output: (chunk, metadata) => {
-					if(audio.description === null && metadata && metadata.decoderConfig && metadata.decoderConfig.description)
-						audio.description = bytesOf(metadata.decoderConfig.description);
+					// The frames are written in the order they arrive, which is the order
+					// they are decoded in. An encoder that reorders them (B-frames, as
+					// Firefox's H.264 encoder makes them) hands them over out of the
+					// order they are shown in, which each frame's offset from its place
+					// in the file puts right: one frame is one unit of the track.
+					const shown = Math.round((chunk.timestamp - state.firstTimestamp) * state.fps / 1000000);
+					const offset = shown - state.encoded;
 					const data = new Uint8Array(chunk.byteLength);
 					chunk.copyTo(data);
-					// Every packet of an audio codec stands on its own, and an
-					// AAC frame is 1024 samples where the chunk does not say.
-					audio.samples.push({data: data, key: true, duration: chunk.duration ? Math.round(chunk.duration * SampleRate / 1000000) : 1024});
+					if(state.video.description === null) {
+						if(metadata && metadata.decoderConfig && metadata.decoderConfig.description)
+							state.video.description = bytesOf(metadata.decoderConfig.description);
+						else if(configType === 'av1C' && chunk.type === 'key')
+							state.video.description = av1Config(data);
+					}
+					state.video.samples.push({data: data, key: chunk.type === 'key', duration: 1, offset: offset});
+					state.encoded++;
+					if(state.video.samples.length >= state.fps)
+						flush();
 				},
-				// A track that stops early is still a track; what is already
-				// written stays, and nothing more is handed over.
-				error: error => { audio.stopped = true; },
+				error: error => { state.error = String((error && error.message) || error).slice(0, 255); },
 			});
-			audio.encoder.configure({codec: 'mp4a.40.2', sampleRate: SampleRate, numberOfChannels: Channels, bitrate: 128000});
-			state.audio = audio;
-		} catch(error) {}
-	}
-	// With a destination the file is written fragment by fragment, which keeps a
-	// long export out of memory; otherwise it is handed over at the end.
-	try {
-		const sink = typeof Module.ddnetVideoSink === 'function'
-			? await Module.ddnetVideoSink({fileName: state.fileName, type: 'video/mp4', width: Width, height: Height, fps: Fps})
-			: null;
-		if(sink) {
-			state.sink = sink;
-			const stream = sink.stream || sink;
-			// Only a file, not a pipe, can be written twice to fix the durations.
-			state.seekable = typeof stream.seek === 'function';
-			state.writer = stream.getWriter();
+		} catch(error) {
+			Module.ddnetVideoStartError = String((error && error.message) || error).slice(0, 255);
+			return -1;
 		}
-	} catch(error) {
-		Module.ddnetVideoStartError = 'the file could not be opened: ' + String((error && error.message) || error).slice(0, 200);
-		try { state.encoder.close(); } catch(closeError) {}
-		if(state.audio)
-			try { state.audio.encoder.close(); } catch(closeError) {}
-		return -1;
-	}
-	Module.ddnetVideo = state;
-	return 0;
+		// The probe only asks whether a family is supported somewhere, and the
+		// answer may well come from a hardware encoder that 'quality' then rules
+		// out: what is left of H.264 in Chrome is Constrained Baseline. So every
+		// profile of the family is offered, each of them once on the quality path
+		// and once with the browser left to pick the encoder.
+		const familyEntry = (Module.ddnetVideoFamilies || []).find(entry => entry[1].includes(codec));
+		let configured = null;
+		for(const candidate of familyEntry ? familyEntry[1] : [codec]) {
+			for(const quality of [true, false]) {
+				const config = {codec: candidate, width: Width, height: Height, bitrate: Bitrate, framerate: Fps};
+				if(quality)
+					config.latencyMode = 'quality';
+				if(candidate.startsWith('avc1') || candidate.startsWith('avc3'))
+					config.avc = {format: 'avc'};
+				else if(candidate.startsWith('hvc1') || candidate.startsWith('hev1'))
+					// 'hevc', not 'hvc1': the enum names the bitstream format and not
+					// the sample entry the file carries it in. A name it does not know
+					// makes configure() throw while reading the dictionary, before it
+					// has looked at the codec at all - which is why passing this for
+					// every codec broke H.264 as well.
+					config.hevc = {format: 'hevc'};
+				try {
+					state.encoder.configure(config);
+					configured = candidate;
+					break;
+				} catch(error) {
+					Module.ddnetVideoStartError = candidate + ': ' + String((error && error.message) || error).slice(0, 200);
+				}
+			}
+			if(configured)
+				break;
+		}
+		if(!configured) {
+			try { state.encoder.close(); } catch(error) {}
+			return -1;
+		}
+		codec = configured;
+		stringToUTF8(codec, pCodec, CodecCapacity);
+		// Every candidate that was turned down left its reason behind; the one that
+		// was taken makes all of them stale.
+		Module.ddnetVideoStartError = null;
+
+		// The sample entry and the configuration box only differ by name between
+		// the families; what goes into the configuration box is whatever the
+		// encoder handed over as its decoder description.
+		const family = codec.slice(0, 4);
+		const sampleEntryType = family === 'av01' ? 'av01' : (family === 'hvc1' || family === 'hev1') ? family : 'avc1';
+		const configType = family === 'av01' ? 'av1C' : (family === 'hvc1' || family === 'hev1') ? 'hvcC' : 'avcC';
+
+		if(SampleRate > 0) {
+			// Audio is AAC because that is what an MP4 carries everywhere. A
+			// browser that cannot encode it loses the sound, not the export.
+			const audio = newTrack(2, SampleRate);
+			audio.channels = Channels;
+			audio.stopped = false;
+			try {
+				audio.encoder = new AudioEncoder({
+					output: (chunk, metadata) => {
+						if(audio.description === null && metadata && metadata.decoderConfig && metadata.decoderConfig.description)
+							audio.description = bytesOf(metadata.decoderConfig.description);
+						const data = new Uint8Array(chunk.byteLength);
+						chunk.copyTo(data);
+						// Every packet of an audio codec stands on its own, and an
+						// AAC frame is 1024 samples where the chunk does not say.
+						audio.samples.push({data: data, key: true, duration: chunk.duration ? Math.round(chunk.duration * SampleRate / 1000000) : 1024});
+					},
+					// A track that stops early is still a track; what is already
+					// written stays, and nothing more is handed over.
+					error: error => { audio.stopped = true; },
+				});
+				audio.encoder.configure({codec: 'mp4a.40.2', sampleRate: SampleRate, numberOfChannels: Channels, bitrate: 128000});
+				state.audio = audio;
+			} catch(error) {}
+		}
+		// With a destination the file is written fragment by fragment, which keeps a
+		// long export out of memory; otherwise it is handed over at the end.
+		try {
+			const sink = typeof Module.ddnetVideoSink === 'function'
+				? await Module.ddnetVideoSink({fileName: state.fileName, type: 'video/mp4', width: Width, height: Height, fps: Fps})
+				: null;
+			if(sink) {
+				state.sink = sink;
+				const stream = sink.stream || sink;
+				// Only a file, not a pipe, can be written twice to fix the durations.
+				state.seekable = typeof stream.seek === 'function';
+				state.writer = stream.getWriter();
+			}
+		} catch(error) {
+			Module.ddnetVideoStartError = 'the file could not be opened: ' + String((error && error.message) || error).slice(0, 200);
+			try { state.encoder.close(); } catch(closeError) {}
+			if(state.audio)
+				try { state.audio.encoder.close(); } catch(closeError) {}
+			return -1;
+		}
+		Module.ddnetVideo = state;
+		return 0;
+	};
+	// What the call returns, or -1 where it throws, is written where the
+	// caller waits for it (`AwaitBrowserCall`), and kept as a promise for a
+	// caller on this thread.
+	Module.ddnetVideoPending = run().catch(() => -1).then(result => {
+		HEAP32[(pCall >> 2) + 1] = result | 0;
+		Atomics.store(HEAP32, pCall >> 2, 1);
+		Atomics.notify(HEAP32, pCall >> 2);
+	});
 });
 
-EM_JS(int, BrowserAudioStarted, (), {
+EM_JS(int, BrowserAudioStartedImpl, (), {
 	return Module.ddnetVideo && Module.ddnetVideo.audio ? 1 : 0;
 });
 
-EM_JS(void, BrowserAudioSubmit, (const short *pSamples, int Frames, double TimestampMicros), {
+EM_JS(void, BrowserAudioSubmitImpl, (const short *pSamples, int Frames, double TimestampMicros), {
 	const state = Module.ddnetVideo;
 	if(!state || !state.audio || state.audio.stopped)
 		return;
@@ -764,85 +791,101 @@ EM_JS(void, BrowserAudioSubmit, (const short *pSamples, int Frames, double Times
 	}
 });
 
-EM_ASYNC_JS(int, BrowserVideoSubmit, (const unsigned char *pData, int Format, double TimestampMicros, int KeyFrame), {
-	const state = Module.ddnetVideo;
-	if(!state)
-		return -1;
-	// The encoder runs on its own thread and the export would otherwise hand it
-	// frames faster than it retires them, which is memory nobody bounded.
-	while(!state.error && state.encoder.encodeQueueSize > 8)
-		await new Promise(resolve => setTimeout(resolve, 0));
-	if(state.error)
-		return -1;
-	const width = state.width;
-	const height = state.height;
-	const init = {timestamp: TimestampMicros, duration: 1000000 / state.fps, codedWidth: width, codedHeight: height};
-	if(state.submitted === 0)
-		state.firstTimestamp = TimestampMicros;
-	let size;
-	if(Format === 1) {
-		init.format = 'NV12';
-		init.layout = [{offset: 0, stride: width}, {offset: width * height, stride: width}];
-		size = width * height * 3 / 2;
-	} else if(Format === 2) {
-		init.format = 'I420';
-		init.layout = [{offset: 0, stride: width}, {offset: width * height, stride: width / 2}, {offset: width * height * 5 / 4, stride: width / 2}];
-		size = width * height * 3 / 2;
-	} else {
-		init.format = 'RGBA';
-		init.layout = [{offset: 0, stride: width * 4}];
-		size = width * height * 4;
-	}
-	try {
-		const frame = new VideoFrame(HEAPU8.subarray(pData, pData + size), init);
-		state.encoder.encode(frame, {keyFrame: KeyFrame !== 0});
-		frame.close();
-		state.submitted++;
-	} catch(error) {
-		state.error = String((error && error.message) || error).slice(0, 255);
-		return -1;
-	}
-	return 0;
-});
-
-EM_ASYNC_JS(void, BrowserVideoStop, (int Cancel, char *pError, int ErrorCapacity), {
-	const state = Module.ddnetVideo;
-	if(!state)
-		return;
-	Module.ddnetVideo = null;
-	// The finish drops the sound track when the browser never described it, so
-	// the encoder to close is the one that was there before it ran.
-	const audio = state.audio;
-	let reason = null;
-	try {
-		if(!Cancel && !state.error) {
-			await state.encoder.flush();
-			// A sound track that fails to drain must not cost the picture, so
-			// the export goes on with whatever it did hand over.
-			if(state.audio && !state.audio.stopped) {
-				try { await state.audio.encoder.flush(); } catch(error) { state.audio.stopped = true; }
-			}
-			reason = await state.finish();
-		} else if(state.writer !== null) {
-			// A cancelled export leaves nothing behind.
-			try { await state.writer.abort(); } catch(error) {}
+EM_JS(void, BrowserVideoSubmitImpl, (const unsigned char *pData, int Format, double TimestampMicros, int KeyFrame, SBrowserCall *pCall), {
+	const run = async () => {
+		const state = Module.ddnetVideo;
+		if(!state)
+			return -1;
+		// The encoder runs on its own thread and the export would otherwise hand it
+		// frames faster than it retires them, which is memory nobody bounded.
+		while(!state.error && state.encoder.encodeQueueSize > 8)
+			await new Promise(resolve => setTimeout(resolve, 0));
+		if(state.error)
+			return -1;
+		const width = state.width;
+		const height = state.height;
+		const init = {timestamp: TimestampMicros, duration: 1000000 / state.fps, codedWidth: width, codedHeight: height};
+		if(state.submitted === 0)
+			state.firstTimestamp = TimestampMicros;
+		let size;
+		if(Format === 1) {
+			init.format = 'NV12';
+			init.layout = [{offset: 0, stride: width}, {offset: width * height, stride: width}];
+			size = width * height * 3 / 2;
+		} else if(Format === 2) {
+			init.format = 'I420';
+			init.layout = [{offset: 0, stride: width}, {offset: width * height, stride: width / 2}, {offset: width * height * 5 / 4, stride: width / 2}];
+			size = width * height * 3 / 2;
+		} else {
+			init.format = 'RGBA';
+			init.layout = [{offset: 0, stride: width * 4}];
+			size = width * height * 4;
 		}
-	} catch(error) {
-		reason = String((error && error.message) || error).slice(0, 200);
-	}
-	try { state.encoder.close(); } catch(error) {}
-	if(audio) {
-		try { audio.encoder.close(); } catch(error) {}
-	}
-	if(reason)
-		stringToUTF8(reason, pError, ErrorCapacity);
+		try {
+			const frame = new VideoFrame(HEAPU8.subarray(pData, pData + size), init);
+			state.encoder.encode(frame, {keyFrame: KeyFrame !== 0});
+			frame.close();
+			state.submitted++;
+		} catch(error) {
+			state.error = String((error && error.message) || error).slice(0, 255);
+			return -1;
+		}
+		return 0;
+	};
+	// See `BrowserVideoStartImpl`.
+	Module.ddnetVideoPending = run().catch(() => -1).then(result => {
+		HEAP32[(pCall >> 2) + 1] = result | 0;
+		Atomics.store(HEAP32, pCall >> 2, 1);
+		Atomics.notify(HEAP32, pCall >> 2);
+	});
 });
 
-EM_JS(int, BrowserVideoEncoded, (), {
+EM_JS(void, BrowserVideoStopImpl, (int Cancel, char *pError, int ErrorCapacity, SBrowserCall *pCall), {
+	const run = async () => {
+		const state = Module.ddnetVideo;
+		if(!state)
+			return;
+		Module.ddnetVideo = null;
+		// The finish drops the sound track when the browser never described it, so
+		// the encoder to close is the one that was there before it ran.
+		const audio = state.audio;
+		let reason = null;
+		try {
+			if(!Cancel && !state.error) {
+				await state.encoder.flush();
+				// A sound track that fails to drain must not cost the picture, so
+				// the export goes on with whatever it did hand over.
+				if(state.audio && !state.audio.stopped) {
+					try { await state.audio.encoder.flush(); } catch(error) { state.audio.stopped = true; }
+				}
+				reason = await state.finish();
+			} else if(state.writer !== null) {
+				// A cancelled export leaves nothing behind.
+				try { await state.writer.abort(); } catch(error) {}
+			}
+		} catch(error) {
+			reason = String((error && error.message) || error).slice(0, 200);
+		}
+		try { state.encoder.close(); } catch(error) {}
+		if(audio) {
+			try { audio.encoder.close(); } catch(error) {}
+		}
+		if(reason)
+			stringToUTF8(reason, pError, ErrorCapacity);
+	};
+	// See `BrowserVideoStartImpl`.
+	Module.ddnetVideoPending = run().catch(() => -1).then(result => {
+		HEAP32[(pCall >> 2) + 1] = result | 0;
+		Atomics.store(HEAP32, pCall >> 2, 1);
+		Atomics.notify(HEAP32, pCall >> 2);
+	});
+});
+
+EM_JS(int, BrowserVideoEncodedImpl, (), {
 	return Module.ddnetVideo ? Module.ddnetVideo.encoded : 0;
 });
 
-EM_JS(int, BrowserVideoError, (char *pError, int ErrorCapacity), {
+EM_JS(int, BrowserVideoErrorImpl, (char *pError, int ErrorCapacity), {
 	// Before there is an export there is no state to carry the reason, and the
 	// start is where the browser is most likely to have one.
 	const message = Module.ddnetVideo ? Module.ddnetVideo.error : Module.ddnetVideoStartError;
@@ -851,7 +894,118 @@ EM_JS(int, BrowserVideoError, (char *pError, int ErrorCapacity), {
 	stringToUTF8(message, pError, ErrorCapacity);
 	return 1;
 });
+#if !defined(CONF_WEB_PLATFORM)
+EM_ASYNC_JS(void, BrowserVideoAwait, (), {
+	await Module.ddnetVideoPending;
+});
+#endif
 // clang-format on
+
+/**
+ * Runs `Fn` on the page's thread, whose module holds the encoders and the
+ * page's hooks. A program in a worker waits for it there; the page's thread
+ * never waits for anything but its own turn.
+ */
+template<typename TFn>
+auto OnPage(TFn &&Fn) -> decltype(Fn())
+{
+#if defined(CONF_WEB_PLATFORM)
+	if(!emscripten_is_main_runtime_thread())
+	{
+		using TResult = decltype(Fn());
+		const auto &&Proxy = [](const std::function<void()> &Task) {
+			emscripten_proxy_sync(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(), [](void *pTask) { (*static_cast<const std::function<void()> *>(pTask))(); }, const_cast<std::function<void()> *>(&Task));
+		};
+		if constexpr(std::is_void_v<TResult>)
+		{
+			Proxy(Fn);
+			return;
+		}
+		else
+		{
+			TResult Result{};
+			Proxy([&] { Result = Fn(); });
+			return Result;
+		}
+	}
+#endif
+	return Fn();
+}
+
+/**
+ * Waits until the asynchronous part of the export that `Call` belongs to is
+ * over: on a real lock where the program runs in a worker, and where it runs
+ * on the page's thread by unwinding it until the browser is done.
+ */
+int AwaitBrowserCall(SBrowserCall &Call)
+{
+#if defined(CONF_WEB_PLATFORM)
+	dbg_assert(!emscripten_is_main_runtime_thread(), "The page's thread must not wait for the export");
+	while(__atomic_load_n(&Call.m_Done, __ATOMIC_ACQUIRE) == 0)
+		emscripten_futex_wait(&Call.m_Done, 0, INFINITY);
+#else
+	BrowserVideoAwait();
+#endif
+	return Call.m_Result;
+}
+
+int BrowserVideoSupported()
+{
+	return OnPage([] { return BrowserVideoSupportedImpl(); });
+}
+void BrowserVideoProbe()
+{
+	OnPage([] { BrowserVideoProbeImpl(); });
+}
+int BrowserVideoProbeDone()
+{
+	return OnPage([] { return BrowserVideoProbeDoneImpl(); });
+}
+int BrowserVideoProbeCount()
+{
+	return OnPage([] { return BrowserVideoProbeCountImpl(); });
+}
+void BrowserVideoProbeEntry(int Index, char *pName, int NameCapacity, char *pDisplay, int DisplayCapacity)
+{
+	OnPage([&] { BrowserVideoProbeEntryImpl(Index, pName, NameCapacity, pDisplay, DisplayCapacity); });
+}
+int BrowserAudioStarted()
+{
+	return OnPage([] { return BrowserAudioStartedImpl(); });
+}
+void BrowserAudioSubmit(const short *pSamples, int Frames, double TimestampMicros)
+{
+	OnPage([&] { BrowserAudioSubmitImpl(pSamples, Frames, TimestampMicros); });
+}
+int BrowserVideoEncoded()
+{
+	return OnPage([] { return BrowserVideoEncodedImpl(); });
+}
+int BrowserVideoError(char *pError, int ErrorCapacity)
+{
+	return OnPage([&] { return BrowserVideoErrorImpl(pError, ErrorCapacity); });
+}
+
+int BrowserVideoStart(char *pCodec, int CodecCapacity, const char *pFileName, int Width, int Height, int Fps, int Bitrate, int SampleRate, int Channels, int ExpectedDurationMs)
+{
+	SBrowserCall Call;
+	OnPage([&] { BrowserVideoStartImpl(pCodec, CodecCapacity, pFileName, Width, Height, Fps, Bitrate, SampleRate, Channels, ExpectedDurationMs, &Call); });
+	return AwaitBrowserCall(Call);
+}
+
+int BrowserVideoSubmit(const unsigned char *pData, int Format, double TimestampMicros, int KeyFrame)
+{
+	SBrowserCall Call;
+	OnPage([&] { BrowserVideoSubmitImpl(pData, Format, TimestampMicros, KeyFrame, &Call); });
+	return AwaitBrowserCall(Call);
+}
+
+void BrowserVideoStop(int Cancel, char *pError, int ErrorCapacity)
+{
+	SBrowserCall Call;
+	OnPage([&] { BrowserVideoStopImpl(Cancel, pError, ErrorCapacity, &Call); });
+	AwaitBrowserCall(Call);
+}
 
 /**
  * What a frame handed to the browser holds, which is what the other side turns

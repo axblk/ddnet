@@ -140,6 +140,7 @@ option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
 option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
 option(WEB_GLYPHS "Draw the glyphs of text with the browser instead of FreeType (emscripten only)" ON)
 option(WEB_PNG "Read and write PNGs with zlib alone instead of libpng (emscripten only)" ON)
+option(WEB_OPUS "Decode Opus sounds with the browser instead of libopusfile (emscripten only)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -864,6 +865,19 @@ if(TARGET_OS STREQUAL "emscripten")
     # src/engine/gfx/png_decode_zlib.cpp and png_encode_zlib.cpp.
     set(PNG_LIBRARIES)
     set(PNG_INCLUDE_DIRS)
+  endif()
+  if(WEB_OPUS)
+    # Opus sounds are decoded by the browser's audio decoder in the worker of
+    # web-decoder, see src/engine/client/opus_decoder_web.cpp, which reads
+    # the Ogg container itself: no libopusfile, libopus or libogg.
+    add_library(web-opus INTERFACE)
+    target_link_libraries(web-opus INTERFACE web-decoder)
+    set(OPUSFILE_LIBRARIES web-opus)
+    set(OPUS_LIBRARIES)
+    set(OGG_LIBRARIES)
+    set(OPUSFILE_INCLUDE_DIRS)
+    set(OPUS_INCLUDE_DIRS)
+    set(OGG_INCLUDE_DIRS)
   endif()
 endif()
 if(TARGET_OS STREQUAL "android" AND NOT(CRYPTO_FOUND))
@@ -2613,6 +2627,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   uuid_manager.h
   video.cpp
   video.h
+  web_decoder.cpp
+  web_decoder.h
   websockets.cpp
   websockets.h
   # tidy-alphabetical-end
@@ -2740,6 +2756,18 @@ target_include_directories(engine-gfx PRIVATE ${PNG_INCLUDE_DIRS})
 set(ENGINE_QUIC ${ENGINE_SHARED})
 list(FILTER ENGINE_QUIC INCLUDE REGEX "src/engine/shared/quic_transport")
 list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/quic_transport")
+# The browser's decoders in a worker, for what WEB_OPUS leaves to the browser.
+# A library of its own, linked by those who use it, so that only programs that
+# decode with it carry its JavaScript side.
+set(WEB_DECODER ${ENGINE_SHARED})
+list(FILTER WEB_DECODER INCLUDE REGEX "src/engine/shared/web_decoder")
+list(FILTER ENGINE_SHARED EXCLUDE REGEX "src/engine/shared/web_decoder")
+if(TARGET web-opus)
+  add_library(web-decoder EXCLUDE_FROM_ALL STATIC ${WEB_DECODER})
+  target_link_options(web-decoder INTERFACE "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/shared/web_decoder.js")
+  set_property(TARGET web-decoder PROPERTY INTERFACE_LINK_DEPENDS ${PROJECT_SOURCE_DIR}/src/engine/shared/web_decoder.js)
+  list(APPEND TARGETS_OWN web-decoder)
+endif()
 add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
@@ -2863,6 +2891,7 @@ if(CLIENT)
     notifications.h
     opus_decoder.h
     opus_decoder_opusfile.cpp
+    opus_decoder_web.cpp
     presentation_surface.h
     render_command_queue.cpp
     render_command_queue.h
@@ -3315,6 +3344,12 @@ if(CLIENT)
     list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/glyph_rasterizer_freetype\\.cpp$")
   else()
     list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/(font_tables|glyph_rasterizer_web)\\.(cpp|h)$")
+  endif()
+  # What decodes Opus, see WEB_OPUS.
+  if(TARGET_OS STREQUAL "emscripten" AND WEB_OPUS)
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/opus_decoder_opusfile\\.cpp$")
+  else()
+    list(FILTER ENGINE_CLIENT EXCLUDE REGEX "src/engine/client/opus_decoder_web\\.cpp$")
   endif()
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan

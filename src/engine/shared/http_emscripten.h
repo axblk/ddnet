@@ -18,6 +18,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(CONF_WEB_PLATFORM)
+#include <pthread.h>
+#endif
+
 typedef struct emscripten_fetch_t emscripten_fetch_t;
 
 class CHttpEmscripten;
@@ -86,8 +90,32 @@ private:
 	std::atomic<bool> m_Shutdown = false;
 	std::atomic<bool> m_StartedShutdown = false;
 
+#if defined(CONF_WEB_PLATFORM)
+	// The thread returns to its event loop, where the fetches call back, and
+	// does a `Turn` when told to.
+	pthread_t m_Thread{};
+	std::atomic<bool> m_TurnPosted = false;
+	bool m_ShutdownTimerSet = false;
+	bool m_Finished = false;
+	void Turn();
+#endif
+
 	static void ThreadMain(void *pUser);
 	void RunLoop();
+	/**
+	 * Starts what was asked for and finishes what the browser answered.
+	 *
+	 * @return Whether the thread is done.
+	 */
+	bool Step();
+	/**
+	 * Aborts whatever is left when the thread is done.
+	 */
+	void Finish();
+	/**
+	 * Has the thread take a step soon.
+	 */
+	void Wake();
 	void AddPendingStateChange(uint64_t RequestId, EHttpState State);
 };
 

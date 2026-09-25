@@ -9,12 +9,13 @@ Look at a DDNet map in a browser.
 ```
 
 `x`, `y` and `tiles` say where to look and how much to show, in tiles.
-`controls="html"` is the package's buttons, `controls` the ones drawn by the
-program; without either, a page puts its own into the `controls` slot and
-steers `element.program`.
+`controls`, whatever its value, is the package's buttons; without it, a page
+puts its own into the `controls` slot and steers `element.program`. The
+program draws no buttons of its own in a browser.
 
 `MapViewer` runs on a canvas of the page's own, `MapControls` are the buttons
-for it. The types are in `map-viewer.d.ts`.
+for it. The canvas is the program's once it runs, see `@ddnet/base`: its size
+goes through `setSize`. The types are in `map-viewer.d.ts`.
 
 The page has to be cross-origin isolated (`Cross-Origin-Opener-Policy:
 same-origin`, `Cross-Origin-Embedder-Policy: require-corp`, or

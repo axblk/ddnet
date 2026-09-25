@@ -31,6 +31,8 @@ public:
 	void Stop();
 	bool IsStopped() const;
 	bool WaitDequeue(SEntry &Entry);
+	// Takes the next buffer if there is one, without waiting.
+	bool TryDequeue(SEntry &Entry);
 
 	bool EnqueueBorrowed(CCommandBuffer *pBuffer);
 	EFrameEnqueueResult EnqueueFrame(CCommandBuffer *pBuffer);
@@ -42,6 +44,8 @@ public:
 
 	bool IsIdle() const;
 	void WaitForIdle();
+	// Waits until no frame is queued or being rendered.
+	void WaitForFramesDone();
 	IGraphics::SFrameMailboxStats GetFrameMailboxStats() const;
 
 private:

@@ -508,9 +508,9 @@ async function videoScratchSink(info) {
 	return { stream: await handle.createWritable(), done: () => handle.getFile() };
 }
 
-// Scratch videos of earlier visits were never taken. Swept once per page, and
-// by the page rather than by render workers: a second worker of a batch would
-// otherwise delete the first one's video while it is still being offered.
+// Scratch videos of earlier visits were never taken. Swept once per page: a
+// second render of a batch would otherwise delete the first one's video while
+// it is still being offered.
 let sweptVideoScratch = false;
 export async function sweepVideoScratch() {
 	if (sweptVideoScratch) {
@@ -728,6 +728,8 @@ export class Program extends EventTarget {
 
 	// The audio outlives the runtime unless it is stopped here.
 	stopAudio() {
+		// The tools' own output, see `src/engine/client/web/web_platform.js`.
+		this.module?.ddnetStopAudio?.();
 		const SDL2 = this.module?.SDL2;
 		if (SDL2 === undefined) {
 			return;
@@ -798,6 +800,9 @@ export class Program extends EventTarget {
 			canvas: this.canvas ?? undefined,
 			mainScriptUrlOrBlob: program?.script,
 			locateFile: program === null ? undefined : path => new URL(path, program.base).href,
+			// Read by `src/engine/client/web/web_platform.js`: without zoom
+			// the wheel scrolls the page.
+			ddnetWheel: options.zoom !== false,
 			// Read by `src/engine/client/viewer_fullscreen.cpp`.
 			ddnetFullscreen: {
 				supported: fullscreenSupported,
@@ -945,7 +950,7 @@ canvas { display: block; width: 100%; height: 100%; background: #000; touch-acti
 .message[hidden] { display: none; }
 `;
 
-// A worker has no `HTMLElement`, and the render worker imports this module.
+// A worker that imports this module has no `HTMLElement`.
 const ELEMENT_BASE = typeof HTMLElement === "undefined" ? class {} : HTMLElement;
 
 export class ViewerElement extends ELEMENT_BASE {
@@ -976,6 +981,8 @@ export class ViewerElement extends ELEMENT_BASE {
 		this.programInstance = null;
 		this.barInstance = null;
 		this.stopping = null;
+		// Whether a program was handed the canvas, which is then its for good.
+		this.canvasTaken = false;
 		// The attributes the program was started with, applied again only
 		// once a file replaces the first one.
 		this.startedWith = [];
@@ -1076,7 +1083,7 @@ export class ViewerElement extends ELEMENT_BASE {
 		const signal = this.stopping.signal;
 		const program = new Class({
 			...options,
-			canvas: this.canvasElement,
+			canvas: this.takeCanvas(),
 			controls: this.wantsProgramControls(),
 			fullscreenElement: this,
 			// An embedded viewer leaves nothing in the visitor's storage.
@@ -1122,6 +1129,19 @@ export class ViewerElement extends ELEMENT_BASE {
 		return program;
 	}
 
+	// The program hands the canvas to the thread it draws on, after which
+	// nothing else can draw on it, so a program started again, such as after
+	// the element moved, gets a new one.
+	takeCanvas() {
+		if (this.canvasTaken) {
+			const canvas = this.canvasElement.cloneNode(false);
+			this.canvasElement.replaceWith(canvas);
+			this.canvasElement = canvas;
+		}
+		this.canvasTaken = true;
+		return this.canvasElement;
+	}
+
 	loaded() {
 		this.say("");
 		const skip = this.startedWith;
@@ -1137,13 +1157,14 @@ export class ViewerElement extends ELEMENT_BASE {
 		return {};
 	}
 
+	// The programs draw no controls of their own in a browser; the page's
+	// are the only ones, whatever `controls` names.
 	wantsProgramControls() {
-		const asked = this.getAttribute("controls");
-		return asked !== null && asked !== "html";
+		return false;
 	}
 
 	applyControlsKind() {
-		const wanted = this.getAttribute("controls") === "html" && this.constructor.bar !== null;
+		const wanted = this.hasAttribute("controls") && this.constructor.bar !== null;
 		if (wanted === (this.barInstance !== null)) {
 			return;
 		}

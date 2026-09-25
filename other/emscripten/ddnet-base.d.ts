@@ -50,6 +50,12 @@ export interface ProgramOptions {
 	dataBase?: string;
 	/** What the program is called in its output. */
 	programName?: string;
+	/**
+	 * Where the program draws. A web tool hands it to the thread it draws on,
+	 * after which the page cannot size it through `width` and `height` or draw
+	 * on it: the size goes through the program's `setSize` (see `followSize`),
+	 * and a canvas serves one program. It needs no id.
+	 */
 	canvas?: HTMLCanvasElement | null;
 	/** What the program's fullscreen button fills, the page otherwise. */
 	fullscreenElement?: Element;
@@ -66,9 +72,12 @@ export interface ProgramOptions {
 	fileArgument?: string;
 	/** More for the command line. */
 	arguments?: string[];
-	/** Whether the program draws its own controls. */
+	/** Whether the program draws its own controls, which the web tools never do. */
 	controls?: boolean;
-	/** Whether this needs WebGPU, which only rendering without a window does. */
+	/**
+	 * Whether the program refuses to start without a WebGPU adapter. None of
+	 * the packages' programs do: they draw with WebGL 2 without one.
+	 */
 	needsWebGpu?: boolean;
 	/** Whether what the program writes is kept in IndexedDB. On by default. */
 	persist?: boolean;
@@ -127,8 +136,8 @@ export declare class Program extends EventTarget {
  * started on it once the element is in a page. Controls for it go into the
  * `controls` slot.
  *
- * Attributes: `src`, `controls` (`html` for the package's own bar, anything
- * else for the one the program draws), `link` (keeps the page address in step
+ * Attributes: `src`, `controls` (the package's own bar, whatever the value;
+ * the programs draw none of their own), `link` (keeps the page address in step
  * with what is shown), `base` (where the program's script is), `data` (where
  * its data is). Events: those of the package, and `error` ({message}).
  */
@@ -160,7 +169,10 @@ export interface AutoHideOptions {
 
 /** Controls over a picture that fade out while nothing happens, as a video player's do. */
 export declare function autoHide(elements: Element[], options?: AutoHideOptions): { show(): void; hide(): void; shown(): boolean };
-/** Tells the program the size of the box its canvas is in. */
+/**
+ * Tells the program the size of the box its canvas is in, which is how a
+ * canvas the program was handed is sized.
+ */
 export declare function followSize(element: Element, program: { setSize(width: number, height: number): void }, options?: { signal?: AbortSignal }): { stop(): void };
 /** Makes `button` fill the screen with `element`, or hides it where that is not possible. */
 export declare function fullscreen(button: HTMLElement, options?: { element?: Element; shortcut?: string | null; signal?: AbortSignal }): void;

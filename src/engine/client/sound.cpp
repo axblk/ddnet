@@ -15,7 +15,7 @@
 #include <engine/shared/config.h>
 #include <engine/storage.h>
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 #include <SDL.h>
 #endif
 
@@ -185,7 +185,7 @@ void CSound::Mix(short *pFinalOut, unsigned Frames, bool Offline)
 #endif
 }
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 static void SdlCallback(void *pUser, Uint8 *pStream, int Len)
 {
 	CSound *pSound = static_cast<CSound *>(pUser);
@@ -216,19 +216,54 @@ int CSound::Init()
 		m_aSamples[std::size(m_aSamples) - 1].m_NextFreeSampleIndex = SAMPLE_INDEX_FULL;
 	}
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
-	if(!g_Config.m_SndEnable)
-		return 0;
+	// The render tool mixes for its video alone, whatever the settings say,
+	// and so does the web demo player where it renders without a page.
+#if defined(CONF_DEMO_RENDER_TOOL)
+	const bool VideoOnly = true;
+#elif defined(SOUND_OUTPUT_WEB)
+	const bool VideoOnly = !CWebAudioOutput::Wanted();
+#else
+	const bool VideoOnly = false;
 #endif
+	if(!VideoOnly && !g_Config.m_SndEnable)
+		return 0;
+	if(VideoOnly)
+	{
+		m_MixingRate = g_Config.m_SndRate;
+		m_MaxFrames = 2048;
+		m_pMixBuffer = static_cast<int *>(calloc(m_MaxFrames * 2, sizeof(int)));
+		if(m_pMixBuffer == nullptr)
+			return -1;
+		m_SoundEnabled = true;
+		Update();
+		return 0;
+	}
 
 #if defined(CONF_DEMO_RENDER_TOOL)
-	m_MixingRate = g_Config.m_SndRate;
-	m_MaxFrames = 2048;
+	// Mixed for the video alone, above.
+	return 0;
+#elif defined(SOUND_OUTPUT_WEB)
+	m_MaxFrames = std::max(g_Config.m_SndBufferSize * 2, 1024 * 2);
 	m_pMixBuffer = static_cast<int *>(calloc(m_MaxFrames * 2, sizeof(int)));
 	if(m_pMixBuffer == nullptr)
 		return -1;
 	m_SoundEnabled = true;
-	Update();
+	UpdateVolume();
+	// Samples are converted to the rate the browser plays at when they are
+	// loaded, which is after this.
+	const int Rate = m_WebOutput.Open(g_Config.m_SndRate, m_MaxFrames, [this](int16_t *pOut, unsigned Frames) { Mix(pOut, Frames, false); });
+	if(Rate > 0)
+	{
+		m_MixingRate = Rate;
+		log_info("sound", "Sound init successful using the page's audio worklet at %d Hz", Rate);
+	}
+	else
+	{
+		m_MixingRate = g_Config.m_SndRate;
+		log_error("sound", "The page has no audio output");
+	}
+	if(m_DevicePaused)
+		m_WebOutput.SetPaused(true);
 	return 0;
 #else
 	if(SDL_InitSubSystem(SDL_INIT_AUDIO) < 0)
@@ -267,7 +302,7 @@ int CSound::Init()
 #endif
 }
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 int SDLCALL CSound::HandleAudioDeviceEvent(void *pUser, SDL_Event *pEvent)
 {
 	if((pEvent->type == SDL_AUDIODEVICEADDED || pEvent->type == SDL_AUDIODEVICEREMOVED) && !pEvent->adevice.iscapture)
@@ -342,17 +377,19 @@ bool CSound::HasAudioOutput() const
 	if(IVideo::Current() && IVideo::Current()->HasAudio())
 		return true;
 #endif
-#if defined(CONF_DEMO_RENDER_TOOL)
-	return false;
-#else
+#if defined(SOUND_OUTPUT_SDL)
 	return m_Device != 0;
+#elif defined(SOUND_OUTPUT_WEB)
+	return m_WebOutput.IsOpen();
+#else
+	return false;
 #endif
 }
 
 int CSound::Update()
 {
 	UpdateVolume();
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	UpdateDevice();
 #endif
 	AdvancePlayback();
@@ -414,11 +451,14 @@ void CSound::Shutdown()
 	StopAll(false);
 	StopAll(true);
 
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	// Stop sound callback before freeing sample data
 	SDL_DelEventWatch(HandleAudioDeviceEvent, this);
 	CloseDevice();
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
+#elif defined(SOUND_OUTPUT_WEB)
+	// The mixer stops before the samples go.
+	m_WebOutput.Close();
 #endif
 
 	const CLockScope LockScope(m_SoundLock);
@@ -1208,23 +1248,29 @@ bool CSound::IsPlaying(int SampleId)
 
 void CSound::PauseAudioDevice()
 {
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	m_DevicePaused = true;
 	if(m_Device != 0)
 	{
 		SDL_PauseAudioDevice(m_Device, 1);
 	}
+#elif defined(SOUND_OUTPUT_WEB)
+	m_DevicePaused = true;
+	m_WebOutput.SetPaused(true);
 #endif
 }
 
 void CSound::UnpauseAudioDevice()
 {
-#if !defined(CONF_DEMO_RENDER_TOOL)
+#if defined(SOUND_OUTPUT_SDL)
 	m_DevicePaused = false;
 	if(m_Device != 0)
 	{
 		SDL_PauseAudioDevice(m_Device, 0);
 	}
+#elif defined(SOUND_OUTPUT_WEB)
+	m_DevicePaused = false;
+	m_WebOutput.SetPaused(false);
 #endif
 }
 

@@ -4,7 +4,11 @@
 #define ENGINE_CLIENT_DEMO_PLAYER_CLIENT_H
 
 #include "demo_client_base.h"
+#include "viewer_gestures.h"
+
+#if !defined(CONF_WEB_PLATFORM)
 #include "viewer_controls.h"
+#endif
 
 #include <chrono>
 #include <functional>
@@ -42,7 +46,10 @@ private:
 	// During an export the window is drawn on a clock of its own.
 	int64_t m_LastWindowRenderTime = 0;
 	std::chrono::nanoseconds m_LastExportScreenRender{0};
+#if !defined(CONF_WEB_PLATFORM)
+	// In a browser the page draws the controls, next to the canvas.
 	CViewerControls m_Controls;
+#endif
 	CViewerGestures m_Gestures;
 	bool m_ShowControls = true;
 	bool m_ZoomEnabled = true;
@@ -82,7 +89,7 @@ private:
 	bool m_Dragging = false;
 	// What `Players` returned last.
 	std::string m_Players;
-	// See `FromPage`.
+	// Put off until between two frames, see `RunPageActions`.
 	std::vector<std::function<void()>> m_vPageActions;
 #if defined(CONF_VIDEORECORDER)
 	// An export reads the demo again in a session of its own, so that
@@ -116,16 +123,19 @@ private:
 	 */
 	float WorldPerPixel() const;
 	void RenderWindowFrame();
+#if !defined(CONF_WEB_PLATFORM)
 	/**
 	 * Draws the bar over the demo and does what was pressed in it.
 	 */
 	void RenderControls();
+#endif
 	/**
 	 * Opens the demo dropped on the window in place of the one that plays.
 	 */
 	void OpenDroppedDemo(const char *pPath);
 	/**
-	 * Does what a page asked for while the program could not.
+	 * Does what a page asked for, and what was put off until between two
+	 * frames.
 	 */
 	void RunPageActions();
 #if defined(CONF_VIDEORECORDER)
@@ -209,13 +219,13 @@ public:
 	 */
 	void SetSize(int Width, int Height);
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
 	/**
-	 * Does what a page asked for now, or in the loop before the next frame
-	 * when the program is unwound in one of its waits (`web_unwound`), where
-	 * waiting again would take it down. Queries do not wait and are answered
-	 * at once, so they show a change only a frame later.
+	 * Hands the page what it reads of the player, which it cannot read
+	 * itself: it runs on a thread of its own. See `CWebPageBridge`.
 	 */
-	void FromPage(std::function<void()> &&Action);
+	void PublishPageState();
+#endif
 
 	void SetPaused(bool Paused);
 	/**

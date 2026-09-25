@@ -171,6 +171,11 @@ export class DemoPlayer extends Program {
 	}
 
 	zoomEnabled(enable) {
+		// Without zoom the wheel scrolls the page, see
+		// `src/engine/client/web/web_platform.js`.
+		if (enable !== undefined && this.module) {
+			this.module.ddnetWheel = enable;
+		}
 		return this.flag("DemoPlayerZoomEnabled", "DemoPlayerSetZoomEnabled", enable);
 	}
 

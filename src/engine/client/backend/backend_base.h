@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +29,10 @@ enum ERunCommandReturnTypes
 	RUN_COMMAND_COMMAND_UNHANDLED,
 	RUN_COMMAND_COMMAND_WARNING,
 	RUN_COMMAND_COMMAND_ERROR,
+	// Waits for the browser: the command is run again once the renderer has
+	// called its wake-up. Only in the web tools, whose render thread must
+	// return to the event loop for the browser to answer.
+	RUN_COMMAND_COMMAND_PENDING,
 };
 
 enum EGfxErrorType
@@ -116,6 +121,26 @@ public:
 
 	const SGfxErrorContainer &GetError() { return m_Error; }
 	virtual void ErroneousCleanup() {}
+
+#if defined(CONF_WEB_PLATFORM)
+	/**
+	 * What a command that answered `RUN_COMMAND_COMMAND_PENDING` calls when
+	 * it may go on, from the browser's callback on the render thread.
+	 */
+	void SetWakeUp(std::function<void()> &&WakeUp) { m_WakeUp = std::move(WakeUp); }
+
+protected:
+	void WakeUp() const
+	{
+		if(m_WakeUp)
+			m_WakeUp();
+	}
+
+private:
+	std::function<void()> m_WakeUp;
+
+public:
+#endif
 
 	const SGfxWarningContainer &GetWarning() { return m_Warning; }
 

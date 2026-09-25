@@ -181,7 +181,8 @@ void CWebDataIndex::List(const char *pPath, const std::function<void(const CEntr
 namespace
 {
 	// Where the data directory is: where the page says, beside it otherwise.
-	// Read once on the main thread, so that a worker builds the same URLs.
+	// Read once on the page's thread, where the page's module and address
+	// are, so that a worker builds the same URLs.
 	// clang-format off
 EM_JS(char *, WebFsPageBase, (), {
 	const base = Module["ddnetDataBase"];
@@ -318,7 +319,10 @@ EM_JS(double, WebFsNow, (), {
 
 bool webfs_init()
 {
-	char *pBase = WebFsPageBase();
+	// A program that runs in a worker asks the page.
+	char *pBase = emscripten_is_main_runtime_thread() ?
+			      WebFsPageBase() :
+			      reinterpret_cast<char *>(emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_I, WebFsPageBase));
 	g_WebFsBase = pBase == nullptr ? "" : pBase;
 	free(pBase);
 

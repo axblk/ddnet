@@ -16,6 +16,9 @@
 
 class IPresentationSurface;
 class IStorage;
+#if defined(CONF_WEB_PLATFORM)
+class CWebRenderThread;
+#endif
 
 enum EGraphicsBackendErrorCodes
 {
@@ -75,6 +78,11 @@ struct SGraphicsBackendInit
 	int m_GlewMinor = 0;
 	int m_GlewPatch = 0;
 	IStorage *m_pStorage = nullptr;
+#if defined(CONF_WEB_PLATFORM)
+	// The thread that owns the surface, which the renderer runs on. A backend
+	// without a surface starts a thread of its own.
+	CWebRenderThread *m_pRenderThread = nullptr;
+#endif
 };
 
 // interface for the graphics backend

@@ -1030,7 +1030,11 @@ public:
 			log_error("storage", "could not read '%s' to hand it to the user", pFilename);
 			return;
 		}
-		SendFileToUserImpl(fs_filename(pFilename), static_cast<const unsigned char *>(pData), Size);
+		// The download link goes into the page, which a worker has to ask for.
+		if(emscripten_is_main_runtime_thread())
+			SendFileToUserImpl(fs_filename(pFilename), static_cast<const unsigned char *>(pData), Size);
+		else
+			emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VIII, SendFileToUserImpl, fs_filename(pFilename), static_cast<const unsigned char *>(pData), Size);
 		free(pData);
 #endif
 	}
@@ -1038,6 +1042,12 @@ public:
 	int RequestFilesFromUser([[maybe_unused]] const char *pFolder, [[maybe_unused]] const char *pAccept) override
 	{
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The picker is awaited on the page's thread, which takes Asyncify.
+		if(!emscripten_has_asyncify())
+		{
+			log_error("storage", "files can only be asked for on the page's thread");
+			return 0;
+		}
 		CreateFolder(pFolder, TYPE_SAVE);
 		char aPath[IO_MAX_PATH_LENGTH];
 		GetCompletePath(TYPE_SAVE, pFolder, aPath, sizeof(aPath));

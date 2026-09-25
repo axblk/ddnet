@@ -15,7 +15,7 @@ export interface RenderOptions extends VideoSettings {
 	settings?: string[];
 	/** Where the video is written; kept in memory and answered otherwise. */
 	videoSink?: VideoSink | WritableStream;
-	/** Where `ddnet-demo-render.js` is, beside this module by default. */
+	/** Where `ddnet-demo-player.js` is, beside this module by default. */
 	scriptUrl?: string;
 	/** Where `data` is, beside the script by default. */
 	dataBase?: string;
@@ -25,8 +25,9 @@ export interface RenderOptions extends VideoSettings {
 }
 
 /**
- * Renders a demo into an MP4 in a worker. Answers the video, or `null` when
- * it went to `videoSink`. Needs WebGPU and WebCodecs.
+ * Renders a demo into an MP4 without a window, with the demo player's program.
+ * Answers the video, or `null` when it went to `videoSink`. Needs WebCodecs,
+ * and draws with WebGPU or, where the browser has no adapter, WebGL 2.
  */
 export declare function renderDemo(options: RenderOptions): Promise<File | Blob | null>;
 

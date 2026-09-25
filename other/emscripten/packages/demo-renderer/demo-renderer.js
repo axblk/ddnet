@@ -1,41 +1,19 @@
 /* (c) Magnus Auvinen. See licence.txt in the root of the distribution for more information. */
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 
-// The DDNet demo renderer: a demo in, an MP4 out, drawn without a window in a
-// worker of its own. The API is documented in demo-renderer.d.ts.
+// The DDNet demo renderer: a demo in, an MP4 out, drawn without a window. The
+// program is the demo player's, which renders without a page when it is given
+// `--render-demo`. The API is documented in demo-renderer.d.ts.
 
-import { abortError, DDNetBaseError, fetchScript, moduleUrl, supportError, sweepVideoScratch } from "@ddnet/base";
+import { abortError, DDNetBaseError, importProgram, Program, supportError, sweepVideoScratch } from "@ddnet/base";
 
-const PROGRAM = "ddnet-demo-render.js";
-const MODULE_NAME = "DDNetDemoRenderer";
+const PROGRAM = "ddnet-demo-player.js";
+const MODULE_NAME = "DDNetDemoPlayer";
 
 export const programUrl = new URL(PROGRAM, import.meta.url).href;
 
-// A worker sees no import map, so it gets the base by URL.
-const WORKER_SCRIPT = `
-self.onmessage = async event => {
-	const { baseUrl, scriptUrl, moduleName, settings, sink } = event.data;
-	try {
-		const base = await import(baseUrl);
-		let video = null;
-		const program = new base.Program({ ...settings, videoSink: sink, module: await base.importProgram(scriptUrl, moduleName) });
-		program.addEventListener("output", event => self.postMessage({ type: "output", ...event.detail }));
-		program.addEventListener("renderprogress", event => self.postMessage({ type: "progress", status: event.detail }));
-		program.addEventListener("video", event => {
-			video = event.detail.file;
-			event.preventDefault();
-		});
-		await program.start();
-		await program.finished;
-		self.postMessage({ type: "done", video });
-	} catch (error) {
-		self.postMessage({ type: "failed", message: String(error?.message ?? error) });
-	}
-};
-`;
-
 // The video settings are the client's own `cl_video_*` variables, which the
-// command line of `ddnet-demo-render` takes as console commands.
+// command line of the render takes as console commands.
 function renderArguments(options) {
 	const args = ["--output", options.output ?? "video.mp4"];
 	if (options.follow != null && options.follow !== "") {
@@ -64,7 +42,8 @@ export async function renderDemo(options) {
 	if (typeof VideoEncoder === "undefined") {
 		throw new DDNetBaseError("NoVideoEncoder", "This browser cannot encode video: it has no VideoEncoder.");
 	}
-	const problem = await supportError(true);
+	// WebGPU where the browser has an adapter, WebGL 2 where it does not.
+	const problem = await supportError();
 	if (problem !== null) {
 		throw problem;
 	}
@@ -72,73 +51,58 @@ export async function renderDemo(options) {
 	if (signal?.aborted) {
 		throw abortError(signal);
 	}
-	const base = new URL(moduleUrl, location.href);
-	const program = new URL(options.scriptUrl ?? programUrl, location.href);
-	// A cross-origin isolated page refuses foreign scripts in a worker, so
-	// they go in as blobs of its own.
-	const [baseScript, programScript] = await Promise.all([base, program].map(async url =>
-		url.origin === location.origin ? url.href : URL.createObjectURL(await fetchScript(url))));
+	const scriptUrl = new URL(options.scriptUrl ?? programUrl, location.href).href;
 	const demo = options.demo;
-	const settings = {
+	await sweepVideoScratch();
+	// The program runs on this page's thread, which it never makes wait, and
+	// not in a worker of its own: its threads would then be workers a worker
+	// starts, and Firefox leaves a worker that starts one hanging for good
+	// now and then while something watches workers (the developer tools,
+	// WebDriver BiDi).
+	const program = new Program({
+		module: await importProgram(scriptUrl, MODULE_NAME),
+		scriptUrl,
 		arguments: renderArguments(options),
 		canvas: null,
 		persist: false,
-		needsWebGpu: true,
 		accept: [".demo"],
-		// The worker's own address is a blob, so a relative URL is resolved here.
 		file: typeof demo === "string" ? new URL(demo, location.href).href : demo,
 		fileName: options.name ?? "render.demo",
 		fileArgument: "--render-demo",
 		programName: "The demo renderer",
 		dataBase: options.dataBase === undefined ? undefined : new URL(options.dataBase, location.href).href,
-		// The worker's program fetches itself again by its real address.
-		scriptUrl: program.href,
-		// Swept here, once per page: a worker of a later render would delete
-		// the video of an earlier one.
-		sweepVideoScratch: false,
-	};
-	await sweepVideoScratch();
-
-	const workerUrl = URL.createObjectURL(new Blob([WORKER_SCRIPT], { type: "text/javascript" }));
-	const worker = new Worker(workerUrl, { type: "module" });
-	URL.revokeObjectURL(workerUrl);
-	const finished = new Promise((resolve, reject) => {
-		signal?.addEventListener("abort", () => {
-			worker.terminate();
-			reject(abortError(signal));
-		}, { once: true });
-		worker.onmessage = event => {
-			const message = event.data;
-			if (message.type === "output") {
-				options.onOutput?.(message.message, message.kind);
-			} else if (message.type === "progress") {
-				options.onProgress?.(message.status);
-			} else {
-				worker.terminate();
-				if (message.type === "done" && (message.video !== null || options.videoSink)) {
-					resolve(message.video);
-				} else {
-					reject(new DDNetBaseError("RenderFailed", message.message ?? "The demo was not rendered into a video, see the output for what went wrong."));
-				}
-			}
-		};
-		worker.onerror = event => {
-			worker.terminate();
-			reject(new DDNetBaseError("RenderFailed", event.message || "The render worker stopped."));
-		};
-		const sink = options.videoSink;
-		const stream = sink?.stream ?? sink;
-		worker.postMessage({ baseUrl: baseScript, scriptUrl: programScript, moduleName: MODULE_NAME, settings, sink }, stream ? [stream] : []);
+		videoSink: options.videoSink,
+		// Quits the program.
+		signal,
 	});
-	const dropScripts = () => {
-		for (const url of [baseScript, programScript]) {
-			if (url.startsWith("blob:")) {
-				URL.revokeObjectURL(url);
-			}
+	let video = null;
+	program.addEventListener("output", event => options.onOutput?.(event.detail.message, event.detail.kind));
+	program.addEventListener("renderprogress", event => options.onProgress?.(event.detail));
+	program.addEventListener("video", event => {
+		video = event.detail.file;
+		event.preventDefault();
+	});
+	const started = program.start();
+	const aborted = new Promise((resolve, reject) => {
+		signal?.addEventListener("abort", () => reject(abortError(signal)), { once: true });
+	});
+	// An abort after the end is nobody's business.
+	aborted.catch(() => {});
+	try {
+		await Promise.race([started.then(() => program.finished), aborted]);
+	} catch (error) {
+		if (signal?.aborted) {
+			// A program that was still starting is quit once it runs.
+			started.then(() => program.destroy(), () => {});
+			throw abortError(signal);
 		}
-	};
-	finished.then(dropScripts, dropScripts);
-	return await finished;
+		throw error instanceof DDNetBaseError ? error : new DDNetBaseError("RenderFailed", String(error?.message ?? error));
+	}
+	program.destroy();
+	if (video === null && !options.videoSink) {
+		throw new DDNetBaseError("RenderFailed", "The demo was not rendered into a video, see the output for what went wrong.");
+	}
+	return video;
 }
 
 const CRC_TABLE = (() => {

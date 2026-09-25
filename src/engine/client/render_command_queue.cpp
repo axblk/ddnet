@@ -54,6 +54,16 @@ bool CRenderCommandQueue::WaitDequeue(SEntry &Entry)
 	return true;
 }
 
+bool CRenderCommandQueue::TryDequeue(SEntry &Entry)
+{
+	std::unique_lock Lock(m_Mutex);
+	if(m_vQueue.empty())
+		return false;
+	Entry = std::move(m_vQueue.front());
+	m_vQueue.erase(m_vQueue.begin());
+	return true;
+}
+
 bool CRenderCommandQueue::EnqueueBorrowed(CCommandBuffer *pBuffer)
 {
 	std::unique_lock Lock(m_Mutex);
@@ -250,6 +260,12 @@ void CRenderCommandQueue::WaitForIdle()
 #else
 	m_Condition.wait(Lock, [this] { return m_BuffersInFlight == 0; });
 #endif
+}
+
+void CRenderCommandQueue::WaitForFramesDone()
+{
+	std::unique_lock Lock(m_Mutex);
+	m_Condition.wait(Lock, [this] { return m_Stopped || m_vpFreeFrameBuffers.size() == FRAME_BUFFER_COUNT; });
 }
 
 IGraphics::SFrameMailboxStats CRenderCommandQueue::GetFrameMailboxStats() const

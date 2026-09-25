@@ -106,6 +106,7 @@ void thread_init_and_detach(void (*threadfunc)(void *), void *user, const char *
 /**
  * Waits on the browser's main thread by giving the browser its turn, which
  * unwinds the program's stack until the wait is over. See `web_unwound`.
+ * A program built without Asyncify, which runs in workers, just waits.
  *
  * @ingroup Threads
  *

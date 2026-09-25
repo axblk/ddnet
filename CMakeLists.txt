@@ -137,6 +137,7 @@ option(CLIENT "Compile client" ON)
 option(SERVER "Compile server" ON)
 option(TOOLS "Compile tools" ON)
 option(WEBGPU_BACKEND_PROTOTYPE "Build the optional WebGPU client backend" OFF)
+option(WEB_PLATFORM "Build the web tools on a platform layer of their own instead of SDL, in workers (emscripten only; off, render.html has no renderer)" ON)
 option(DOWNLOAD_GTEST "Download and compile GTest" ${AUTO_DEPENDENCIES_DEFAULT})
 option(STEAM "Build the Steam release version" OFF)
 option(DISCORD "Enable Discord rich presence support" OFF)
@@ -2851,7 +2852,20 @@ if(CLIENT)
     viewer_controls.h
     viewer_fullscreen.cpp
     viewer_fullscreen.h
+    viewer_gestures.cpp
+    viewer_gestures.h
     warning.cpp
+    web/audio_web.cpp
+    web/audio_web.h
+    web/input_web.cpp
+    web/page_bridge_web.h
+    web/program_thread_web.cpp
+    web/program_thread_web.h
+    web/render_thread_web.cpp
+    web/render_thread_web.h
+    web/web_platform.h
+    web/window_web.cpp
+    web/window_web.h
     window_offscreen.cpp
     window_sdl.cpp
     window_sdl.h
@@ -3243,8 +3257,14 @@ if(CLIENT)
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
   # The controls the demo player and the map viewer draw over what they show.
   set(ENGINE_CLIENT_VIEWER ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen|gestures)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_VIEWER})
+  # What the web tools stand on in place of SDL: the canvas, its events and an
+  # audio worklet (see src/engine/client/web/web_platform.h). The client keeps
+  # SDL.
+  set(ENGINE_CLIENT_WEB ${ENGINE_CLIENT})
+  list(FILTER ENGINE_CLIENT_WEB INCLUDE REGEX "src/engine/client/web/")
+  list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_WEB})
 
   # Shaders are embedded in the binary: GLSL for OpenGL, SPIR-V for Vulkan
   # (cmake/BuildVulkanShaders.cmake), see scripts/embed_shaders.py.
@@ -3403,6 +3423,36 @@ if(CLIENT)
     set(TARGETS_LINK ${TARGETS_LINK} ${NAME} PARENT_SCOPE)
   endfunction()
 
+  # The web tools' platform layer in place of SDL, for a tool's browser build.
+  # With WEB_PLATFORM off they are built on SDL as the client is.
+  if(TARGET_OS STREQUAL "emscripten" AND WEB_PLATFORM)
+    set(WEB_TOOLS_PLATFORM ON)
+    set(TOOLS_SDL2_LIBRARIES)
+  else()
+    set(WEB_TOOLS_PLATFORM OFF)
+    set(TOOLS_SDL2_LIBRARIES ${SDL2_LIBRARIES})
+  endif()
+  # What SDL, the SDL input and the controls drawn over the picture are
+  # replaced with; the page draws the controls.
+  set(WEB_TOOLS_EXCLUDE_REGEX "src/engine/client/(input|input_null|keyboard|keynames|viewer_controls|viewer_fullscreen|window_sdl)\\.(cpp|h)$")
+  # A tool on the platform layer runs in workers: its main() on a thread of
+  # its own (`WebRunProgram`, like PROXY_TO_PTHREAD without the canvas), its
+  # drawing on a render thread that is handed the canvas
+  # (OFFSCREENCANVAS_SUPPORT), and nothing of it on the page's thread but the
+  # events and the page's own glue.
+  function(use_web_platform NAME)
+    target_sources(${NAME} PRIVATE ${ENGINE_CLIENT_WEB})
+    target_compile_definitions(${NAME} PRIVATE CONF_WEB_PLATFORM)
+    target_link_options(${NAME} PRIVATE
+      "SHELL:--js-library ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js"
+      -sOFFSCREENCANVAS_SUPPORT=1
+      # In workers a wait is a real one, so the program needs no Asyncify
+      # to give the page its turn, unlike those on the page's thread.
+      -sASYNCIFY=0
+    )
+    set_property(TARGET ${NAME} APPEND PROPERTY LINK_DEPENDS ${PROJECT_SOURCE_DIR}/src/engine/client/web/web_platform.js)
+  endfunction()
+
   add_graphics_lib(engine-client-graphics ${ENGINE_CLIENT_GRAPHICS})
   target_include_directories(engine-client-graphics SYSTEM PRIVATE ${GLEW_INCLUDE_DIRS})
   if(GLEW_BUNDLED)
@@ -3415,6 +3465,17 @@ if(CLIENT)
   list(FILTER ENGINE_CLIENT_GRAPHICS_HEADLESS EXCLUDE REGEX "/backend/opengl(es)?/")
   add_graphics_lib(engine-client-graphics-headless ${ENGINE_CLIENT_GRAPHICS_HEADLESS})
   target_compile_definitions(engine-client-graphics-headless PRIVATE CONF_BACKEND_NO_OPENGL)
+
+  # The same for the tools on the web platform layer, whose renderer runs on
+  # a render thread that returns to the browser instead of waiting in it.
+  if(WEB_TOOLS_PLATFORM)
+    add_graphics_lib(engine-client-graphics-web ${ENGINE_CLIENT_GRAPHICS})
+    target_include_directories(engine-client-graphics-web SYSTEM PRIVATE ${GLEW_INCLUDE_DIRS})
+    target_compile_definitions(engine-client-graphics-web PRIVATE CONF_WEB_PLATFORM)
+    set(TOOLS_GRAPHICS_LIB engine-client-graphics-web)
+  else()
+    set(TOOLS_GRAPHICS_LIB engine-client-graphics)
+  endif()
 
   # Target
   if(TARGET_OS STREQUAL "android")
@@ -3548,7 +3609,9 @@ if(CLIENT)
   # out.
   set(STANDALONE_CLIENT_TARGETS demo-player demo-renderer map-viewer)
 
-  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android")
+  # In the browser on the web platform layer the demo player is the render
+  # tool as well, see below.
+  if(VIDEORECORDER AND (VULKAN OR WEBGPU_BACKEND_PROTOTYPE) AND NOT TARGET_OS STREQUAL "android" AND NOT WEB_TOOLS_PLATFORM)
     # Draws into a surface without a window, so no SDL and the null input. In
     # the browser, WebGPU draws into render targets without a canvas and the
     # encoder behind `IVideo` is WebCodecs instead of FFmpeg.
@@ -3607,15 +3670,24 @@ if(CLIENT)
   # the client is an app of its own (and Xcode builds the generated client
   # sources for one target only).
   if(NOT(TARGET_OS STREQUAL "android" OR TARGET_OS STREQUAL "ios"))
+    set(DEMO_PLAYER_SRC ${DEMO_CLIENT_SRC} ${ENGINE_CLIENT_VIEWER} src/engine/client/demo_player_client.cpp src/engine/client/demo_player_client.h)
+    if(WEB_TOOLS_PLATFORM)
+      # The key names stay: the binds of the game name their keys.
+      set(DEMO_PLAYER_EXCLUDE_REGEX "src/engine/client/(input|input_null|viewer_controls|viewer_fullscreen|window_sdl)\\.(cpp|h)$")
+      list(FILTER DEMO_PLAYER_SRC EXCLUDE REGEX "${DEMO_PLAYER_EXCLUDE_REGEX}")
+      # One program for both in a page: with `--render-demo` it renders the
+      # demo into a video without a page, which is what `@ddnet/demo-renderer`
+      # runs in a worker of its own. Not without the video recorder.
+      if(VIDEORECORDER)
+        list(APPEND DEMO_PLAYER_SRC src/engine/client/demo_render_client.cpp src/engine/client/demo_render_client.h)
+      endif()
+    endif()
     add_executable(demo-player EXCLUDE_FROM_ALL
-      ${DEMO_CLIENT_SRC}
-      ${ENGINE_CLIENT_VIEWER}
-      src/engine/client/demo_player_client.cpp
-      src/engine/client/demo_player_client.h
+      ${DEMO_PLAYER_SRC}
       ${DEPS_CLIENT}
       ${WAVPACK_DEP}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:${TOOLS_GRAPHICS_LIB}>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3625,13 +3697,16 @@ if(CLIENT)
     set_property(TARGET demo-player PROPERTY OUTPUT_NAME ddnet-demo-player)
     set_web_export_name(demo-player DDNetDemoPlayer)
     target_compile_definitions(demo-player PRIVATE CONF_DEMO_PLAYER_TOOL)
+    if(WEB_TOOLS_PLATFORM)
+      use_web_platform(demo-player)
+    endif()
     target_link_libraries(demo-player
       # tidy-alphabetical-start
       ${FFMPEG_LIBRARIES}
       ${FREETYPE_LIBRARIES}
       ${GLEW_LIBRARIES}
       ${PNG_LIBRARIES}
-      ${SDL2_LIBRARIES}
+      ${TOOLS_SDL2_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${WAVPACK_LIBRARIES}
       # tidy-alphabetical-end
@@ -3666,11 +3741,8 @@ if(CLIENT)
   # window and a pointer. It is the same view the map render tool draws with,
   # with somebody looking at it instead of a file to write.
   if(CLIENT AND SDL2_FOUND)
-    add_executable(map-viewer EXCLUDE_FROM_ALL
-      ${DEPS_CLIENT}
+    set(MAP_VIEWER_SRC
       ${ENGINE_CLIENT_VIEWER}
-      ${GAME_MAP}
-      ${GAME_MAP_STANDALONE}
       # The window and the keyboard, and nothing else out of the client - and
       # the asset loader, which is how the map's images are read beside each
       # other rather than one after another.
@@ -3687,8 +3759,17 @@ if(CLIENT)
       src/engine/client/window_sdl.h
       src/game/map/standalone/map_viewer_main.cpp
       # tidy-alphabetical-end
+    )
+    if(WEB_TOOLS_PLATFORM)
+      list(FILTER MAP_VIEWER_SRC EXCLUDE REGEX "${WEB_TOOLS_EXCLUDE_REGEX}")
+    endif()
+    add_executable(map-viewer EXCLUDE_FROM_ALL
+      ${DEPS_CLIENT}
+      ${GAME_MAP}
+      ${GAME_MAP_STANDALONE}
+      ${MAP_VIEWER_SRC}
       # tidy-alphabetical-start
-      $<TARGET_OBJECTS:engine-client-graphics>
+      $<TARGET_OBJECTS:${TOOLS_GRAPHICS_LIB}>
       $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-shared>
       $<TARGET_OBJECTS:game-shared>
@@ -3697,6 +3778,9 @@ if(CLIENT)
     ddnet_graphics_program(map-viewer)
     set_property(TARGET map-viewer PROPERTY OUTPUT_NAME ddnet-map-viewer)
     set_web_export_name(map-viewer DDNetMapViewer)
+    if(WEB_TOOLS_PLATFORM)
+      use_web_platform(map-viewer)
+    endif()
     if(TARGET_OS STREQUAL "emscripten")
       # The browser's own fetch, so that the map's images are fetched beside
       # each other.
@@ -3709,7 +3793,7 @@ if(CLIENT)
       ${CRYPTO_LIBRARIES}
       ${GLEW_LIBRARIES}
       ${PNG_LIBRARIES}
-      ${SDL2_LIBRARIES}
+      ${TOOLS_SDL2_LIBRARIES}
       ${VULKAN_LIBRARIES}
       ${ZLIB_LIBRARIES}
       # tidy-alphabetical-end
@@ -3730,25 +3814,32 @@ if(CLIENT)
   endif()
 
   if(TARGET_OS STREQUAL "emscripten")
-    # Four programs, three pages and one data directory. The render tool has no
-    # page of its own. The build says what a server needs.
+    # Three programs, three pages and one data directory: the demo player is
+    # the render tool as well, which has no page of its own. Without the web
+    # platform layer the render tool is a program of its own. The build says
+    # what a server needs.
+    if(WEB_TOOLS_PLATFORM)
+      set(WEB_TOOL_PROGRAMS ddnet-demo-player ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player map-viewer)
+    else()
+      set(WEB_TOOL_PROGRAMS ddnet-demo-render ddnet-demo-player ddnet-map-viewer)
+      set(WEB_TOOL_TARGETS demo-player demo-renderer map-viewer)
+    endif()
     add_custom_target(web-site
       COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${PROJECT_BINARY_DIR}
         -DSITE_DIR=${PROJECT_BINARY_DIR}/site
-        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>ddnet-demo-render$<SEMICOLON>ddnet-demo-player$<SEMICOLON>ddnet-map-viewer"
+        "-DPROGRAMS=${CLIENT_EXECUTABLE}$<SEMICOLON>$<JOIN:${WEB_TOOL_PROGRAMS},$<SEMICOLON>>"
         "-DPAGE_FILES=$<JOIN:${WEB_PAGE_NAMES},$<SEMICOLON>>"
         -P ${PROJECT_SOURCE_DIR}/cmake/assemble_web_site.cmake
       DEPENDS
         # tidy-alphabetical-start
         copy_data
         copy_web_page_files
-        demo-player
-        demo-renderer
         game-client
-        map-viewer
         web_data_index
         # tidy-alphabetical-end
+        ${WEB_TOOL_TARGETS}
       COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
       VERBATIM)
   endif()

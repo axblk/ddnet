@@ -10,8 +10,13 @@
 #include <engine/storage.h>
 
 #include <emscripten/emscripten.h>
+#include <emscripten/eventloop.h>
 #include <emscripten/fetch.h>
+#if defined(CONF_WEB_PLATFORM)
+#include <emscripten/proxying.h>
+#endif
 
+#include <algorithm>
 #include <limits>
 #include <thread>
 
@@ -291,7 +296,7 @@ void CHttpEmscripten::Shutdown()
 		}
 		m_Shutdown = true;
 	}
-	m_ConditionVariableLoop.notify_all();
+	Wake();
 }
 
 CHttpEmscripten::~CHttpEmscripten()
@@ -321,7 +326,7 @@ void CHttpEmscripten::Run(std::shared_ptr<IHttpRequest> pRequest)
 		}
 		m_PendingRequests.emplace_back(pRequestImpl);
 	}
-	m_ConditionVariableLoop.notify_all();
+	Wake();
 }
 
 bool CHttpEmscripten::HasIpresolveBug() const
@@ -334,6 +339,60 @@ void CHttpEmscripten::ThreadMain(void *pUser)
 	static_cast<CHttpEmscripten *>(pUser)->RunLoop();
 }
 
+#if defined(CONF_WEB_PLATFORM)
+void CHttpEmscripten::RunLoop()
+{
+	// The fetches call back into this thread's event loop, so the thread
+	// returns to it and does a turn whenever there is something to do.
+	emscripten_runtime_keepalive_push();
+	{
+		std::unique_lock Lock(m_Lock);
+		m_Thread = pthread_self();
+		m_Initialized = true;
+	}
+	m_ConditionVariableInit.notify_all();
+	Turn();
+}
+
+void CHttpEmscripten::Wake()
+{
+	if(m_TurnPosted.exchange(true))
+		return;
+	emscripten_proxy_async(emscripten_proxy_get_system_queue(), m_Thread, [](void *pUser) { static_cast<CHttpEmscripten *>(pUser)->Turn(); }, this);
+}
+
+void CHttpEmscripten::Turn()
+{
+	m_TurnPosted = false;
+	if(m_Finished)
+		return;
+	if(Step())
+	{
+		Finish();
+		m_Finished = true;
+		// The thread ends once this is over.
+		emscripten_runtime_keepalive_pop();
+		return;
+	}
+	// A shutdown that waits for running requests gives up on them on time.
+	std::optional<std::chrono::time_point<std::chrono::steady_clock>> ShutdownTime;
+	{
+		std::unique_lock Lock(m_Lock);
+		ShutdownTime = m_ShutdownTime;
+	}
+	if(ShutdownTime.has_value() && !m_ShutdownTimerSet)
+	{
+		m_ShutdownTimerSet = true;
+		const double Milliseconds = std::chrono::duration<double, std::milli>(ShutdownTime.value() - std::chrono::steady_clock::now()).count();
+		emscripten_set_timeout([](void *pUser) {
+			CHttpEmscripten *pThis = static_cast<CHttpEmscripten *>(pUser);
+			pThis->m_ShutdownTimerSet = false;
+			pThis->Turn();
+		},
+			std::max(Milliseconds, 0.0) + 1.0, this);
+	}
+}
+#else
 void CHttpEmscripten::RunLoop()
 {
 	{
@@ -342,122 +401,8 @@ void CHttpEmscripten::RunLoop()
 	}
 	m_ConditionVariableInit.notify_all();
 
-	while(true)
+	while(!Step())
 	{
-		{
-			std::unique_lock Lock(m_Lock);
-			if(m_Shutdown)
-			{
-				if(m_RunningRequests.empty() && m_PendingRequests.empty())
-					break;
-
-				const auto Now = std::chrono::steady_clock::now();
-				if(!m_ShutdownTime.has_value())
-				{
-					m_ShutdownTime = Now + m_ShutdownDelay;
-				}
-				else if(m_ShutdownTime < Now)
-				{
-					if(m_StartedShutdown)
-					{
-						break;
-					}
-					else
-					{
-						for(auto &[_, pRequest] : m_RunningRequests)
-						{
-							auto [ExistingElement, Inserted] = m_PendingFetchChanges.emplace(pRequest->m_RequestId, EHttpState::ABORTED);
-							if(!Inserted)
-							{
-								ExistingElement->second = EHttpState::ABORTED;
-							}
-						}
-						m_StartedShutdown = true;
-						m_ShutdownTime = Now + m_ShutdownDelay;
-					}
-				}
-			}
-		}
-
-		decltype(m_PendingRequests) PendingRequests = {};
-		decltype(m_PendingFetchChanges) PendingFetchChanges = {};
-		{
-			std::unique_lock Lock(m_Lock);
-			std::swap(m_PendingRequests, PendingRequests);
-			std::swap(m_PendingFetchChanges, PendingFetchChanges);
-		}
-
-		while(!PendingRequests.empty())
-		{
-			auto &pRequest = PendingRequests.front();
-			if(g_Config.m_DbgHttp)
-			{
-				log_debug("http", "task: %s %s", CHttpRequestEmscripten::GetRequestType(pRequest->m_Type), pRequest->m_aUrl);
-			}
-
-			if(pRequest->ShouldSkipRequest())
-			{
-				if(pRequest->m_pProgressCallback != nullptr)
-				{
-					pRequest->m_pProgressCallback->OnCompletion(EHttpState::DONE);
-				}
-				{
-					std::unique_lock WaitLock(pRequest->m_WaitMutex);
-					pRequest->m_State = EHttpState::DONE;
-				}
-				pRequest->m_WaitCondition.notify_all();
-				PendingRequests.pop_front();
-				continue;
-			}
-
-			if(m_StartedShutdown || pRequest->IsAbortRequested())
-			{
-				pRequest->OnCompletionInternal(EHttpState::ABORTED, m_StartedShutdown ? "Shutting down" : "Request aborted");
-				PendingRequests.pop_front();
-				continue;
-			}
-
-			if(!pRequest->ConfigureAndRun())
-			{
-				pRequest->OnCompletionInternal(EHttpState::ABORTED, "Failed to initialize request");
-				PendingRequests.pop_front();
-				continue;
-			}
-
-			if(pRequest->IsAbortRequested())
-			{
-				pRequest->OnCompletionInternal(EHttpState::ABORTED, "Request aborted");
-				PendingRequests.pop_front();
-				continue;
-			}
-
-			{
-				uint64_t RequestId = pRequest->m_RequestId;
-				auto [_, Inserted] = m_RunningRequests.emplace(RequestId, std::move(pRequest));
-				dbg_assert(Inserted, "Request with same ID already running");
-			}
-			PendingRequests.pop_front();
-		}
-
-		for(const auto &[RequestId, NewState] : PendingFetchChanges)
-		{
-			auto pRequest = m_RunningRequests.find(RequestId);
-			if(pRequest == m_RunningRequests.end())
-			{
-				// Requests can be aborted even if they are not in m_RunningRequests anymore.
-				// We only hold the lock to swap the pending fetch changes above, so another
-				// pending state change to abort a request can be added while the HTTP thread
-				// is removing the running request in the branch below.
-				dbg_assert(NewState == EHttpState::ABORTED, "Request for pending fetch state change not found");
-			}
-			else
-			{
-				pRequest->second->OnCompletionInternal(NewState, nullptr);
-				m_RunningRequests.erase(pRequest);
-			}
-		}
-		PendingFetchChanges.clear();
-
 		// Return control to the browser so the created fetch handles are serviced.
 		// This will cause the success, failure and progress callbacks to be called.
 		web_yield(0);
@@ -477,7 +422,135 @@ void CHttpEmscripten::RunLoop()
 			m_ConditionVariableLoop.wait_for(Lock, WaitTime, WaitPredicate);
 		}
 	}
+	Finish();
+}
 
+void CHttpEmscripten::Wake()
+{
+	m_ConditionVariableLoop.notify_all();
+}
+#endif
+
+bool CHttpEmscripten::Step()
+{
+	{
+		std::unique_lock Lock(m_Lock);
+		if(m_Shutdown)
+		{
+			if(m_RunningRequests.empty() && m_PendingRequests.empty())
+				return true;
+
+			const auto Now = std::chrono::steady_clock::now();
+			if(!m_ShutdownTime.has_value())
+			{
+				m_ShutdownTime = Now + m_ShutdownDelay;
+			}
+			else if(m_ShutdownTime < Now)
+			{
+				if(m_StartedShutdown)
+				{
+					return true;
+				}
+				else
+				{
+					for(auto &[_, pRequest] : m_RunningRequests)
+					{
+						auto [ExistingElement, Inserted] = m_PendingFetchChanges.emplace(pRequest->m_RequestId, EHttpState::ABORTED);
+						if(!Inserted)
+						{
+							ExistingElement->second = EHttpState::ABORTED;
+						}
+					}
+					m_StartedShutdown = true;
+					m_ShutdownTime = Now + m_ShutdownDelay;
+				}
+			}
+		}
+	}
+
+	decltype(m_PendingRequests) PendingRequests = {};
+	decltype(m_PendingFetchChanges) PendingFetchChanges = {};
+	{
+		std::unique_lock Lock(m_Lock);
+		std::swap(m_PendingRequests, PendingRequests);
+		std::swap(m_PendingFetchChanges, PendingFetchChanges);
+	}
+
+	while(!PendingRequests.empty())
+	{
+		auto &pRequest = PendingRequests.front();
+		if(g_Config.m_DbgHttp)
+		{
+			log_debug("http", "task: %s %s", CHttpRequestEmscripten::GetRequestType(pRequest->m_Type), pRequest->m_aUrl);
+		}
+
+		if(pRequest->ShouldSkipRequest())
+		{
+			if(pRequest->m_pProgressCallback != nullptr)
+			{
+				pRequest->m_pProgressCallback->OnCompletion(EHttpState::DONE);
+			}
+			{
+				std::unique_lock WaitLock(pRequest->m_WaitMutex);
+				pRequest->m_State = EHttpState::DONE;
+			}
+			pRequest->m_WaitCondition.notify_all();
+			PendingRequests.pop_front();
+			continue;
+		}
+
+		if(m_StartedShutdown || pRequest->IsAbortRequested())
+		{
+			pRequest->OnCompletionInternal(EHttpState::ABORTED, m_StartedShutdown ? "Shutting down" : "Request aborted");
+			PendingRequests.pop_front();
+			continue;
+		}
+
+		if(!pRequest->ConfigureAndRun())
+		{
+			pRequest->OnCompletionInternal(EHttpState::ABORTED, "Failed to initialize request");
+			PendingRequests.pop_front();
+			continue;
+		}
+
+		if(pRequest->IsAbortRequested())
+		{
+			pRequest->OnCompletionInternal(EHttpState::ABORTED, "Request aborted");
+			PendingRequests.pop_front();
+			continue;
+		}
+
+		{
+			uint64_t RequestId = pRequest->m_RequestId;
+			auto [_, Inserted] = m_RunningRequests.emplace(RequestId, std::move(pRequest));
+			dbg_assert(Inserted, "Request with same ID already running");
+		}
+		PendingRequests.pop_front();
+	}
+
+	for(const auto &[RequestId, NewState] : PendingFetchChanges)
+	{
+		auto pRequest = m_RunningRequests.find(RequestId);
+		if(pRequest == m_RunningRequests.end())
+		{
+			// Requests can be aborted even if they are not in m_RunningRequests anymore.
+			// We only hold the lock to swap the pending fetch changes above, so another
+			// pending state change to abort a request can be added while the HTTP thread
+			// is removing the running request in the branch below.
+			dbg_assert(NewState == EHttpState::ABORTED, "Request for pending fetch state change not found");
+		}
+		else
+		{
+			pRequest->second->OnCompletionInternal(NewState, nullptr);
+			m_RunningRequests.erase(pRequest);
+		}
+	}
+	PendingFetchChanges.clear();
+	return false;
+}
+
+void CHttpEmscripten::Finish()
+{
 	std::unique_lock Lock(m_Lock);
 	for(auto &pRequest : m_PendingRequests)
 	{
@@ -502,7 +575,7 @@ void CHttpEmscripten::AddPendingStateChange(uint64_t RequestId, EHttpState State
 			ExistingElement->second = State;
 		}
 	}
-	m_ConditionVariableLoop.notify_all();
+	Wake();
 }
 
 IEngineHttp *CreateEngineHttp()

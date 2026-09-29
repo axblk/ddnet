@@ -16,6 +16,7 @@
 #include <vector>
 
 class IServer;
+class IStorage;
 
 // Counts what happens in one round and turns it into a report.
 class CMatchRecorder
@@ -73,6 +74,26 @@ public:
 	 */
 	CMatchReport Report(int Tick, EMatchTermination Termination, bool SuddenDeath) const;
 };
+
+/**
+ * Writes the report of a round to a file of its own, for the operator of the
+ * server: `<end_time_utc>-<match_id>.json` in `pDirectory`, written to a
+ * temporary file first and then renamed, so that a reader never sees half a
+ * report. The file holds the JSON of `MatchReportWriteJson` in an envelope
+ * that says which server wrote it and what ended the round, and no addresses.
+ *
+ * @param pStorage Where the directory is, created if needed.
+ * @param pDirectory The directory, relative to the storage.
+ * @param Report The report.
+ * @param pEndedBy What ended the round, `ended_by` in the envelope.
+ * @param pServerName The name of the server.
+ * @param Port Its port.
+ * @param pFilename Receives the name of the file, without the directory.
+ * @param FilenameSize Size of the buffer `pFilename`.
+ *
+ * @return Whether the file was written.
+ */
+bool MatchReportWriteFile(IStorage *pStorage, const char *pDirectory, const CMatchReport &Report, const char *pEndedBy, const char *pServerName, int Port, char *pFilename, int FilenameSize);
 
 // Hands reports to clients, a few chunks per tick so that the resend buffer of a connection does not overflow.
 class CMatchReportSender

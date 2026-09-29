@@ -33,17 +33,22 @@ static const CGameModeRegistration *FindRegistration(const char *pName)
 	return pFound;
 }
 
+std::vector<const CGameModeInfo *> GameModes()
+{
+	std::vector<const CGameModeInfo *> vpModes;
+	for(const CGameModeRegistration *pMode = gs_pFirstGameMode; pMode; pMode = pMode->m_pNext)
+		vpModes.push_back(&pMode->m_Info);
+	std::sort(vpModes.begin(), vpModes.end(), [](const CGameModeInfo *pA, const CGameModeInfo *pB) { return str_comp(pA->m_pName, pB->m_pName) < 0; });
+	return vpModes;
+}
+
 const char *GameModeNames()
 {
 	// the registrations are complete before main, so the list is built once and lives as long as the program
 	static const std::string s_Names = [] {
-		std::vector<std::string> vNames;
-		for(const CGameModeRegistration *pMode = gs_pFirstGameMode; pMode; pMode = pMode->m_pNext)
-			vNames.emplace_back(pMode->m_Info.m_pName);
-		std::sort(vNames.begin(), vNames.end());
 		std::string Names;
-		for(const std::string &Name : vNames)
-			Names += (Names.empty() ? "" : ", ") + Name;
+		for(const CGameModeInfo *pInfo : GameModes())
+			Names += (Names.empty() ? "" : ", ") + std::string(pInfo->m_pName);
 		return Names;
 	}();
 	return s_Names.c_str();

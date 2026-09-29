@@ -4055,6 +4055,8 @@ if(SERVER)
     antibot.h
     authmanager.cpp
     authmanager.h
+    config_schema.cpp
+    config_schema.h
     databases/connection.cpp
     databases/connection.h
     databases/connection_pool.cpp
@@ -4536,6 +4538,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     client_connection_test.cpp
     color_test.cpp
     compression_test.cpp
+    config_schema_test.cpp
     connect_target_test.cpp
     console_test.cpp
     csv_test.cpp

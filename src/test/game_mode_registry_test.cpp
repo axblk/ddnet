@@ -1,8 +1,13 @@
+#include <base/str.h>
+
 #include <generated/protocol7.h>
 
 #include <game/server/mode/game_mode_registry.h>
 
 #include <gtest/gtest.h>
+
+#include <string>
+#include <vector>
 
 TEST(GameModeRegistry, FindsByName)
 {
@@ -32,4 +37,21 @@ TEST(GameModeRegistry, FindsByName)
 	EXPECT_EQ(FindGameMode("1on1"), nullptr);
 	EXPECT_EQ(FindGameMode("vanilla.dm"), nullptr);
 	EXPECT_EQ(FindGameMode(""), nullptr);
+}
+
+TEST(GameModeRegistry, ListsSorted)
+{
+	const std::vector<const CGameModeInfo *> vpModes = GameModes();
+	ASSERT_FALSE(vpModes.empty());
+	std::string Names;
+	for(size_t i = 0; i < vpModes.size(); i++)
+	{
+		if(i > 0)
+		{
+			EXPECT_LT(str_comp(vpModes[i - 1]->m_pName, vpModes[i]->m_pName), 0);
+		}
+		EXPECT_EQ(FindGameMode(vpModes[i]->m_pName), vpModes[i]);
+		Names += (Names.empty() ? "" : ", ") + std::string(vpModes[i]->m_pName);
+	}
+	EXPECT_EQ(Names, GameModeNames());
 }

@@ -283,6 +283,7 @@ CServer::CServer()
 	m_aShutdownReason[0] = 0;
 
 	m_pCurrentMapDataSixup = nullptr;
+	m_pPersistentData = nullptr;
 	m_SixupMapAvailable = false;
 	m_SixupMapUnconvertible = false;
 	m_aSixupMapName[0] = '\0';

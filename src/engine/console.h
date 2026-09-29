@@ -99,6 +99,8 @@ public:
 		virtual bool TakesClientId() const = 0;
 		virtual int Flags() const = 0;
 		virtual EAccessLevel GetAccessLevel() const = 0;
+		// Whether something is chained to the command, see `Chain`
+		virtual bool IsChained() const = 0;
 	};
 
 	typedef std::optional<std::vector<int>> (*FGetVictimsCommandCallback)(int ClientId, const char *pVictim, void *pUser);

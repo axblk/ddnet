@@ -1146,6 +1146,35 @@ def server_lists_clients_as_json(test_env):
 	server.wait_for_exit()
 
 
+@test
+def server_describes_its_config(test_env):
+	before = sorted(os.listdir(test_env.tmp_dir))
+	# The server path is relative to the test directory; Windows would resolve it against ours.
+	server = os.path.abspath(os.path.join(test_env.tmp_dir, test_env.ddnet_server))
+	result = subprocess.run([server, "--config-schema"], cwd=test_env.tmp_dir, capture_output=True, timeout=5 * test_env.runner.timeout_multiplier, check=False)
+	if result.returncode != 0:
+		raise AssertionError(f"--config-schema exited with {result.returncode}: {result.stderr!r}")
+	schema = json.loads(result.stdout)
+	if schema["v"] != 1:
+		raise AssertionError(f"schema version {schema['v']!r}")
+	variables = {variable["name"]: variable for variable in schema["variables"]}
+	expected = {"name": "sv_port", "type": "int", "default": 0, "min": 0, "max": 65535, "flags": ["server"], "apply": "restart", "chained": False}
+	if {key: variables["sv_port"][key] for key in expected} != expected:
+		raise AssertionError(f"sv_port {variables['sv_port']!r}")
+	if "game" not in variables["sv_hit"]["flags"] or variables["sv_hit"]["apply"] != "map_load":
+		raise AssertionError(f"sv_hit {variables['sv_hit']!r}")
+	commands = {command["name"]: command for command in schema["commands"]}
+	if not {"status", "status_json", "reload_tls_cert"} <= commands.keys():
+		raise AssertionError("commands missing from the schema")
+	if commands.get("tele", {}).get("gametypes") != ["ddnet", "mod"] or "gametypes" in commands["status"]:
+		raise AssertionError(f"game type commands {commands.get('tele')!r}")
+	if [gametype["name"] for gametype in schema["gametypes"] if gametype["default"]] != ["ddnet"]:
+		raise AssertionError(f"gametypes {schema['gametypes']!r}")
+	# Nothing is written, not even the storage directories.
+	if sorted(os.listdir(test_env.tmp_dir)) != before:
+		raise AssertionError(f"--config-schema wrote {sorted(set(os.listdir(test_env.tmp_dir)) - set(before))!r}")
+
+
 # TODO: make this less verbose
 @test
 def client_can_connect(test_env):
@@ -1833,6 +1862,58 @@ def vanilla_dm_match_lifecycle(test_env):
 	server.wait_for_exit()
 	attacker.wait_for_exit()
 	victim.wait_for_exit()
+
+
+@test
+def server_writes_match_reports(test_env):
+	client = test_env.client(["player_name reporter"])
+	server = test_env.server(["sv_gametype dm", "sv_map Tutorial", "sv_match_report_dir reports/rounds", "sv_name report test"])
+	wait_for_startup([client, server])
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	# A restart ends the round that runs.
+	server.command("restart")
+	filename = server.wait_for_log_prefix("match: v=1 ev=report file=", timeout=10).line.split("file=", 1)[1]
+	directory = os.path.join(test_env.tmp_dir, "reports", "rounds")
+	if os.listdir(directory) != [filename]:
+		raise AssertionError(f"report directory holds {os.listdir(directory)!r}, expected {filename!r}")
+	with open(os.path.join(directory, filename), encoding="utf-8") as f:
+		envelope = json.load(f)
+	report = envelope["report"]
+	if envelope["v"] != 1 or envelope["server"]["name"] != "report test" or envelope["server"]["port"] != server.port:
+		raise AssertionError(f"report envelope {envelope['server']!r}")
+	if filename != f"{report['end_time_utc']}-{report['match_id']}.json" or report["termination"] != "admin_ended" or report["mode_id"] != "dm" or envelope["ended_by"] != "restart":
+		raise AssertionError(f"report {filename!r}: {envelope!r}")
+	if [participant["display_name"] for participant in report["participants"]] != ["reporter"]:
+		raise AssertionError(f"report participants {report['participants']!r}")
+	# A map change and a shutdown end the round the same way, the envelope tells them apart.
+	for command, ended_by in [("reload", "map_change"), ("shutdown", "shutdown")]:
+		if command == "shutdown":
+			# Back in the game on the reloaded map, so that the round has a participant.
+			server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		server.command(command)
+		filename = server.wait_for_log_prefix("match: v=1 ev=report file=", timeout=10).line.split("file=", 1)[1]
+		with open(os.path.join(directory, filename), encoding="utf-8") as f:
+			envelope = json.load(f)
+		if envelope["ended_by"] != ended_by or envelope["report"]["termination"] != "admin_ended":
+			raise AssertionError(f"{command}: report {envelope!r}")
+	server.wait_for_exit()
+	client.exit()
+	client.wait_for_exit()
+
+
+@test
+def server_writes_no_empty_match_reports(test_env):
+	server = test_env.server(["sv_gametype dm", "sv_map Tutorial", "sv_match_report_dir reports/rounds"])
+	server.wait_for_startup()
+	server.wait_for_log_prefix("server: v=1 ev=ready", timeout=10)
+	server.command("reload")
+	server.wait_for_log_prefix("session: v=1 ev=map", timeout=10)
+	server.exit()
+	server.wait_for_exit()
+	directory = os.path.join(test_env.tmp_dir, "reports", "rounds")
+	if os.path.isdir(directory) and os.listdir(directory):
+		raise AssertionError(f"rounds without players were reported: {os.listdir(directory)!r}")
 
 
 @test

@@ -178,7 +178,8 @@ private:
 	CGameContext *GameServer() const { return m_pGameServer; }
 	void StartMatchReport();
 	void UpdateMatchParticipants();
-	void FinishMatchReport(EMatchTermination Termination, bool SuddenDeath = false);
+	// `pEndedBy` says what ended the round in the report's file: `round_end`, `restart`, `map_change`, `shutdown` or `not_enough_players`.
+	void FinishMatchReport(EMatchTermination Termination, const char *pEndedBy, bool SuddenDeath = false);
 	CMatchRecorder::CParticipant *MatchParticipant(CPlayer *pPlayer);
 
 	// CReadyMode::IGame, the match lifecycle and the pause of the mode for the ready mode
@@ -261,6 +262,9 @@ public:
 	IGameController(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 	virtual ~IGameController();
 	virtual void Init(CDbConnectionPool *pDbPool);
+	// Registers the commands of the mode as `Init` does, without starting
+	// it, so that they can be listed. They go away with the controller.
+	void RegisterCommandsToList() { RegisterCommands(); }
 	const CGameModeInfo &Info() const { return m_GameModeInfo; }
 	// what the mode may use of the game server
 	CGameServices &Services() const { return m_Services; }
@@ -270,8 +274,8 @@ public:
 	virtual int GameInfoFlags2(int SnappingClient) const { return 0; }
 	int TuningZoneAt(vec2 Position) const;
 	void SendLiveStats(int ClientId);
-	// ends the report of the running round without a result
-	void AbortMatchReport(EMatchTermination Termination = EMatchTermination::ADMIN_ENDED);
+	// ends the report of the running round without a result; `pEndedBy` as for FinishMatchReport, a map change unless said otherwise
+	void AbortMatchReport(EMatchTermination Termination = EMatchTermination::ADMIN_ENDED, const char *pEndedBy = "map_change");
 	void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);

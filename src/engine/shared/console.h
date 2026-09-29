@@ -38,6 +38,7 @@ class CConsole : public IConsole
 		bool TakesClientId() const override;
 		int Flags() const override { return m_Flags; }
 		EAccessLevel GetAccessLevel() const override { return m_AccessLevel; }
+		bool IsChained() const override { return m_pfnCallback == Con_Chain; }
 		void SetAccessLevel(EAccessLevel AccessLevel);
 	};
 

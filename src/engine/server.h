@@ -22,8 +22,10 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <optional>
 #include <type_traits>
+#include <vector>
 
 struct CAntibotRoundData;
 class IMap;
@@ -471,6 +473,30 @@ public:
 
 	virtual CUuid GameUuid() const = 0;
 	virtual const char *GameType() const = 0;
+	/**
+	 * A game type the server can run.
+	 */
+	struct CGameTypeName
+	{
+		// What `sv_gametype` selects it by
+		const char *m_pName;
+		// What the server advertises while it runs
+		const char *m_pDisplay;
+	};
+	/**
+	 * The game types `sv_gametype` can select, sorted by name. Known before
+	 * the game is initialized.
+	 */
+	virtual std::vector<CGameTypeName> GameTypes() const = 0;
+	/**
+	 * Registers the commands a game type adds to the console while it runs,
+	 * calls `Visit` while they are there, and removes them again. The game
+	 * type does not run, so this only serves to describe it.
+	 *
+	 * @param pGameType What `sv_gametype` selects the game type by.
+	 * @param Visit Called while the commands are registered.
+	 */
+	virtual void VisitGameTypeCommands(const char *pGameType, const std::function<void()> &Visit) = 0;
 	virtual const char *ClientScoreKind() const = 0;
 	// What `sv_gametype` selected the game type by, "ddnet" say, where
 	// `GameType` is what the server advertises.

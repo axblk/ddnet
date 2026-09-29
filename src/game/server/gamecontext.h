@@ -398,6 +398,8 @@ public:
 
 	CUuid GameUuid() const override;
 	const char *GameType() const override;
+	std::vector<CGameTypeName> GameTypes() const override;
+	void VisitGameTypeCommands(const char *pGameType, const std::function<void()> &Visit) override;
 	const char *ClientScoreKind() const override;
 	const char *GameModeId() const override;
 	char m_aVersionString[32];

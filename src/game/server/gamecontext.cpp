@@ -3877,8 +3877,9 @@ void CGameContext::OnShutdown(void *pPersistentData)
 		new(pPersistent) CPersistentData();
 		pPersistent->m_PrevGameUuid = m_GameUuid;
 	}
+	// Without data to keep, the server stops rather than changing the map.
 	if(GameHost().Controller())
-		GameHost().Controller()->AbortMatchReport();
+		GameHost().Controller()->AbortMatchReport(EMatchTermination::ADMIN_ENDED, pPersistent == nullptr ? "shutdown" : "map_change");
 
 	Antibot()->RoundEnd();
 
@@ -4016,6 +4017,24 @@ bool CGameContext::IsClientHighBandwidth(int ClientId) const
 }
 
 CUuid CGameContext::GameUuid() const { return m_GameUuid; }
+std::vector<IGameServer::CGameTypeName> CGameContext::GameTypes() const
+{
+	std::vector<CGameTypeName> vGameTypes;
+	for(const CGameModeInfo *pInfo : GameModes())
+		vGameTypes.push_back({pInfo->m_pName, pInfo->m_pGameType});
+	return vGameTypes;
+}
+
+void CGameContext::VisitGameTypeCommands(const char *pGameType, const std::function<void()> &Visit)
+{
+	// The controller takes its commands with it when it goes.
+	std::unique_ptr<IGameController> pController = CreateGameController(pGameType, GameHost().Services());
+	if(!pController)
+		return;
+	pController->RegisterCommandsToList();
+	Visit();
+}
+
 const char *CGameContext::GameType() const
 {
 	dbg_assert(m_GameHost.Controller(), "no controller");

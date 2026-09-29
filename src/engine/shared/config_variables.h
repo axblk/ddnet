@@ -529,6 +529,7 @@ MACRO_CONFIG_INT(SvRconBantime, sv_rcon_bantime, 5, 0, 1440, CFGFLAG_SERVER, "Th
 MACRO_CONFIG_INT(SvAutoDemoRecord, sv_auto_demo_record, 0, 0, 1, CFGFLAG_SERVER, "Automatically record demos")
 MACRO_CONFIG_INT(SvAutoDemoMax, sv_auto_demo_max, 10, 0, 1000, CFGFLAG_SERVER, "Maximum number of automatically recorded demos (0 = no limit)")
 MACRO_CONFIG_INT(SvTeeHistorian, sv_tee_historian, 0, 0, 1, CFGFLAG_SERVER, "Activate the tee historian that writes complete gameplay data to disk (WARNING: This will use a lot of disk space)")
+MACRO_CONFIG_STR(SvMatchReportDir, sv_match_report_dir, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Directory in the storage to write a JSON file with the report of every round to, and log its name (empty = off; race modes such as ddnet have no rounds and write none)")
 MACRO_CONFIG_INT(SvVanillaAntiSpoof, sv_vanilla_antispoof, 1, 0, 1, CFGFLAG_SERVER, "Enable antispoof for vanilla 0.6 clients")
 MACRO_CONFIG_INT(SvVanillaConnections, sv_vanilla_connections, 1, 0, 1, CFGFLAG_SERVER, "Accept 0.6 clients without security tokens (vanilla Teeworlds and old DDNet)")
 MACRO_CONFIG_INT(SvDdnetConnections, sv_ddnet_connections, 1, 0, 1, CFGFLAG_SERVER, "Accept 0.6 clients with security tokens (DDNet)")

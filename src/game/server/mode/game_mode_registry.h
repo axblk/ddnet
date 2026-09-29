@@ -2,6 +2,7 @@
 #define GAME_SERVER_MODE_GAME_MODE_REGISTRY_H
 
 #include <memory>
+#include <vector>
 
 class CGameServices;
 class IGameController;
@@ -39,6 +40,8 @@ public:
 };
 
 const CGameModeInfo *FindGameMode(const char *pName);
+// all registered modes, sorted by name
+std::vector<const CGameModeInfo *> GameModes();
 // the names of all registered modes, sorted and separated by ", "
 const char *GameModeNames();
 std::unique_ptr<IGameController> CreateGameController(const char *pName, CGameServices &Services);

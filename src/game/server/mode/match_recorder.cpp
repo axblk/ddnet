@@ -1,11 +1,17 @@
 #include "match_recorder.h"
 
+#include <base/io.h>
 #include <base/log.h>
+#include <base/str.h>
 #include <base/time.h>
 
 #include <engine/message.h>
 #include <engine/server.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/shared/protocol_ex.h>
+#include <engine/storage.h>
+
+#include <game/version.h>
 
 #include <algorithm>
 
@@ -269,5 +275,74 @@ bool CMatchReportSender::AcceptLiveRequest(int ClientId, int Tick, int TickSpeed
 	if(m_aLastLiveRequestTick[ClientId] >= 0 && Tick - m_aLastLiveRequestTick[ClientId] < TickSpeed * 2)
 		return false;
 	m_aLastLiveRequestTick[ClientId] = Tick;
+	return true;
+}
+
+bool MatchReportWriteFile(IStorage *pStorage, const char *pDirectory, const CMatchReport &Report, const char *pEndedBy, const char *pServerName, int Port, char *pFilename, int FilenameSize)
+{
+	// Each level of the directory, since the storage only makes one at a time.
+	char aDirectory[IO_MAX_PATH_LENGTH];
+	str_copy(aDirectory, pDirectory);
+	for(int i = 1; aDirectory[i] != '\0'; i++)
+	{
+		if(aDirectory[i] != '/')
+			continue;
+		aDirectory[i] = '\0';
+		pStorage->CreateFolder(aDirectory, IStorage::TYPE_SAVE);
+		aDirectory[i] = '/';
+	}
+	pStorage->CreateFolder(aDirectory, IStorage::TYPE_SAVE);
+
+	char aMatchId[UUID_MAXSTRSIZE];
+	FormatUuid(Report.m_MatchId, aMatchId, sizeof(aMatchId));
+	char aTmpPath[IO_MAX_PATH_LENGTH];
+	str_format(aTmpPath, sizeof(aTmpPath), "%s/%s.json.tmp", pDirectory, aMatchId);
+	str_format(pFilename, FilenameSize, "%lld-%s.json", (long long)Report.m_EndTimeUtc, aMatchId);
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "%s/%s", pDirectory, pFilename);
+
+	CJsonStringWriter Json;
+	Json.BeginObject();
+	Json.WriteAttribute("v");
+	Json.WriteIntValue(1);
+	Json.WriteAttribute("server");
+	Json.BeginObject();
+	Json.WriteAttribute("name");
+	Json.WriteStrValue(pServerName);
+	Json.WriteAttribute("port");
+	Json.WriteIntValue(Port);
+	Json.WriteAttribute("git");
+	if(GIT_SHORTREV_HASH)
+		Json.WriteStrValue(GIT_SHORTREV_HASH);
+	else
+		Json.WriteNullValue();
+	Json.EndObject();
+	// The termination of the report cannot tell a map change from a restart or a shutdown.
+	Json.WriteAttribute("ended_by");
+	Json.WriteStrValue(pEndedBy);
+	Json.WriteAttribute("report");
+	MatchReportWriteJson(Json, Report);
+	Json.EndObject();
+	const std::string &Output = Json.GetOutputString();
+
+	IOHANDLE File = pStorage->OpenFile(aTmpPath, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+	if(!File)
+	{
+		log_error("match", "could not open '%s' for writing", aTmpPath);
+		return false;
+	}
+	const bool Written = io_write(File, Output.data(), Output.size()) == Output.size();
+	if(io_close(File) != 0 || !Written)
+	{
+		log_error("match", "could not write '%s'", aTmpPath);
+		pStorage->RemoveFile(aTmpPath, IStorage::TYPE_SAVE);
+		return false;
+	}
+	if(!pStorage->RenameFile(aTmpPath, aPath, IStorage::TYPE_SAVE))
+	{
+		log_error("match", "could not rename '%s' to '%s'", aTmpPath, aPath);
+		pStorage->RemoveFile(aTmpPath, IStorage::TYPE_SAVE);
+		return false;
+	}
 	return true;
 }

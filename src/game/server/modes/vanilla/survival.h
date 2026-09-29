@@ -305,7 +305,7 @@ private:
 		{
 			// the match ends without a result, a new one starts once there are enough players again
 			log_info("game", "survival match aborted, not enough players");
-			this->AbortMatchReport(EMatchTermination::ABORTED);
+			this->AbortMatchReport(EMatchTermination::ABORTED, "not_enough_players");
 			Match().WaitForPlayers();
 			EnterWarmup();
 			return;

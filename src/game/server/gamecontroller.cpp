@@ -130,11 +130,18 @@ void IGameController::UpdateMatchParticipants()
 		m_MatchRecorder.SetTeamScores(TeamScore(TEAM_RED), TeamScore(TEAM_BLUE));
 }
 
-void IGameController::FinishMatchReport(EMatchTermination Termination, bool SuddenDeath)
+void IGameController::FinishMatchReport(EMatchTermination Termination, const char *pEndedBy, bool SuddenDeath)
 {
 	if(!m_MatchRecorder.IsRunning())
 		return;
 	const CMatchReport Report = m_MatchRecorder.Report(Server()->Tick(), Termination, SuddenDeath);
+	// A round nobody played in, such as one on an empty server that stops, has nothing to report.
+	if(g_Config.m_SvMatchReportDir[0] != '\0' && !Report.m_vParticipants.empty())
+	{
+		char aFilename[128];
+		if(MatchReportWriteFile(GameServer()->Storage(), g_Config.m_SvMatchReportDir, Report, pEndedBy, g_Config.m_SvName, Server()->Port(), aFilename, sizeof(aFilename)))
+			log_info("match", "v=1 ev=report file=%s", aFilename);
+	}
 	std::string Payload;
 	std::string Error;
 	if(MatchReportToPacked(Report, Payload, &Error))
@@ -153,10 +160,10 @@ void IGameController::FinishMatchReport(EMatchTermination Termination, bool Sudd
 	m_MatchRecorder.Stop();
 }
 
-void IGameController::AbortMatchReport(EMatchTermination Termination)
+void IGameController::AbortMatchReport(EMatchTermination Termination, const char *pEndedBy)
 {
 	UpdateMatchParticipants();
-	FinishMatchReport(Termination);
+	FinishMatchReport(Termination, pEndedBy);
 }
 
 bool IGameController::BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId)
@@ -705,7 +712,7 @@ void IGameController::EndRound()
 	if(!Match().EndRound(Server()->Tick()))
 		return;
 	UpdateMatchParticipants();
-	FinishMatchReport(EMatchTermination::COMPLETED, SuddenDeath);
+	FinishMatchReport(EMatchTermination::COMPLETED, "round_end", SuddenDeath);
 
 	SetGamePaused(true);
 	log_info("game", "end round type='%s'", m_pGameType);
@@ -758,7 +765,7 @@ bool IGameController::IsPausedWithoutEnd() const
 void IGameController::StartRound()
 {
 	// only a round restarted in the middle is still running, its scores are those of the last tick because the mode reset them already
-	FinishMatchReport(EMatchTermination::ADMIN_ENDED);
+	FinishMatchReport(EMatchTermination::ADMIN_ENDED, "restart");
 	ResetGame();
 
 	Match().StartRound(Server()->Tick());

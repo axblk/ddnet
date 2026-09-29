@@ -14,6 +14,7 @@
 #include <engine/map.h>
 #include <engine/server.h>
 #include <engine/server/antibot.h>
+#include <engine/server/config_schema.h>
 #include <engine/server/databases/connection.h>
 #include <engine/server/server.h>
 #include <engine/server/server_logger.h>
@@ -24,6 +25,7 @@
 #include <game/version.h>
 
 #include <mutex>
+#include <string>
 #include <vector>
 
 #if defined(CONF_FAMILY_WINDOWS)
@@ -52,6 +54,14 @@ static void HandleSigIntTerm(int Param)
 	signal(SIGTERM, SIG_DFL);
 }
 
+// Describes the binary on stdout, see `ServerConfigSchema`.
+static int PrintConfigSchema()
+{
+	const std::string Schema = ServerConfigSchema();
+	IOHANDLE Stdout = io_stdout();
+	return io_write(Stdout, Schema.data(), Schema.size()) == Schema.size() && io_flush(Stdout) == 0 ? 0 : -1;
+}
+
 int main(int argc, const char **argv)
 {
 	const int64_t MainStart = time_get();
@@ -59,6 +69,12 @@ int main(int argc, const char **argv)
 	CCmdlineFix CmdlineFix(&argc, &argv);
 	// A panic in the Rust half should fail the same way an assertion does.
 	rust_panic_use_dbg_assert();
+
+	for(int i = 1; i < argc; i++)
+	{
+		if(str_comp("--config-schema", argv[i]) == 0)
+			return PrintConfigSchema();
+	}
 
 #if !defined(CONF_PLATFORM_ANDROID)
 	bool Silent = false;

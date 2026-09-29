@@ -1,7 +1,15 @@
+#include "test.h"
+
+#include <base/io.h>
+#include <base/str.h>
+
+#include <engine/shared/json.h>
 #include <engine/shared/jsonwriter.h>
+#include <engine/storage.h>
 
 #include <game/client/match_report_view.h>
 #include <game/match_report.h>
+#include <game/server/mode/match_recorder.h>
 
 #include <gtest/gtest.h>
 
@@ -57,6 +65,43 @@ namespace
 		EXPECT_TRUE(MatchReportToPacked(Report, Result, &Error)) << Error;
 		return Result;
 	}
+}
+
+TEST(MatchReport, WritesFile)
+{
+	CTestInfo Info;
+	Info.m_DeleteTestStorageFilesOnSuccess = true;
+	std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
+	ASSERT_NE(pStorage, nullptr);
+	const CMatchReport Report = SampleReport();
+
+	char aFilename[128];
+	ASSERT_TRUE(MatchReportWriteFile(pStorage.get(), "reports/rounds", Report, "round_end", "a \"server\"", 8303, aFilename, sizeof(aFilename)));
+	EXPECT_STREQ(aFilename, "1720000120-f5a6231e-bc53-3f6f-8954-2edb2d7d36a6.json");
+
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "reports/rounds/%s", aFilename);
+	char *pContents = pStorage->ReadFileStr(aPath, IStorage::TYPE_SAVE);
+	ASSERT_NE(pContents, nullptr);
+	json_value *pJson = JsonParse(pContents, str_length(pContents));
+	free(pContents);
+	ASSERT_NE(pJson, nullptr);
+	EXPECT_EQ(json_int_get(json_object_get(pJson, "v")), 1);
+	const json_value *pServer = json_object_get(pJson, "server");
+	EXPECT_STREQ(json_string_get(json_object_get(pServer, "name")), "a \"server\"");
+	EXPECT_EQ(json_int_get(json_object_get(pServer, "port")), 8303);
+	EXPECT_STREQ(json_string_get(json_object_get(pJson, "ended_by")), "round_end");
+	// The report is exactly what clients are shown.
+	const json_value *pReport = json_object_get(pJson, "report");
+	EXPECT_STREQ(json_string_get(json_object_get(pReport, "match_id")), "f5a6231e-bc53-3f6f-8954-2edb2d7d36a6");
+	EXPECT_STREQ(json_string_get(json_object_get(pReport, "termination")), "completed");
+	EXPECT_EQ(json_array_length(json_object_get(pReport, "participants")), 2);
+	json_value_free(pJson);
+
+	// Nothing is left behind but the report.
+	char aTmpPath[IO_MAX_PATH_LENGTH];
+	str_format(aTmpPath, sizeof(aTmpPath), "reports/rounds/%s", "f5a6231e-bc53-3f6f-8954-2edb2d7d36a6.json.tmp");
+	EXPECT_FALSE(pStorage->FileExists(aTmpPath, IStorage::TYPE_SAVE));
 }
 
 TEST(MatchReport, PackedRoundTrip)

@@ -2644,6 +2644,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   storage.cpp
   stun.cpp
   stun.h
+  systemd_notify.cpp
+  systemd_notify.h
   teehistorian_ex.cpp
   teehistorian_ex.h
   teehistorian_ex_chunks.h
@@ -4588,6 +4590,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     sound_test.cpp
     str_test.cpp
     swap_endian_test.cpp
+    systemd_notify_test.cpp
     teehistorian_test.cpp
     teeinfo_test.cpp
     test.cpp

@@ -43,6 +43,7 @@
 #include <engine/shared/rust_version.h>
 #include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
+#include <engine/shared/systemd_notify.h>
 #include <engine/shared/transport_pin.h>
 #if defined(CONF_WEBSOCKETS)
 #include <engine/shared/websockets.h>
@@ -4411,6 +4412,11 @@ int CServer::Run()
 		log_info("server", "+-------------------------+");
 	}
 
+	// Everything is bound and the first map is loaded, so whatever waits for the
+	// server can go ahead.
+	if(m_RunServer < STOPPING)
+		SystemdNotify("READY=1");
+
 	// start game
 	{
 		bool NonActive = false;
@@ -4715,6 +4721,7 @@ int CServer::Run()
 			}
 		}
 	}
+	SystemdNotify("STOPPING=1");
 	const char *pDisconnectReason = "Server shutdown";
 	if(m_aShutdownReason[0])
 		pDisconnectReason = m_aShutdownReason;

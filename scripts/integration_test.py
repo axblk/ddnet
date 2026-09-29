@@ -688,7 +688,7 @@ class TeeworldsClient(Runnable):
 
 
 class Server(Runnable):
-	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], extra_env_vars={}):  # noqa: B006 mutable-default-arguments
 		name = f"server{test_env.num_servers}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# How clients check the QUIC and WebTransport certificate, as in a link.
@@ -708,6 +708,7 @@ class Server(Runnable):
 				f"conn_timeout {test_env.runner.conn_timeout}",
 			]
 			+ extra_args,
+			extra_env_vars=extra_env_vars,
 		)
 		test_env.num_servers += 1
 
@@ -867,6 +868,24 @@ def start_client(test_env):
 	wait_for_startup([client])
 	client.exit()
 	client.wait_for_exit()
+
+
+# An abstract socket name, because a path in the test directory can be longer
+# than a Unix socket address allows.
+@test(requires_linux=True)
+def server_notifies_service_manager(test_env):
+	with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+		name = f"ddnet-integration-notify-{uuid4()}"
+		notify.bind(f"\0{name}")
+		notify.settimeout(10 * test_env.runner.timeout_multiplier)
+		server = test_env.server(extra_env_vars={"NOTIFY_SOCKET": f"@{name}"})
+		server.wait_for_startup()
+		if notify.recv(256) != b"READY=1":
+			raise AssertionError("server did not report READY=1")
+		server.exit()
+		server.wait_for_exit()
+		if notify.recv(256) != b"STOPPING=1":
+			raise AssertionError("server did not report STOPPING=1")
 
 
 # TODO: make this less verbose

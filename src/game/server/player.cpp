@@ -619,7 +619,7 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
 	return m_pCharacter;
 }
 
-void CPlayer::SetTeam(int Team, bool DoChatMsg)
+void CPlayer::SetTeam(int Team)
 {
 	KillCharacter();
 
@@ -631,7 +631,9 @@ void CPlayer::SetTeam(int Team, bool DoChatMsg)
 	protocol7::CNetMsg_Sv_Team Msg;
 	Msg.m_ClientId = m_ClientId;
 	Msg.m_Team = m_Team;
-	Msg.m_Silent = !DoChatMsg;
+	// The game announces a team change in the chat, which 0.7 clients get as
+	// well. Their own message would say the same a second time.
+	Msg.m_Silent = true;
 	Msg.m_CooldownTick = m_LastSetTeam + Server()->TickSpeed() * g_Config.m_SvTeamChangeDelay;
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, -1);
 

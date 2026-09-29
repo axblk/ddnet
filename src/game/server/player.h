@@ -36,7 +36,7 @@ public:
 	// mark respawning, with weak hook if WeakHook is true and strong otherwise
 	void Respawn(bool WeakHook = false);
 	CCharacter *ForceSpawn(vec2 Pos); // required for loading savegames
-	void SetTeam(int Team, bool DoChatMsg = true);
+	void SetTeam(int Team);
 	int GetTeam() const { return m_Team; }
 	int GetCid() const { return m_ClientId; }
 	uint32_t GetUniqueCid() const { return m_UniqueClientId; }

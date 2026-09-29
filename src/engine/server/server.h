@@ -95,8 +95,9 @@ public:
 	 * The bytes of the map a client of the given protocol downloads.
 	 *
 	 * The 0.6 map is the one the game loaded, so its reader is already
-	 * holding the file; only the 0.7 map has no reader and is read by the
-	 * server itself.
+	 * holding the file; only a 0.7 version from maps7/ has no reader and is
+	 * read by the server itself. A map that Teeworlds 0.7 wrote is its own
+	 * 0.7 version.
 	 *
 	 * @param MapType Protocol the map is for.
 	 *
@@ -320,6 +321,10 @@ public:
 	unsigned m_aCurrentMapCrc[NUM_MAP_TYPES];
 	unsigned char *m_pCurrentMapDataSixup;
 	unsigned int m_aCurrentMapSize[NUM_MAP_TYPES];
+	// Whether 0.7 clients can play the current map: from its version in
+	// maps7/, or from the map itself if Teeworlds 0.7 wrote it. `sv_sixup` is
+	// only whether the operator lets them.
+	bool m_SixupMapAvailable;
 	char m_aMapDownloadUrl[256];
 
 	CDemoRecorder m_aDemoRecorder[NUM_RECORDERS];
@@ -561,7 +566,6 @@ public:
 	static void ConchainRconHelperPasswordChange(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainReservedSlotsAuthLevel(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainMapUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
-	static void ConchainSixupUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainRegisterCommunityTokenRedact(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainLoglevel(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainStdoutOutputLevel(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);

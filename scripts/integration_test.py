@@ -1722,6 +1722,156 @@ def vanilla_ctf_stock_07_match_lifecycle(test_env):
 	observer.wait_for_exit()
 
 
+SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DDNet client to play it."
+
+
+@test
+def client_07_is_told_that_the_map_has_no_07_version(test_env):
+	client = test_env.client()
+	# coverage has no version in maps7/, which no longer switches 0.7 off
+	server = test_env.server(["sv_map coverage"])
+	server.wait_for_log_prefix("sixup: 0.7 clients cannot play this map", timeout=5)
+	wait_for_startup([client, server])
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	client.wait_for_log_exact(f"client: offline error='{SIXUP_MAP_MISSING}'", timeout=10)
+	# the next map with a 0.7 version lets 0.7 clients in again
+	server.command("change_map Tutorial")
+	server.wait_for_log_prefix("game: selected game type", timeout=10)
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def client_07_is_dropped_when_the_map_has_no_07_version(test_env):
+	client = test_env.client()
+	server = test_env.server()
+	wait_for_startup([client, server])
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	# no map of size 0 and no "invalid map size", but the reason
+	server.command("change_map coverage")
+	client.wait_for_log_exact(f"client: offline error='{SIXUP_MAP_MISSING}'", timeout=10)
+	server.exit()
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def client_07_plays_a_map_that_teeworlds_07_wrote(test_env):
+	# 0.7's dm1 as a map of its own, without a version in maps7/
+	os.makedirs(os.path.join(test_env.tmp_dir, "maps"), exist_ok=True)
+	shutil.copyfile(os.path.join(test_env.runner.data_dir, "maps7", "dm1.map"), os.path.join(test_env.tmp_dir, "maps", "dm1_07.map"))
+	client = test_env.client()
+	server = test_env.server(["sv_gametype dm", "sv_map dm1_07"])
+	server.wait_for_log_exact("sixup: Teeworlds 0.7 wrote the map, 0.7 clients get it as it is", timeout=5)
+	wait_for_startup([client, server])
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test
+def client_07_follows_a_map_change_in_a_team_mode(test_env):
+	client = test_env.client()
+	server = test_env.server(["sv_gametype ctf", "sv_map ctf2"])
+	wait_for_startup([client, server])
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	# the player map tells a 0.7 client about its placeholders while the next
+	# map has no game mode yet
+	server.command("change_map ctf3")
+	server.wait_for_log_prefix("game: selected game type", timeout=10)
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_mastersrv=True)
+def server_registers_07_while_the_map_has_a_07_version(test_env):
+	mastersrv = test_env.mastersrv()
+	mastersrv.wait_for_startup()
+	server = start_registered_server(test_env, mastersrv, ["sv_quic 0", "sv_webtransport 0"])
+	wait_for_server_addresses(mastersrv, legacy_addresses(server))
+	server.command("change_map coverage")
+	server.wait_for_log_exact("register: 0.7 clients cannot play the map, no longer registering for them", timeout=10)
+	wait_for_server_addresses(mastersrv, {f"tw-0.6+udp://[::1]:{server.port}"})
+	server.command("change_map Tutorial")
+	server.wait_for_log_exact("register: 0.7 clients can play the map, registering for them again", timeout=10)
+	wait_for_server_addresses(mastersrv, legacy_addresses(server))
+	stop_registered_server(mastersrv, server, 2)
+	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def stock_07_client_keeps_the_settings_of_a_big_server(test_env):
+	# 128 slots are more than 0.7 knows, the client dropped the whole settings message
+	server = test_env.server(["sv_gametype dm", "sv_map dm1", "sv_max_clients 128"])
+	server.wait_for_startup()
+	client = test_env.teeworlds(["player_name stock-player", f"connect 127.0.0.1:{server.port}"])
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	client_id = int(join.split("ClientId=", 1)[1].split(" ", 1)[0])
+	# a team change is announced once, in the chat
+	server.command(f"set_team {client_id} -1")
+	client.wait_for_log(lambda l: "'stock-player' joined the spectators" in l.line, "the spectators message", timeout=10)
+	server.command(f"set_team {client_id} 0")
+	client.wait_for_log(lambda l: "'stock-player' joined the game" in l.line, "the game message", timeout=10)
+	server.command("say marker")
+	client.wait_for_log(lambda l: "marker" in l.line, "the marker", timeout=10)
+	lines = [Log.parse(line).line for line in client.full_stdout]
+	dropped = [line for line in lines if "dropped weird message 'Sv_ServerSettings'" in line]
+	if dropped:
+		raise AssertionError(f"the client dropped the server settings: {dropped!r}")
+	for message in ("joined the spectators", "joined the game"):
+		count = sum(f"'stock-player' {message}" in line for line in lines)
+		if count != 1:
+			raise AssertionError(f"'{message}' shown {count} times")
+	server.exit()
+	client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def stock_07_client_plays_the_vanilla_maps(test_env):
+	for game_type, map_name in (("ctf", "ctf2"), ("dm", "dm6")):
+		server = test_env.server([f"sv_gametype {game_type}", f"sv_map {map_name}"])
+		server.wait_for_startup()
+		client = test_env.teeworlds(["player_name stock-player", f"connect 127.0.0.1:{server.port}"])
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "sixup=1" not in join:
+			raise AssertionError(f"sixup=1 not found in {join!r}")
+		server.exit()
+		client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+		client.exit()
+		server.wait_for_exit()
+		client.wait_for_exit()
+
+
 @test(requires_websockets=True)
 def client_can_connect_websockets(test_env):
 	client = test_env.client(["dbg_websockets 1", "stdout_output_level 1"])

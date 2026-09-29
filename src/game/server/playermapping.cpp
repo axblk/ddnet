@@ -140,7 +140,7 @@ void CPlayerMapping::CPlayerMap::InitPlayer(CSixupCfg SixupCfg)
 			protocol7::CNetMsg_Sv_ClientInfo FakeInfo;
 			FakeInfo.m_ClientId = m_pPlayerMapping->Server()->GetMaxClients(m_ClientId) - 1;
 			FakeInfo.m_Local = 0;
-			FakeInfo.m_Team = TEAM_BLUE; // `TEAM_BLUE` to hide from ddrace scoreboards
+			FakeInfo.m_Team = m_pPlayerMapping->PlaceholderTeam();
 			FakeInfo.m_pName = " ";
 			FakeInfo.m_pClan = "";
 			FakeInfo.m_Country = -1;
@@ -403,6 +403,16 @@ bool CPlayerMapping::ReserveTeamSlots(int DDTeam, int ClientId) const
 	return !g_Config.m_SvSoloServer && m_ReserveAnyTeamSlots && DDTeam != TEAM_FLOCK && m_aTeamSizes[DDTeam] <= ms_MaxTeamSizePlayerMap && IsDDNet;
 }
 
+int CPlayerMapping::PlaceholderTeam() const
+{
+	// A 0.7 client in a race leaves the blue team out of its scoreboard, a
+	// race has no teams. In a team mode, blue players count, and the
+	// placeholders are spectators there. While the map changes, there is no
+	// mode yet; the placeholders are sent again when the player is back.
+	const IGameController *pController = m_pGameServer->GameHost().Controller();
+	return pController != nullptr && pController->IsTeamPlay() ? TEAM_SPECTATORS : TEAM_BLUE;
+}
+
 int CPlayerMapping::SeeOthersId(int ClientId) const
 {
 	return m_pServer->GetMaxClients(ClientId) - 2;
@@ -624,7 +634,7 @@ void CPlayerMapping::CPlayerMap::UpdateSeeOthers() const
 	protocol7::CNetMsg_Sv_ClientInfo NewClientInfoMsg;
 	NewClientInfoMsg.m_ClientId = SeeOthersId;
 	NewClientInfoMsg.m_Local = 0;
-	NewClientInfoMsg.m_Team = TEAM_BLUE; // `TEAM_BLUE` to hide from ddrace scoreboards
+	NewClientInfoMsg.m_Team = m_pPlayerMapping->PlaceholderTeam();
 	NewClientInfoMsg.m_pName = m_pPlayerMapping->SeeOthersName(m_ClientId);
 	NewClientInfoMsg.m_pClan = "";
 	NewClientInfoMsg.m_Country = -1;

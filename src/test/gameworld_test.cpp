@@ -1,6 +1,8 @@
 #include "test.h"
 
+#include <base/io.h>
 #include <base/logger.h>
+#include <base/mem.h>
 #include <base/types.h>
 
 #include <engine/engine.h>
@@ -445,6 +447,61 @@ namespace
 			return Match().IsSuddenDeath();
 		}
 	};
+}
+
+// A map change as the server does it between two ticks
+static void ChangeMap(GameWorld *pWorld, const char *pMapName)
+{
+	ASSERT_NE(pWorld->m_pServer->LoadMap(pMapName), 0) << pMapName;
+	pWorld->m_pGameServer->OnShutdown(pWorld->m_pServer->m_pPersistentData);
+	pWorld->m_pKernel->ReregisterInterface(pWorld->m_pGameServer);
+	pWorld->m_pGameServer->OnInit(pWorld->m_pServer->m_pPersistentData);
+}
+
+TEST_F(GameWorld, SixupMapIsAMatterOfTheMap)
+{
+	// coverage has no version for 0.7, which leaves 0.7 on for the next map
+	EXPECT_FALSE(m_pServer->m_SixupMapAvailable);
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], 0u);
+	EXPECT_EQ(g_Config.m_SvSixup, 1);
+
+	// Tutorial has one in maps7/
+	ChangeMap(this, "Tutorial");
+	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
+	void *pData;
+	unsigned Size;
+	ASSERT_TRUE(m_pStorage->ReadFile("maps7/Tutorial.map", IStorage::TYPE_ALL, &pData, &Size));
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], Size);
+	EXPECT_EQ(mem_comp(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), pData, Size), 0);
+	EXPECT_NE(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX]), 0);
+	free(pData);
+
+	ChangeMap(this, "coverage");
+	EXPECT_FALSE(m_pServer->m_SixupMapAvailable);
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], 0u);
+	EXPECT_EQ(g_Config.m_SvSixup, 1);
+}
+
+TEST_F(GameWorld, SixupMapIsTheMapThatTeeworlds07Wrote)
+{
+	// ctf1 as Teeworlds 0.7 ships it, as a map of its own without a version in maps7/
+	void *pData;
+	unsigned Size;
+	ASSERT_TRUE(m_pStorage->ReadFile("maps7/ctf1.map", IStorage::TYPE_ALL, &pData, &Size));
+	m_pStorage->CreateFolder("maps", IStorage::TYPE_SAVE);
+	IOHANDLE File = m_pStorage->OpenFile("maps/ctf1_07.map", IOFLAG_WRITE, IStorage::TYPE_SAVE);
+	ASSERT_TRUE(File);
+	EXPECT_EQ(io_write(File, pData, Size), Size);
+	io_close(File);
+	free(pData);
+
+	ChangeMap(this, "ctf1_07");
+	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], Size);
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIX], Size);
+	EXPECT_EQ(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), m_pServer->CurrentMapData(CServer::MAP_TYPE_SIX));
+	EXPECT_EQ(m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIX]);
+	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX]), 0);
 }
 
 TEST_F(GameWorld, ClosestCharacter)

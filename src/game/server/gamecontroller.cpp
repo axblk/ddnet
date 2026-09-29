@@ -1019,7 +1019,9 @@ void IGameController::Snap(int SnappingClient)
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_GAMEOVER;
 		if(Match().IsSuddenDeath())
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_SUDDENDEATH;
-		if(IsGamePaused())
+		// A game over pauses the world, but a 0.7 client would show a paused
+		// game on top of the scores
+		if(IsGamePaused() && !(GameData.m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER))
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
 		// A 0.7 client counts warmup down to the end tick and shows it after
 		// a match as the time the match took, which is what a 0.7 server

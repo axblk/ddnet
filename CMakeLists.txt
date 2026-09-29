@@ -1929,6 +1929,16 @@ set(EXPECTED_DATA
   maps7/Tsunami.map
   maps7/Tutorial.map
   maps7/ctf1.map
+  maps7/ctf2.map
+  maps7/ctf3.map
+  maps7/ctf4.map
+  maps7/ctf6.map
+  maps7/ctf7.map
+  maps7/dm1.map
+  maps7/dm2.map
+  maps7/dm6.map
+  maps7/dm8.map
+  maps7/dm9.map
   maps7/readme.txt
   menuimages/demos.png
   menuimages/editor.png
@@ -4453,6 +4463,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     map_context_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
+    maps7_test.cpp
     match_journal_test.cpp
     match_report_test.cpp
     math_test.cpp

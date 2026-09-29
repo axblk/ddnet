@@ -773,6 +773,10 @@ void CGameContext::SendSettings(int ClientId) const
 	Msg.m_TeamLock = 0;
 	Msg.m_TeamBalance = m_GameHost.Controller()->IsTeamPlay() && g_Config.m_SvTeambalanceTime != 0;
 	Msg.m_PlayerSlots = Server()->MaxClients() - g_Config.m_SvSpectatorSlots;
+	// A 0.7 client knows 64 players at most and drops the whole message if a
+	// number is larger, and then allows no player to join the game
+	Msg.m_KickMin = std::min<int>(Msg.m_KickMin, LEGACY_MAX_CLIENTS);
+	Msg.m_PlayerSlots = std::clamp<int>(Msg.m_PlayerSlots, 0, LEGACY_MAX_CLIENTS);
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_NORECORD, ClientId);
 }
 

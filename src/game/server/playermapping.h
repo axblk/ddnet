@@ -120,6 +120,8 @@ public:
 	ESeeOthersInd SeeOthersInd(int ClientId, int MapId) const;
 	const char *SeeOthersName(int ClientId);
 	bool ReserveTeamSlots(int DDTeam, int ClientId) const;
+	// the team in which a 0.7 client is told about the placeholders of its player map
+	int PlaceholderTeam() const;
 };
 
 #endif

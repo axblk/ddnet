@@ -22,6 +22,9 @@ public:
 	// `pInfo` must be an encoded JSON object.
 	virtual void OnNewInfo(const char *pInfo) = 0;
 	virtual void OnModernTrustChanged(const char *pQuicFragment, const char *pWebTransportFragment) = 0;
+	// Whether 0.7 clients can play the current map. The server is only
+	// registered for them while they can and `sv_sixup` lets them.
+	virtual void OnSixupMapChange(bool Available) = 0;
 	virtual void OnShutdown() = 0;
 };
 

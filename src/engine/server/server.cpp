@@ -51,6 +51,7 @@
 
 #include <generated/protocol.h>
 
+#include <game/mapitems.h>
 #include <game/version.h>
 
 #include <zlib.h>
@@ -61,6 +62,9 @@
 #include <vector>
 
 using namespace std::chrono_literals;
+
+// why a 0.7 client is dropped, or not let in, while the map has no 0.7 version
+static constexpr const char *SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DDNet client to play it.";
 
 #if defined(CONF_PLATFORM_ANDROID)
 extern std::vector<std::string> FetchAndroidServerCommandQueue();
@@ -277,6 +281,7 @@ CServer::CServer()
 	m_aShutdownReason[0] = 0;
 
 	m_pCurrentMapDataSixup = nullptr;
+	m_SixupMapAvailable = false;
 	for(unsigned int &MapSize : m_aCurrentMapSize)
 	{
 		MapSize = 0;
@@ -1487,6 +1492,10 @@ void CServer::SendCapabilities(int ClientId)
 void CServer::SendMap(int ClientId)
 {
 	int MapType = IsSixup(ClientId) ? MAP_TYPE_SIXUP : MAP_TYPE_SIX;
+	// A 0.7 client takes a map of size 0 as invalid. Without a 0.7 version
+	// of the map, it is dropped with the reason instead.
+	if(MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable)
+		return;
 	{
 		CMsgPacker Msg(NETMSG_MAP_DETAILS, true);
 		Msg.AddString(GameServer()->Map()->BaseName(), 0);
@@ -1688,7 +1697,9 @@ const unsigned char *CServer::CurrentMapData(int MapType)
 {
 	dbg_assert(MapType == MAP_TYPE_SIX || MapType == MAP_TYPE_SIXUP, "Map type invalid: %d", MapType);
 
-	return MapType == MAP_TYPE_SIX ? GameServer()->Map()->MapData() : m_pCurrentMapDataSixup;
+	if(MapType == MAP_TYPE_SIXUP && m_pCurrentMapDataSixup != nullptr)
+		return m_pCurrentMapDataSixup;
+	return GameServer()->Map()->MapData();
 }
 
 bool CServer::UpdateQuicMaps()
@@ -1697,7 +1708,7 @@ bool CServer::UpdateQuicMaps()
 		return true;
 	for(uint32_t MapType = MAP_TYPE_SIX; MapType <= MAP_TYPE_SIXUP; ++MapType)
 	{
-		if(MapType == MAP_TYPE_SIXUP && !Config()->m_SvSixup)
+		if(MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable)
 			continue;
 		if(!m_QuicTransport.SetMap(
 			   MapType,
@@ -2377,6 +2388,12 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 		char aReason[256];
 		str_format(aReason, sizeof(aReason), "Wrong version. Server is running '%s' and client '%s'", GameServer()->NetVersion(), pVersion);
 		DropClient(ClientId, aReason);
+		return;
+	}
+
+	if(IsSixup(ClientId) && !m_SixupMapAvailable)
+	{
+		DropClient(ClientId, SIXUP_MAP_MISSING);
 		return;
 	}
 
@@ -3817,38 +3834,40 @@ int CServer::LoadMap(const char *pMapName)
 		m_aMapDownloadUrl[0] = '\0';
 	}
 
-	// load sixup version of the map
-	if(Config()->m_SvSixup)
+	// The map 0.7 clients download: its version in maps7/, or the map itself
+	// if Teeworlds 0.7 wrote it. Without either, 0.7 clients cannot play it,
+	// which is a matter of this map only.
+	free(m_pCurrentMapDataSixup);
+	m_pCurrentMapDataSixup = nullptr;
+	str_format(aBuf, sizeof(aBuf), "maps7/%s.map", pMapName);
+	void *pData;
+	if(Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pData, &m_aCurrentMapSize[MAP_TYPE_SIXUP]))
 	{
-		str_format(aBuf, sizeof(aBuf), "maps7/%s.map", pMapName);
-		void *pData;
-		if(!Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pData, &m_aCurrentMapSize[MAP_TYPE_SIXUP]))
-		{
-			Config()->m_SvSixup = 0;
-			if(m_pRegister)
-			{
-				m_pRegister->OnConfigChange();
-			}
-			log_error("sixup", "couldn't load map %s", aBuf);
-			log_info("sixup", "disabling 0.7 compatibility");
-		}
-		else
-		{
-			free(m_pCurrentMapDataSixup);
-			m_pCurrentMapDataSixup = (unsigned char *)pData;
-
-			m_aCurrentMapSha256[MAP_TYPE_SIXUP] = sha256(m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
-			m_aCurrentMapCrc[MAP_TYPE_SIXUP] = crc32(0, m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
-			sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIXUP], aSha256, sizeof(aSha256));
-			str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
-			Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "sixup", aBufMsg);
-		}
+		m_pCurrentMapDataSixup = (unsigned char *)pData;
+		m_aCurrentMapSha256[MAP_TYPE_SIXUP] = sha256(m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
+		m_aCurrentMapCrc[MAP_TYPE_SIXUP] = crc32(0, m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
+		m_SixupMapAvailable = true;
+		sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIXUP], aSha256, sizeof(aSha256));
+		str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
+		Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "sixup", aBufMsg);
 	}
-	if(!Config()->m_SvSixup)
+	else if(IsTeeworlds07Map(GameServer()->Map()))
 	{
-		free(m_pCurrentMapDataSixup);
-		m_pCurrentMapDataSixup = nullptr;
+		m_aCurrentMapSha256[MAP_TYPE_SIXUP] = m_aCurrentMapSha256[MAP_TYPE_SIX];
+		m_aCurrentMapCrc[MAP_TYPE_SIXUP] = m_aCurrentMapCrc[MAP_TYPE_SIX];
+		m_aCurrentMapSize[MAP_TYPE_SIXUP] = m_aCurrentMapSize[MAP_TYPE_SIX];
+		m_SixupMapAvailable = true;
+		log_info("sixup", "Teeworlds 0.7 wrote the map, 0.7 clients get it as it is");
 	}
+	else
+	{
+		m_aCurrentMapSize[MAP_TYPE_SIXUP] = 0;
+		m_SixupMapAvailable = false;
+		if(Config()->m_SvSixup)
+			log_info("sixup", "0.7 clients cannot play this map: Teeworlds 0.7 did not write it and there is no %s", aBuf);
+	}
+	if(m_pRegister)
+		m_pRegister->OnSixupMapChange(m_SixupMapAvailable);
 
 	for(int i = 0; i < MAX_CLIENTS; i++)
 		m_aPrevStates[i] = m_aClients[i].m_State;
@@ -4086,6 +4105,7 @@ int CServer::Run()
 	char aWebTransportFragment[160];
 	FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
 	m_pRegister = CreateRegister(&g_Config, m_pConsole, m_pEngine, m_pHttp, g_Config.m_SvRegisterPort > 0 ? g_Config.m_SvRegisterPort : this->Port(), m_NetServer.GetGlobalToken(), m_LegacyUdpStarted, m_QuicStarted, m_WebTransportStarted, g_Config.m_SvRegisterHostname, aQuicFragment, aWebTransportFragment);
+	m_pRegister->OnSixupMapChange(m_SixupMapAvailable);
 
 	m_NetServer.SetCallbacks(NewClientCallback, NewClientNoAuthCallback, ClientRejoinCallback, DelClientCallback, this);
 
@@ -4204,6 +4224,13 @@ int CServer::Run()
 								CAuthManager::AuthLevelToRoleName(GetAuthedState(ClientId)),
 								GetAuthName(ClientId));
 						}
+					}
+
+					// 0.7 clients cannot follow to a map without a 0.7 version
+					for(int ClientId = 0; ClientId < MAX_CLIENTS && !m_SixupMapAvailable; ClientId++)
+					{
+						if(m_aClients[ClientId].m_State != CClient::STATE_EMPTY && m_aClients[ClientId].m_Sixup)
+							DropClient(ClientId, SIXUP_MAP_MISSING);
 					}
 
 					if(ErrorShutdown())
@@ -5403,16 +5430,6 @@ void CServer::ConchainMapUpdate(IConsole::IResult *pResult, void *pUserData, ICo
 	}
 }
 
-void CServer::ConchainSixupUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
-{
-	pfnCallback(pResult, pCallbackUserData);
-	CServer *pThis = static_cast<CServer *>(pUserData);
-	if(pResult->NumArguments() >= 1 && pThis->GameServer()->Map()->IsLoaded())
-	{
-		pThis->m_MapReload |= (pThis->m_pCurrentMapDataSixup != nullptr) != (pResult->GetInteger(0) != 0);
-	}
-}
-
 void CServer::ConchainRegisterCommunityTokenRedact(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
 {
 	// community tokens look like this:
@@ -5553,7 +5570,6 @@ void CServer::RegisterCommands()
 	Console()->Chain("sv_rcon_helper_password", ConchainRconHelperPasswordChange, this);
 	Console()->Chain("sv_reserved_slots_auth_level", ConchainReservedSlotsAuthLevel, this);
 	Console()->Chain("sv_map", ConchainMapUpdate, this);
-	Console()->Chain("sv_sixup", ConchainSixupUpdate, this);
 	Console()->Chain("sv_register_community_token", ConchainRegisterCommunityTokenRedact, nullptr);
 
 	Console()->Chain("loglevel", ConchainLoglevel, this);

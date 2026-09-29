@@ -162,6 +162,7 @@ class CRegister : public IRegister
 	bool m_LegacyUdpStarted;
 	bool m_QuicStarted;
 	bool m_WebTransportStarted;
+	bool m_SixupMapAvailable = true;
 	char m_aConnlessTokenHex[16];
 	char m_aRegisterHostname[256] = {};
 	char m_aQuicFragment[160] = {};
@@ -192,6 +193,7 @@ public:
 	bool OnPacket(const CNetChunk *pPacket) override;
 	void OnNewInfo(const char *pInfo) override;
 	void OnModernTrustChanged(const char *pQuicFragment, const char *pWebTransportFragment) override;
+	void OnSixupMapChange(bool Available) override;
 	void OnShutdown() override;
 };
 
@@ -615,7 +617,7 @@ void CRegister::UpdateProtocolEnabled()
 		else
 			Enabled &= (Info.m_Transport == ETransport::QUIC ? m_QuicStarted : m_WebTransportStarted) && !m_aProtocols[Protocol].Unsupported();
 		if(Info.m_Sixup)
-			Enabled &= m_pConfig->m_SvSixup != 0;
+			Enabled &= m_pConfig->m_SvSixup != 0 && m_SixupMapAvailable;
 		if(Info.m_Ipresolve == IPRESOLVE::V6)
 			Enabled &= m_pConfig->m_SvIpv4Only == 0;
 		if(Enabled == m_aProtocolEnabled[Protocol])
@@ -856,6 +858,22 @@ void CRegister::OnModernTrustChanged(const char *pQuicFragment, const char *pWeb
 		if(m_aProtocolEnabled[Protocol] && ((QuicChanged && Transport == ETransport::QUIC) || (WebTransportChanged && Transport == ETransport::WEBTRANSPORT)))
 			m_aProtocols[Protocol].SendRegister();
 	}
+}
+
+void CRegister::OnSixupMapChange(bool Available)
+{
+	if(Available == m_SixupMapAvailable)
+		return;
+	m_SixupMapAvailable = Available;
+	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
+	{
+		if(ms_aProtocolInfos[Protocol].m_Sixup && m_aProtocolRequested[Protocol] && m_pConfig->m_SvSixup)
+		{
+			log_info("register", "%s", Available ? "0.7 clients can play the map, registering for them again" : "0.7 clients cannot play the map, no longer registering for them");
+			break;
+		}
+	}
+	UpdateProtocolEnabled();
 }
 
 void CRegister::OnShutdown()

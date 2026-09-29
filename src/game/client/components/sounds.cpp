@@ -147,6 +147,11 @@ void CSounds::OnReset()
 		Sound()->StopAll();
 		ClearQueue();
 	}
+	// Which sample of a set played last belonged to what was shown before, and
+	// picking the next one draws on `rand()`: forgetting it lets a demo sound
+	// and look the same however it was come to.
+	for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
+		g_pData->m_aSounds[SetId].m_Last = -1;
 }
 
 void CSounds::OnStateChange(int NewState, int OldState)

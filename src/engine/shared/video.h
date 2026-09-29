@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 typedef std::function<void(short *pFinalOut, unsigned Frames)> ISoundMixFunc;
@@ -58,8 +59,9 @@ void ProbeVideoEncoders(class IEngine *pEngine);
  * Logs how the video export arguments are used.
  *
  * @param pUsageName Name of the program as the usage message should show it.
+ * @param SeveralDemos Whether the program takes several demos at once.
  */
-void PrintVideoExportUsage(const char *pUsageName);
+void PrintVideoExportUsage(const char *pUsageName, bool SeveralDemos = false);
 
 class CVideoExportSettings
 {
@@ -115,6 +117,11 @@ public:
 	bool m_ListCodecs = false;
 	char m_aDemoPath[IO_MAX_PATH_LENGTH] = {};
 	char m_aVideoPath[IO_MAX_PATH_LENGTH] = {};
+	/**
+	 * Every demo that was named, in order; the first is `m_aDemoPath`. With
+	 * more than one, `m_aVideoPath` is the directory the videos go into.
+	 */
+	std::vector<std::string> m_vDemoPaths;
 
 	/**
 	 * Takes the video export arguments off the command line and leaves the
@@ -127,10 +134,13 @@ public:
 	 * @param pUsageName Name of the program in the usage message.
 	 * @param AcceptPositional Whether the demo and the output file may be named
 	 * without a flag.
+	 * @param SeveralDemos Whether more than one demo may be named, each with
+	 * `--render-demo` or, with `AcceptPositional`, as a file ending in
+	 * `.demo`. Otherwise the last one named counts.
 	 *
 	 * @return `false` when the arguments are invalid, which has been logged.
 	 */
-	bool ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments, const char *pUsageName, bool AcceptPositional = false);
+	bool ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments, const char *pUsageName, bool AcceptPositional = false, bool SeveralDemos = false);
 
 	/**
 	 * The settings of the export, read from the configuration. Call after the

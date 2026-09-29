@@ -1041,6 +1041,11 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 		m_ActiveRecordings.reset();
 	}
 
+#if defined(CONF_VIDEORECORDER)
+	if(m_VideoView.SessionId() == SessionId)
+		m_VideoView.ResetCamera();
+#endif
+
 	if(SessionId != Sessions()->FocusedSessionId())
 		return;
 
@@ -1084,6 +1089,7 @@ void CGameClient::OnSessionClosed(CSessionId SessionId)
 	{
 		pView->SetSpectator(false);
 		pView->m_SpectatorCursor.Reset();
+		pView->ResetCamera();
 	}
 
 	for(auto &pComponent : m_vpAll)

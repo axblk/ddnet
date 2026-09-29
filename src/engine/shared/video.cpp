@@ -37,22 +37,36 @@ bool VideoExportInterrupted()
 	return true;
 }
 
-void PrintVideoExportUsage(const char *pUsageName)
+void PrintVideoExportUsage(const char *pUsageName, bool SeveralDemos)
 {
 	log_info("videorecorder", "Usage: %s --render-demo <demo> --output <video.mp4> [console commands]", pUsageName);
+	if(SeveralDemos)
+	{
+		log_info("videorecorder", "       %s <demo> <demo>... --output <directory> [console commands]", pUsageName);
+		log_info("videorecorder", "Several demos are rendered one after the other, each into a video named after");
+		log_info("videorecorder", "it in the directory.");
+	}
 	log_info("videorecorder", "  --list-codecs      List the encoders that work on this machine");
 	log_info("videorecorder", "  --help             Show this");
 	log_info("videorecorder", "The video is configured by the cl_video_* settings, which can be set on the");
 	log_info("videorecorder", "command line like any other console command, e.g. `cl_video_width 1280`.");
 }
 
-bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments, const char *pUsageName, bool AcceptPositional)
+bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments, const char *pUsageName, bool AcceptPositional, bool SeveralDemos)
 {
 	CCommandLineVideoExport Parsed;
 	char aError[256] = {};
 	std::vector<const char *> vRemaining;
 	vRemaining.reserve(ArgumentCount);
 	vRemaining.push_back(ppArguments[0]);
+	const auto &&AddDemo = [&](const char *pPath) {
+		if(!SeveralDemos)
+			Parsed.m_vDemoPaths.clear();
+		if(Parsed.m_vDemoPaths.empty())
+			str_copy(Parsed.m_aDemoPath, pPath);
+		Parsed.m_vDemoPaths.emplace_back(pPath);
+		Parsed.m_Export = true;
+	};
 	for(int Argument = 1; Argument < ArgumentCount && aError[0] == '\0'; ++Argument)
 	{
 		const char *pArgument = ppArguments[Argument];
@@ -63,10 +77,7 @@ bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&p
 			if(pValue == nullptr || pValue[0] == '\0' || str_length(pValue) >= static_cast<int>(sizeof(Parsed.m_aDemoPath)))
 				str_copy(aError, "Invalid value for --render-demo.");
 			else
-			{
-				str_copy(Parsed.m_aDemoPath, pValue);
-				Parsed.m_Export = true;
-			}
+				AddDemo(pValue);
 		}
 		else if(str_comp(pArgument, "--output") == 0)
 		{
@@ -80,17 +91,16 @@ bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&p
 			Parsed.m_ListCodecs = true;
 		else if(str_comp(pArgument, "--help") == 0 || str_comp(pArgument, "-h") == 0)
 			Parsed.m_Help = true;
-		else if(AcceptPositional && pArgument[0] != '-' && Parsed.m_aVideoPath[0] == '\0')
+		else if(AcceptPositional && pArgument[0] != '-' && (Parsed.m_aVideoPath[0] == '\0' || (SeveralDemos && str_endswith(pArgument, ".demo"))))
 		{
-			if(!Parsed.m_Export)
+			// The first file is a demo whatever it is called; after it, only
+			// what is called one is another.
+			if(!Parsed.m_Export || (SeveralDemos && str_endswith(pArgument, ".demo")))
 			{
 				if(str_length(pArgument) >= static_cast<int>(sizeof(Parsed.m_aDemoPath)))
 					str_copy(aError, "The demo path is too long.");
 				else
-				{
-					str_copy(Parsed.m_aDemoPath, pArgument);
-					Parsed.m_Export = true;
-				}
+					AddDemo(pArgument);
 			}
 			else if(str_length(pArgument) >= static_cast<int>(sizeof(Parsed.m_aVideoPath)) - str_length(".mp4.partial"))
 				str_copy(aError, "The output path is too long.");
@@ -105,11 +115,11 @@ bool CCommandLineVideoExport::ParseArguments(int &ArgumentCount, const char **&p
 	if(aError[0] != '\0')
 	{
 		log_error("videorecorder", "%s", aError);
-		PrintVideoExportUsage(pUsageName);
+		PrintVideoExportUsage(pUsageName, SeveralDemos);
 		return false;
 	}
 	if(Parsed.m_Help)
-		PrintVideoExportUsage(pUsageName);
+		PrintVideoExportUsage(pUsageName, SeveralDemos);
 
 	*this = Parsed;
 	vArguments = std::move(vRemaining);

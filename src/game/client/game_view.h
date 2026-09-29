@@ -244,6 +244,18 @@ public:
 	void SetViewport(CViewport Viewport) { m_Viewport = Viewport; }
 	vec2 CameraPosition() const { return m_Camera.m_Center; }
 	void SetCameraPosition(vec2 Position) { m_Camera.m_Center = Position; }
+	/**
+	 * Forgets where the camera was and how it was moving, for a view whose
+	 * session closed: the next one starts the way the first one did. Whether
+	 * a spectator follows the camera the server sends is the user's choice
+	 * and stays.
+	 */
+	void ResetCamera()
+	{
+		const bool AutoSpecCamera = m_Camera.m_AutoSpecCamera;
+		m_Camera = CCameraState();
+		m_Camera.m_AutoSpecCamera = AutoSpecCamera;
+	}
 	float Zoom() const { return m_Camera.m_Zoom; }
 	void SetZoom(float Zoom) { m_Camera.m_Zoom = Zoom; }
 	vec2 CursorPosition() const { return m_CursorPosition; }

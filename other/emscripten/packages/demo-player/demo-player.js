@@ -5,7 +5,7 @@
 // end of the calls is the `DemoPlayer*` block in
 // `src/engine/client/demo_player_client.cpp`.
 
-import { addIcons, autoHide, exportSettingsForm, fullscreen, paintIcons, Program, ViewerElement } from "@ddnet/base";
+import { addIcons, autoHide, demoInfoSections, exportSettingsForm, fillInfo, fullscreen, paintIcons, Program, ViewerElement } from "@ddnet/base";
 
 addIcons({
 	play: '<path d="M7.5 3.8 20.5 12 7.5 20.2Z"/>',
@@ -22,6 +22,7 @@ addIcons({
 	settings: '<path d="M10.3 2.5h3.4l.5 2.6 1.9.8 2.2-1.5 2.4 2.4-1.5 2.2.8 1.9 2.6.5v3.4l-2.6.5-.8 1.9 1.5 2.2-2.4 2.4-2.2-1.5-1.9.8-.5 2.6h-3.4l-.5-2.6-1.9-.8-2.2 1.5-2.4-2.4 1.5-2.2-.8-1.9-2.6-.5v-3.4l2.6-.5.8-1.9-1.5-2.2 2.4-2.4 2.2 1.5 1.9-.8Z"/><circle cx="12" cy="12" r="3.2" fill="#000"/>',
 	back: '<path d="M14.8 5 7.8 12l7 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>',
 	close: '<path d="M6 6 18 18M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+	info: '<circle cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="2.2"/><rect x="10.8" y="10.4" width="2.4" height="7.2" rx="1.2"/><circle cx="12" cy="7.4" r="1.5"/>',
 });
 
 const PROGRAM = "ddnet-demo-player.js";
@@ -158,6 +159,10 @@ export class DemoPlayer extends Program {
 		return JSON.parse(this.call("DemoPlayerPlayers", "string") || "[]");
 	}
 
+	info() {
+		return JSON.parse(this.call("DemoPlayerInfo", "string") || "{}");
+	}
+
 	zoom(factor) {
 		return factor === undefined ? this.number("DemoPlayerZoom") : this.number("DemoPlayerZoomBy", factor);
 	}
@@ -207,7 +212,7 @@ export class DemoPlayer extends Program {
 	// Only a server demo needs it, a client demo follows its recorder.
 	startExport(options = {}) {
 		return this.call("DemoPlayerStartExport", "number",
-			["number", "number", "number", "number", "number", "string", "number", "number", "number"],
+			["number", "number", "number", "number", "number", "string", "number", "number", "number", "number", "number", "number"],
 			[
 				options.width ?? 0,
 				options.height ?? 0,
@@ -218,6 +223,11 @@ export class DemoPlayer extends Program {
 				options.hud ? 1 : 0,
 				options.chat === false ? 0 : 1,
 				options.follow ?? SPEC_FOLLOW,
+				options.highDetail === false ? 0 : 1,
+				// Everybody's, as `cl_video_show_direction 2`: in a demo that
+				// includes whoever recorded it.
+				options.keyPresses ? 2 : 0,
+				options.nameplates === false ? 0 : 1,
 			]) === 1;
 	}
 
@@ -419,6 +429,13 @@ const BAR_HTML = `
 		<button class="viewer-text-button" data-role="export-start">Export</button>
 	</div>
 </div>
+<div class="viewer-popup viewer-panel" data-role="info-panel" role="dialog" aria-label="About this demo" hidden>
+	<div class="viewer-panel-title">About this demo</div>
+	<dl class="viewer-info" data-role="info"></dl>
+	<div class="viewer-panel-actions">
+		<button class="viewer-text-button viewer-text-button-quiet" data-role="info-close">Close</button>
+	</div>
+</div>
 <div class="viewer-bar" data-role="bar" hidden>
 	<input class="viewer-seek" data-role="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek">
 	<div class="viewer-row">
@@ -481,7 +498,7 @@ export class DemoControls {
 	}
 
 	panelOpen() {
-		return !this.part("export-panel").hidden;
+		return !this.part("export-panel").hidden || !this.part("info-panel").hidden;
 	}
 
 	// `keyboard` says whether the menu is used from the keyboard, which then
@@ -506,6 +523,7 @@ export class DemoControls {
 
 	openPanel() {
 		this.openMenu(false);
+		this.part("info-panel").hidden = true;
 		const panel = this.part("export-panel");
 		panel.hidden = false;
 		this.say("");
@@ -516,6 +534,25 @@ export class DemoControls {
 
 	closePanel() {
 		this.part("export-panel").hidden = true;
+		this.part("info-panel").hidden = true;
+	}
+
+	openInfo() {
+		this.openMenu(false);
+		this.part("info-panel").hidden = false;
+		this.updateInfo();
+		this.autoHide.show();
+		this.part("info-close").focus();
+	}
+
+	// The players come as the demo names them, so the panel is filled again
+	// while it is open.
+	updateInfo() {
+		const text = this.player.call("DemoPlayerInfo", "string") || "{}";
+		if (text !== this.infoText) {
+			this.infoText = text;
+			fillInfo(this.part("info"), demoInfoSections(JSON.parse(text)));
+		}
 	}
 
 	say(message) {
@@ -625,6 +662,7 @@ export class DemoControls {
 		// A click from the keyboard has no pointer position.
 		on(part("settings"), "click", event => this.openMenu(!this.menuOpen(), null, event.detail === 0));
 		on(part("export-cancel"), "click", () => this.closePanel());
+		on(part("info-close"), "click", () => this.closePanel());
 		on(part("export-stop"), "click", () => player.cancelExport());
 		on(part("export-start"), "click", () => this.startExport());
 		this.noEncoder = typeof VideoEncoder === "undefined";
@@ -737,6 +775,7 @@ export class DemoControls {
 			if (!this.noEncoder) {
 				items.push(row("Export video…", () => this.openPanel(), { icon: "save" }));
 			}
+			items.push(row("About this demo", () => this.openInfo(), { icon: "info" }));
 		}
 		menu.replaceChildren(...items);
 		paintIcons(menu);
@@ -750,6 +789,9 @@ export class DemoControls {
 		const length = player.duration;
 		part("bar").hidden = !(length > 0);
 		this.updateExport();
+		if (!part("info-panel").hidden) {
+			this.updateInfo();
+		}
 		if (!(length > 0)) {
 			return;
 		}

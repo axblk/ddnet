@@ -654,7 +654,9 @@ void CNamePlates::RenderNamePlateGame(const CRenderContext &Context, vec2 Positi
 	Data.m_CameraPosition = Context.m_View.CameraPosition();
 	Data.m_AspectRatio = Context.AspectRatio(Graphics()->ScreenAspect());
 
-	Data.m_ShowName = PlayerInfo.m_Local ? g_Config.m_ClNamePlatesOwn : g_Config.m_ClNamePlates;
+	// A video can leave the names out, whatever the client shows.
+	const bool VideoNames = !Context.m_IsVideoOutput || Context.m_VideoSettings.m_ShowNameplates;
+	Data.m_ShowName = VideoNames && (PlayerInfo.m_Local ? g_Config.m_ClNamePlatesOwn : g_Config.m_ClNamePlates);
 	str_copy(Data.m_aName, Client.m_aName);
 	Data.m_ShowFriendMark = Data.m_ShowName && g_Config.m_ClNamePlatesFriendMark && Client.m_Friend;
 	Data.m_ShowClientId = Data.m_ShowName && (g_Config.m_Debug || g_Config.m_ClNamePlatesIds);
@@ -861,7 +863,8 @@ void CNamePlates::OnRender(const CRenderContext &Context)
 	int ShowDirection = Context.m_View.RenderOptions().m_ShowDirection;
 	if(Context.m_IsVideoOutput)
 		ShowDirection = Context.m_VideoSettings.m_ShowDirection;
-	if(!g_Config.m_ClNamePlates && !g_Config.m_ClNamePlatesOwn && ShowDirection == 0)
+	const bool VideoNames = !Context.m_IsVideoOutput || Context.m_VideoSettings.m_ShowNameplates;
+	if((!VideoNames || (!g_Config.m_ClNamePlates && !g_Config.m_ClNamePlatesOwn)) && ShowDirection == 0)
 		return;
 
 	const CSessionPresentation &Presentation = GameClient()->SessionPresentation(Context.m_Session.Id());

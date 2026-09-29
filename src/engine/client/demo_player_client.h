@@ -69,9 +69,9 @@ private:
 	int m_VolumeBeforeMute = 0;
 	// What `PlayerName` returned last.
 	char m_aPlayerName[MAX_NAME_LENGTH] = "";
-	// How the view draws, the same for the demo and its export. Somebody
-	// watching a demo wants the map as it was made, so detail is on and the
-	// key presses are off.
+	// How the view draws. Somebody watching a demo wants the map as it was
+	// made, so detail is on and the key presses are off. An export draws the
+	// way its settings say.
 	CViewRenderOptions m_RenderOptions;
 	// See `SetStartTime`.
 	float m_StartTime = -1.0f;
@@ -91,6 +91,12 @@ private:
 	std::string m_Players;
 	// Put off until between two frames, see `RunPageActions`.
 	std::vector<std::function<void()>> m_vPageActions;
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// What `DemoInfo` said last, for the page, and when and of which demo.
+	std::string m_Info = "{}";
+	int m_InfoLoadCount = -1;
+	std::chrono::nanoseconds m_LastInfoUpdate{0};
+#endif
 #if defined(CONF_VIDEORECORDER)
 	// An export reads the demo again in a session of its own, so that
 	// watching goes on beside it.

@@ -18,7 +18,13 @@
 
 #if defined(CONF_WEB_PLATFORM)
 #include "web/audio_web.h"
+#include "web/page_bridge_web.h"
 #include "web/window_web.h"
+
+#include <base/thread.h>
+
+#include <engine/console.h>
+#include <engine/shared/config.h>
 
 #include <emscripten/proxying.h>
 #include <emscripten/threading.h>
@@ -64,6 +70,50 @@ namespace
 } // namespace
 #endif
 
+#if defined(CONF_WEB_PLATFORM)
+// How a job of the page went: whether it did, why not, and for a job that
+// asked what a demo is, the answer.
+// clang-format off
+EM_JS(void, BrowserRenderDone, (int Id, int Ok, const char *pError, const char *pInfo), {
+	if(typeof Module.ddnetRenderDone === 'function')
+		Module.ddnetRenderDone({id: Id, ok: Ok !== 0, error: UTF8ToString(pError), info: UTF8ToString(pInfo)});
+});
+// clang-format on
+
+namespace
+{
+	// The renderer of the page, while it runs.
+	CDemoRenderClient *gs_pRenderClient = nullptr;
+	// What the page asked for, taken between two frames. The renderer
+	// publishes nothing: it answers each job when it is done.
+	struct SNoPageState
+	{
+	};
+	CWebPageBridge<SNoPageState> gs_PageBridge;
+
+	struct SJobDone
+	{
+		int m_Id;
+		bool m_Ok;
+		std::string m_Error;
+		std::string m_Info;
+	};
+
+	void ReportJobDone(SJobDone &&Done)
+	{
+		// On the page's thread, after the progress that came before it.
+		if(!emscripten_is_main_runtime_thread())
+		{
+			emscripten_proxy_async(emscripten_proxy_get_system_queue(), emscripten_main_runtime_thread_id(), [](void *pUser) {
+				const std::unique_ptr<SJobDone> pDone(static_cast<SJobDone *>(pUser));
+				ReportJobDone(std::move(*pDone)); }, new SJobDone(std::move(Done)));
+			return;
+		}
+		BrowserRenderDone(Done.m_Id, Done.m_Ok ? 1 : 0, Done.m_Error.c_str(), Done.m_Info.c_str());
+	}
+} // namespace
+#endif
+
 namespace
 {
 	// What `rand()` starts with in a program that never seeds it.
@@ -92,6 +142,20 @@ std::optional<int> CDemoRenderClient::ParseArguments(int &ArgumentCount, const c
 	}
 	ArgumentCount = static_cast<int>(vArguments.size());
 	ppArguments = vArguments.data();
+
+#if defined(CONF_WEB_PLATFORM)
+	// A page that keeps the renderer names no demo: it hands them over one
+	// by one. The rest of the command line is console commands.
+	const auto QueueArgument = std::find_if(vArguments.begin() + 1, vArguments.end(), [](const char *pArgument) { return str_comp(pArgument, "--render-queue") == 0; });
+	if(QueueArgument != vArguments.end())
+	{
+		m_Queue = true;
+		vArguments.erase(QueueArgument);
+		ArgumentCount = static_cast<int>(vArguments.size());
+		ppArguments = vArguments.data();
+		return std::nullopt;
+	}
+#endif
 
 	CCommandLineVideoExport VideoExport;
 	if(!VideoExport.ParseArguments(ArgumentCount, ppArguments, vArguments, "ddnet-demo-render", true, true))
@@ -196,6 +260,7 @@ bool CDemoRenderClient::RenderDemo(const SJob &Job)
 	if(pError != nullptr)
 	{
 		log_error("videorecorder", "%s", pError);
+		m_LastError = pError;
 		EndDemo();
 		return false;
 	}
@@ -205,6 +270,16 @@ bool CDemoRenderClient::RenderDemo(const SJob &Job)
 	srand(VIDEO_RANDOM_SEED);
 	while(State() != IClient::STATE_QUITTING && SessionState(m_DemoSessionId) == ESessionState::READY)
 	{
+#if defined(CONF_WEB_PLATFORM)
+		TakePageRequests();
+#endif
+		if(m_Cancelled)
+		{
+			if(Exporting())
+				m_pVideo->Cancel();
+			StopDemoSession("The render was cancelled.");
+			continue;
+		}
 		if(VideoExportInterrupted())
 		{
 			m_Interrupted = true;
@@ -220,6 +295,7 @@ bool CDemoRenderClient::RenderDemo(const SJob &Job)
 		Update();
 	}
 	const bool Succeeded = m_aError[0] == '\0';
+	m_LastError = m_aError;
 	if(Succeeded)
 		log_info("videorecorder", "Export completed: '%s' in %.1f s", m_aVideoPath, std::chrono::duration<float>(time_get_nanoseconds() - StartTime).count());
 	else
@@ -242,7 +318,99 @@ void CDemoRenderClient::EndDemo()
 	Sound()->StopAll();
 	m_aError[0] = '\0';
 	m_LastProgressLog = std::chrono::nanoseconds(0);
+	m_Cancelled = false;
 }
+
+#if defined(CONF_WEB_PLATFORM)
+void CDemoRenderClient::TakePageRequests()
+{
+	gs_PageBridge.RunActions();
+}
+
+void CDemoRenderClient::CancelPageJob(int Id)
+{
+	if(Id == m_PageJobId)
+		m_Cancelled = true;
+	const auto It = std::find_if(m_vPageJobs.begin(), m_vPageJobs.end(), [Id](const SPageJob &Job) { return Job.m_Id == Id; });
+	if(It != m_vPageJobs.end())
+	{
+		m_vPageJobs.erase(It);
+		ReportJobDone({Id, false, "The render was cancelled.", ""});
+	}
+}
+
+void CDemoRenderClient::RunPageJob(const SPageJob &Job)
+{
+	m_PageJobId = Job.m_Id;
+	m_Cancelled = false;
+	// Every job starts from the configuration the program started with, so
+	// that what one job set does not reach the next.
+	g_Config = *m_pBaseConfig;
+	const char *pCommands = Job.m_Commands.c_str();
+	while(pCommands[0] != '\0')
+	{
+		const char *pEnd = str_find(pCommands, "\n");
+		const std::string Command(pCommands, pEnd == nullptr ? str_length(pCommands) : pEnd - pCommands);
+		if(!Command.empty())
+			m_pConsole->ExecuteLine(Command.c_str(), IConsole::CLIENT_ID_UNSPECIFIED);
+		if(pEnd == nullptr)
+			break;
+		pCommands = pEnd + 1;
+	}
+	m_Settings = CCommandLineVideoExport::Settings();
+	str_copy(m_aFollow, Job.m_Follow.c_str());
+
+	SJobDone Done{Job.m_Id, false, "", ""};
+	if(Job.m_Render)
+	{
+		Done.m_Ok = RenderDemo({Job.m_DemoPath, Job.m_VideoPath});
+		if(!Done.m_Ok)
+			Done.m_Error = m_LastError;
+	}
+	else
+	{
+		// The players are named by the first snapshots and messages, which
+		// the demo reads as it goes: a moment into it, they are there.
+		str_copy(m_aDemoPath, Job.m_DemoPath.c_str());
+		if(const char *pError = PlayDemo())
+			Done.m_Error = pError;
+		else
+		{
+			DemoPlayer().SeekTime(0.5f);
+			Update();
+			Done.m_Info = DemoInfo(m_DemoSessionId);
+			Done.m_Ok = true;
+		}
+		EndDemo();
+	}
+	m_PageJobId = -1;
+	m_Cancelled = false;
+	ReportJobDone(std::move(Done));
+}
+
+void CDemoRenderClient::RunQueue()
+{
+	m_pBaseConfig = std::make_unique<CConfig>(g_Config);
+	gs_pRenderClient = this;
+	while(State() != IClient::STATE_QUITTING)
+	{
+		TakePageRequests();
+		if(m_vPageJobs.empty())
+		{
+			thread_sleep_idle(std::chrono::milliseconds(10));
+			continue;
+		}
+		const SPageJob Job = std::move(m_vPageJobs.front());
+		m_vPageJobs.erase(m_vPageJobs.begin());
+		RunPageJob(Job);
+	}
+	for(const SPageJob &Job : m_vPageJobs)
+		ReportJobDone({Job.m_Id, false, "The renderer stopped.", ""});
+	m_vPageJobs.clear();
+	gs_pRenderClient = nullptr;
+	gs_PageBridge.Reset();
+}
+#endif
 
 int CDemoRenderClient::Run()
 {
@@ -257,6 +425,14 @@ int CDemoRenderClient::Run()
 #endif
 	if(InitGame(pWindow, nullptr))
 	{
+#if defined(CONF_WEB_PLATFORM)
+		if(m_Queue)
+		{
+			RunQueue();
+			ShutdownGame();
+			return 0;
+		}
+#endif
 		// Nobody is at a keyboard here, so an interrupt is the only way out.
 		// It has to reach the encoder, which removes the unfinished file.
 		CatchVideoExportInterrupt();
@@ -278,6 +454,63 @@ int CDemoRenderClient::Run()
 	ShutdownGame();
 	return Failed == 0 ? 0 : 1;
 }
+
+#if defined(CONF_WEB_PLATFORM)
+namespace
+{
+	// The page calls on a thread of its own, so what it asks for is done by
+	// the renderer between two frames. See `CWebPageBridge`.
+	void FromPage(std::function<void()> &&Action)
+	{
+		gs_PageBridge.Post([Action = std::move(Action)] {
+			if(gs_pRenderClient != nullptr)
+				Action();
+		});
+	}
+
+	std::string PageString(const char *pString)
+	{
+		return pString == nullptr ? "" : pString;
+	}
+} // namespace
+
+// What a page that keeps a renderer started with `--render-queue` calls. Each
+// job is answered with `Module.ddnetRenderDone({id, ok, error, info})` once
+// it is done, in the order they were handed over.
+extern "C" {
+// Renders the demo at `pDemoPath` into a video called `pVideoPath`, which
+// goes where `Module.ddnetVideoSink` says. `pCommands` are console commands,
+// one per line, and `pFollow` is whom to follow, as `--follow` takes it.
+EMSCRIPTEN_KEEPALIVE void DemoRendererRender(int Id, const char *pDemoPath, const char *pVideoPath, const char *pFollow, const char *pCommands)
+{
+	CDemoRenderClient::SPageJob Job;
+	Job.m_Id = Id;
+	Job.m_DemoPath = PageString(pDemoPath);
+	Job.m_VideoPath = PageString(pVideoPath);
+	Job.m_Follow = PageString(pFollow);
+	Job.m_Commands = PageString(pCommands);
+	FromPage([Job = std::move(Job)]() mutable { gs_pRenderClient->AddPageJob(std::move(Job)); });
+}
+
+// Says what the demo at `pDemoPath` is, as `CDemoClientBase::DemoInfo` does,
+// in the `info` of the answer.
+EMSCRIPTEN_KEEPALIVE void DemoRendererInfo(int Id, const char *pDemoPath)
+{
+	CDemoRenderClient::SPageJob Job;
+	Job.m_Id = Id;
+	Job.m_Render = false;
+	Job.m_DemoPath = PageString(pDemoPath);
+	FromPage([Job = std::move(Job)]() mutable { gs_pRenderClient->AddPageJob(std::move(Job)); });
+}
+
+// Stops a job that runs, which throws away its unfinished video, or takes
+// one that waits off the list.
+EMSCRIPTEN_KEEPALIVE void DemoRendererCancel(int Id)
+{
+	FromPage([Id] { gs_pRenderClient->CancelPageJob(Id); });
+}
+}
+#endif
 
 // The web demo player starts it, see its main().
 #if !defined(CONF_WEB_PLATFORM)

@@ -283,6 +283,41 @@
 	letter-spacing: 0.04em;
 	text-transform: uppercase;
 }
+/* What a demo or a map is: names and their values side by side. */
+.viewer-info {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 3px 12px;
+	margin: 0;
+	font-size: 13px;
+}
+.viewer-info dt {
+	color: var(--viewer-dim);
+}
+.viewer-info dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.viewer-info .info-heading {
+	grid-column: 1 / -1;
+	margin-top: 6px;
+	color: var(--viewer-accent);
+	font-size: 11px;
+	font-weight: bold;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.viewer-info .info-heading:first-child {
+	margin-top: 0;
+}
+.viewer-info .info-wide {
+	grid-column: 1 / -1;
+}
+/* A map has no bar, so its panel hangs under the corner's buttons. */
+.viewer-controls-corner .viewer-panel {
+	position: static;
+	max-height: calc(100vh - 2 * var(--viewer-button) - 4 * var(--viewer-edge));
+}
 .viewer-panel-message {
 	margin: 0;
 	color: #ff8a80;

@@ -40,6 +40,23 @@
 #settings input[type=number], #settings select {
 	width: 80px;
 }
+#settings .video-preset select {
+	width: auto;
+}
+/* The single settings, folded under the preset. */
+#settings .video-details {
+	flex-basis: 100%;
+}
+#settings .video-details summary {
+	cursor: pointer;
+}
+#settings .video-details-fields {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px clamp(10px, 2vw, 20px);
+	align-items: center;
+	margin-top: 10px;
+}
 #actions {
 	display: flex;
 	flex-wrap: wrap;
@@ -75,6 +92,13 @@
 }
 #queue .failed {
 	color: #c00;
+}
+/* What the demo is, under its row. */
+#queue .about {
+	grid-column: 1 / -1;
+	color: #555;
+	font-size: 0.85em;
+	white-space: pre-line;
 }
 #queue progress {
 	width: clamp(60px, 15vw, 120px);

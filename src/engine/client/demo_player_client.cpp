@@ -85,6 +85,7 @@ namespace
 		float m_Progress = 0.0f;
 		float m_Speed = 1.0f;
 		float m_Length = 0.0f;
+		std::string m_Info = "{}";
 	};
 	CWebPageBridge<SPageState> gs_PageBridge;
 #endif
@@ -223,6 +224,16 @@ void CDemoPlayerClient::PublishPageState()
 	State.m_Progress = Progress();
 	State.m_Speed = Speed();
 	State.m_Length = Length();
+	// What the demo is changes with the next demo, and its players come and
+	// go: asked again now and then rather than on every frame.
+	const std::chrono::nanoseconds Now = time_get_nanoseconds();
+	if(m_InfoLoadCount != LoadCount() || Now - m_LastInfoUpdate >= std::chrono::seconds(1))
+	{
+		m_Info = DemoInfo(m_DemoSessionId);
+		m_InfoLoadCount = LoadCount();
+		m_LastInfoUpdate = Now;
+	}
+	State.m_Info = m_Info;
 	gs_PageBridge.Publish(std::move(State));
 }
 #endif
@@ -449,12 +460,9 @@ void CDemoPlayerClient::SetMuted(bool Muted)
 
 void CDemoPlayerClient::SetRenderOptions(const CViewRenderOptions &Options)
 {
+	// An export that runs keeps the ones it was started with.
 	m_RenderOptions = Options;
 	ViewControl()->SetRenderOptions(m_DemoSessionId, m_RenderOptions);
-#if defined(CONF_VIDEORECORDER)
-	if(m_VideoSessionId != m_DemoSessionId)
-		ViewControl()->SetRenderOptions(m_VideoSessionId, m_RenderOptions);
-#endif
 }
 
 float CDemoPlayerClient::WorldPerPixel() const
@@ -953,6 +961,9 @@ void CDemoPlayerClient::ExportFromControls(int Width, int Height)
 	Settings.m_Height = std::max(Height & ~1, 2);
 	Settings.m_FPS = m_ExportFps;
 	Settings.m_Audio = m_ExportAudio;
+	// The video draws what the window draws.
+	Settings.m_HighDetail = m_RenderOptions.m_HighDetail;
+	Settings.m_ShowDirection = m_RenderOptions.m_ShowDirection;
 	RequestExport(Settings, ServerDemo() ? Spectating() : SPEC_FOLLOW);
 #endif
 }
@@ -1030,6 +1041,7 @@ bool CDemoPlayerClient::StartExport(const CVideoExportSettings &Settings, int Sp
 	m_Settings.m_Height = std::clamp(Settings.m_Height, 2, 8192) & ~1;
 	m_Settings.m_FPS = std::clamp(Settings.m_FPS, 1, 240);
 	m_Settings.m_Crf = std::clamp(Settings.m_Crf, 0, 51);
+	m_Settings.m_ShowDirection = std::clamp(Settings.m_ShowDirection, 0, 3);
 	// The name of the demo, so that whoever ends up with the file knows what
 	// it is a video of. It is written where the user's own files go and handed
 	// to the browser from there.
@@ -1050,7 +1062,10 @@ bool CDemoPlayerClient::StartExport(const CVideoExportSettings &Settings, int Sp
 	{
 		// Whom it follows and how it draws are its own.
 		ViewControl()->SetSpectatorId(m_ExportSessionId, SpectatorId);
-		ViewControl()->SetRenderOptions(m_ExportSessionId, m_RenderOptions);
+		CViewRenderOptions ExportOptions = m_RenderOptions;
+		ExportOptions.m_ShowDirection = m_Settings.m_ShowDirection;
+		ExportOptions.m_HighDetail = m_Settings.m_HighDetail;
+		ViewControl()->SetRenderOptions(m_ExportSessionId, ExportOptions);
 		// Only the marked piece, where there is one.
 		if(HasClip())
 		{
@@ -1243,11 +1258,12 @@ int main(int argc, const char **argv)
 {
 	// In a worker, where it may wait; see `WebRunProgram`. In a browser the
 	// player is the demo renderer as well, which renders the demo that
-	// `--render-demo` names into a video without a page.
+	// `--render-demo` names, or the demos a page hands it after
+	// `--render-queue`, into videos without a page.
 	return WebRunProgram([](int ArgumentCount, const char **ppArguments) {
 		for(int i = 1; i < ArgumentCount; ++i)
 		{
-			if(str_comp(ppArguments[i], "--render-demo") == 0)
+			if(str_comp(ppArguments[i], "--render-demo") == 0 || str_comp(ppArguments[i], "--render-queue") == 0)
 			{
 #if defined(CONF_VIDEORECORDER)
 				return DemoClientMain(new CDemoRenderClient, ArgumentCount, ppArguments);
@@ -1509,8 +1525,9 @@ EMSCRIPTEN_KEEPALIVE void DemoPlayerQuit()
 }
 
 // Only asks: `DemoPlayerExportState` says a moment later whether the browser
-// had an encoder.
-EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat, int SpectatorId)
+// had an encoder. `ShowDirection` is whose key presses are shown, as
+// `cl_video_show_direction`.
+EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, int Audio, int Crf, const char *pCodec, int Hud, int Chat, int SpectatorId, int HighDetail, int ShowDirection, int Nameplates)
 {
 	CVideoExportSettings Settings;
 	Settings.m_Width = Width;
@@ -1521,6 +1538,9 @@ EMSCRIPTEN_KEEPALIVE int DemoPlayerStartExport(int Width, int Height, int Fps, i
 	str_copy(Settings.m_aVideoCodec, pCodec == nullptr ? "" : pCodec);
 	Settings.m_ShowHud = Hud != 0;
 	Settings.m_ShowChat = Chat != 0;
+	Settings.m_HighDetail = HighDetail != 0;
+	Settings.m_ShowDirection = ShowDirection;
+	Settings.m_ShowNameplates = Nameplates != 0;
 	// Taken as the player would take it, which it does unless an export runs;
 	// one that runs already is what the page reads right away.
 	bool Accepted = false;
@@ -1602,6 +1622,14 @@ EMSCRIPTEN_KEEPALIVE float DemoPlayerSpeed()
 EMSCRIPTEN_KEEPALIVE float DemoPlayerLength()
 {
 	return PageState().m_Length;
+}
+
+// What the demo is, as a JSON object, see `CDemoClientBase::DemoInfo`. Valid
+// until the next call.
+EMSCRIPTEN_KEEPALIVE const char *DemoPlayerInfo()
+{
+	static std::string s_Info;
+	return PageString(s_Info, std::move(PageState().m_Info));
 }
 }
 #endif

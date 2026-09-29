@@ -85,6 +85,15 @@ public:
 	bool m_ShowHookCollOther = false;
 	int m_ShowDirection = 0;
 	bool m_ShowImportantAlerts = true;
+	/**
+	 * Whether the map's detail layers are drawn, as `gfx_high_detail`.
+	 */
+	bool m_HighDetail = true;
+	/**
+	 * Whether the players' names are drawn over them. Leaving them out takes
+	 * them out whatever `cl_nameplates` says; the key presses stay.
+	 */
+	bool m_ShowNameplates = true;
 };
 
 /**

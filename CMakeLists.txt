@@ -2663,6 +2663,8 @@ set_src(GAME_SHARED GLOB src/game
   localization.h
   map_door_collision.cpp
   map_door_collision.h
+  map_summary.cpp
+  map_summary.h
   mapbugs.cpp
   mapbugs.h
   mapbugs_list.h

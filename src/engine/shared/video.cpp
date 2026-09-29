@@ -149,6 +149,8 @@ CVideoExportSettings CCommandLineVideoExport::Settings()
 	Settings.m_ShowHookCollOther = g_Config.m_ClVideoShowHookCollOther != 0;
 	Settings.m_ShowDirection = g_Config.m_ClVideoShowDirection;
 	Settings.m_ShowImportantAlerts = g_Config.m_ClVideoShowImportantAlerts != 0;
+	Settings.m_HighDetail = g_Config.m_GfxHighDetail != 0;
+	Settings.m_ShowNameplates = g_Config.m_ClNamePlates != 0 || g_Config.m_ClNamePlatesOwn != 0;
 	return Settings;
 }
 

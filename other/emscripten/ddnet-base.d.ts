@@ -188,10 +188,72 @@ export interface VideoSettings {
 	audio?: boolean;
 	hud?: boolean;
 	chat?: boolean;
+	/** The map's detail layers, as `gfx_high_detail`. On by default. */
+	highDetail?: boolean;
+	/** The players' names over them, as `cl_nameplates`. On by default. */
+	nameplates?: boolean;
+	/** Every player's key presses over them. Off by default. */
+	keyPresses?: boolean;
 }
 
-/** Fields for the video settings in `container`. It fires `change`. */
-export declare function exportSettingsForm(container: HTMLElement, options?: { canvas?: HTMLCanvasElement | null; audio?: boolean }): { values(): VideoSettings; setValues(values: VideoSettings): void };
+/**
+ * Fields for the video settings in `container`. It fires `change`. With
+ * `presets`, a choice of whole sets comes first and the single settings are
+ * details under it.
+ */
+export declare function exportSettingsForm(container: HTMLElement, options?: { canvas?: HTMLCanvasElement | null; audio?: boolean; presets?: boolean }): { values(): VideoSettings; setValues(values: VideoSettings): void };
+
+/** What `DemoPlayer.info` and `DemoRenderer.info` answer. */
+export interface DemoInfo {
+	file?: string;
+	/** Bytes. */
+	size?: number;
+	version?: number;
+	netversion?: string;
+	/** `client` or `server`: who recorded it. */
+	type?: string;
+	/** When it was recorded, as its header says. */
+	date?: string;
+	/** Milliseconds. */
+	length?: number;
+	/** Milliseconds from the beginning. */
+	markers?: number[];
+	map?: MapInfo & { name?: string };
+	/** The players it named so far, or at its beginning. */
+	players?: { id: number; name: string }[];
+}
+
+/** What a map says about itself, and its file. */
+export interface MapInfo {
+	file?: string;
+	/** Bytes. */
+	size?: number;
+	crc?: string;
+	sha256?: string;
+	author?: string;
+	version?: string;
+	credits?: string;
+	license?: string;
+	/** Server settings the map brings. */
+	settings?: number;
+	/** Of the game layer, in tiles. */
+	width?: number;
+	height?: number;
+	groups?: number;
+	layers?: number;
+	images?: number;
+	sounds?: number;
+	envelopes?: number;
+}
+
+export declare function formatBytes(bytes: number): string;
+export declare function formatDuration(milliseconds: number): string;
+/** The sections `fillInfo` shows for a demo. */
+export declare function demoInfoSections(info: DemoInfo): [string, [string | null, unknown][]][];
+/** The sections `fillInfo` shows for a map. */
+export declare function mapInfoSections(info: MapInfo): [string, [string | null, unknown][]][];
+/** Fills a `<dl>` with headed sections of names and values, leaving out what has no value. */
+export declare function fillInfo(list: HTMLElement, sections: [string, [string | null, unknown][]][]): void;
 
 /** Adds pictures by name: `{name: "<svg contents>"}` in a 24 by 24 box, in `currentColor`. */
 export declare function addIcons(pictures: Record<string, string>): void;

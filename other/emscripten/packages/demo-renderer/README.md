@@ -12,6 +12,19 @@ const video = await renderDemo({
 });
 ```
 
+Several demos go through one `DemoRenderer`, which starts the program once:
+
+```js
+import { DemoRenderer } from "@ddnet/demo-renderer";
+
+const renderer = new DemoRenderer();
+for (const demo of demos) {
+	console.log(await renderer.info(demo));
+	videos.push(await renderer.render({ demo, width: 1280, height: 720, highDetail: false }));
+}
+renderer.close();
+```
+
 The demo is drawn without a window in a worker and encoded by the browser,
 which needs WebCodecs; it is drawn with WebGPU, or with WebGL 2 where the
 browser has no WebGPU adapter. The program is the demo player's

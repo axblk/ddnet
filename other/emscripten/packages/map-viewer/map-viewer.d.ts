@@ -1,4 +1,4 @@
-import type { Program, ProgramOptions, ViewerElement } from "@ddnet/base";
+import type { MapInfo, Program, ProgramOptions, ViewerElement } from "@ddnet/base";
 
 /**
  * A map viewer. Everything is said in tiles. Events beyond the base's:
@@ -25,6 +25,8 @@ export declare class MapViewer extends Program {
 	/** Each of these answers without an argument and sets with one. */
 	highDetail(on?: boolean): boolean;
 	entities(on?: boolean): boolean;
+	/** What the map says about itself, and its file. */
+	info(): MapInfo;
 	/**
 	 * Whether the program is asked to draw its own buttons, which it does not
 	 * in a browser.

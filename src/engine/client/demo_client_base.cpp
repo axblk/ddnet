@@ -2,7 +2,10 @@
 /* If you are missing that file, acquire a complete release at teeworlds.com.                */
 #include "demo_client_base.h"
 
+#include <base/bytes.h>
 #include <base/fs.h>
+#include <base/hash.h>
+#include <base/io.h>
 #include <base/log.h>
 #include <base/logger.h>
 #include <base/os.h>
@@ -17,13 +20,16 @@
 #include <engine/graphics_window.h>
 #include <engine/http.h>
 #include <engine/input.h>
+#include <engine/map.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/shared/protocol.h>
 #include <engine/sound.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
+#include <game/map_summary.h>
 #include <game/version.h>
 
 #include <algorithm>
@@ -245,6 +251,83 @@ void CDemoClientBase::WaitUntilReadyToRender()
 	}
 	if(!WasPaused)
 		DemoPlayer().Unpause();
+}
+
+std::string CDemoClientBase::DemoInfo(CSessionId SessionId)
+{
+	const CDemoPlayer &Player = DemoSource(SessionId).m_DemoPlayer;
+	CJsonStringWriter Writer;
+	Writer.BeginObject();
+	if(SessionState(SessionId) != ESessionState::OFFLINE)
+	{
+		Writer.WriteAttribute("file");
+		Writer.WriteStrValue(fs_filename(m_aDemoPath));
+		if(IOHANDLE File = Storage()->OpenFile(m_aDemoPath, IOFLAG_READ, IStorage::TYPE_ALL_OR_ABSOLUTE))
+		{
+			Writer.WriteAttribute("size");
+			Writer.WriteInt64Value(io_length(File));
+			io_close(File);
+		}
+		const CDemoHeader &Header = Player.Info()->m_Header;
+		Writer.WriteAttribute("version");
+		Writer.WriteIntValue(Header.m_Version);
+		Writer.WriteAttribute("netversion");
+		Writer.WriteStrValue(Header.m_aNetversion);
+		Writer.WriteAttribute("type");
+		Writer.WriteStrValue(Header.m_aType);
+		Writer.WriteAttribute("date");
+		Writer.WriteStrValue(Header.m_aTimestamp);
+		// The ticks the file holds, which is what can be played; the header
+		// counts whole seconds.
+		const IDemoPlayer::CInfo *pInfo = Player.BaseInfo();
+		const auto &&Milliseconds = [pInfo](int Tick) { return (int)((int64_t)(Tick - pInfo->m_FirstTick) * 1000 / SERVER_TICK_SPEED); };
+		Writer.WriteAttribute("length");
+		Writer.WriteIntValue(Milliseconds(pInfo->m_LastTick));
+		Writer.WriteAttribute("markers");
+		Writer.BeginArray();
+		for(int i = 0; i < pInfo->m_NumTimelineMarkers; ++i)
+			Writer.WriteIntValue(Milliseconds(pInfo->m_aTimelineMarkers[i]));
+		Writer.EndArray();
+
+		Writer.WriteAttribute("map");
+		Writer.BeginObject();
+		Writer.WriteAttribute("name");
+		Writer.WriteStrValue(Header.m_aMapName);
+		Writer.WriteAttribute("size");
+		Writer.WriteInt64Value(bytes_be_to_uint(Header.m_aMapSize));
+		char aCrc[16];
+		str_format(aCrc, sizeof(aCrc), "%08x", bytes_be_to_uint(Header.m_aMapCrc));
+		Writer.WriteAttribute("crc");
+		Writer.WriteStrValue(aCrc);
+		if(Player.GetMapInfo()->m_Sha256.has_value())
+		{
+			char aSha256[SHA256_MAXSTRSIZE];
+			sha256_str(Player.GetMapInfo()->m_Sha256.value(), aSha256, sizeof(aSha256));
+			Writer.WriteAttribute("sha256");
+			Writer.WriteStrValue(aSha256);
+		}
+		if(IMap *pMap = GameClient()->Map(SessionId); pMap != nullptr && pMap->IsLoaded())
+			WriteMapSummary(Writer, *pMap);
+		Writer.EndObject();
+
+		Writer.WriteAttribute("players");
+		Writer.BeginArray();
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ++ClientId)
+		{
+			char aName[MAX_NAME_LENGTH];
+			if(!ViewControl()->PlayerName(SessionId, ClientId, aName, sizeof(aName)))
+				continue;
+			Writer.BeginObject();
+			Writer.WriteAttribute("id");
+			Writer.WriteIntValue(ClientId);
+			Writer.WriteAttribute("name");
+			Writer.WriteStrValue(aName);
+			Writer.EndObject();
+		}
+		Writer.EndArray();
+	}
+	Writer.EndObject();
+	return Writer.GetOutputString();
 }
 
 #if defined(CONF_VIDEORECORDER)

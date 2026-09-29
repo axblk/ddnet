@@ -14,6 +14,7 @@
 #include <engine/view_control.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 class IConfigManager;
@@ -127,6 +128,14 @@ protected:
 	 * is logged.
 	 */
 	void WaitUntilReadyToRender();
+	/**
+	 * What the demo of a session is, as a JSON object: its `file` and `size`,
+	 * the `version`, `netversion`, `type` and `date` its header gives, its
+	 * `length` and its `markers` in milliseconds, its `map` - the header's
+	 * name, size, CRC and SHA256 and what the map says about itself, see
+	 * `WriteMapSummary` - and the `players` it named so far.
+	 */
+	std::string DemoInfo(CSessionId SessionId);
 
 #if defined(CONF_VIDEORECORDER)
 	/**

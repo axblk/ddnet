@@ -1,4 +1,5 @@
 #include <base/fs.h>
+#include <base/hash.h>
 #include <base/log.h>
 #include <base/logger.h>
 #include <base/math.h>
@@ -22,10 +23,13 @@
 #include <engine/graphics_window.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/map.h>
 #include <engine/shared/config.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/storage.h>
 
 #include <game/map/standalone/map_view.h>
+#include <game/map_summary.h>
 
 #include <algorithm>
 #include <chrono>
@@ -97,6 +101,7 @@ namespace
 		int m_LoadCount = 0;
 		EExportState m_ExportState = EExportState::IDLE;
 		float m_ExportProgress = 0.0f;
+		std::string m_Info = "{}";
 	};
 	CWebPageBridge<SPageState> gs_PageBridge;
 #endif
@@ -130,6 +135,37 @@ namespace
 		// Where the picture of the whole map that is being drawn goes.
 		std::string m_FullMapFilename;
 		int m_LoadCount = 0;
+		// What the map is, see `MapInfo`.
+		std::string m_Info = "{}";
+
+		/**
+		 * What the map is, as a JSON object: its `file`, `size`, `crc` and
+		 * `sha256`, and what it says about itself, see `WriteMapSummary`.
+		 */
+		std::string MapInfo(const char *pPath)
+		{
+			IMap *pMap = m_View.Map();
+			CJsonStringWriter Writer;
+			Writer.BeginObject();
+			if(pMap != nullptr)
+			{
+				Writer.WriteAttribute("file");
+				Writer.WriteStrValue(fs_filename(pPath));
+				Writer.WriteAttribute("size");
+				Writer.WriteIntValue(pMap->Size());
+				char aCrc[16];
+				str_format(aCrc, sizeof(aCrc), "%08x", pMap->Crc());
+				Writer.WriteAttribute("crc");
+				Writer.WriteStrValue(aCrc);
+				char aSha256[SHA256_MAXSTRSIZE];
+				sha256_str(pMap->Sha256(), aSha256, sizeof(aSha256));
+				Writer.WriteAttribute("sha256");
+				Writer.WriteStrValue(aSha256);
+				WriteMapSummary(Writer, *pMap);
+			}
+			Writer.EndObject();
+			return Writer.GetOutputString();
+		}
 
 		// A path that names a file where it stands is opened as it stands, the
 		// rest is looked for in the data directories like any other map.
@@ -140,6 +176,7 @@ namespace
 			char aName[IO_MAX_PATH_LENGTH];
 			fs_split_file_extension(fs_filename(pPath), aName, sizeof(aName));
 			m_MapName = aName;
+			m_Info = MapInfo(pPath);
 			++m_LoadCount;
 			FitView();
 			return true;
@@ -399,6 +436,7 @@ namespace
 			State.m_LoadCount = LoadCount();
 			State.m_ExportState = m_Requests.m_ExportState;
 			State.m_ExportProgress = m_View.FullImageRunning() ? m_View.FullImageProgress() : 0.0f;
+			State.m_Info = m_Info;
 			gs_PageBridge.Publish(State);
 		}
 #endif
@@ -634,6 +672,15 @@ EMSCRIPTEN_KEEPALIVE int MapViewerExportState()
 EMSCRIPTEN_KEEPALIVE float MapViewerExportProgress()
 {
 	return PageState().m_ExportProgress;
+}
+
+// What the map is, as a JSON object, see `CMapViewer::MapInfo`. Valid until
+// the next call.
+EMSCRIPTEN_KEEPALIVE const char *MapViewerInfo()
+{
+	static std::string s_Info;
+	s_Info = PageState().m_Info;
+	return s_Info.c_str();
 }
 }
 #endif

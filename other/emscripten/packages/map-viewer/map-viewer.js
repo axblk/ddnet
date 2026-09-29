@@ -5,11 +5,12 @@
 // end of the calls is the `MapViewer*` block in
 // `src/game/map/standalone/map_viewer_main.cpp`.
 
-import { addIcons, autoHide, fullscreen, paintIcons, Program, ViewerElement } from "@ddnet/base";
+import { addIcons, autoHide, fillInfo, fullscreen, mapInfoSections, paintIcons, Program, ViewerElement } from "@ddnet/base";
 
 addIcons({
 	detail: '<path d="M12 1.5 13.9 9.1 21.5 11 13.9 12.9 12 20.5 10.1 12.9 2.5 11 10.1 9.1Z"/>',
 	entities: '<rect x="3" y="3" width="8" height="8" rx="1.6"/><rect x="13" y="3" width="8" height="8" rx="1.6"/><rect x="3" y="13" width="8" height="8" rx="1.6"/><rect x="13" y="13" width="8" height="8" rx="1.6"/>',
+	info: '<circle cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="2.2"/><rect x="10.8" y="10.4" width="2.4" height="7.2" rx="1.2"/><circle cx="12" cy="7.4" r="1.5"/>',
 	save_all: '<path d="M7 2.8V9.6M4.2 7 7 10 9.8 7M1.6 13.2v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3M17 6.4V13.2M14.2 10.6 17 13.6 19.8 10.6M11.6 16.8v3a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
 });
 
@@ -120,6 +121,10 @@ export class MapViewer extends Program {
 		return this.flag("MapViewerEntities", "MapViewerSetEntities", on);
 	}
 
+	info() {
+		return JSON.parse(this.call("MapViewerInfo", "string") || "{}");
+	}
+
 	controls(show) {
 		return this.flag("MapViewerControls", "MapViewerSetControls", show);
 	}
@@ -187,6 +192,10 @@ const CORNER_HTML = `
 		<button class="viewer-button" data-role="entities" data-icon="entities" title="Entities" aria-label="Entities" aria-pressed="false"></button>
 		<button class="viewer-button" data-role="save-view" data-icon="save" title="Save the view as a picture (F2)" aria-label="Save the view as a picture" aria-keyshortcuts="F2"></button>
 		<button class="viewer-button" data-role="save-map" data-icon="save_all" title="Save the whole map as a picture" aria-label="Save the whole map as a picture"></button>
+		<button class="viewer-button" data-role="info-button" data-icon="info" title="About this map" aria-label="About this map" aria-pressed="false"></button>
+	</div>
+	<div class="viewer-popup viewer-panel" data-role="info-panel" role="dialog" aria-label="About this map" hidden>
+		<dl class="viewer-info" data-role="info"></dl>
 	</div>
 </div>
 `;
@@ -242,7 +251,7 @@ export class MapControls {
 		fullscreen(part("fullscreen"), { element: this.picture, signal });
 		autoHide([part("cluster"), part("menu")], {
 			picture: this.picture,
-			hold: () => !part("menu").hidden,
+			hold: () => !part("menu").hidden || !part("info-panel").hidden,
 			onHide: () => this.openMenu(false),
 			signal,
 		});
@@ -255,15 +264,17 @@ export class MapControls {
 		on(document, "pointerdown", event => {
 			if (!event.composedPath().includes(part("controls"))) {
 				this.openMenu(false);
+				this.openInfo(false);
 			}
 		});
 		// Escape also reaches here from the picture, which keeps the focus
 		// after a click on a button.
 		const keys = event => {
-			if (event.key === "Escape" && !part("menu").hidden) {
+			if (event.key === "Escape" && (!part("menu").hidden || !part("info-panel").hidden)) {
 				event.stopPropagation();
 				const inside = this.root.contains(document.activeElement);
 				this.openMenu(false);
+				this.openInfo(false);
 				if (inside) {
 					part("menu-button").focus();
 				}
@@ -287,6 +298,25 @@ export class MapControls {
 			viewer.exportFullMap();
 			this.openMenu(false);
 		});
+		on(part("info-button"), "click", () => this.openInfo(part("info-panel").hidden));
+	}
+
+	openInfo(open) {
+		const panel = this.part("info-panel");
+		panel.hidden = !open;
+		this.part("info-button").setAttribute("aria-pressed", String(open));
+		if (open) {
+			this.infoText = null;
+			this.updateInfo();
+		}
+	}
+
+	updateInfo() {
+		const text = this.viewer.call("MapViewerInfo", "string") || "{}";
+		if (text !== this.infoText) {
+			this.infoText = text;
+			fillInfo(this.part("info"), mapInfoSections(JSON.parse(text)));
+		}
 	}
 
 	update() {
@@ -295,7 +325,12 @@ export class MapControls {
 		if (!viewer.loaded()) {
 			part("cluster").hidden = true;
 			this.openMenu(false);
+			this.openInfo(false);
 			return;
+		}
+		// Another map may have come.
+		if (!part("info-panel").hidden) {
+			this.updateInfo();
 		}
 		part("cluster").hidden = false;
 		part("detail").setAttribute("aria-pressed", String(viewer.highDetail()));

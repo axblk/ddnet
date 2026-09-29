@@ -29,7 +29,8 @@
 				Drop demos here, or
 				<label><input id="files" type="file" accept=".demo" multiple hidden><button id="choose" type="button">choose files</button></label>
 			</div>
-			<!-- Filled by `exportSettingsForm`, the same form the demo player uses. -->
+			<!-- Filled by `exportSettingsForm`, the same form the demo player uses,
+			     with the presets first and the single settings as details. -->
 			<div id="settings">
 				<label id="follow-choice" title="A demo a server recorded has nobody who recorded it, so without this the camera stands still.">Follow <input id="follow" type="text" placeholder="player or id" size="10"></label>
 				<label id="folder-choice" hidden><input id="folder" type="checkbox" checked> Save into a folder</label>
@@ -43,11 +44,12 @@
 			<ul id="queue"></ul>
 		</div>
 		<script type="module">
-			import { setUrlParameters, supportError, exportSettingsForm, urlParameter } from "@ddnet/base";
-			import { renderDemo, zip } from "@ddnet/demo-renderer";
+			import { exportSettingsForm, formatBytes, formatDuration, setUrlParameters, supportError, urlParameter } from "@ddnet/base";
+			import { DemoRenderer, readDemoHeader, zip } from "@ddnet/demo-renderer";
 
 			// Demos are queued and rendered one after the other: a render takes
-			// the whole machine.
+			// the whole machine. One renderer does all of them, so only the
+			// first waits for the game to load.
 			const $ = id => document.getElementById(id);
 			const queueList = $('queue');
 			const startButton = $('start');
@@ -57,12 +59,23 @@
 			const followInput = $('follow');
 			const folderCheckbox = $('folder');
 			const settingsBox = $('settings');
-			const settingsForm = exportSettingsForm(settingsBox);
+			const settingsForm = exportSettingsForm(settingsBox, { presets: true });
 			settingsBox.append($('follow-choice'), $('folder-choice'));
 			// Writing into a folder needs no download per video and nothing in
 			// memory, where the browser can be asked for one.
 			$('folder-choice').hidden = !window.showDirectoryPicker;
 			const jobs = [];
+			let renderer = null;
+			const theRenderer = () => {
+				renderer ??= new DemoRenderer({
+					onOutput: (message, kind) => {
+						if (kind.error) {
+							console.warn(message);
+						}
+					},
+				});
+				return renderer;
+			};
 			let running = false;
 			let stopping = false;
 			let problem = null;
@@ -137,23 +150,71 @@
 				const status = Object.assign(document.createElement('span'), { className: "status", textContent: "Waiting" });
 				const remove = Object.assign(document.createElement('button'), { textContent: "×", title: "Take off the list" });
 				remove.setAttribute('aria-label', `Take ${file.name} off the list`);
-				row.append(name, progress, status, remove);
+				const about = Object.assign(document.createElement('span'), { className: "about" });
+				row.append(name, progress, status, remove, about);
 				queueList.append(row);
-				const job = { file, row, progress, status, id: id ?? crypto.randomUUID(), remembered: id !== undefined };
-				// The job being rendered is stopped; what it wrote stays.
+				const job = { file, row, progress, status, about, id: id ?? crypto.randomUUID(), remembered: id !== undefined };
+				// The job being rendered is cancelled, and its unfinished video
+				// thrown away; one that waits is taken off the list.
 				remove.addEventListener('click', () => {
 					jobs.splice(jobs.indexOf(job), 1);
 					row.remove();
 					forget(job);
 					job.stop?.abort();
+					job.aboutStop.abort();
 					updateSummary();
 				});
+				job.aboutStop = new AbortController();
+				describe(job);
 				jobs.push(job);
 				if (id === undefined) {
 					remember(job);
 				}
 				updateSummary();
 				return job;
+			}
+
+			// What a demo is: its header at once, its players and what its map
+			// says about itself once the renderer had a look, which waits for
+			// the render before it.
+			function showAbout(job, info) {
+				const parts = [];
+				if (info.length > 0) {
+					parts.push(formatDuration(info.length));
+				}
+				if (info.map?.name) {
+					parts.push(`on ${info.map.name}${info.map.author ? ` by ${info.map.author}` : ""}`);
+				}
+				if (info.type) {
+					parts.push(info.type === "server" ? "recorded by the server" : "recorded by a player");
+				}
+				if (info.date) {
+					parts.push(info.date);
+				}
+				if (info.size > 0) {
+					parts.push(formatBytes(info.size));
+				}
+				const players = info.players?.map(player => player.name) ?? [];
+				job.about.textContent = parts.join(" · ") + (players.length > 0 ? `\nPlayers: ${players.join(", ")}` : "");
+				job.about.title = info.netversion ? `Demo version ${info.version}, ${info.netversion}` : "";
+			}
+
+			async function describe(job) {
+				const header = await readDemoHeader(job.file).catch(() => null);
+				if (header === null) {
+					job.about.textContent = "This is no demo the renderer knows.";
+					return;
+				}
+				showAbout(job, header);
+				if (problem !== null) {
+					return;
+				}
+				try {
+					const info = await theRenderer().info(job.file, { name: job.file.name, signal: job.aboutStop.signal });
+					showAbout(job, { ...header, ...info, map: { ...header.map, ...info.map } });
+				} catch (error) {
+					// The header is what there is.
+				}
 			}
 
 			function updateSummary() {
@@ -169,7 +230,7 @@
 			// A link can carry the settings; only what differs from the
 			// default is written into it.
 			const defaults = settings();
-			const LINK_SETTINGS = ["width", "height", "fps", "crf", "codec", "audio", "hud", "chat", "follow"];
+			const LINK_SETTINGS = ["width", "height", "fps", "crf", "codec", "audio", "hud", "chat", "highDetail", "nameplates", "keyPresses", "follow"];
 			function applyLink() {
 				const value = name => urlParameter(name);
 				const number = name => parseFloat(value(name)) || undefined;
@@ -177,6 +238,7 @@
 				settingsForm.setValues({
 					width: number("width"), height: number("height"), fps: number("fps"), crf: number("crf"),
 					codec: value("codec") || undefined, audio: flag("audio"), hud: flag("hud"), chat: flag("chat"),
+					highDetail: flag("highDetail"), nameplates: flag("nameplates"), keyPresses: flag("keyPresses"),
 				});
 				followInput.value = value("follow") ?? followInput.value;
 			}
@@ -195,18 +257,13 @@
 				const handle = directory === null ? null : await directory.getFileHandle(name, { create: true });
 				job.stop = new AbortController();
 				const started = performance.now();
-				const video = await renderDemo({
+				const video = await theRenderer().render({
 					...options,
 					demo: job.file,
 					name: job.file.name,
 					output: name,
 					videoSink: handle === null ? undefined : { stream: await handle.createWritable(), done: () => null },
 					signal: job.stop.signal,
-					onOutput: (message, kind) => {
-						if (kind.error) {
-							console.warn(message);
-						}
-					},
 					onProgress: status => {
 						job.progress.value = status.progress;
 						const left = status.progress > 0.01 ? (performance.now() - started) / 1000 * (1 - status.progress) / status.progress : NaN;
@@ -214,8 +271,9 @@
 					},
 				});
 				job.progress.value = 1;
+				job.seconds = (performance.now() - started) / 1000;
 				if (handle !== null) {
-					say(job.status, `Saved as ${name}`);
+					say(job.status, `Saved as ${name} · ${formatDuration(job.seconds * 1000)}`);
 					return;
 				}
 				// A browser refuses downloads nobody asked for, so each is a link.
@@ -253,7 +311,7 @@
 						forget(job);
 					} catch (error) {
 						if (jobs.includes(job)) {
-							say(job.status, job.stop.signal.aborted ? "Stopped" : `Failed: ${error?.message ?? error}`);
+							say(job.status, job.stop.signal.aborted ? "Cancelled" : `Failed: ${error?.message ?? error}`);
 							job.status.className = "status failed";
 							job.progress.style.visibility = "hidden";
 						}

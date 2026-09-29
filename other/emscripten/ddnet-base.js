@@ -260,6 +260,96 @@ export function paintIcons(root = document) {
 	}
 }
 
+// What a demo or a map is, for people: sizes, lengths and the lists that
+// `DemoPlayer.info`, `MapViewer.info` and `DemoRenderer.info` answer.
+export function formatBytes(bytes) {
+	if (!(bytes >= 0)) {
+		return "";
+	}
+	const units = ["bytes", "KiB", "MiB", "GiB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		++unit;
+	}
+	return unit === 0 ? `${value} ${units[0]}` : `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+export function formatDuration(milliseconds) {
+	const total = Math.max(0, Math.round(milliseconds / 1000));
+	const hours = Math.floor(total / 3600);
+	const minutes = Math.floor(total / 60) % 60;
+	const seconds = String(total % 60).padStart(2, "0");
+	return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+// The lines of a map's description: what `WriteMapSummary` in
+// `src/game/map_summary.cpp` writes, beside the file's own numbers.
+function mapInfoLines(map) {
+	const lines = [
+		["Name", map.name ?? map.file],
+		["Author", map.author],
+		["Version", map.version],
+		["Credits", map.credits],
+		["License", map.license],
+		["Size", map.width > 0 ? `${map.width} × ${map.height} tiles` : undefined],
+		["File", map.size > 0 ? formatBytes(map.size) : undefined],
+		["Layers", map.layers > 0 ? `${map.layers} in ${map.groups} groups` : undefined],
+		["Images", map.images],
+		["Sounds", map.sounds || undefined],
+		["Envelopes", map.envelopes || undefined],
+		["Settings", map.settings || undefined],
+		["CRC", map.crc],
+		["SHA256", map.sha256],
+	];
+	return lines;
+}
+
+export function demoInfoSections(info) {
+	const sections = [["Demo", [
+		["File", info.file],
+		["Recorded", info.date],
+		["Length", info.length >= 0 ? formatDuration(info.length) : undefined],
+		["Recorded by", info.type === "server" ? "The server" : info.type === "client" ? "A player" : info.type],
+		["Size", info.size > 0 ? formatBytes(info.size) : undefined],
+		["Format", info.version !== undefined ? `Version ${info.version}, ${info.netversion}` : undefined],
+		["Markers", info.markers?.length ? info.markers.map(formatDuration).join(", ") : undefined],
+	]]];
+	if (info.map) {
+		sections.push(["Map", mapInfoLines(info.map)]);
+	}
+	if (info.players?.length) {
+		sections.push(["Players", [[null, info.players.map(player => player.name).join(", ")]]]);
+	}
+	return sections;
+}
+
+export function mapInfoSections(info) {
+	return [["Map", mapInfoLines({ ...info, name: info.file?.replace(/\.map$/, "") })]];
+}
+
+// Fills a `<dl>` with sections of name and value; what has no value is left
+// out.
+export function fillInfo(list, sections) {
+	const element = (tag, properties) => Object.assign(document.createElement(tag), properties);
+	const children = [];
+	for (const [heading, lines] of sections) {
+		const shown = lines.filter(([, value]) => value !== undefined && value !== null && value !== "");
+		if (shown.length === 0) {
+			continue;
+		}
+		children.push(element("dt", { className: "info-heading", textContent: heading }));
+		for (const [name, value] of shown) {
+			if (name !== null) {
+				children.push(element("dt", { textContent: name }));
+			}
+			children.push(element("dd", { className: name === null ? "info-wide" : "", textContent: String(value) }));
+		}
+	}
+	list.replaceChildren(...children);
+}
+
 // Safari before 16.4 only has the prefixed names, and an iPhone allows only a
 // video to fill the screen.
 const fullscreenSupported = () => document.fullscreenEnabled === true || document.webkitFullscreenEnabled === true;
@@ -309,21 +399,43 @@ const VIDEO_SIZE_PRESETS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160
 const VIDEO_FPS_PRESETS = [30, 50, 60, 120, 144, 240];
 // Constant rate factors, lower is better; 23 is the encoder's default.
 const VIDEO_QUALITY_PRESETS = [[16, "Best"], [18, "High"], [23, "Normal"], [28, "Small"]];
+// Whole sets of the above, for whoever does not want to pick each.
+const VIDEO_PRESETS = [
+	["preview", "Preview · 720p, 30 fps", { width: 1280, height: 720, fps: 30, crf: 28 }],
+	["standard", "Standard · 1080p, 60 fps", { width: 1920, height: 1080, fps: 60, crf: 23 }],
+	["high", "High · 1440p, 60 fps", { width: 2560, height: 1440, fps: 60, crf: 18 }],
+	["uhd", "4K · 2160p, 60 fps", { width: 3840, height: 2160, fps: 60, crf: 18 }],
+];
 
 export function exportSettingsForm(container, options = {}) {
-	const { canvas = null, audio: audioDefault = true } = options;
+	const { canvas = null, audio: audioDefault = true, presets = false } = options;
 	const element = (tag, properties) => Object.assign(document.createElement(tag), properties);
+	// With presets, the single settings are details under the preset.
+	let target = container;
 	const labelled = (text, ...controls) => {
 		const label = element("label");
 		if (text !== null) {
 			label.append(`${text} `);
 		}
 		label.append(...controls);
-		container.append(label);
+		target.append(label);
 		return label;
 	};
 	const option = (value, text) => element("option", { value: String(value), textContent: text });
 	const preset = (select, value) => [...select.options].some(entry => entry.value === value) ? value : "custom";
+
+	const presetChoice = element("select");
+	let details = null;
+	if (presets) {
+		presetChoice.append(...VIDEO_PRESETS.map(([name, text]) => option(name, text)), option("custom", "Custom"));
+		presetChoice.value = "standard";
+		labelled("Preset", presetChoice).classList.add("video-preset");
+		details = element("details", { className: "video-details" });
+		// A box of its own inside, which can be laid out as a row.
+		target = element("div", { className: "video-details-fields" });
+		details.append(element("summary", { textContent: "Details" }), target);
+		container.append(details);
+	}
 
 	const size = element("select");
 	if (canvas !== null) {
@@ -376,15 +488,56 @@ export function exportSettingsForm(container, options = {}) {
 	labelled(null, audio, " Sound");
 	labelled(null, hud, " Interface");
 	labelled(null, chat, " Chat");
+	// How the game is drawn, as the client's graphics settings.
+	const highDetail = element("input", { type: "checkbox", checked: true, title: "The map's detail layers" });
+	const nameplates = element("input", { type: "checkbox", checked: true });
+	const keyPresses = element("input", { type: "checkbox", title: "Every player's key presses over them" });
+	labelled(null, highDetail, " High detail");
+	labelled(null, nameplates, " Names");
+	labelled(null, keyPresses, " Key presses");
+	const flags = [["audio", audio], ["hud", hud], ["chat", chat], ["highDetail", highDetail], ["nameplates", nameplates], ["keyPresses", keyPresses]];
 
 	const updateCustom = () => {
 		customSize.hidden = size.value !== "custom";
 		customFps.hidden = fps.value !== "custom";
 		customQuality.hidden = quality.value !== "custom";
 	};
+	// A preset that matches what the fields say is shown as chosen.
+	const matchingPreset = () => {
+		const number = (select, input) => parseInt(select.value === "custom" ? input.value : select.value, 10);
+		const [chosenWidth, chosenHeight] = size.value === "custom" ? [parseInt(width.value, 10), parseInt(height.value, 10)] : size.value.split("x").map(part => parseInt(part, 10));
+		const chosenFps = number(fps, customFpsValue);
+		const chosenCrf = number(quality, crf);
+		const found = VIDEO_PRESETS.find(([, , values]) => values.width === chosenWidth && values.height === chosenHeight && values.fps === chosenFps && values.crf === chosenCrf);
+		return found?.[0] ?? "custom";
+	};
 	for (const select of [size, fps, quality]) {
-		select.addEventListener("change", updateCustom);
+		select.addEventListener("change", () => {
+			updateCustom();
+			presetChoice.value = matchingPreset();
+		});
 	}
+	for (const input of [width, height, customFpsValue, crf]) {
+		input.addEventListener("input", () => { presetChoice.value = matchingPreset(); });
+	}
+	const applyPreset = name => {
+		const values = VIDEO_PRESETS.find(([presetName]) => presetName === name)?.[2];
+		if (values === undefined) {
+			if (details !== null) {
+				details.open = true;
+			}
+			return;
+		}
+		width.value = values.width;
+		height.value = values.height;
+		size.value = preset(size, `${values.width}x${values.height}`);
+		customFpsValue.value = values.fps;
+		fps.value = preset(fps, String(values.fps));
+		crf.value = values.crf;
+		quality.value = preset(quality, String(values.crf));
+		updateCustom();
+	};
+	presetChoice.addEventListener("change", () => applyPreset(presetChoice.value));
 	updateCustom();
 
 	return {
@@ -405,6 +558,9 @@ export function exportSettingsForm(container, options = {}) {
 				audio: audio.checked,
 				hud: hud.checked,
 				chat: chat.checked,
+				highDetail: highDetail.checked,
+				nameplates: nameplates.checked,
+				keyPresses: keyPresses.checked,
 			};
 		},
 
@@ -426,12 +582,13 @@ export function exportSettingsForm(container, options = {}) {
 				wantedCodec = values.codec;
 				applyCodec();
 			}
-			for (const [name, control] of [["audio", audio], ["hud", hud], ["chat", chat]]) {
+			for (const [name, control] of flags) {
 				if (values[name] != null) {
 					control.checked = values[name] === true;
 				}
 			}
 			updateCustom();
+			presetChoice.value = matchingPreset();
 		},
 	};
 }
@@ -816,6 +973,7 @@ export class Program extends EventTarget {
 			ddnetVideoSink: info => this.videoSink(info),
 			// Read by `src/engine/client/demo_render_client.cpp`.
 			ddnetRenderProgress: status => this.dispatchEvent(new CustomEvent("renderprogress", { detail: status })),
+			ddnetRenderDone: result => this.dispatchEvent(new CustomEvent("renderdone", { detail: result })),
 			// Read by `src/base/webfs.cpp`. A program from another origin brings
 			// its data along.
 			ddnetDataBase: options.dataBase ?? (program === null ? undefined : new URL(".", program.base).href),

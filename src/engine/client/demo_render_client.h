@@ -6,13 +6,20 @@
 #include "demo_client_base.h"
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
+
+class CConfig;
 
 /**
  * The client of the demo render tool: it encodes every frame of the demos the
  * command line named into video files, one after the other, as fast as the
  * machine manages, into a surface without a window.
+ *
+ * In a browser it can instead wait for a page to hand it demos, render each
+ * one it is given and wait for the next, so that the page starts it once for
+ * any number of them: see `--render-queue` and the `DemoRenderer*` functions.
  */
 class CDemoRenderClient : public CDemoClientBase
 {
@@ -46,6 +53,59 @@ class CDemoRenderClient : public CDemoClientBase
 	 * left behind: its error and the sound still playing.
 	 */
 	void EndDemo();
+	// Set when the page cancelled the demo being rendered.
+	bool m_Cancelled = false;
+	// Why the last render failed, empty when it did not.
+	std::string m_LastError;
+
+#if defined(CONF_WEB_PLATFORM)
+public:
+	/**
+	 * What a page asks of a renderer it keeps: to render a demo, or to say
+	 * what it is.
+	 */
+	struct SPageJob
+	{
+		int m_Id = 0;
+		bool m_Render = true;
+		std::string m_DemoPath;
+		std::string m_VideoPath;
+		// Whom to follow, as `--follow` takes it.
+		std::string m_Follow;
+		// Console commands, one per line, run on the configuration the
+		// program started with.
+		std::string m_Commands;
+	};
+
+private:
+	bool m_Queue = false;
+	std::vector<SPageJob> m_vPageJobs;
+	int m_PageJobId = -1;
+	// The configuration after the command line, which every job starts from.
+	std::unique_ptr<CConfig> m_pBaseConfig;
+
+	/**
+	 * Takes what the page asked for since the last call: new jobs, and
+	 * cancelling the one that runs or one that waits.
+	 */
+	void TakePageRequests();
+	/**
+	 * Waits for jobs from the page and does them, until the program quits.
+	 */
+	void RunQueue();
+	void RunPageJob(const SPageJob &Job);
+
+public:
+	/**
+	 * Queues a job of the page. Only from the program's thread.
+	 */
+	void AddPageJob(SPageJob &&Job) { m_vPageJobs.push_back(std::move(Job)); }
+	/**
+	 * Cancels a job of the page, running or waiting. Only from the program's
+	 * thread.
+	 */
+	void CancelPageJob(int Id);
+#endif
 
 public:
 	std::optional<int> ParseArguments(int &ArgumentCount, const char **&ppArguments, std::vector<const char *> &vArguments) override;

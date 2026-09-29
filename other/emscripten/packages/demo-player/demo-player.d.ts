@@ -1,4 +1,4 @@
-import type { Program, ProgramOptions, ViewerElement, VideoSettings } from "@ddnet/base";
+import type { DemoInfo, Program, ProgramOptions, ViewerElement, VideoSettings } from "@ddnet/base";
 
 export interface DemoPlayerOptions extends ProgramOptions {
 	/** Whether the wheel, the zoom keys and a pinch zoom. */
@@ -77,6 +77,8 @@ export declare class DemoPlayer extends Program {
 	/** Whether the demo was recorded by a server, so nobody's own view is in it. */
 	serverDemo(): boolean;
 	players(): { id: number; name: string }[];
+	/** What the demo is: its header, its markers, its map and its players so far. */
+	info(): DemoInfo;
 
 	/** The zoom; multiplies it by `factor`. */
 	zoom(factor?: number): number | null;

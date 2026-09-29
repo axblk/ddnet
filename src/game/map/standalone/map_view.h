@@ -93,6 +93,10 @@ public:
 	 */
 	bool LoadMap(const char *pPath, int StorageType);
 	bool MapLoaded() const { return m_pMap != nullptr; }
+	/**
+	 * The map that is shown, `nullptr` before one is.
+	 */
+	IMap *Map() { return m_pMap.get(); }
 
 	/**
 	 * Draws one frame. Putting it on the screen is the caller's business:

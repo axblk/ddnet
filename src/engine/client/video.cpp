@@ -612,8 +612,14 @@ bool CVideo::Start()
 		}
 	}
 
-	/* Write the stream header, if any. */
-	const int WriteHeaderResult = avformat_write_header(m_pFormatContext, &m_pOptDict);
+	/* Write the stream header, if any. The index goes to the front of the
+	 * file once it is finished, so that a browser can play and seek the video
+	 * before it has all of it. */
+	AVDictionary *pMuxerOptions = nullptr;
+	av_dict_copy(&pMuxerOptions, m_pOptDict, 0);
+	av_dict_set(&pMuxerOptions, "movflags", "+faststart", 0);
+	const int WriteHeaderResult = avformat_write_header(m_pFormatContext, &pMuxerOptions);
+	av_dict_free(&pMuxerOptions);
 	if(WriteHeaderResult < 0)
 	{
 		char aError[AV_ERROR_MAX_STRING_SIZE];

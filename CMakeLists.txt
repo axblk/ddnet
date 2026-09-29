@@ -1709,6 +1709,7 @@ set(EXPECTED_DATA
   mapres/desert_background.png
   mapres/desert_doodads.png
   mapres/desert_main.png
+  mapres/desert_main_0.7.png
   mapres/desert_mountains.png
   mapres/desert_mountains2.png
   mapres/desert_mountains_new_background.png

@@ -187,6 +187,10 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 		}
 	}
 
+	// A map that Teeworlds 0.7 wrote means the 0.7 pictures of the images 0.7
+	// drew again, and so does every map a 0.7 server sends
+	const bool Teeworlds07Pictures = Client()->IsSixup() || IsTeeworlds07Map(pMap);
+
 	// load new textures
 	bool ShowWarning = false;
 	for(int i = 0; i < m_Count; i++)
@@ -223,17 +227,7 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 		if(pImg->m_External)
 		{
 			char aPath[IO_MAX_PATH_LENGTH];
-			bool Translated = false;
-			if(Client()->IsSixup())
-			{
-				Translated =
-					!str_comp(pName, "grass_doodads") ||
-					!str_comp(pName, "grass_main") ||
-					!str_comp(pName, "winter_main") ||
-					!str_comp(pName, "generic_shadows") ||
-					!str_comp(pName, "generic_unhookable") ||
-					!str_comp(pName, "easter");
-			}
+			const bool Translated = Teeworlds07Pictures && IsMapImageRedrawnFor07(pName);
 			str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Translated ? "_0.7" : "");
 			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, IStorage::TYPE_ALL)});
 		}

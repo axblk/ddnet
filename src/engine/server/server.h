@@ -5,6 +5,7 @@
 
 #include "antibot.h"
 #include "authmanager.h"
+#include "live_recorder.h"
 #include "map_conversion.h"
 #include "name_ban.h"
 #include "snap_id_pool.h"
@@ -336,7 +337,9 @@ public:
 	{
 		RECORDER_MANUAL = MAX_CLIENTS,
 		RECORDER_AUTO = MAX_CLIENTS + 1,
-		NUM_RECORDERS = MAX_CLIENTS + 2,
+		// Makes the demo of the live stream, see `m_LiveRecorder`.
+		RECORDER_LIVE = MAX_CLIENTS + 2,
+		NUM_RECORDERS = MAX_CLIENTS + 3,
 	};
 
 	SHA256_DIGEST m_aCurrentMapSha256[NUM_MAP_TYPES];
@@ -373,6 +376,11 @@ public:
 	bool m_AutoDemoWaitsForMap;
 
 	CDemoRecorder m_aDemoRecorder[NUM_RECORDERS];
+	// Writes what `RECORDER_LIVE` records into a directory a web server can
+	// hand out, see `live_start`.
+	CLiveRecorder m_LiveRecorder{&m_aDemoRecorder[RECORDER_LIVE]};
+	// `sv_live_auto` starts one stream per server run.
+	bool m_LiveAutoStarted = false;
 	CAuthManager m_AuthManager;
 
 	// start of the second the connection-less server info responses are counted in
@@ -641,6 +649,21 @@ public:
 	static void ConStatus(IConsole::IResult *pResult, void *pUser);
 	static void ConStatusJson(IConsole::IResult *pResult, void *pUser);
 	static void ConShutdown(IConsole::IResult *pResult, void *pUser);
+	/**
+	 * Starts a live stream of the current map.
+	 *
+	 * @param pName Its name, a default one of the time and the map if empty.
+	 */
+	void LiveStart(const char *pName);
+	/**
+	 * Starts the demo of the current map in a running live stream.
+	 */
+	void LiveBeginEpoch();
+	static void ConLiveStart(IConsole::IResult *pResult, void *pUser);
+	static void ConLiveStop(IConsole::IResult *pResult, void *pUser);
+	static void ConLiveStatus(IConsole::IResult *pResult, void *pUser);
+	static void ConLiveMarker(IConsole::IResult *pResult, void *pUser);
+	static void ConchainLiveAuto(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConStopRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConMapReload(IConsole::IResult *pResult, void *pUser);

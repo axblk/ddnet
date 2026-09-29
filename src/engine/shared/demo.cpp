@@ -56,7 +56,7 @@ CDemoRecorder::CDemoRecorder(CSnapshotDelta *pSnapshotDelta, bool NoMapData)
 
 CDemoRecorder::~CDemoRecorder()
 {
-	dbg_assert(m_File == nullptr, "Demo recorder was not stopped");
+	dbg_assert(m_File == nullptr && m_pSink == nullptr, "Demo recorder was not stopped");
 }
 
 // Record
@@ -133,7 +133,68 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 		}
 	}
 
-	// write header
+	m_File = DemoFile;
+	WriteHeader(pNetVersion, pMap, Sha256, Crc, pType, MapSize);
+
+	if(MapSize == 0)
+	{
+	}
+	else if(pMapData)
+	{
+		WriteOut(pMapData, MapSize);
+	}
+	else
+	{
+		// write map data
+		while(true)
+		{
+			unsigned char aChunk[1024 * 64];
+			int Bytes = io_read(MapFile, &aChunk, sizeof(aChunk));
+			if(Bytes <= 0)
+				break;
+			WriteOut(&aChunk, Bytes);
+		}
+		io_close(MapFile);
+	}
+
+	log_info_color(DEMO_PRINT_COLOR, "demo_recorder", "Recording to '%s'", pFilename);
+
+	m_pfnFilter = pfnFilter;
+	m_pUser = pUser;
+
+	str_copy(m_aCurrentFilename, pFilename);
+
+	return 0;
+}
+
+void CDemoRecorder::Start(IDemoSink *pSink, const char *pNetVersion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned Crc, const char *pType, unsigned MapSize, const unsigned char *pMapData, DEMOFUNC_FILTER pfnFilter, void *pUser)
+{
+	dbg_assert(m_File == nullptr && m_pSink == nullptr, "Demo recorder already recording");
+	dbg_assert(pMapData != nullptr || MapSize == 0 || m_NoMapData, "A demo recorded into a sink needs the map");
+
+	m_pStorage = nullptr;
+	m_pSink = pSink;
+	if(m_NoMapData)
+		MapSize = 0;
+	WriteHeader(pNetVersion, pMap, Sha256, Crc, pType, MapSize);
+	if(MapSize > 0)
+		WriteOut(pMapData, MapSize);
+
+	m_pfnFilter = pfnFilter;
+	m_pUser = pUser;
+	m_aCurrentFilename[0] = '\0';
+}
+
+void CDemoRecorder::WriteOut(const void *pData, size_t Size)
+{
+	if(m_pSink)
+		m_pSink->DemoWrite(pData, Size);
+	else
+		io_write(m_File, pData, Size);
+}
+
+void CDemoRecorder::WriteHeader(const char *pNetVersion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned Crc, const char *pType, unsigned MapSize)
+{
 	CDemoHeader Header;
 	mem_zero(&Header, sizeof(Header));
 	mem_copy(Header.m_aMarker, gs_aHeaderMarker, sizeof(Header.m_aMarker));
@@ -145,51 +206,20 @@ int CDemoRecorder::Start(IStorage *pStorage, const char *pFilename, const char *
 	str_copy(Header.m_aType, pType);
 	// Header.m_Length - add this on stop
 	str_timestamp(Header.m_aTimestamp, sizeof(Header.m_aTimestamp));
-	io_write(DemoFile, &Header, sizeof(Header));
+	WriteOut(&Header, sizeof(Header));
 
 	CTimelineMarkers TimelineMarkers;
 	mem_zero(&TimelineMarkers, sizeof(TimelineMarkers));
-	io_write(DemoFile, &TimelineMarkers, sizeof(TimelineMarkers)); // fill this on stop
+	WriteOut(&TimelineMarkers, sizeof(TimelineMarkers)); // fill this on stop
 
 	// Write Sha256
-	io_write(DemoFile, SHA256_EXTENSION.m_aData, sizeof(SHA256_EXTENSION.m_aData));
-	io_write(DemoFile, &Sha256, sizeof(SHA256_DIGEST));
-
-	if(MapSize == 0)
-	{
-	}
-	else if(pMapData)
-	{
-		io_write(DemoFile, pMapData, MapSize);
-	}
-	else
-	{
-		// write map data
-		while(true)
-		{
-			unsigned char aChunk[1024 * 64];
-			int Bytes = io_read(MapFile, &aChunk, sizeof(aChunk));
-			if(Bytes <= 0)
-				break;
-			io_write(DemoFile, &aChunk, Bytes);
-		}
-		io_close(MapFile);
-	}
+	WriteOut(SHA256_EXTENSION.m_aData, sizeof(SHA256_EXTENSION.m_aData));
+	WriteOut(&Sha256, sizeof(SHA256_DIGEST));
 
 	m_LastKeyFrame = -1;
 	m_LastTickMarker = -1;
 	m_FirstTick = -1;
 	m_NumTimelineMarkers = 0;
-
-	log_info_color(DEMO_PRINT_COLOR, "demo_recorder", "Recording to '%s'", pFilename);
-
-	m_pfnFilter = pfnFilter;
-	m_pUser = pUser;
-
-	m_File = DemoFile;
-	str_copy(m_aCurrentFilename, pFilename);
-
-	return 0;
 }
 
 /*
@@ -231,13 +261,13 @@ void CDemoRecorder::WriteTickMarker(int Tick, bool Keyframe)
 		if(Keyframe)
 			aChunk[0] |= CHUNKTICKFLAG_KEYFRAME;
 
-		io_write(m_File, aChunk, sizeof(aChunk));
+		WriteOut(aChunk, sizeof(aChunk));
 	}
 	else
 	{
 		unsigned char aChunk[1];
 		aChunk[0] = CHUNKTYPEFLAG_TICKMARKER | CHUNKTICKFLAG_TICK_COMPRESSED | (Tick - m_LastTickMarker);
-		io_write(m_File, aChunk, sizeof(aChunk));
+		WriteOut(aChunk, sizeof(aChunk));
 	}
 
 	m_LastTickMarker = Tick;
@@ -247,7 +277,7 @@ void CDemoRecorder::WriteTickMarker(int Tick, bool Keyframe)
 
 bool CDemoRecorder::Write(int Type, const void *pData, int Size)
 {
-	if(!m_File)
+	if(!IsRecording())
 		return false;
 
 	if(Size > 64 * 1024)
@@ -276,7 +306,7 @@ bool CDemoRecorder::Write(int Type, const void *pData, int Size)
 	if(Size < 30)
 	{
 		aChunk[0] |= Size;
-		io_write(m_File, aChunk, 1);
+		WriteOut(aChunk, 1);
 	}
 	else
 	{
@@ -284,18 +314,18 @@ bool CDemoRecorder::Write(int Type, const void *pData, int Size)
 		{
 			aChunk[0] |= 30;
 			aChunk[1] = Size & 0xff;
-			io_write(m_File, aChunk, 2);
+			WriteOut(aChunk, 2);
 		}
 		else
 		{
 			aChunk[0] |= 31;
 			aChunk[1] = Size & 0xff;
 			aChunk[2] = Size >> 8;
-			io_write(m_File, aChunk, 3);
+			WriteOut(aChunk, 3);
 		}
 	}
 
-	io_write(m_File, aBuffer2, Size);
+	WriteOut(aBuffer2, Size);
 	return true;
 }
 
@@ -344,30 +374,47 @@ void CDemoRecorder::RecordMessage(const void *pData, int Size)
 	Write(CHUNKTYPE_MESSAGE, pData, Size);
 }
 
+bool CDemoRecorder::WriteLengthAndMarkers(IOHANDLE File, int Length, const int *pMarkers, int NumMarkers)
+{
+	dbg_assert(NumMarkers >= 0 && NumMarkers <= MAX_TIMELINE_MARKERS, "Invalid number of timeline markers: %d", NumMarkers);
+	bool Ok = true;
+
+	// add the demo length to the header
+	Ok = Ok && io_seek(File, offsetof(CDemoHeader, m_aLength), EIoSeekOrigin::START) == 0;
+	unsigned char aLength[sizeof(int32_t)];
+	uint_to_bytes_be(aLength, Length);
+	Ok = Ok && io_write(File, aLength, sizeof(aLength)) == sizeof(aLength);
+
+	// add the timeline markers to the header
+	Ok = Ok && io_seek(File, sizeof(CDemoHeader) + offsetof(CTimelineMarkers, m_aNumTimelineMarkers), EIoSeekOrigin::START) == 0;
+	unsigned char aNumMarkers[sizeof(int32_t)];
+	uint_to_bytes_be(aNumMarkers, NumMarkers);
+	Ok = Ok && io_write(File, aNumMarkers, sizeof(aNumMarkers)) == sizeof(aNumMarkers);
+	for(int i = 0; i < NumMarkers; i++)
+	{
+		unsigned char aMarker[sizeof(int32_t)];
+		uint_to_bytes_be(aMarker, pMarkers[i]);
+		Ok = Ok && io_write(File, aMarker, sizeof(aMarker)) == sizeof(aMarker);
+	}
+	return Ok;
+}
+
 int CDemoRecorder::Stop(IDemoRecorder::EStopMode Mode, const char *pTargetFilename)
 {
+	if(m_pSink)
+	{
+		IDemoSink *pSink = m_pSink;
+		m_pSink = nullptr;
+		pSink->DemoStopped();
+		return 0;
+	}
+
 	if(!m_File)
 		return -1;
 
 	if(Mode == IDemoRecorder::EStopMode::KEEP_FILE)
 	{
-		// add the demo length to the header
-		io_seek(m_File, offsetof(CDemoHeader, m_aLength), EIoSeekOrigin::START);
-		unsigned char aLength[sizeof(int32_t)];
-		uint_to_bytes_be(aLength, Length());
-		io_write(m_File, aLength, sizeof(aLength));
-
-		// add the timeline markers to the header
-		io_seek(m_File, sizeof(CDemoHeader) + offsetof(CTimelineMarkers, m_aNumTimelineMarkers), EIoSeekOrigin::START);
-		unsigned char aNumMarkers[sizeof(int32_t)];
-		uint_to_bytes_be(aNumMarkers, m_NumTimelineMarkers);
-		io_write(m_File, aNumMarkers, sizeof(aNumMarkers));
-		for(int i = 0; i < m_NumTimelineMarkers; i++)
-		{
-			unsigned char aMarker[sizeof(int32_t)];
-			uint_to_bytes_be(aMarker, m_aTimelineMarkers[i]);
-			io_write(m_File, aMarker, sizeof(aMarker));
-		}
+		WriteLengthAndMarkers(m_File, Length(), m_aTimelineMarkers, m_NumTimelineMarkers);
 	}
 
 	io_close(m_File);

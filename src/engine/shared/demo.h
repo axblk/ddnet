@@ -21,11 +21,33 @@ class IStorage;
 class IVideo;
 #endif
 
+/**
+ * Where a demo recorder that writes no file of its own puts its bytes, such as
+ * the live stream of a server (see `CLiveRecorder`).
+ */
+class IDemoSink
+{
+public:
+	virtual ~IDemoSink() = default;
+	/**
+	 * Takes the next bytes of the demo, in the order a file would have them.
+	 *
+	 * @param pData The bytes.
+	 * @param Size How many.
+	 */
+	virtual void DemoWrite(const void *pData, size_t Size) = 0;
+	/**
+	 * The recorder stopped, nothing follows until it is started again.
+	 */
+	virtual void DemoStopped() = 0;
+};
+
 class CDemoRecorder : public IDemoRecorder
 {
 	IStorage *m_pStorage;
 
 	IOHANDLE m_File;
+	IDemoSink *m_pSink = nullptr;
 	char m_aCurrentFilename[IO_MAX_PATH_LENGTH];
 	int m_LastTickMarker;
 	int m_LastKeyFrame;
@@ -42,6 +64,8 @@ class CDemoRecorder : public IDemoRecorder
 	DEMOFUNC_FILTER m_pfnFilter;
 	void *m_pUser;
 
+	void WriteOut(const void *pData, size_t Size);
+	void WriteHeader(const char *pNetVersion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned MapCrc, const char *pType, unsigned MapSize);
 	void WriteTickMarker(int Tick, bool Keyframe);
 	bool Write(int Type, const void *pData, int Size);
 
@@ -51,7 +75,39 @@ public:
 	~CDemoRecorder() override;
 
 	int Start(IStorage *pStorage, const char *pFilename, const char *pNetversion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned MapCrc, const char *pType, unsigned MapSize, const unsigned char *pMapData, DEMOFUNC_FILTER pfnFilter, void *pUser);
+	/**
+	 * Starts recording into a sink instead of a file. The header and the map
+	 * are the first bytes the sink gets, as in a file.
+	 *
+	 * @param pSink Takes the bytes until the recorder is stopped.
+	 * @param pNetversion The network version the demo is of.
+	 * @param pMap The name of the map.
+	 * @param Sha256 The map's SHA256.
+	 * @param MapCrc The map's CRC.
+	 * @param pType What recorded the demo, such as `server`.
+	 * @param MapSize How large the map is.
+	 * @param pMapData The map, which goes into the demo.
+	 * @param pfnFilter Leaves messages out of the demo, or `nullptr`.
+	 * @param pUser Passed to `pfnFilter`.
+	 */
+	void Start(IDemoSink *pSink, const char *pNetversion, const char *pMap, const SHA256_DIGEST &Sha256, unsigned MapCrc, const char *pType, unsigned MapSize, const unsigned char *pMapData, DEMOFUNC_FILTER pfnFilter, void *pUser);
 	int Stop(IDemoRecorder::EStopMode Mode, const char *pTargetFilename = "") override;
+	/**
+	 * Fills in what the header of a demo file only knows at the end: its
+	 * length and its timeline markers.
+	 *
+	 * @param File The demo file, open for writing; where it stands afterwards is undefined.
+	 * @param Length The length in seconds.
+	 * @param pMarkers The ticks of the markers.
+	 * @param NumMarkers How many, at most `MAX_TIMELINE_MARKERS`.
+	 *
+	 * @return Whether it was written.
+	 */
+	static bool WriteLengthAndMarkers(IOHANDLE File, int Length, const int *pMarkers, int NumMarkers);
+	/**
+	 * Makes the next snapshot a keyframe, which is where a demo can be cut.
+	 */
+	void ForceKeyframe() { m_LastKeyFrame = -1; }
 
 	void AddDemoMarker();
 	void AddDemoMarker(int Tick);
@@ -59,7 +115,7 @@ public:
 	void RecordSnapshot(int Tick, const void *pData, int Size);
 	void RecordMessage(const void *pData, int Size);
 
-	bool IsRecording() const override { return m_File != nullptr; }
+	bool IsRecording() const override { return m_File != nullptr || m_pSink != nullptr; }
 	const char *CurrentFilename() const override { return m_aCurrentFilename; }
 
 	int Length() const override { return (m_LastTickMarker - m_FirstTick) / SERVER_TICK_SPEED; }

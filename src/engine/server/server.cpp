@@ -274,6 +274,7 @@ CServer::CServer()
 		m_aDemoRecorder[i] = CDemoRecorder(&m_SnapshotDelta, true);
 	m_aDemoRecorder[RECORDER_MANUAL] = CDemoRecorder(&m_SnapshotDelta, false);
 	m_aDemoRecorder[RECORDER_AUTO] = CDemoRecorder(&m_SnapshotDelta, false);
+	m_aDemoRecorder[RECORDER_LIVE] = CDemoRecorder(&m_SnapshotDelta, false);
 
 	m_pGameServer = nullptr;
 
@@ -1129,9 +1130,9 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		// write message to demo recorders
 		if(!(Flags & MSGFLAG_NORECORD))
 		{
-			for(auto &Recorder : m_aDemoRecorder)
-				if(Recorder.IsRecording())
-					Recorder.RecordMessage(Pack6.Data(), Pack6.Size());
+			for(int i = 0; i < NUM_RECORDERS; i++)
+				if(m_aDemoRecorder[i].IsRecording() && (i != RECORDER_LIVE || !pMsg->m_System))
+					m_aDemoRecorder[i].RecordMessage(Pack6.Data(), Pack6.Size());
 		}
 
 		if(!(Flags & MSGFLAG_NOSEND))
@@ -1180,6 +1181,10 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 				m_aDemoRecorder[RECORDER_MANUAL].RecordMessage(Pack.Data(), Pack.Size());
 			if(m_aDemoRecorder[RECORDER_AUTO].IsRecording())
 				m_aDemoRecorder[RECORDER_AUTO].RecordMessage(Pack.Data(), Pack.Size());
+			// Players ignore system messages, and the snapshots sent to
+			// each client would make most of the stream.
+			if(m_aDemoRecorder[RECORDER_LIVE].IsRecording() && !pMsg->m_System)
+				m_aDemoRecorder[RECORDER_LIVE].RecordMessage(Pack.Data(), Pack.Size());
 		}
 
 		if(!(Flags & MSGFLAG_NOSEND))
@@ -1232,7 +1237,7 @@ void CServer::DoSnapshot()
 {
 	bool IsGlobalSnap = Config()->m_SvHighBandwidth || (m_CurrentGameTick % 2) == 0;
 
-	if(m_aDemoRecorder[RECORDER_MANUAL].IsRecording() || m_aDemoRecorder[RECORDER_AUTO].IsRecording())
+	if(m_aDemoRecorder[RECORDER_MANUAL].IsRecording() || m_aDemoRecorder[RECORDER_AUTO].IsRecording() || m_aDemoRecorder[RECORDER_LIVE].IsRecording())
 	{
 		// create snapshot for demo recording
 		CSnapshotBuffer Data;
@@ -1247,6 +1252,8 @@ void CServer::DoSnapshot()
 			m_aDemoRecorder[RECORDER_MANUAL].RecordSnapshot(Tick(), Data.AsSnapshot(), SnapshotSize);
 		if(m_aDemoRecorder[RECORDER_AUTO].IsRecording())
 			m_aDemoRecorder[RECORDER_AUTO].RecordSnapshot(Tick(), Data.AsSnapshot(), SnapshotSize);
+		if(m_aDemoRecorder[RECORDER_LIVE].IsRecording())
+			m_LiveRecorder.RecordSnapshot(Tick(), Data.AsSnapshot(), SnapshotSize, time_get_nanoseconds());
 	}
 
 	// create snapshots for all clients
@@ -4725,6 +4732,7 @@ int CServer::Run()
 			if(NewTicks)
 			{
 				DoSnapshot();
+				m_LiveRecorder.Update(time_get_nanoseconds());
 
 				const int CommandSendingClientId = Tick() % MAX_CLIENTS;
 				UpdateClientRconCommands(CommandSendingClientId);
@@ -4849,6 +4857,7 @@ int CServer::Run()
 			else if(NonActive &&
 				!m_aDemoRecorder[RECORDER_MANUAL].IsRecording() &&
 				!m_aDemoRecorder[RECORDER_AUTO].IsRecording() &&
+				!m_LiveRecorder.IsActive() &&
 				m_pMapConversionJob == nullptr)
 			{
 				net_socket_read_wait(m_NetServer.Socket(), QuicWait(1s));
@@ -4927,6 +4936,8 @@ int CServer::Run()
 	Engine()->ShutdownJobs();
 
 	GameServer()->OnShutdown(nullptr);
+	// What the delay still holds back is never written.
+	m_LiveRecorder.Abort("shutdown");
 	GameServer()->Map()->Unload();
 	DbPool()->OnShutdown();
 
@@ -5408,6 +5419,116 @@ void CServer::DemoRecorder_HandleAutoStart()
 			CFileCollection AutoDemos;
 			AutoDemos.Init(Storage(), "demos/auto/server", "", ".demo", Config()->m_SvAutoDemoMax);
 		}
+	}
+
+	// A live stream goes on over map changes, with a new epoch per map.
+	if(Config()->m_SvLiveAuto && !m_LiveAutoStarted && !m_LiveRecorder.IsLive())
+	{
+		m_LiveAutoStarted = true;
+		LiveStart("");
+	}
+	else if(m_LiveRecorder.NeedsEpoch())
+	{
+		LiveBeginEpoch();
+	}
+}
+
+void CServer::LiveStart(const char *pName)
+{
+	if(m_LiveRecorder.IsLive())
+	{
+		log_error("live", "already live name=%s", m_LiveRecorder.Name());
+		return;
+	}
+	// A stream that still writes what it held back makes way.
+	m_LiveRecorder.Abort("replaced");
+
+	char aName[128];
+	if(pName[0] != '\0')
+	{
+		str_copy(aName, pName);
+	}
+	else
+	{
+		char aTimestamp[20];
+		str_timestamp(aTimestamp, sizeof(aTimestamp));
+		str_format(aName, sizeof(aName), "%s_%s", aTimestamp, GameServer()->Map()->BaseName());
+		str_sanitize_filename(aName);
+	}
+	CLiveRecorder::CSettings Settings;
+	Settings.m_Delay = std::chrono::seconds(Config()->m_SvLiveDelay);
+	Settings.m_SegmentSeconds = Config()->m_SvLiveSegment;
+	Settings.m_MaxDurationSeconds = Config()->m_SvLiveMaxDuration;
+	Settings.m_MaxBytes = (int64_t)Config()->m_SvLiveMaxSize * 1024;
+	char aError[256];
+	if(!m_LiveRecorder.Start(Storage(), Config()->m_SvLiveDir, aName, Settings, time_get_nanoseconds(), aError, sizeof(aError)))
+	{
+		log_error("live", "could not start: %s", aError);
+		return;
+	}
+	LiveBeginEpoch();
+}
+
+void CServer::LiveBeginEpoch()
+{
+	m_LiveRecorder.BeginEpoch(
+		GameServer()->NetVersion(),
+		GameServer()->Map()->BaseName(),
+		m_aCurrentMapSha256[MAP_TYPE_SIX],
+		m_aCurrentMapCrc[MAP_TYPE_SIX],
+		m_aCurrentMapSize[MAP_TYPE_SIX],
+		CurrentMapData(MAP_TYPE_SIX),
+		time_get_nanoseconds());
+}
+
+void CServer::ConLiveStart(IConsole::IResult *pResult, void *pUser)
+{
+	static_cast<CServer *>(pUser)->LiveStart(pResult->NumArguments() ? pResult->GetString(0) : "");
+}
+
+void CServer::ConLiveStop(IConsole::IResult *pResult, void *pUser)
+{
+	CServer *pSelf = static_cast<CServer *>(pUser);
+	const char *pMode = pResult->NumArguments() ? pResult->GetString(0) : "";
+	if(pMode[0] != '\0' && str_comp(pMode, "keep") != 0)
+	{
+		log_error("live", "live_stop takes 'keep' or nothing, not '%s'", pMode);
+		return;
+	}
+	if(!pSelf->m_LiveRecorder.IsLive())
+	{
+		log_error("live", "not live");
+		return;
+	}
+	pSelf->m_LiveRecorder.Stop(pMode[0] != '\0', "manual");
+	log_info("live", "stopping name=%s delay=%ds", pSelf->m_LiveRecorder.Name(), pSelf->Config()->m_SvLiveDelay);
+}
+
+void CServer::ConLiveStatus(IConsole::IResult *pResult, void *pUser)
+{
+	char aStatus[512];
+	static_cast<CServer *>(pUser)->m_LiveRecorder.Status(aStatus, sizeof(aStatus), time_get_nanoseconds());
+	log_info("live", "%s", aStatus);
+}
+
+void CServer::ConLiveMarker(IConsole::IResult *pResult, void *pUser)
+{
+	CServer *pSelf = static_cast<CServer *>(pUser);
+	if(pSelf->m_LiveRecorder.AddMarker(CLiveRecorder::EMarkerKind::MANUAL, pResult->NumArguments() ? pResult->GetString(0) : "", time_get_nanoseconds()) < 0)
+		log_error("live", "no live demo to mark");
+}
+
+void CServer::ConchainLiveAuto(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
+{
+	CServer *pSelf = static_cast<CServer *>(pUserData);
+	const bool WasOn = pSelf->Config()->m_SvLiveAuto != 0;
+	pfnCallback(pResult, pCallbackUserData);
+	// Turned on while a map runs, the stream starts right away. Before the
+	// first map, the map load starts it.
+	if(pResult->NumArguments() && !WasOn && pSelf->Config()->m_SvLiveAuto && pSelf->GameServer()->Map()->IsLoaded() && !pSelf->m_LiveRecorder.IsLive())
+	{
+		pSelf->m_LiveAutoStarted = true;
+		pSelf->LiveStart("");
 	}
 }
 
@@ -6062,6 +6183,11 @@ void CServer::RegisterCommands()
 
 	Console()->Register("record", "?s[file]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRecord, this, "Record to a file");
 	Console()->Register("stoprecord", "", CFGFLAG_SERVER, ConStopRecord, this, "Stop recording");
+	Console()->Register("live_start", "?s[name]", CFGFLAG_SERVER | CFGFLAG_STORE, ConLiveStart, this, "Start a live demo stream into sv_live_dir/<name>");
+	Console()->Register("live_stop", "?s['keep']", CFGFLAG_SERVER, ConLiveStop, this, "Stop the live demo stream after its delay, with 'keep' also into a demo");
+	Console()->Register("live_status", "", CFGFLAG_SERVER, ConLiveStatus, this, "Show the state of the live demo stream");
+	Console()->Register("live_marker", "?r[label]", CFGFLAG_SERVER, ConLiveMarker, this, "Mark the current tick of the live demo stream");
+	Console()->Chain("sv_live_auto", ConchainLiveAuto, this);
 
 	Console()->Register("reload", "", CFGFLAG_SERVER, ConMapReload, this, "Reload the map");
 

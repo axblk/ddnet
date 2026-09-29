@@ -4063,6 +4063,8 @@ if(SERVER)
     databases/connection_pool.h
     databases/mysql.cpp
     databases/sqlite.cpp
+    live_recorder.cpp
+    live_recorder.h
     main.cpp
     map_conversion.cpp
     map_conversion.h
@@ -4564,6 +4566,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     json_test.cpp
     jsonwriter_test.cpp
     linereader_test.cpp
+    live_recorder_test.cpp
     map_context_test.cpp
     map_conversion_test.cpp
     map_convert_test.cpp

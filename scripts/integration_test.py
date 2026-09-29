@@ -2927,6 +2927,241 @@ def stock_07_client_plays_converted_maps(test_env):
 		client.wait_for_exit()
 
 
+# The layout of a demo file, see `CDemoHeader` and `CDemoRecorder`.
+DEMO_HEADER_SIZE = 176
+DEMO_MAP_SIZE_OFFSET = 136
+DEMO_LENGTH_OFFSET = 152
+DEMO_MARKERS_SIZE = 4 + 64 * 4
+DEMO_SHA256_EXTENSION_SIZE = 16 + 32
+
+
+def demo_chunks(data):
+	"""Walks the chunks of a demo like `CDemoPlayer::ScanFile`, and returns the ticks it holds, in order, and the ticks of its keyframes."""
+	assert data[:7] == b"TWDEMO\0", data[:7]
+	map_size = int.from_bytes(data[DEMO_MAP_SIZE_OFFSET : DEMO_MAP_SIZE_OFFSET + 4], "big")
+	position = DEMO_HEADER_SIZE + DEMO_MARKERS_SIZE + DEMO_SHA256_EXTENSION_SIZE + map_size
+	tick = None
+	ticks = []
+	keyframes = []
+	while position < len(data):
+		chunk = data[position]
+		position += 1
+		if chunk & 0x80:
+			if chunk & 0x20:
+				assert tick is not None, "a tick delta before any tick"
+				tick += chunk & 0x1F
+			else:
+				assert position + 4 <= len(data), "a cut tick marker"
+				tick = int.from_bytes(data[position : position + 4], "big")
+				position += 4
+			ticks.append(tick)
+			if chunk & 0x40:
+				keyframes.append(tick)
+		else:
+			size = chunk & 0x1F
+			if size == 30:
+				size = data[position]
+				position += 1
+			elif size == 31:
+				size = data[position] | (data[position + 1] << 8)
+				position += 2
+			position += size
+			assert position <= len(data), "a cut chunk"
+	return ticks, keyframes
+
+
+def live_dir(test_env, name, root="live"):
+	return os.path.join(test_env.tmp_dir, root, name)
+
+
+def read_live_index(test_env, name, root="live"):
+	path = os.path.join(live_dir(test_env, name, root), "index.json")
+	# On Windows the file cannot be opened for a moment while the server replaces it.
+	for attempt in range(40):
+		try:
+			with open(path, encoding="utf-8") as f:
+				return json.load(f)
+		except FileNotFoundError:
+			return None
+		except PermissionError:
+			if attempt == 39:
+				raise
+			sleep(0.05)
+	return None
+
+
+def wait_for_live_index(test_env, name, condition, description, timeout=10, root="live"):
+	end = time() + timeout * test_env.runner.timeout_multiplier
+	index = None
+	while time() < end:
+		index = read_live_index(test_env, name, root)
+		if index is not None and condition(index):
+			return index
+		sleep(0.05)
+	raise AssertionError(f"{description}: {index}")
+
+
+def concatenate_live_epoch(test_env, name, index, epoch, filename):
+	"""Writes the init of an epoch and its segments that are left into one file, which has to be a demo."""
+	directory = live_dir(test_env, name)
+	init = next(entry["init"] for entry in index["epochs"] if entry["epoch"] == epoch)
+	segments = [segment for segment in index["segments"] if segment["epoch"] == epoch]
+	with open(os.path.join(directory, init), "rb") as f:
+		data = f.read()
+	for segment in segments:
+		with open(os.path.join(directory, segment["file"]), "rb") as f:
+			part = f.read()
+		assert len(part) == segment["bytes"], (segment, len(part))
+		data += part
+	with open(os.path.join(test_env.tmp_dir, filename), "wb") as f:
+		f.write(data)
+	return data, segments
+
+
+def play_demo_to_its_end(client, filename, ticks):
+	"""Plays a demo in the client and seeks to its end, which reads it through from its last keyframe, and back to its start.
+
+	`ticks` are the ticks the demo holds. The server records one snapshot per
+	pass of its loop, and a server that fell behind does several ticks in one
+	pass, so these are not every tick. The player shows the tick before the one
+	it reads next (`CDemoPlayer::SetPos`): a seek to the end stops before the
+	last tick. A seek to the start reads the first tick, and then one more to
+	have a previous tick (`CDemoPlayer::Play`): it shows the second tick."""
+	client.command(f"play {filename}")
+	wait_for_sessions(client, lambda s: any(fields["type"] == "1" and fields["state"] == "3" for key, fields in s.items() if key < 0), f"{filename} did not play")
+	client.command("demo_speed 0")
+	# Past the end, where the player stops, so that rounding the seconds to a tick cannot stop it earlier.
+	client.command(f"demo_seek {(ticks[-1] - ticks[0]) / 50 + 1}")
+	wait_for_sessions(client, lambda s: int(demo_session(s)["tick"]) == ticks[-2] and demo_session(s)["state"] == "3", f"{filename} did not play to tick {ticks[-1]}")
+	client.command("demo_seek 0")
+	wait_for_sessions(client, lambda s: int(demo_session(s)["tick"]) == ticks[1], f"{filename} did not play from tick {ticks[0]}")
+	client.command("disconnect")
+	wait_for_sessions(client, lambda s: all(fields["state"] == "0" for key, fields in s.items() if key < 0), f"{filename} was not closed")
+
+
+@test(timeout=120)
+def server_streams_live_demo(test_env):
+	delay = 2
+	attacker = test_env.client(["player_name attacker", "cl_auto_demo_record 0"])
+	victim = test_env.client(["player_name victim", "cl_auto_demo_record 0"])
+	server = test_env.server(["sv_gametype dm", "sv_map dm1", "sv_scorelimit 1", "sv_test_cmds 1", f"sv_live_delay {delay}", "sv_live_segment 2", "sv_live_max_duration 6"])
+	wait_for_startup([attacker, victim, server])
+	server.command("live_start it")
+	# The directory in the storage, not on the host.
+	server.wait_for_log_exact("live: started name=it dir=live/it", timeout=5)
+	# The stream is announced at once, its first bytes only after the delay.
+	index = read_live_index(test_env, "it")
+	assert index is not None and index["state"] == "live" and index["segments"] == [] and index["delay_ms"] == delay * 1000, index
+
+	attacker.command(f"connect localhost:{server.port}")
+	victim.command(f"connect localhost:{server.port}")
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	wait_for_live_index(test_env, "it", lambda i: len(i["segments"]) >= 2, "no second segment")
+
+	# A marker is on disk the delay after it was set, not before.
+	server.command("live_marker probe")
+	marked = time()
+	marker_tick = int(server.wait_for_log_prefix("live: marker tick=", timeout=5).line.split("tick=", 1)[1].split(" ", 1)[0])
+	index = wait_for_live_index(test_env, "it", lambda i: any(m["kind"] == "manual" for m in i["markers"]), "the manual marker did not arrive", timeout=delay + 5)
+	arrived = time() - marked
+	assert delay - 0.1 <= arrived <= delay + 1.5 * test_env.runner.timeout_multiplier, arrived
+	assert index["markers"] == [{"epoch": 0, "tick": marker_tick, "kind": "manual", "label": "probe"}], index["markers"]
+
+	# The end of a match is marked by itself.
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestDM'")
+	match_end = int(server.wait_for_log(lambda l: l.line.startswith("live: marker tick=") and l.line.endswith(" kind=match_end"), "the match end marker", timeout=5).line.split("tick=", 1)[1].split(" ", 1)[0])
+	wait_for_live_index(test_env, "it", lambda i: any(m["kind"] == "match_end" and m["tick"] == match_end for m in i["markers"]), "the match end marker did not arrive", timeout=delay + 5)
+
+	# The limit keeps 6 s: old segments go, those listed are there.
+	index = wait_for_live_index(test_env, "it", lambda i: i["segments"][0]["n"] >= 3, "no old segment was deleted", timeout=20)
+	assert sum(segment["end_tick"] - segment["start_tick"] for segment in index["segments"]) <= 6 * 50, index["segments"]
+	assert not os.path.exists(os.path.join(live_dir(test_env, "it"), "seg-0"))
+	for segment in index["segments"]:
+		assert os.path.exists(os.path.join(live_dir(test_env, "it"), segment["file"])), segment
+
+	# A new map is a new epoch with an init of its own.
+	server.command("change_map dm2")
+	index = wait_for_live_index(test_env, "it", lambda i: len(i["epochs"]) == 2 and any(segment["epoch"] == 1 for segment in i["segments"]), "no epoch for the new map", timeout=15)
+	assert [epoch["map"] for epoch in index["epochs"]] == ["dm1", "dm2"], index["epochs"]
+	assert os.path.exists(os.path.join(live_dir(test_env, "it"), "init-1"))
+
+	server.command("live_status")
+	status = server.wait_for_log_prefix("live: state=live name=it dir=live/it ", timeout=5).line
+	assert f" delay={delay}s " in status, status
+
+	# Stopping writes what the delay still holds, then ends the stream and
+	# keeps it as a demo per map.
+	server.command("live_stop keep")
+	stopping = time()
+	server.wait_for_log_exact("live: stopped name=it reason=manual", timeout=delay + 5)
+	assert time() - stopping >= delay - 0.1
+	index = read_live_index(test_env, "it")
+	assert index["state"] == "ended", index
+	assert all(segment["complete"] for segment in index["segments"]), index["segments"]
+	epochs = sorted({segment["epoch"] for segment in index["segments"]})
+	server.exit()
+	server.wait_for_exit()
+
+	for client in (attacker, victim):
+		client.command("disconnect")
+	for epoch in epochs:
+		data, segments = concatenate_live_epoch(test_env, "it", index, epoch, f"demos/concat_{epoch}.demo")
+		ticks, keyframes = demo_chunks(data)
+		first_tick, last_tick = ticks[0], ticks[-1]
+		assert first_tick == segments[0]["start_tick"] and last_tick == segments[-1]["end_tick"], (first_tick, last_tick, segments)
+		# Every segment starts at a keyframe.
+		assert {segment["start_tick"] for segment in segments} <= set(keyframes), (segments, keyframes)
+		kept = f"demos/it_{epoch}.demo" if len(epochs) > 1 else "demos/it.demo"
+		with open(os.path.join(test_env.tmp_dir, kept), "rb") as f:
+			kept_data = f.read()
+		assert kept_data[DEMO_HEADER_SIZE + DEMO_MARKERS_SIZE :] == data[DEMO_HEADER_SIZE + DEMO_MARKERS_SIZE :]
+		assert int.from_bytes(kept_data[DEMO_LENGTH_OFFSET : DEMO_LENGTH_OFFSET + 4], "big") == (last_tick - first_tick) // 50
+		play_demo_to_its_end(attacker, f"demos/concat_{epoch}.demo", ticks)
+		play_demo_to_its_end(victim, kept, ticks)
+
+	attacker.exit()
+	victim.exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test
+def server_streams_live_demo_from_start(test_env):
+	server = test_env.server(["sv_live_auto 1", "sv_live_delay 1", "sv_live_dir streams/public"])
+	# The stream starts with the game, before the server says it is up.
+	started = server.wait_for_log_prefix("live: started name=", timeout=5).line
+	server.wait_for_startup()
+	name = started.split("name=", 1)[1].split(" ", 1)[0]
+	assert name.endswith("_Tutorial"), name
+	root = os.path.join("streams", "public")
+	assert os.path.isdir(live_dir(test_env, name, root))
+	wait_for_live_index(test_env, name, lambda index: index["segments"], "no segment", root=root)
+	# A shutdown drops what the delay still holds back.
+	server.exit()
+	server.wait_for_log_exact(f"live: stopped name={name} reason=shutdown", timeout=5)
+	server.wait_for_exit()
+	assert read_live_index(test_env, name, root)["state"] == "ended"
+
+
+@test
+def server_streams_live_demo_when_turned_on(test_env):
+	server = test_env.server(["sv_live_delay 0"])
+	server.wait_for_startup()
+	server.wait_for_log_prefix("server: v=1 ev=ready", timeout=10)
+	# Turned on in a running server, it starts at once, not with the next map.
+	server.command("sv_live_auto 1")
+	name = server.wait_for_log_prefix("live: started name=", timeout=5).line.split("name=", 1)[1].split(" ", 1)[0]
+	server.command("live_stop")
+	server.wait_for_log_exact(f"live: stopped name={name} reason=manual", timeout=5)
+	server.command("live_stop")
+	server.wait_for_log_exact("live: not live", timeout=5)
+	server.exit()
+	server.wait_for_exit()
+
+
 @test(requires_websockets=True)
 def client_can_connect_websockets(test_env):
 	client = test_env.client(["dbg_websockets 1", "stdout_output_level 1"])

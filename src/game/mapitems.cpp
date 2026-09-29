@@ -1,6 +1,7 @@
 #include <base/str.h>
 
 #include <engine/map.h>
+#include <engine/shared/datafile.h>
 
 #include <game/mapitems.h>
 
@@ -51,19 +52,30 @@ bool IsMapImageRedrawnFor07(const char *pName)
 	});
 }
 
-bool IsTeeworlds07Map(IMap *pMap)
+template<typename TMap>
+static bool WrittenByTeeworlds07(TMap &Map)
 {
 	int Start, Num;
-	pMap->GetType(MAPITEMTYPE_IMAGE, &Start, &Num);
+	Map.GetType(MAPITEMTYPE_IMAGE, &Start, &Num);
 	for(int i = 0; i < Num; i++)
 	{
-		if(pMap->GetItemSize(Start + i) < (int)sizeof(CMapItemImage_v2))
+		if(Map.GetItemSize(Start + i) < (int)sizeof(CMapItemImage_v2))
 			continue;
-		const CMapItemImage_v2 *pImage = static_cast<const CMapItemImage_v2 *>(pMap->GetItem(Start + i));
+		const CMapItemImage_v2 *pImage = static_cast<const CMapItemImage_v2 *>(Map.GetItem(Start + i));
 		if(pImage->m_Version >= 2 && MapImageFormat(pImage) != CImageInfo::FORMAT_UNDEFINED)
 			return true;
 	}
 	return false;
+}
+
+bool IsTeeworlds07Map(IMap *pMap)
+{
+	return WrittenByTeeworlds07(*pMap);
+}
+
+bool IsTeeworlds07Map(CDataFileReader &Reader)
+{
+	return WrittenByTeeworlds07(Reader);
 }
 
 bool IsValidGameTile(int Index)

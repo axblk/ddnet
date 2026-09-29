@@ -1,0 +1,8 @@
+Maps of Teeworlds 0.7.5 (https://github.com/teeworlds/teeworlds-maps),
+unchanged, for the tests of the map converter.
+
+Like all content under 'data' and 'datasrc' of Teeworlds, they are released
+under CC-BY-SA 3.0 (http://creativecommons.org/licenses/by-sa/3.0/).
+Authors: android272, Chi11y (chi1), Crises, Daniel, Echchouik, Fisico, Landil,
+Lappi, LordSk, maikka, matricks, Pocram, red_com, serpis, SkizZ, somerunce,
+Sonix, Stephanator, teetow, Ubu, Zatline.

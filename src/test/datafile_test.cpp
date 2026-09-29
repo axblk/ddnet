@@ -242,3 +242,70 @@ TEST(Datafile, OpenFromMemory)
 	Reader.Close();
 	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
 }
+
+TEST(Datafile, WritesIntoMemoryWhatItWritesIntoAFile)
+{
+	std::unique_ptr<IStorage> pStorage = CreateLocalStorage();
+	ASSERT_NE(pStorage, nullptr) << "Error creating local storage";
+	CTestInfo Info;
+	WriteRawDataTestFile(pStorage.get(), Info.m_aFilename);
+
+	void *pFileData;
+	unsigned FileSize;
+	ASSERT_TRUE(pStorage->ReadFile(Info.m_aFilename, IStorage::TYPE_ALL, &pFileData, &FileSize));
+	const std::vector<uint8_t> vFileData(static_cast<uint8_t *>(pFileData), static_cast<uint8_t *>(pFileData) + FileSize);
+	free(pFileData);
+	EXPECT_TRUE(pStorage->RemoveFile(Info.m_aFilename, IStorage::TYPE_SAVE));
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("memory_map", vFileData, "memory"));
+
+	// Everything handed on as the reader stores it: the same bytes come out
+	const auto &&Copy = [&]() {
+		CDataFileWriter Writer;
+		for(int Index = 0; Index < Reader.NumItems(); Index++)
+		{
+			int Type, Id;
+			CUuid Uuid;
+			const void *pItem = Reader.GetItem(Index, &Type, &Id, &Uuid);
+			Writer.AddItem(Type, Id, Reader.GetItemSize(Index), pItem, &Uuid);
+		}
+		for(int Index = 0; Index < Reader.NumData(); Index++)
+		{
+			CDataFileRawData RawData;
+			EXPECT_TRUE(Reader.GetRawData(Index, RawData));
+			EXPECT_TRUE(RawData.Compressed());
+			EXPECT_EQ(Writer.AddRawData(RawData), Index);
+		}
+		return Writer.FinishToMemory();
+	};
+	const std::vector<uint8_t> vCopy = Copy();
+	EXPECT_EQ(vCopy, vFileData);
+	EXPECT_EQ(Copy(), vCopy);
+}
+
+TEST(Datafile, CompressesRawDataThatIsNotCompressed)
+{
+	const std::vector<uint8_t> vData(1000, 7);
+	CDataFileWriter Writer;
+	const int32_t Item = 1;
+	Writer.AddItem(1, 0, sizeof(Item), &Item);
+	EXPECT_EQ(Writer.AddRawData(CDataFileRawData(vData, vData.size(), false)), 0);
+	EXPECT_EQ(Writer.AddData(vData.size(), vData.data()), 1);
+	const std::vector<uint8_t> vFile = Writer.FinishToMemory();
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("memory_map", vFile, "memory"));
+	ASSERT_EQ(Reader.NumData(), 2);
+	for(int Index = 0; Index < 2; Index++)
+	{
+		ASSERT_EQ(Reader.GetDataSize(Index), (int)vData.size());
+		const uint8_t *pData = static_cast<const uint8_t *>(Reader.GetData(Index));
+		ASSERT_NE(pData, nullptr);
+		EXPECT_TRUE(std::equal(vData.begin(), vData.end(), pData));
+	}
+	CDataFileRawData First, Second;
+	ASSERT_TRUE(Reader.GetRawData(0, First));
+	ASSERT_TRUE(Reader.GetRawData(1, Second));
+	EXPECT_TRUE(std::equal(First.Data().begin(), First.Data().end(), Second.Data().begin(), Second.Data().end()));
+}

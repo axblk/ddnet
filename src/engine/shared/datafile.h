@@ -46,6 +46,11 @@ public:
 	CDataFileRawData(std::shared_ptr<const std::vector<uint8_t>> pBuffer, std::span<const uint8_t> Data, size_t UncompressedSize, bool Compressed);
 
 	size_t UncompressedSize() const { return m_UncompressedSize; }
+	/**
+	 * @return The stored bytes, compressed if `Compressed()`.
+	 */
+	std::span<const uint8_t> Data() const { return m_Data; }
+	bool Compressed() const { return m_Compressed; }
 
 	/**
 	 * @return Buffer of `UncompressedSize()` bytes, `nullptr` if the data is
@@ -148,6 +153,9 @@ private:
 		void *m_pCompressedData;
 		int m_CompressedSize;
 		ECompressionLevel m_CompressionLevel;
+		// Data added with `AddRawData`, written from here instead of the buffers above
+		CDataFileRawData m_RawData;
+		bool m_Raw;
 	};
 
 	class CItemInfo
@@ -184,6 +192,9 @@ private:
 
 	int GetTypeFromIndex(int Index) const;
 	int GetExtendedItemTypeIndex(int Type, const CUuid *pUuid);
+	void CompressData();
+	int64_t TotalFileSize() const;
+	void Write(const std::function<void(const void *pData, size_t Size)> &WriteBytes);
 
 public:
 	CDataFileWriter();
@@ -203,7 +214,26 @@ public:
 	int AddData(size_t Size, const void *pData, ECompressionLevel CompressionLevel = COMPRESSION_DEFAULT);
 	int AddDataSwapped(size_t Size, const void *pData);
 	int AddDataString(const char *pStr);
+	/**
+	 * Adds data as a reader hands it out. Compressed data is written as it is,
+	 * without being uncompressed and compressed again, so that a file can be
+	 * copied with only the parts that change taken apart.
+	 *
+	 * @param RawData The data, which shares ownership of its bytes, so that
+	 * they need not be copied and stay valid until the file is finished.
+	 *
+	 * @return The index of the data.
+	 */
+	int AddRawData(CDataFileRawData RawData);
 	void Finish();
+	/**
+	 * Writes the file into memory instead of into the file opened with `Open`,
+	 * which must not be called then. The output depends only on what was
+	 * added, in which order: no time or other state goes into it.
+	 *
+	 * @return The contents of the file.
+	 */
+	std::vector<uint8_t> FinishToMemory();
 };
 
 #endif

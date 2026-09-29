@@ -69,6 +69,7 @@ demo_extract_chat
 dilate
 dummy_map
 fake_server
+map_convert
 map_convert_07
 map_diff
 map_extract

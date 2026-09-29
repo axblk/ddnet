@@ -8,6 +8,7 @@
 
 #include <engine/image.h>
 
+class CDataFileReader;
 class IMap;
 
 // layer types
@@ -424,9 +425,11 @@ bool IsMapImageRedrawnFor07(const char *pName);
  * images 0.7 drew again, see `IsMapImageRedrawnFor07`.
  *
  * Teeworlds 0.7 writes the second version of the image item, the one with the
- * format field (`m_MustBe1` here). 0.6 and DDNet write the first, and so does
- * `map_convert_07`, whose maps embed the pictures of the 0.6 tilesets. Only
- * the image items are asked: they are what the answer is needed for.
+ * format field (`m_MustBe1` here). 0.6 and DDNet write the first, and so did
+ * `map_convert_07` before `map_convert` took its place: its maps embed the
+ * pictures of the 0.6 tilesets. `map_convert` writes the second version into
+ * the maps it converts for 0.7. Only the image items are asked: they are what
+ * the answer is needed for.
  *
  * @param pMap The map to look at.
  *
@@ -434,6 +437,16 @@ bool IsMapImageRedrawnFor07(const char *pName);
  * format that a map writer uses.
  */
 bool IsTeeworlds07Map(IMap *pMap);
+
+/**
+ * Whether Teeworlds 0.7 wrote this map, see `IsTeeworlds07Map(IMap *)`.
+ *
+ * @param Reader The map as a data file, open.
+ *
+ * @return Whether one of its image items is of the second version, with a
+ * format that a map writer uses.
+ */
+bool IsTeeworlds07Map(CDataFileReader &Reader);
 
 class CMapItemGroup_v1
 {

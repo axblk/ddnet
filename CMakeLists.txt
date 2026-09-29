@@ -1499,6 +1499,13 @@ set(EXPECTED_DATA
   blob.png
   censorlist.txt
   communityicons/none.png
+  convert/desert_main_07new.png
+  convert/generic_shadows_07new.png
+  convert/generic_unhookable_07new.png
+  convert/grass_doodads_06removed.png
+  convert/grass_doodads_07new.png
+  convert/grass_main_07new.png
+  convert/winter_main_07new.png
   countryflags/AD.png
   countryflags/AE.png
   countryflags/AF.png
@@ -2176,6 +2183,13 @@ set(EXPECTED_DATA
   skins7/x_ninja.json
   skins7/xmas_hat.png
   strong_weak.png
+  test/maps07/ctf2.map
+  test/maps07/ctf5.map
+  test/maps07/dm1.map
+  test/maps07/dm2.map
+  test/maps07/dm7.map
+  test/maps07/license.txt
+  test/maps07/lms1.map
   themes/auto.png
   themes/autumn.png
   themes/autumn_day.map
@@ -2788,15 +2802,29 @@ add_library(engine-net EXCLUDE_FROM_ALL OBJECT ${ENGINE_NET})
 add_library(engine-shared EXCLUDE_FROM_ALL OBJECT ${ENGINE_INTERFACE} ${ENGINE_SHARED} ${ENGINE_UUID_SHARED} ${BASE})
 add_library(engine-quic EXCLUDE_FROM_ALL OBJECT ${ENGINE_QUIC} ${RUST_BRIDGE_QUIC})
 add_library(game-shared EXCLUDE_FROM_ALL OBJECT ${GAME_SHARED} ${GAME_GENERATED_SHARED})
+# Converting maps between Teeworlds 0.7 and DDNet: for the server, the map
+# tools and the editor, and nothing else, so it is not part of game-shared.
+# It reads the pictures it embeds with engine-gfx.
+set_src(GAME_MAP_CONVERT GLOB src/game/map/convert
+  # tidy-alphabetical-start
+  map07_tables.h
+  map_convert.cpp
+  map_convert.h
+  mapres.cpp
+  mapres.h
+  # tidy-alphabetical-end
+)
+add_library(game-map-convert EXCLUDE_FROM_ALL OBJECT ${GAME_MAP_CONVERT})
 # game-shared compiles src/generated/data_types.h, so the Xcode generator needs
 # generate_content_types to be a dependency of it, not just of its consumers.
 # tidy-alphabetical-start
 add_dependencies(engine-net generate_protocol)
 add_dependencies(engine-shared generate_protocol)
+add_dependencies(game-map-convert generate_protocol)
 add_dependencies(game-shared generate_content_types)
 add_dependencies(game-shared generate_protocol)
 # tidy-alphabetical-end
-list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-shared)
+list(APPEND TARGETS_OWN engine-gfx engine-net engine-quic engine-shared game-map-convert game-shared)
 
 if(DISCORD AND NOT DISCORD_DYNAMIC)
   add_library(discord-shared SHARED IMPORTED)
@@ -3261,6 +3289,11 @@ if(CLIENT)
   )
   set_src(GAME_MAP GLOB_RECURSE src/game/map
     # tidy-alphabetical-start
+    convert/map07_tables.h
+    convert/map_convert.cpp
+    convert/map_convert.h
+    convert/mapres.cpp
+    convert/mapres.h
     envelope_extrema.cpp
     envelope_extrema.h
     envelope_manager.h
@@ -3291,6 +3324,8 @@ if(CLIENT)
   list(FILTER GAME_MAP_STANDALONE INCLUDE REGEX "/standalone/")
   list(FILTER GAME_MAP_STANDALONE EXCLUDE REGEX "_main\\.cpp$")
   list(FILTER GAME_MAP EXCLUDE REGEX "/standalone/")
+  # The map converter is a library of its own, see game-map-convert.
+  list(FILTER GAME_MAP EXCLUDE REGEX "/convert/")
   set(GAME_GENERATED_CLIENT
     # tidy-alphabetical-start
     src/generated/checksum.cpp
@@ -4259,7 +4294,7 @@ if(TOOLS)
     dilate.cpp
     dummy_map.cpp
     ghost_to_demo.cpp
-    map_convert_07.cpp
+    map_convert.cpp
     map_diff.cpp
     map_extract.cpp
     map_find_env.cpp
@@ -4302,10 +4337,13 @@ if(TOOLS)
         # Hashing in `base` uses OpenSSL where it is available, so that stays.
         set(TOOL_LIBS ${CRYPTO_LIBRARIES} ${ZLIB_LIBRARIES} ${PLATFORM_LIBS} ${CMAKE_THREAD_LIBS_INIT})
       endif()
-      if(TOOL MATCHES "^(dilate|map_convert_07|map_optimize|map_extract|map_replace_image)$")
+      if(TOOL MATCHES "^(dilate|map_convert|map_optimize|map_extract|map_replace_image)$")
         list(APPEND TOOL_INCLUDE_DIRS ${PNG_INCLUDE_DIRS})
         list(APPEND TOOL_DEPS $<TARGET_OBJECTS:engine-gfx>)
         list(APPEND TOOL_LIBS ${PNG_LIBRARIES})
+      endif()
+      if(TOOL MATCHES "^map_convert$")
+        list(APPEND TOOL_DEPS $<TARGET_OBJECTS:game-map-convert>)
       endif()
       if(TOOL MATCHES "^ghost_to_demo$")
         # Reading a ghost is the client's, and that one file of it carries
@@ -4353,6 +4391,21 @@ if(TOOLS)
       )
       target_include_directories(${TOOL} SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
       target_link_libraries(${TOOL} ${TOOL_LIBS})
+      if(TOOL MATCHES "^map_convert$")
+        # The old name, which converts to 0.7 unless told otherwise
+        add_executable(map_convert_07 ${EXCLUDE_FROM_ALL}
+          ${TOOL_DEPS}
+          src/tools/map_convert.cpp
+          # tidy-alphabetical-start
+          $<TARGET_OBJECTS:engine-shared>
+          $<TARGET_OBJECTS:game-shared>
+          # tidy-alphabetical-end
+        )
+        target_compile_definitions(map_convert_07 PRIVATE MAP_CONVERT_TO07)
+        target_include_directories(map_convert_07 SYSTEM PRIVATE ${TOOL_INCLUDE_DIRS})
+        target_link_libraries(map_convert_07 ${TOOL_LIBS})
+        list(APPEND TARGETS_TOOLS map_convert_07)
+      endif()
       if(TOOL MATCHES "^map_render$")
         target_sources(map_render PRIVATE
           ${GAME_MAP_STANDALONE}
@@ -4461,6 +4514,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     jsonwriter_test.cpp
     linereader_test.cpp
     map_context_test.cpp
+    map_convert_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
     maps7_test.cpp
@@ -4635,6 +4689,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-map-convert>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>
@@ -4753,7 +4808,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
 endif()
 
 if(ENABLE_IPO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  foreach(target engine-gfx engine-shared game-shared rust-bridge-shared json md5 zlib)
+  foreach(target engine-gfx engine-shared game-map-convert game-shared rust-bridge-shared json md5 zlib)
     if(TARGET ${target})
       target_compile_options(${target} PRIVATE -ffat-lto-objects)
     endif()
@@ -4957,6 +5012,7 @@ if(TOOLS)
     config_store
     demo_extract_chat
     dilate
+    map_convert
     map_convert_07
     map_diff
     map_extract

@@ -390,6 +390,7 @@ public:
 
 	bool IsClientReady(int ClientId) const override;
 	bool IsClientPlayer(int ClientId) const override;
+	bool IsClientAfk(int ClientId) const override;
 	// Whether the client is allowed to have high bandwidth.
 	bool IsClientHighBandwidth(int ClientId) const override;
 	int PersistentDataSize() const override { return sizeof(CPersistentData); }
@@ -398,6 +399,7 @@ public:
 	CUuid GameUuid() const override;
 	const char *GameType() const override;
 	const char *ClientScoreKind() const override;
+	const char *GameModeId() const override;
 	char m_aVersionString[32];
 	const char *Version() const override;
 	const char *NetVersion() const override;

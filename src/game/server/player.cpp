@@ -31,6 +31,7 @@ CPlayer::CPlayer(CGameServices &Services, uint32_t UniqueClientId, int ClientId,
 	m_Team = Team;
 	m_NumInputs = 0;
 	Reset();
+	Server()->SetClientTeam(m_ClientId, m_Team);
 	GameServer()->Antibot()->OnPlayerInit(m_ClientId);
 }
 
@@ -632,7 +633,10 @@ CCharacter *CPlayer::ForceSpawn(vec2 Pos)
 {
 	m_Spawning = false;
 	if(m_Team == TEAM_SPECTATORS)
+	{
 		m_Team = TEAM_GAME;
+		Server()->SetClientTeam(m_ClientId, m_Team);
+	}
 	m_pCharacter = GameServer()->GameHost().Controller()->CreateCharacter(this);
 	dbg_assert(m_pCharacter, "game mode returned no character");
 	m_pCharacter->Spawn(this, Pos);
@@ -644,6 +648,7 @@ void CPlayer::SetTeam(int Team)
 	KillCharacter();
 
 	m_Team = Team;
+	Server()->SetClientTeam(m_ClientId, m_Team);
 	m_LastSetTeam = Server()->Tick();
 	m_LastActionTick = Server()->Tick();
 	SetSpectatorId(SPEC_FREEVIEW);

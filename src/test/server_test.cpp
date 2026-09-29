@@ -2,6 +2,19 @@
 
 #include <gtest/gtest.h>
 
+TEST(Server, StrLogValue)
+{
+	char aValue[16];
+	CServer::StrLogValue(aValue, sizeof(aValue), "it's me");
+	EXPECT_STREQ(aValue, "it s me");
+	CServer::StrLogValue(aValue, sizeof(aValue), "a' b='c\nd\te");
+	EXPECT_STREQ(aValue, "a  b= c d e");
+	CServer::StrLogValue(aValue, 4, "abcdef");
+	EXPECT_STREQ(aValue, "abc");
+	CServer::StrLogValue(aValue, sizeof(aValue), "");
+	EXPECT_STREQ(aValue, "");
+}
+
 TEST(Server, StrHideIps)
 {
 	char aLine[512];

@@ -4003,6 +4003,11 @@ bool CGameContext::IsClientPlayer(int ClientId) const
 	return m_apPlayers[ClientId] && m_apPlayers[ClientId]->GetTeam() != TEAM_SPECTATORS;
 }
 
+bool CGameContext::IsClientAfk(int ClientId) const
+{
+	return m_apPlayers[ClientId] && m_apPlayers[ClientId]->IsAfk();
+}
+
 bool CGameContext::IsClientHighBandwidth(int ClientId) const
 {
 	// force high bandwidth is not supported for sixup
@@ -4022,6 +4027,12 @@ const char *CGameContext::ClientScoreKind() const
 {
 	dbg_assert(m_GameHost.Controller(), "no controller");
 	return m_GameHost.Controller()->Info().m_DDRace ? "time" : "points";
+}
+
+const char *CGameContext::GameModeId() const
+{
+	dbg_assert(m_GameHost.Controller(), "no controller");
+	return m_GameHost.Controller()->Info().m_pName;
 }
 const char *CGameContext::Version() const { return m_aVersionString; }
 const char *CGameContext::NetVersion() const { return GAME_NETVERSION; }

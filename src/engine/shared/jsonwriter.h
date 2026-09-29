@@ -33,6 +33,7 @@ class CJsonWriter
 
 	std::stack<SState> m_States;
 	int m_Indentation;
+	bool m_Compact = false;
 
 	bool CanWriteDatatype();
 	void WriteInternalEscaped(const char *pStr);
@@ -52,6 +53,13 @@ public:
 
 	// The root is created by beginning the first datatype (object, array, value).
 	// The writer must not be used after ending the root, which must be unique.
+
+	/**
+	 * Writes without line breaks and indentation, for output that is read line
+	 * by line. Must be called before anything is written.
+	 */
+	void SetCompact();
+	bool IsCompact() const { return m_Compact; }
 
 	// Begin writing a new object
 	void BeginObject();
@@ -113,6 +121,7 @@ protected:
 public:
 	CJsonStringWriter() = default;
 	~CJsonStringWriter() override = default;
+	// Ends with a line break, unless the writer is compact.
 	std::string &&GetOutputString();
 };
 

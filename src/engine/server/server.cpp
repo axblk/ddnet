@@ -448,6 +448,7 @@ bool CServer::SetClientNameImpl(int ClientId, const char *pNameRequest, bool Set
 		// set the client name
 		str_copy(m_aClients[ClientId].m_aName, aNameTry);
 		GameServer()->TeehistorianRecordPlayerName(ClientId, m_aClients[ClientId].m_aName);
+		LogSessionRename(ClientId);
 		GameServer()->OnClientInfoChange(ClientId);
 	}
 
@@ -798,6 +799,7 @@ void CServer::SetClientDDNetVersion(int ClientId, int DDNetVersion)
 	{
 		m_aClients[ClientId].m_DDNetVersion = DDNetVersion;
 		m_aClients[ClientId].m_DDNetVersionSettled = true;
+		LogSessionIdent(ClientId);
 	}
 }
 
@@ -831,9 +833,114 @@ const char *CServer::ClientTransportName(int ClientId) const
 {
 	if(ClientId < 0 || ClientId >= MAX_CLIENTS)
 		return "unknown";
+	// Nothing is connected to a bot's slot.
+	if(m_aClients[ClientId].IsBot())
+		return "none";
 	if(!m_aClients[ClientId].m_Quic)
 		return "udp";
 	return m_aClients[ClientId].m_WebTransport ? "webtransport" : "quic";
+}
+
+void CServer::StrLogValue(char *pValue, int ValueSize, const char *pText)
+{
+	str_copy(pValue, pText, ValueSize);
+	str_sanitize_cc(pValue);
+	for(char *pChar = pValue; *pChar != '\0'; pChar++)
+	{
+		if(*pChar == '\'')
+			*pChar = ' ';
+	}
+}
+
+void CServer::LogSessionJoin(int ClientId)
+{
+	CClient &Client = m_aClients[ClientId];
+	Client.m_SessionIdentLogged = false;
+	// A new id for every connection, so that sessions stay apart when a
+	// client id is taken again.
+	Client.m_SessionId = RandomUuid();
+	Client.m_SessionStart = time_get();
+	Client.m_Team = 0;
+	char aSessionId[UUID_MAXSTRSIZE];
+	FormatUuid(Client.m_SessionId, aSessionId, sizeof(aSessionId));
+	log_info("session", "v=1 ev=join cid=%d proto=%s transport=%s secure=%d addr=%s sid=%s bot=%d",
+		ClientId,
+		Client.m_Sixup ? "0.7" : "0.6",
+		ClientTransportName(ClientId),
+		Client.m_Quic || m_NetServer.HasSecurityToken(ClientId) ? 1 : 0,
+		ClientAddrString(ClientId, false),
+		aSessionId,
+		Client.IsBot());
+}
+
+void CServer::LogSessionIdent(int ClientId)
+{
+	// The name is certain once the client is in the game. The version of a
+	// DDNet client is certain before that, of an old one only afterwards, and
+	// a vanilla client never says; so the line comes when the client enters,
+	// and again should the version still change.
+	CClient &Client = m_aClients[ClientId];
+	if(Client.m_State != CClient::STATE_INGAME || (Client.m_SessionIdentLogged && Client.m_SessionIdentVersion == Client.m_DDNetVersion))
+		return;
+	Client.m_SessionIdentLogged = true;
+	Client.m_SessionIdentVersion = Client.m_DDNetVersion;
+	char aSessionId[UUID_MAXSTRSIZE];
+	FormatUuid(Client.m_SessionId, aSessionId, sizeof(aSessionId));
+	char aVersion[64];
+	StrLogValue(aVersion, sizeof(aVersion), Client.m_aDDNetVersionStr);
+	char aName[MAX_NAME_LENGTH];
+	StrLogValue(aName, sizeof(aName), Client.m_aName);
+	char aClan[MAX_CLAN_LENGTH];
+	StrLogValue(aClan, sizeof(aClan), Client.m_aClan);
+	// `name` and `clan` lose their quotes, `name_enc` and `clan_enc` are exact, percent-encoded.
+	char aNameEncoded[MAX_NAME_LENGTH * 3];
+	str_url_encode(aNameEncoded, Client.m_aName);
+	char aClanEncoded[MAX_CLAN_LENGTH * 3];
+	str_url_encode(aClanEncoded, Client.m_aClan);
+	log_info("session", "v=1 ev=ident cid=%d sid=%s version=%d vstr='%s' name='%s' clan='%s' country=%d team=%d name_enc=%s clan_enc=%s",
+		ClientId, aSessionId, Client.m_DDNetVersion, aVersion, aName, aClan, Client.m_Country, Client.m_Team, aNameEncoded, aClanEncoded);
+}
+
+void CServer::LogSessionRename(int ClientId)
+{
+	if(!m_aClients[ClientId].m_SessionIdentLogged)
+		return;
+	char aSessionId[UUID_MAXSTRSIZE];
+	FormatUuid(m_aClients[ClientId].m_SessionId, aSessionId, sizeof(aSessionId));
+	char aName[MAX_NAME_LENGTH];
+	StrLogValue(aName, sizeof(aName), m_aClients[ClientId].m_aName);
+	char aNameEncoded[MAX_NAME_LENGTH * 3];
+	str_url_encode(aNameEncoded, m_aClients[ClientId].m_aName);
+	log_info("session", "v=1 ev=rename cid=%d sid=%s name='%s' name_enc=%s", ClientId, aSessionId, aName, aNameEncoded);
+}
+
+void CServer::LogSessionMap()
+{
+	// After OnInit the game knows its type, and the map in play is the one that was
+	// just loaded. Both are operator supplied, but they pass through the same
+	// laundering as everything else in this log.
+	char aMap[128];
+	StrLogValue(aMap, sizeof(aMap), Config()->m_SvMap);
+	char aGameType[64];
+	StrLogValue(aGameType, sizeof(aGameType), GameServer()->GameType());
+	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIX], aSha256, sizeof(aSha256));
+	// `mode_id` is what `sv_gametype` selected, `gametype` what the server advertises.
+	log_info("session", "v=1 ev=map gametype='%s' map='%s' sha256=%s mode_id=%s", aGameType, aMap, aSha256, GameServer()->GameModeId());
+}
+
+void CServer::SetClientTeam(int ClientId, int Team)
+{
+	dbg_assert(ClientId >= 0 && ClientId < MAX_CLIENTS, "Invalid ClientId: %d", ClientId);
+	CClient &Client = m_aClients[ClientId];
+	if(Client.m_State == CClient::STATE_EMPTY || Client.m_Team == Team)
+		return;
+	Client.m_Team = Team;
+	if(!Client.m_SessionIdentLogged)
+		return;
+	char aSessionId[UUID_MAXSTRSIZE];
+	FormatUuid(Client.m_SessionId, aSessionId, sizeof(aSessionId));
+	log_info("session", "v=1 ev=team cid=%d sid=%s team=%d", ClientId, aSessionId, Team);
 }
 
 const char *CServer::ClientName(int ClientId) const
@@ -878,7 +985,7 @@ bool CServer::ClientIngame(int ClientId) const
 
 bool CServer::ClientIsDummy(int ClientId) const
 {
-	return ClientId >= 0 && ClientId < MAX_CLIENTS && m_aClients[ClientId].m_State != CClient::STATE_EMPTY && m_aClients[ClientId].m_DebugDummy;
+	return ClientId >= 0 && ClientId < MAX_CLIENTS && m_aClients[ClientId].m_State != CClient::STATE_EMPTY && m_aClients[ClientId].IsBot();
 }
 
 int CServer::Port() const
@@ -1296,6 +1403,7 @@ int CServer::ClientRejoinCallback(int ClientId, void *pUser, bool Sixup, bool Va
 	pThis->m_aClients[ClientId].m_RconCmdToSend.clear();
 	pThis->m_aClients[ClientId].m_MaplistEntryToSend = CClient::MAPLIST_UNINITIALIZED;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
+	pThis->m_aClients[ClientId].m_aDDNetVersionStr[0] = '\0';
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
 	pThis->m_aClients[ClientId].m_DDNetVersionSettled = false;
 
@@ -1338,6 +1446,7 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 	pThis->m_aClients[ClientId].m_QuicSession = CQuicSessionId();
 	pThis->m_aClients[ClientId].m_ForceHighBandwidthOnSpectate = false;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
+	pThis->m_aClients[ClientId].m_aDDNetVersionStr[0] = '\0';
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
 	pThis->m_aClients[ClientId].m_DDNetVersionSettled = false;
 	pThis->m_aClients[ClientId].Reset();
@@ -1350,6 +1459,7 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 #if defined(CONF_FAMILY_UNIX)
 	pThis->SendConnLoggingCommand(OPEN_SESSION, pThis->ClientAddr(ClientId));
 #endif
+	pThis->LogSessionJoin(ClientId);
 	return 0;
 }
 
@@ -1369,9 +1479,11 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 	pThis->m_aClients[ClientId].m_Traffic = 0;
 	pThis->m_aClients[ClientId].m_TrafficSince = 0;
 	pThis->m_aClients[ClientId].m_ShowIps = false;
-	pThis->m_aClients[ClientId].m_DebugDummy = false;
+	// Not reset: a bot is marked before its slot is taken, and an empty slot
+	// is never marked.
 	pThis->m_aClients[ClientId].m_ForceHighBandwidthOnSpectate = false;
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
+	pThis->m_aClients[ClientId].m_aDDNetVersionStr[0] = '\0';
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
 	pThis->m_aClients[ClientId].m_DDNetVersionSettled = false;
 	pThis->m_aClients[ClientId].m_WaitingForMap = false;
@@ -1384,6 +1496,7 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 #if defined(CONF_FAMILY_UNIX)
 	pThis->SendConnLoggingCommand(OPEN_SESSION, pThis->ClientAddr(ClientId));
 #endif
+	pThis->LogSessionJoin(ClientId);
 	return 0;
 }
 
@@ -1440,6 +1553,17 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "client dropped. cid=%d addr=<{%s}> transport=%s reason='%s'", ClientId, pThis->ClientAddrString(ClientId, true), pThis->ClientTransportName(ClientId), pReason);
 	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "server", aBuf);
+
+	{
+		// `dummy` is what said that a session was a bot's before the join did.
+		char aReason[192];
+		StrLogValue(aReason, sizeof(aReason), pReason);
+		char aSessionId[UUID_MAXSTRSIZE];
+		FormatUuid(pThis->m_aClients[ClientId].m_SessionId, aSessionId, sizeof(aSessionId));
+		const int64_t Duration = (time_get() - pThis->m_aClients[ClientId].m_SessionStart) / time_freq();
+		log_info("session", "v=1 ev=leave cid=%d sid=%s dummy=%d reason='%s' duration_s=%d",
+			ClientId, aSessionId, pThis->m_aClients[ClientId].IsBot() ? 1 : 0, aReason, (int)Duration);
+	}
 
 #if defined(CONF_FAMILY_UNIX)
 	// Make copy of address because the client slot will be empty at the end of the function
@@ -2503,6 +2627,19 @@ void CServer::OnNetMsgReady(int ClientId)
 	}
 }
 
+void CServer::LogClientEnter(int ClientId)
+{
+	// Human clients get no field, so that the line stays as it is upstream.
+	log_info(
+		"server",
+		"player has entered the game. ClientId=%d addr=<{%s}> transport=%s sixup=%d%s",
+		ClientId,
+		ClientAddrString(ClientId, true),
+		ClientTransportName(ClientId),
+		IsSixup(ClientId),
+		m_aClients[ClientId].IsBot() ? " bot=1" : "");
+}
+
 void CServer::OnNetMsgEnterGame(int ClientId)
 {
 	if(m_aClients[ClientId].m_State != CClient::STATE_READY)
@@ -2510,14 +2647,9 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 	if(!GameServer()->IsClientReady(ClientId))
 		return;
 
-	log_info(
-		"server",
-		"player has entered the game. ClientId=%d addr=<{%s}> transport=%s sixup=%d",
-		ClientId,
-		ClientAddrString(ClientId, true),
-		ClientTransportName(ClientId),
-		IsSixup(ClientId));
+	LogClientEnter(ClientId);
 	m_aClients[ClientId].m_State = CClient::STATE_INGAME;
+	LogSessionIdent(ClientId);
 	SendServerInfoToClient(ClientId, SERVERINFO_EXTENDED);
 
 	if(m_aClients[ClientId].m_IngameBeforeRejoin)
@@ -4154,7 +4286,9 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 		CClient &Client = m_aClients[ClientId];
 		if(AddDummy && m_aClients[ClientId].m_State == CClient::STATE_EMPTY)
 		{
-			NewClientCallback(ClientId, this, false);
+			// Marked before the slot is taken, so that everything that
+			// follows already knows the client is a bot, like a QUIC client is
+			// known to be one before its slot is taken.
 			Client.m_DebugDummy = true;
 
 			// See https://en.wikipedia.org/wiki/Unique_local_address
@@ -4177,6 +4311,8 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 			net_addr_str(&Client.m_DebugDummyAddr, Client.m_aDebugDummyAddrString.data(), Client.m_aDebugDummyAddrString.size(), true);
 			net_addr_str(&Client.m_DebugDummyAddr, Client.m_aDebugDummyAddrStringNoPort.data(), Client.m_aDebugDummyAddrStringNoPort.size(), false);
 
+			NewClientCallback(ClientId, this, false);
+
 			GameServer()->OnClientConnected(ClientId, nullptr);
 			Client.m_State = CClient::STATE_INGAME;
 			Client.m_DDNetVersion = DDNET_VERSION_NUMBER;
@@ -4185,6 +4321,8 @@ void CServer::UpdateDebugDummies(bool ForceDisconnect)
 			char aDummyName[MAX_NAME_LENGTH];
 			str_format(aDummyName, sizeof(aDummyName), "Debug dummy %d", DummyIndex + 1);
 			SetClientName(ClientId, aDummyName);
+			LogClientEnter(ClientId);
+			LogSessionIdent(ClientId);
 			GameServer()->OnClientEnter(ClientId);
 		}
 		else if(!AddDummy && Client.m_DebugDummy)
@@ -4387,6 +4525,7 @@ int CServer::Run()
 
 	Antibot()->Init();
 	GameServer()->OnInit(nullptr);
+	LogSessionMap();
 	if(ErrorShutdown())
 	{
 		m_RunServer = STOPPING;
@@ -4415,7 +4554,13 @@ int CServer::Run()
 	// Everything is bound and the first map is loaded, so whatever waits for the
 	// server can go ahead.
 	if(m_RunServer < STOPPING)
+	{
+		// For a supervisor reading the log, once, with what it would otherwise
+		// have to piece together from several lines.
+		log_info("server", "v=1 ev=ready port=%d econ_port=%d legacy_udp=%d quic=%d webtransport=%d",
+			this->Port(), m_Econ.IsListening() ? Config()->m_EcPort : 0, m_LegacyUdpStarted, m_QuicStarted, m_WebTransportStarted);
 		SystemdNotify("READY=1");
+	}
 
 	// start game
 	{
@@ -4475,6 +4620,7 @@ int CServer::Run()
 					Kernel()->ReregisterInterface(GameServer());
 					Console()->StoreCommands(true);
 					GameServer()->OnInit(m_pPersistentData);
+					LogSessionMap();
 					Console()->StoreCommands(false);
 
 					for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
@@ -4859,9 +5005,10 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 			{
 				pClientPrefix = "0.7:";
 			}
-			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> name='%s' transport=%s client=%s%d secure=%s flags=%d%s%s",
+			// A bot is marked at the end, humans get no field, so that the line stays as it is upstream.
+			str_format(aBuf, sizeof(aBuf), "id=%d addr=<{%s}> name='%s' transport=%s client=%s%d secure=%s flags=%d%s%s%s",
 				i, pThis->ClientAddrString(i, true), pThis->m_aClients[i].m_aName, pThis->ClientTransportName(i), pClientPrefix, pThis->m_aClients[i].m_DDNetVersion,
-				pThis->m_NetServer.HasSecurityToken(i) ? "yes" : "no", pThis->m_aClients[i].m_Flags, aDnsblStr, aAuthStr);
+				pThis->m_NetServer.HasSecurityToken(i) ? "yes" : "no", pThis->m_aClients[i].m_Flags, aDnsblStr, aAuthStr, pThis->m_aClients[i].IsBot() ? " bot=1" : "");
 		}
 		else
 		{
@@ -4869,6 +5016,96 @@ void CServer::ConStatus(IConsole::IResult *pResult, void *pUser)
 		}
 		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "server", aBuf);
 	}
+}
+
+void CServer::ConStatusJson(IConsole::IResult *pResult, void *pUser)
+{
+	CServer *pThis = static_cast<CServer *>(pUser);
+	// One line per client: a single line would soon be longer than econ sends.
+	int NumClients = 0;
+	for(const CClient &Client : pThis->m_aClients)
+		NumClients += Client.m_State != CClient::STATE_EMPTY;
+	char aLine[512];
+	str_format(aLine, sizeof(aLine), "v=1 ev=begin tick=%d clients=%d", pThis->Tick(), NumClients);
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "status_json", aLine);
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		const CClient &Client = pThis->m_aClients[ClientId];
+		if(Client.m_State == CClient::STATE_EMPTY)
+			continue;
+		const bool Connecting = Client.m_State < CClient::STATE_READY;
+		CJsonStringWriter Json;
+		Json.SetCompact();
+		Json.BeginObject();
+		Json.WriteAttribute("v");
+		Json.WriteIntValue(1);
+		Json.WriteAttribute("id");
+		Json.WriteIntValue(ClientId);
+		Json.WriteAttribute("state");
+		if(Connecting)
+			Json.WriteStrValue("connecting");
+		else
+			Json.WriteStrValue(Client.m_State == CClient::STATE_READY ? "ready" : "ingame");
+		if(!Connecting)
+		{
+			Json.WriteAttribute("name");
+			Json.WriteStrValue(Client.m_aName);
+			Json.WriteAttribute("clan");
+			Json.WriteStrValue(Client.m_aClan);
+			Json.WriteAttribute("country");
+			Json.WriteIntValue(Client.m_Country);
+			Json.WriteAttribute("score");
+			if(Client.m_Score.has_value())
+				Json.WriteIntValue(Client.m_Score.value());
+			else
+				Json.WriteNullValue();
+			Json.WriteAttribute("team");
+			Json.WriteIntValue(Client.m_Team);
+		}
+		Json.WriteAttribute("transport");
+		Json.WriteStrValue(pThis->ClientTransportName(ClientId));
+		if(!Connecting)
+		{
+			Json.WriteAttribute("version");
+			Json.WriteIntValue(Client.m_DDNetVersion);
+			Json.WriteAttribute("sixup");
+			Json.WriteBoolValue(Client.m_Sixup);
+			Json.WriteAttribute("secure");
+			Json.WriteBoolValue(Client.m_Quic || pThis->m_NetServer.HasSecurityToken(ClientId));
+			Json.WriteAttribute("afk");
+			Json.WriteBoolValue(pThis->GameServer()->IsClientAfk(ClientId));
+			Json.WriteAttribute("spectator");
+			Json.WriteBoolValue(!pThis->GameServer()->IsClientPlayer(ClientId));
+			Json.WriteAttribute("bot");
+			Json.WriteBoolValue(Client.IsBot());
+			Json.WriteAttribute("auth");
+			switch(pThis->GetAuthedState(ClientId))
+			{
+			case AUTHED_ADMIN: Json.WriteStrValue("admin"); break;
+			case AUTHED_MOD: Json.WriteStrValue("moderator"); break;
+			case AUTHED_HELPER: Json.WriteStrValue("helper"); break;
+			default: Json.WriteStrValue("none"); break;
+			}
+			Json.WriteAttribute("auth_key");
+			if(Client.m_AuthKey >= 0)
+				Json.WriteStrValue(pThis->m_AuthManager.KeyIdent(Client.m_AuthKey));
+			else
+				Json.WriteNullValue();
+		}
+		Json.EndObject();
+		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "status_json", Json.GetOutputString().c_str());
+	}
+
+	char aMap[128];
+	StrLogValue(aMap, sizeof(aMap), pThis->GameServer()->Map()->FullName());
+	char aGameType[64];
+	StrLogValue(aGameType, sizeof(aGameType), pThis->GameServer()->GameType());
+	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(pThis->m_aCurrentMapSha256[MAP_TYPE_SIX], aSha256, sizeof(aSha256));
+	str_format(aLine, sizeof(aLine), "v=1 ev=end map='%s' map_sha256=%s game_type='%s' legacy_udp=%d quic=%d webtransport=%d mode_id=%s",
+		aMap, aSha256, aGameType, pThis->m_LegacyUdpStarted, pThis->m_QuicStarted, pThis->m_WebTransportStarted, pThis->GameServer()->GameModeId());
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "status_json", aLine);
 }
 
 static int GetAuthLevel(const char *pLevel)
@@ -5815,6 +6052,7 @@ void CServer::RegisterCommands()
 	// register console commands
 	Console()->Register("kick", "v[id] ?r[reason]", CFGFLAG_SERVER, ConKick, this, "Kick player with specified id for any reason");
 	Console()->Register("status", "?r[name]", CFGFLAG_SERVER, ConStatus, this, "List players containing name or all players");
+	Console()->Register("status_json", "", CFGFLAG_SERVER, ConStatusJson, this, "List all clients for programs, as one line of JSON each between a begin and an end line");
 	Console()->Register("shutdown", "?r[reason]", CFGFLAG_SERVER, ConShutdown, this, "Shut down");
 	Console()->Register("logout", "", CFGFLAG_SERVER, ConLogout, this, "Logout of rcon");
 	Console()->Register("show_ips", "?i[show]", CFGFLAG_SERVER, ConShowIps, this, "Show IP addresses in rcon commands (1 = on, 0 = off)");

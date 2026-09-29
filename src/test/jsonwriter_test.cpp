@@ -226,3 +226,24 @@ TYPED_TEST(JsonWriters, Int64Small)
 	this->m_Impl.m_pJson->WriteInt64Value(std::numeric_limits<int64_t>::min());
 	this->m_Impl.Expect("-9223372036854775808\n");
 }
+
+TEST(JsonStringWriter, Compact)
+{
+	CJsonStringWriter Json;
+	Json.SetCompact();
+	Json.BeginObject();
+	Json.WriteAttribute("a");
+	Json.WriteIntValue(1);
+	Json.WriteAttribute("b");
+	Json.BeginArray();
+	Json.WriteStrValue("x y");
+	Json.BeginObject();
+	Json.EndObject();
+	Json.WriteNullValue();
+	Json.EndArray();
+	Json.WriteAttribute("c");
+	Json.BeginArray();
+	Json.EndArray();
+	Json.EndObject();
+	EXPECT_EQ(Json.GetOutputString(), R"({"a":1,"b":["x y",{},null],"c":[]})");
+}

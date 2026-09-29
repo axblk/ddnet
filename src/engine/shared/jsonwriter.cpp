@@ -29,6 +29,12 @@ CJsonWriter::CJsonWriter()
 	m_Indentation = 0;
 }
 
+void CJsonWriter::SetCompact()
+{
+	dbg_assert(m_States.empty(), "Cannot make the writer compact after writing");
+	m_Compact = true;
+}
+
 void CJsonWriter::BeginObject()
 {
 	dbg_assert(CanWriteDatatype(), "Cannot write object here");
@@ -68,7 +74,7 @@ void CJsonWriter::WriteAttribute(const char *pName)
 	dbg_assert(TopState()->m_Kind == STATE_OBJECT, "Cannot write attribute here");
 	WriteIndent(false);
 	WriteInternalEscaped(pName);
-	WriteInternal(": ");
+	WriteInternal(m_Compact ? ":" : ": ");
 	PushState(STATE_ATTRIBUTE);
 }
 
@@ -171,6 +177,9 @@ void CJsonWriter::WriteIndent(bool EndElement)
 	if(NotRootOrAttribute && !TopState()->m_Empty && !EndElement)
 		WriteInternal(",");
 
+	if(m_Compact)
+		return;
+
 	if(NotRootOrAttribute || EndElement)
 		WriteInternal("\n");
 
@@ -246,7 +255,8 @@ void CJsonStringWriter::WriteInternal(const char *pStr, int Length)
 std::string &&CJsonStringWriter::GetOutputString()
 {
 	// Ensure newline at the end. Modify member variable so we can move it when returning.
-	WriteInternal("\n");
+	if(!IsCompact())
+		WriteInternal("\n");
 	m_RetrievedOutput = true; // prevent further usage of this writer
 	return std::move(m_OutputString);
 }

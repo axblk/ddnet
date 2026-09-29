@@ -322,6 +322,14 @@ public:
 	virtual void SetClientCountry(int ClientId, int Country) = 0;
 	virtual void SetClientScore(int ClientId, std::optional<int> Score) = 0;
 	virtual void SetClientFlags(int ClientId, int Flags) = 0;
+	/**
+	 * Tells the engine which team the game put a client in, for the session
+	 * log and for status queries.
+	 *
+	 * @param ClientId The client.
+	 * @param Team The team, `TEAM_SPECTATORS` for spectators.
+	 */
+	virtual void SetClientTeam(int ClientId, int Team) = 0;
 
 	virtual std::optional<int> SnapNewId() = 0;
 	virtual void SnapFreeId(int Id) = 0;
@@ -450,6 +458,12 @@ public:
 
 	virtual bool IsClientReady(int ClientId) const = 0;
 	virtual bool IsClientPlayer(int ClientId) const = 0;
+	/**
+	 * Whether the player of a client has not done anything for a while.
+	 *
+	 * @param ClientId The client.
+	 */
+	virtual bool IsClientAfk(int ClientId) const = 0;
 	virtual bool IsClientHighBandwidth(int ClientId) const = 0;
 
 	virtual int PersistentDataSize() const = 0;
@@ -458,6 +472,9 @@ public:
 	virtual CUuid GameUuid() const = 0;
 	virtual const char *GameType() const = 0;
 	virtual const char *ClientScoreKind() const = 0;
+	// What `sv_gametype` selected the game type by, "ddnet" say, where
+	// `GameType` is what the server advertises.
+	virtual const char *GameModeId() const = 0;
 	virtual const char *Version() const = 0;
 	virtual const char *NetVersion() const = 0;
 

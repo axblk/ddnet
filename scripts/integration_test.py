@@ -12,6 +12,7 @@ import io
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import sqlite3
@@ -688,7 +689,7 @@ class TeeworldsClient(Runnable):
 
 
 class Server(Runnable):
-	def __init__(self, test_env, extra_args=[], extra_env_vars={}):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], extra_env_vars={}, allow_unclean_exit=False):  # noqa: B006 mutable-default-arguments
 		name = f"server{test_env.num_servers}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# How clients check the QUIC and WebTransport certificate, as in a link.
@@ -709,6 +710,7 @@ class Server(Runnable):
 			]
 			+ extra_args,
 			extra_env_vars=extra_env_vars,
+			allow_unclean_exit=allow_unclean_exit,
 		)
 		test_env.num_servers += 1
 
@@ -886,6 +888,262 @@ def server_notifies_service_manager(test_env):
 		server.wait_for_exit()
 		if notify.recv(256) != b"STOPPING=1":
 			raise AssertionError("server did not report STOPPING=1")
+
+
+def free_tcp_port():
+	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+		s.bind(("127.0.0.1", 0))
+		return s.getsockname()[1]
+
+
+class Econ:
+	"""A client of the external console of a server."""
+
+	def __init__(self, port, password, timeout=10):
+		self.socket = socket.create_connection(("localhost", port), timeout=timeout)
+		self.buffer = b""
+		self.wait_for_line(lambda line: line.startswith("Enter password"))
+		self.send(password)
+		self.wait_for_line(lambda line: line.startswith("Authentication successful"))
+
+	def send(self, line):
+		self.socket.sendall(line.encode() + b"\n")
+
+	def read_line(self):
+		"""The next line, as its message if it is a log line."""
+		while b"\n" not in self.buffer:
+			data = self.socket.recv(4096)
+			if not data:
+				raise EOFError("econ connection closed")
+			self.buffer += data
+		line, self.buffer = self.buffer.split(b"\n", 1)
+		line = line.decode().replace("\0", "").rstrip("\r")
+		# Log lines start with the date, answers to the login do not.
+		if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ", line):
+			return Log.parse(line).line
+		return line
+
+	def wait_for_line(self, fn):
+		while True:
+			line = self.read_line()
+			if fn(line):
+				return line
+
+	def command(self, command, prefix):
+		"""Runs a command and returns the first line from then on that starts with `prefix`."""
+		self.send(command)
+		return self.wait_for_line(lambda line: line.startswith(prefix))
+
+	def close(self):
+		self.socket.close()
+
+
+def econ_server_args(port):
+	return [f"ec_port {port}", "ec_password econ-test"]
+
+
+def parse_key_values(line, prefix):
+	if not line.startswith(prefix):
+		raise AssertionError(f"{line!r} does not start with {prefix!r}")
+	return dict(field.split("=", 1) for field in line[len(prefix) :].split(" "))
+
+
+@test(requires_linux=True)
+def server_says_when_it_is_ready(test_env):
+	with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+		name = f"ddnet-integration-notify-{uuid4()}"
+		notify.bind(f"\0{name}")
+		econ_port = free_tcp_port()
+		server = test_env.server(econ_server_args(econ_port))
+		transports = server.wait_for_log_prefix("server: network transports: ", timeout=10).line
+		transports = {key: str(int(value == "enabled")) for key, value in parse_key_values(transports, "server: network transports: ").items()}
+		ready = parse_key_values(server.wait_for_log_prefix("server: v=1 ev=ready ", timeout=10).line, "server: v=1 ev=ready ")
+		expected = {"port": str(server.port), "econ_port": str(econ_port), "legacy_udp": transports["legacy-udp"], "quic": transports["quic"], "webtransport": transports["webtransport"]}
+		if ready != expected:
+			raise AssertionError(f"ready line {ready!r}, expected {expected!r}")
+		# The line comes after econ is bound, so it can be connected to right away.
+		Econ(econ_port, "econ-test").close()
+
+		# A second server on the same port gives up, and must neither say
+		# that it is ready nor tell the service manager so.
+		failing = test_env.server([f"sv_port {server.port}"], extra_env_vars={"NOTIFY_SOCKET": f"@{name}"}, allow_unclean_exit=True)
+		failing.wait_for_log_prefix("server: couldn't open socket.", timeout=10)
+		failing.wait_for_exit()
+		if any("v=1 ev=ready" in line for line in failing.full_stdout):
+			raise AssertionError("a server that failed to start said it was ready")
+		notify.settimeout(0.5)
+		try:
+			message = notify.recv(256)
+		except TimeoutError:
+			message = None
+		if message is not None:
+			raise AssertionError(f"a server that failed to start told the service manager {message!r}")
+
+		server.exit()
+		server.wait_for_exit()
+
+
+def add_debug_dummy(server):
+	"""Adds a debug dummy and returns the line saying that it entered, or None in builds without debug dummies."""
+	server.command("dbg_dummies 1")
+	line = server.wait_for_log(lambda l: l.line.startswith(("server: player has entered the game", "chatresp: No such command: dbg_dummies")), "debug dummy", timeout=10).line
+	return None if line.startswith("chatresp:") else line
+
+
+@test
+def server_marks_bots(test_env):
+	server = test_env.server()
+	client = test_env.client()
+	wait_for_startup([server, client])
+	client.command(f"connect localhost:{server.port}")
+	human = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "bot=" in human:
+		raise AssertionError(f"a human client is marked in {human!r}")
+	bot = add_debug_dummy(server)
+	if bot is not None:
+		if not bot.endswith(" bot=1"):
+			raise AssertionError(f"the debug dummy is not marked in {bot!r}")
+		server.command("status")
+		status = [server.wait_for_log_prefix("server: id=", timeout=10).line for _ in range(2)]
+		if not status[0].startswith("server: id=0 ") or "bot=" in status[0]:
+			raise AssertionError(f"a human client is marked in {status[0]!r}")
+		if not status[1].endswith(" bot=1") or " transport=none " not in status[1]:
+			raise AssertionError(f"the debug dummy is not marked in {status[1]!r}")
+	client.exit()
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+def parse_session_fields(text):
+	"""The `key=value` fields of a structured log line; a quoted value ends at `' `."""
+	return {m.group(1): m.group(3) if m.group(3) is not None else m.group(2) for m in re.finditer(r"(\w+)=('([^']*)'|\S*)", text)}
+
+
+def wait_for_session(server, event, timeout=10):
+	prefix = f"session: v=1 ev={event} "
+	return parse_session_fields(server.wait_for_log_prefix(prefix, timeout=timeout).line[len(prefix) :])
+
+
+@test
+def server_logs_sessions(test_env):
+	server = test_env.server(["sv_info_change_delay 0"])
+	server_map = wait_for_session(server, "map")
+	with open(os.path.join(test_env.runner.data_dir, "maps", f"{server_map['map']}.map"), "rb") as f:
+		map_sha256 = hashlib.sha256(f.read()).hexdigest()
+	if server_map["sha256"] != map_sha256 or server_map["gametype"] == "" or server_map["mode_id"] != "ddnet":
+		raise AssertionError(f"map event {server_map!r}, expected sha256={map_sha256}")
+
+	client = test_env.client(["player_name session'test", "player_clan clan", "player_country 276"])
+	wait_for_startup([server, client])
+	client.command(f"connect localhost:{server.port}")
+	join = wait_for_session(server, "join")
+	sid = join["sid"]
+	if join["cid"] != "0" or join["bot"] != "0" or str(UUID(sid)) != sid:
+		raise AssertionError(f"join event {join!r}")
+	ident = wait_for_session(server, "ident")
+	# The quote cannot end the value early, and the encoded name keeps it.
+	expected = {"cid": "0", "sid": sid, "name": "session test", "clan": "clan", "country": "276", "team": "0", "name_enc": "session%27test", "clan_enc": "clan"}
+	if {key: ident.get(key) for key in expected} != expected or int(ident["version"]) <= 0:
+		raise AssertionError(f"ident event {ident!r}, expected {expected!r}")
+
+	client.command('player_name "renamed it\'s"')
+	rename = wait_for_session(server, "rename")
+	if rename != {"cid": "0", "sid": sid, "name": "renamed it s", "name_enc": "renamed%20it%27s"}:
+		raise AssertionError(f"rename event {rename!r}")
+	server.command("set_team 0 -1")
+	team = wait_for_session(server, "team")
+	if team != {"cid": "0", "sid": sid, "team": "-1"}:
+		raise AssertionError(f"team event {team!r}")
+
+	bot = add_debug_dummy(server)
+	if bot is not None:
+		# The slot is taken before the dummy enters the game.
+		prefix = "session: v=1 ev=join "
+		bot_join = parse_session_fields(next(line for line in reversed(server.full_stdout) if prefix in line).split(prefix, 1)[1])
+		if bot_join["bot"] != "1" or bot_join["sid"] == sid:
+			raise AssertionError(f"join event of a debug dummy {bot_join!r}")
+		wait_for_session(server, "ident")
+		server.command("dbg_dummies 0")
+		bot_leave = wait_for_session(server, "leave")
+		if bot_leave["sid"] != bot_join["sid"] or bot_leave["dummy"] != "1":
+			raise AssertionError(f"leave event of a debug dummy {bot_leave!r}")
+
+	client.exit()
+	leave = wait_for_session(server, "leave")
+	if leave["sid"] != sid or leave["dummy"] != "0" or int(leave["duration_s"]) < 0 or "reason" not in leave:
+		raise AssertionError(f"leave event {leave!r}")
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+def econ_status_json(econ):
+	"""Runs `status_json` and returns the fields of its begin and end lines and the clients."""
+	prefix = "status_json: "
+	begin = econ.command("status_json", f"{prefix}v=1 ev=begin ")
+	begin = parse_session_fields(begin[len(prefix) :])
+	clients = []
+	while True:
+		line = econ.wait_for_line(lambda line: line.startswith(prefix))[len(prefix) :]
+		if line.startswith("v=1 ev=end "):
+			end = parse_session_fields(line)
+			break
+		clients.append(json.loads(line))
+	if int(begin["clients"]) != len(clients):
+		raise AssertionError(f"status_json announced {begin['clients']} clients and listed {len(clients)}")
+	return begin, clients, end
+
+
+@test
+def server_lists_clients_as_json(test_env):
+	econ_port = free_tcp_port()
+	server = test_env.server(econ_server_args(econ_port))
+	client = test_env.client(["player_name json'\\ü", "player_clan c", "player_country 276"])
+	wait_for_startup([server, client])
+	server.wait_for_log_prefix("server: v=1 ev=ready ", timeout=10)
+	econ = Econ(econ_port, "econ-test")
+	_, clients, end = econ_status_json(econ)
+	if clients:
+		raise AssertionError(f"status_json lists clients on an empty server: {clients!r}")
+	with open(os.path.join(test_env.runner.data_dir, "maps", f"{end['map']}.map"), "rb") as f:
+		map_sha256 = hashlib.sha256(f.read()).hexdigest()
+	if end["map_sha256"] != map_sha256 or end["game_type"] == "" or end["mode_id"] != "ddnet" or end["legacy_udp"] != "1":
+		raise AssertionError(f"status_json end line {end!r}")
+
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	bot = add_debug_dummy(server)
+	_, clients, _ = econ_status_json(econ)
+	human = clients[0]
+	expected = {
+		"v": 1,
+		"id": 0,
+		"state": "ingame",
+		"name": "json'\\ü",
+		"clan": "c",
+		"country": 276,
+		"team": 0,
+		"transport": human["transport"],
+		"sixup": False,
+		"secure": True,
+		# A client that sends no input soon counts as away.
+		"afk": human.get("afk") if isinstance(human.get("afk"), bool) else "bool",
+		"spectator": False,
+		"bot": False,
+		"auth": "none",
+		"auth_key": None,
+	}
+	if {key: human.get(key) for key in expected} != expected or set(human) != set(expected) | {"score", "version"} or human["version"] <= 0:
+		raise AssertionError(f"status_json client {human!r}, expected {expected!r}")
+	if bot is not None and (len(clients) != 2 or not clients[1]["bot"]):
+		raise AssertionError(f"status_json does not mark the debug dummy: {clients!r}")
+	econ.close()
+
+	client.exit()
+	client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
 
 
 # TODO: make this less verbose

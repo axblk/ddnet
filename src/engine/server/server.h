@@ -237,6 +237,15 @@ public:
 
 		bool m_GotDDNetVersionPacket;
 		bool m_DDNetVersionSettled;
+		// Whether the session log already identified the client, and with which
+		// version, so that it does so once, and again only for a new version.
+		bool m_SessionIdentLogged;
+		int m_SessionIdentVersion;
+		// Tells the session apart from other sessions in the same slot.
+		CUuid m_SessionId;
+		int64_t m_SessionStart;
+		// The team the game put the client in, see `IServer::SetClientTeam`.
+		int m_Team;
 		int m_DDNetVersion;
 		char m_aDDNetVersionStr[64];
 		CUuid m_ConnectionId;
@@ -258,6 +267,13 @@ public:
 		{
 			return m_State != STATE_EMPTY && !m_DebugDummy;
 		}
+
+		/**
+		 * Whether the server plays this client itself: nothing is connected to
+		 * the slot. Debug dummies are, and so is any client whose slot is taken
+		 * the same way: marked with `m_DebugDummy` before `NewClientCallback`.
+		 */
+		bool IsBot() const { return m_DebugDummy; }
 	};
 
 	IConsole::EAccessLevel ConsoleAccessLevel(int ClientId) const;
@@ -387,6 +403,7 @@ public:
 	void SetClientCountry(int ClientId, int Country) override;
 	void SetClientScore(int ClientId, std::optional<int> Score) override;
 	void SetClientFlags(int ClientId, int Flags) override;
+	void SetClientTeam(int ClientId, int Team) override;
 
 	void Kick(int ClientId, const char *pReason) override;
 	void DropClient(int ClientId, const char *pReason);
@@ -401,6 +418,17 @@ public:
 	int Init();
 
 	static bool StrHideIps(const char *pInput, char *pOutputWithIps, size_t OutputWithIpsSize, char *pOutputWithoutIps, size_t OutputWithoutIpsSize);
+	/**
+	 * Prepares text for a quoted value in a `key='value'` log line meant to be
+	 * parsed, such as those of the `session` system: without control characters
+	 * and with quotes turned into spaces, so that the quote-space sequence that
+	 * ends the value cannot occur in it, whoever wrote the text.
+	 *
+	 * @param pValue Receives the value.
+	 * @param ValueSize Size of the buffer `pValue`.
+	 * @param pText The text.
+	 */
+	static void StrLogValue(char *pValue, int ValueSize, const char *pText);
 	void SendLogLine(const CLogMessage *pMessage);
 	void SetRconCid(int ClientId) override;
 	int GetAuthedState(int ClientId) const override;
@@ -534,8 +562,19 @@ public:
 	bool IssueQuicResume(int ClientId);
 	void ExpireQuicResumes();
 	void OnNetMsgClientVer(int ClientId, CUuid *pConnectionId, int DDNetVersion, const char *pDDNetVersionStr);
+
+	// Usage accounting for an external wrapper, one line per event on the `session`
+	// log system. A dedicated system so a reader filters on it instead of parsing
+	// prose that is free to change; INFO level so it appears without debug logging.
+	void LogSessionJoin(int ClientId);
+	void LogSessionIdent(int ClientId);
+	void LogSessionRename(int ClientId);
+	void LogSessionMap();
 	void OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPasswordOrNullptr);
 	void OnNetMsgReady(int ClientId);
+	// The line saying that a client entered the game, also for bots, which
+	// enter without a message.
+	void LogClientEnter(int ClientId);
 	void OnNetMsgEnterGame(int ClientId);
 	void OnNetMsgRconCmd(int ClientId, const char *pCmd);
 	void OnNetMsgRconAuth(int ClientId, const char *pName, const char *pPw, bool SendRconCmds);
@@ -600,6 +639,7 @@ public:
 
 	static void ConKick(IConsole::IResult *pResult, void *pUser);
 	static void ConStatus(IConsole::IResult *pResult, void *pUser);
+	static void ConStatusJson(IConsole::IResult *pResult, void *pUser);
 	static void ConShutdown(IConsole::IResult *pResult, void *pUser);
 	static void ConRecord(IConsole::IResult *pResult, void *pUser);
 	static void ConStopRecord(IConsole::IResult *pResult, void *pUser);

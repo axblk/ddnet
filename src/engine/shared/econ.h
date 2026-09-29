@@ -51,6 +51,10 @@ public:
 	IConsole *Console() { return m_pConsole; }
 
 	void Init(CConfig *pConfig, IConsole *pConsole, CNetBan *pNetBan);
+	/**
+	 * Whether `Init` bound the socket, so that econ clients can connect.
+	 */
+	bool IsListening() const { return m_Ready; }
 	void Update();
 	void Send(int ClientId, const char *pLine);
 	void Shutdown();

@@ -82,7 +82,15 @@ public:
 
 	void Print(Mode DatabaseMode);
 
-	void RegisterSqliteDatabase(Mode DatabaseMode, const char aFilename[64]);
+	/**
+	 * Adds an SQLite database, created if it does not exist yet.
+	 *
+	 * @param DatabaseMode What the database is used for.
+	 * @param pFilename Absolute path of the database file.
+	 *
+	 * @return `false` if the path is too long to be kept, then nothing is added.
+	 */
+	bool RegisterSqliteDatabase(Mode DatabaseMode, const char *pFilename);
 	void RegisterMysqlDatabase(Mode DatabaseMode, const CMysqlConfig *pMysqlConfig);
 
 	void Execute(

@@ -1,4 +1,7 @@
+#include "test.h"
+
 #include <base/detect.h>
+#include <base/fs.h>
 #include <base/str.h>
 #include <base/time.h>
 
@@ -12,6 +15,9 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 
+#include <chrono>
+#include <thread>
+
 #if defined(CONF_TEST_MYSQL)
 int DummyMysqlInit = (MysqlInit(), 1);
 #endif
@@ -19,6 +25,59 @@ int DummyMysqlInit = (MysqlInit(), 1);
 TEST(SQLite, Version)
 {
 	ASSERT_GE(sqlite3_libversion_number(), 3025000) << "SQLite >= 3.25.0 required for Window functions";
+}
+
+static bool SqliteConnects(IDbConnection *pConnection, const ISqlData *pData, char *pError, int ErrorSize)
+{
+	return true;
+}
+
+TEST(SQLite, PoolKeepsLongPath)
+{
+	// The server passes an absolute path below its storage directory, which
+	// easily grows past 64 bytes.
+	CTestInfo Info;
+	char aCwd[IO_MAX_PATH_LENGTH];
+	ASSERT_NE(fs_getcwd(aCwd, sizeof(aCwd)), nullptr);
+	char aDirectory[IO_MAX_PATH_LENGTH];
+	str_format(aDirectory, sizeof(aDirectory), "%s/%s-%0150d", aCwd, Info.m_aFilenamePrefix, 0);
+	char aPath[IO_MAX_PATH_LENGTH];
+	str_format(aPath, sizeof(aPath), "%s/ranks.sqlite", aDirectory);
+	ASSERT_GE(str_length(aPath), 200);
+	ASSERT_EQ(fs_makedir(aDirectory), 0);
+
+	{
+		CDbConnectionPool Pool;
+		ASSERT_TRUE(Pool.RegisterSqliteDatabase(CDbConnectionPool::READ, aPath));
+		auto pResult = std::make_shared<ISqlResult>();
+		Pool.Execute(SqliteConnects, std::make_unique<ISqlData>(pResult), "connect");
+		for(int i = 0; i < 1000 && !pResult->m_Completed.load(); i++)
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		ASSERT_TRUE(pResult->m_Completed.load());
+		EXPECT_TRUE(pResult->m_Success);
+	}
+	EXPECT_TRUE(fs_is_file(aPath));
+
+	EXPECT_EQ(fs_remove(aPath), 0);
+	// SQLite may leave its write-ahead log and shared memory files behind
+	for(const char *pSuffix : {"-wal", "-shm", "-journal"})
+	{
+		char aExtra[IO_MAX_PATH_LENGTH];
+		str_format(aExtra, sizeof(aExtra), "%s%s", aPath, pSuffix);
+		if(fs_is_file(aExtra))
+		{
+			EXPECT_EQ(fs_remove(aExtra), 0) << aExtra;
+		}
+	}
+	EXPECT_EQ(fs_removedir(aDirectory), 0);
+}
+
+TEST(SQLite, PoolRefusesTooLongPath)
+{
+	char aPath[IO_MAX_PATH_LENGTH + 16];
+	str_format(aPath, sizeof(aPath), "/%0*d", IO_MAX_PATH_LENGTH + 8, 0);
+	CDbConnectionPool Pool;
+	EXPECT_FALSE(Pool.RegisterSqliteDatabase(CDbConnectionPool::READ, aPath));
 }
 
 struct Score : public testing::TestWithParam<IDbConnection *> // NOLINT(readability-identifier-naming)

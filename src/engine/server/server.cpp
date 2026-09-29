@@ -4276,15 +4276,23 @@ int CServer::Run()
 		}
 		char aFullPath[IO_MAX_PATH_LENGTH];
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE, Config()->m_SvSqliteFile, aFullPath, sizeof(aFullPath));
+		// A path that fills the buffer may have been cut short.
+		if(str_length(aFullPath) >= (int)sizeof(aFullPath) - 1)
+		{
+			log_error("server", "the path of sv_sqlite_file is too long. path='%s'", aFullPath);
+			return -1;
+		}
 
 		if(Config()->m_SvUseSql)
 		{
-			DbPool()->RegisterSqliteDatabase(CDbConnectionPool::WRITE_BACKUP, aFullPath);
+			if(!DbPool()->RegisterSqliteDatabase(CDbConnectionPool::WRITE_BACKUP, aFullPath))
+				return -1;
 		}
 		else
 		{
-			DbPool()->RegisterSqliteDatabase(CDbConnectionPool::READ, aFullPath);
-			DbPool()->RegisterSqliteDatabase(CDbConnectionPool::WRITE, aFullPath);
+			if(!DbPool()->RegisterSqliteDatabase(CDbConnectionPool::READ, aFullPath) ||
+				!DbPool()->RegisterSqliteDatabase(CDbConnectionPool::WRITE, aFullPath))
+				return -1;
 		}
 	}
 

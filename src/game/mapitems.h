@@ -6,6 +6,8 @@
 #include <base/color.h>
 #include <base/vmath.h>
 
+#include <engine/image.h>
+
 // layer types
 enum
 {
@@ -390,6 +392,19 @@ public:
 };
 
 typedef CMapItemImage_v1 CMapItemImage;
+
+/**
+ * The pixel format of the picture a map image item embeds.
+ *
+ * The first version of the item is always RGBA. Teeworlds 0.7 added a format
+ * field, which is `m_MustBe1` here: 0 for RGB and 1 for RGBA.
+ *
+ * @param pImage The image item, of any version.
+ *
+ * @return The format, or `CImageInfo::FORMAT_UNDEFINED` for a format field
+ * that no map writer uses.
+ */
+CImageInfo::EImageFormat MapImageFormat(const CMapItemImage_v2 *pImage);
 
 class CMapItemGroup_v1
 {

@@ -49,7 +49,9 @@ static void ExtractMapImages(CDataFileReader &Reader, const char *pPathSave)
 		str_format(aBuf, sizeof(aBuf), "%s/%s.png", pPathSave, pName);
 		Reader.UnloadData(pItem->m_ImageName);
 
-		if(pItem->m_Version >= 2 && pItem->m_MustBe1 != 1)
+		// Teeworlds 0.7 maps can embed RGB pictures, see MapImageFormat
+		const CImageInfo::EImageFormat Format = MapImageFormat(pItem);
+		if(Format == CImageInfo::FORMAT_UNDEFINED)
 		{
 			log_error("map_extract", "ignoring image '%s' with unknown format %d", aBuf, pItem->m_MustBe1);
 			continue;
@@ -64,8 +66,14 @@ static void ExtractMapImages(CDataFileReader &Reader, const char *pPathSave)
 		CImageInfo Image;
 		Image.m_Width = pItem->m_Width;
 		Image.m_Height = pItem->m_Height;
-		Image.m_Format = CImageInfo::FORMAT_RGBA;
+		Image.m_Format = Format;
 		Image.m_pData = static_cast<uint8_t *>(Reader.GetData(pItem->m_ImageData));
+		if(Image.m_pData == nullptr || (size_t)Reader.GetDataSize(pItem->m_ImageData) < Image.DataSize())
+		{
+			log_error("map_extract", "ignoring image '%s' with too little data for %dx%d", aBuf, pItem->m_Width, pItem->m_Height);
+			Reader.UnloadData(pItem->m_ImageData);
+			continue;
+		}
 
 		log_info("map_extract", "writing image: %s (%dx%d)", aBuf, pItem->m_Width, pItem->m_Height);
 		if(!CImageLoader::SavePng(io_open(aBuf, IOFLAG_WRITE), aBuf, Image))

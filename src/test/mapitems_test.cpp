@@ -24,3 +24,20 @@ TEST(Mapitems, FixedTimeRoundtrip)
 		ASSERT_EQ(Fixed, CFixedTime::FromSeconds(Fixed.AsSeconds()));
 	}
 }
+
+TEST(Mapitems, ImageFormat)
+{
+	CMapItemImage_v2 Image = {};
+	Image.m_Version = 1;
+	Image.m_MustBe1 = 0; // not read for the first version
+	EXPECT_EQ(MapImageFormat(&Image), CImageInfo::FORMAT_RGBA);
+	Image.m_Version = 2;
+	Image.m_MustBe1 = 1;
+	EXPECT_EQ(MapImageFormat(&Image), CImageInfo::FORMAT_RGBA);
+	Image.m_MustBe1 = 0;
+	EXPECT_EQ(MapImageFormat(&Image), CImageInfo::FORMAT_RGB);
+	Image.m_MustBe1 = 2;
+	EXPECT_EQ(MapImageFormat(&Image), CImageInfo::FORMAT_UNDEFINED);
+	Image.m_MustBe1 = -1;
+	EXPECT_EQ(MapImageFormat(&Image), CImageInfo::FORMAT_UNDEFINED);
+}

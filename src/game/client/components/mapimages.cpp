@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 CMapImages::CMapImages()
@@ -211,7 +212,8 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 			pName = "(error)";
 		}
 
-		if(pImg->m_Version > 1 && pImg->m_MustBe1 != 1)
+		const CImageInfo::EImageFormat Format = MapImageFormat(pImg);
+		if(Format == CImageInfo::FORMAT_UNDEFINED)
 		{
 			log_error("mapimages", "Failed to load map image %d '%s': invalid map image type.", i, pName);
 			ShowWarning = true;
@@ -244,7 +246,7 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 				continue;
 			}
 
-			const size_t DataSize = (size_t)pImg->m_Width * pImg->m_Height * CImageInfo::PixelSize(CImageInfo::FORMAT_RGBA);
+			const size_t DataSize = (size_t)pImg->m_Width * pImg->m_Height * CImageInfo::PixelSize(Format);
 			CDataFileRawData RawData;
 			if(!pMap->GetRawData(pImg->m_ImageData, RawData) || RawData.UncompressedSize() < DataSize)
 			{
@@ -254,7 +256,15 @@ void CMapImages::OnMapLoadImpl(class CLayers *pLayers, IMap *pMap)
 			}
 			char aTexName[IO_MAX_PATH_LENGTH];
 			str_format(aTexName, sizeof(aTexName), "embedded: %s", pName);
-			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageRawData(std::move(RawData), pImg->m_Width, pImg->m_Height, CImageInfo::FORMAT_RGBA, aTexName)});
+			// Teeworlds 0.7 maps can embed RGB pictures. Textures are RGBA, and
+			// the job that uncompresses the picture converts it as well.
+			std::function<bool(CImageInfo &)> Postprocess;
+			if(Format != CImageInfo::FORMAT_RGBA)
+				Postprocess = [](CImageInfo &Image) {
+					ConvertToRgba(Image);
+					return true;
+				};
+			m_vImageLoads.push_back({i, LoadFlag, GameClient()->AssetLoader().LoadImageRawData(std::move(RawData), pImg->m_Width, pImg->m_Height, Format, aTexName, std::move(Postprocess))});
 		}
 		pMap->UnloadData(pImg->m_ImageName);
 	}

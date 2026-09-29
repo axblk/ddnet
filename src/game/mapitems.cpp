@@ -13,6 +13,21 @@ void CEnvPoint::SetColorValue(const ColorRGBA &Color)
 	m_aValues[3] = f2fx(Color.a);
 }
 
+CImageInfo::EImageFormat MapImageFormat(const CMapItemImage_v2 *pImage)
+{
+	if(pImage->m_Version < 2)
+		return CImageInfo::FORMAT_RGBA;
+	switch(pImage->m_MustBe1)
+	{
+	case 0:
+		return CImageInfo::FORMAT_RGB;
+	case 1:
+		return CImageInfo::FORMAT_RGBA;
+	default:
+		return CImageInfo::FORMAT_UNDEFINED;
+	}
+}
+
 bool IsValidGameTile(int Index)
 {
 	return (

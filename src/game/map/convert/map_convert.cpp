@@ -331,6 +331,12 @@ class CMapConverter
 	void ReadData();
 	void ReadImages();
 	void ReadLayers();
+	// What happens to an image, before its picture is there
+	EAction DecideAction(const CImage &Image) const;
+	// Whether the image needs its picture, once it was decided
+	static bool NeedsPicture(const CImage &Image);
+	// The diff tileset of the image (`HYBRID`), once it was decided, or `nullptr`
+	const char *DiffName(const CImage &Image) const;
 	bool DecideImages();
 	bool RemapLayer(CLayer &Layer, CImage &Image);
 	int SplitImage(Map07Tables::ESet Set);
@@ -352,6 +358,7 @@ public:
 		m_Reader(Reader), m_Options(Options), m_Mapres(Mapres), m_Result(Result), m_To07(Options.m_Direction == EMapConvertDirection::TO07 || Options.m_Mode == EMapConvertMode::MARK), m_Mode(Options.m_Mode) {}
 
 	bool Run();
+	void ListPictures(CMapConvertPictures &Pictures);
 };
 
 void CMapConverter::Warn(const char *pFormat, ...)
@@ -604,6 +611,52 @@ void CMapConverter::ReadLayers()
 	}
 }
 
+CMapConverter::EAction CMapConverter::DecideAction(const CImage &Image) const
+{
+	if(!Image.m_External || m_Mode == EMapConvertMode::MARK || (!Image.m_UsedByTiles && !Image.m_UsedByQuads))
+	{
+		return EAction::KEEP;
+	}
+	const bool Foreign = m_To07 && !IsTeeworlds07Mapres(Image.m_aName);
+	if(Image.m_pTable == nullptr && !Foreign)
+	{
+		return EAction::KEEP;
+	}
+	if(Foreign)
+	{
+		// A 0.7 client does not have the picture at all
+		return EAction::EMBED;
+	}
+	const Map07Tables::CTileTable &Table = *Image.m_pTable;
+	const bool Remappable = std::any_of(std::begin(Table.m_aKind), std::end(Table.m_aKind), [](uint8_t Kind) { return Kind == Map07Tables::KIND_EXACT; });
+	if(!Image.m_UsesChanged && !Image.m_QuadsUseChanged && (m_To07 || Map07Tables::SIZE06[Table.m_Source][0] != 0))
+	{
+		// The tiles and the parts of the picture the map uses are where they were, and the other version has the picture
+		return EAction::KEEP;
+	}
+	// A picture without any counterpart (easter) is embedded in every mode
+	if(m_Mode == EMapConvertMode::EMBED || !Remappable)
+	{
+		return EAction::EMBED;
+	}
+	// Quads show any part of the picture: with nothing to remap, embed it for them
+	return Image.m_UsedByTiles ? EAction::REMAP : EAction::EMBED;
+}
+
+bool CMapConverter::NeedsPicture(const CImage &Image)
+{
+	return Image.m_Action == EAction::EMBED || (Image.m_Action == EAction::REMAP && Image.m_QuadsUseChanged);
+}
+
+const char *CMapConverter::DiffName(const CImage &Image) const
+{
+	if(m_Mode != EMapConvertMode::HYBRID || Image.m_Action != EAction::REMAP || !Image.m_UsesFallback)
+	{
+		return nullptr;
+	}
+	return (m_To07 ? Map07Tables::DIFFS07 : Map07Tables::DIFFS06)[Image.m_pTable->m_Source];
+}
+
 bool CMapConverter::DecideImages()
 {
 	for(size_t i = 0; i < m_vImages.size() && m_To07 && m_Mode != EMapConvertMode::MARK; i++)
@@ -624,39 +677,13 @@ bool CMapConverter::DecideImages()
 
 	for(CImage &Image : m_vImages)
 	{
-		if(!Image.m_External || m_Mode == EMapConvertMode::MARK || (!Image.m_UsedByTiles && !Image.m_UsedByQuads))
+		Image.m_Action = DecideAction(Image);
+		if(Image.m_Action == EAction::KEEP)
 		{
 			continue;
-		}
-		const bool Foreign = m_To07 && !IsTeeworlds07Mapres(Image.m_aName);
-		if(Image.m_pTable == nullptr && !Foreign)
-		{
-			continue;
-		}
-		if(Foreign)
-		{
-			// A 0.7 client does not have the picture at all
-			Image.m_Action = EAction::EMBED;
-		}
-		else
-		{
-			const Map07Tables::CTileTable &Table = *Image.m_pTable;
-			const bool Remappable = std::any_of(std::begin(Table.m_aKind), std::end(Table.m_aKind), [](uint8_t Kind) { return Kind == Map07Tables::KIND_EXACT; });
-			if(!Image.m_UsesChanged && !Image.m_QuadsUseChanged && (m_To07 || Map07Tables::SIZE06[Table.m_Source][0] != 0))
-			{
-				// The tiles and the parts of the picture the map uses are where they were, and the other version has the picture
-				continue;
-			}
-			// A picture without any counterpart (easter) is embedded in every mode
-			Image.m_Action = m_Mode == EMapConvertMode::EMBED || !Remappable ? EAction::EMBED : EAction::REMAP;
-			// Quads show any part of the picture: with nothing to remap, embed it for them
-			if(Image.m_Action == EAction::REMAP && !Image.m_UsedByTiles)
-			{
-				Image.m_Action = EAction::EMBED;
-			}
 		}
 
-		if(Image.m_Action == EAction::EMBED || (Image.m_Action == EAction::REMAP && Image.m_QuadsUseChanged))
+		if(NeedsPicture(Image))
 		{
 			Image.m_pPicture = m_Mapres.Find(Image.m_aName, !m_To07);
 			if(Image.m_pPicture == nullptr)
@@ -698,15 +725,14 @@ bool CMapConverter::DecideImages()
 		return true;
 	}
 	// The diff tilesets of the tiles without a counterpart the map uses, all of them or none
-	const auto &apDiffs = m_To07 ? Map07Tables::DIFFS07 : Map07Tables::DIFFS06;
 	std::map<int, std::shared_ptr<const CMapresImage>> Diffs;
 	for(const CImage &Image : m_vImages)
 	{
-		if(Image.m_Action != EAction::REMAP || !Image.m_UsesFallback || apDiffs[Image.m_pTable->m_Source] == nullptr || Diffs.contains(Image.m_pTable->m_Source))
+		const char *pName = DiffName(Image);
+		if(pName == nullptr || Diffs.contains(Image.m_pTable->m_Source))
 		{
 			continue;
 		}
-		const char *pName = apDiffs[Image.m_pTable->m_Source];
 		std::shared_ptr<const CMapresImage> pDiff = m_Mapres.FindDiff(pName);
 		if(pDiff == nullptr)
 		{
@@ -1337,6 +1363,28 @@ bool CMapConverter::Run()
 	return Write();
 }
 
+void CMapConverter::ListPictures(CMapConvertPictures &Pictures)
+{
+	Pictures.m_Teeworlds07 = !m_To07;
+	if(!Prepare() || !Needed())
+	{
+		return;
+	}
+	for(CImage &Image : m_vImages)
+	{
+		Image.m_Action = DecideAction(Image);
+		if(NeedsPicture(Image))
+		{
+			Pictures.m_vImages.emplace_back(Image.m_aName);
+		}
+		const char *pDiff = DiffName(Image);
+		if(pDiff != nullptr && std::find(Pictures.m_vDiffs.begin(), Pictures.m_vDiffs.end(), pDiff) == Pictures.m_vDiffs.end())
+		{
+			Pictures.m_vDiffs.emplace_back(pDiff);
+		}
+	}
+}
+
 // Stands in for the pictures where none are needed
 class CNoMapres : public IMapres
 {
@@ -1360,4 +1408,14 @@ bool ConvertMap(CDataFileReader &Source, const CMapConvertOptions &Options, cons
 	Result = CMapConvertResult();
 	CMapConverter Converter(Source, Options, Mapres, Result);
 	return Converter.Run();
+}
+
+CMapConvertPictures MapConvertPictures(CDataFileReader &Source, const CMapConvertOptions &Options)
+{
+	CMapConvertPictures Pictures;
+	CMapConvertResult Result;
+	const CNoMapres NoMapres;
+	CMapConverter Converter(Source, Options, NoMapres, Result);
+	Converter.ListPictures(Pictures);
+	return Pictures;
 }

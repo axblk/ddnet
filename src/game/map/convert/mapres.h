@@ -6,10 +6,14 @@
 #include <engine/shared/datafile.h>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
+class CMapConvertPictures;
 class IStorage;
 
 /**
@@ -63,13 +67,27 @@ public:
 /**
  * The pictures in `mapres/` of the data directory: `<name>.png`, and
  * `<name>_0.7.png` for the tilesets Teeworlds 0.7 drew again; the diff
- * tilesets are in `convert/`. Each is read
- * and compressed once, when it is first asked for, and then kept; one
- * instance can serve every conversion of a process, from several threads.
+ * tilesets are in `convert/`. The files come from a function, so that they
+ * can be fetched ahead (see `MapConvertPictures`) or read from a storage
+ * (`CMapresFromStorage`). Each is read and compressed once, when it is first
+ * asked for, and then kept; one instance can serve every conversion of a
+ * process, from several threads.
  */
-class CMapresFromStorage : public IMapres
+class CMapresFromFiles : public IMapres
 {
-	IStorage *m_pStorage;
+public:
+	/**
+	 * Gives the bytes of a file of the data directory.
+	 *
+	 * @param pPath The path in the data directory, such as `mapres/jungle_main.png`.
+	 * @param vData Gets the bytes.
+	 *
+	 * @return `false` if the file is missing.
+	 */
+	using FReadFile = std::function<bool(const char *pPath, std::vector<uint8_t> &vData)>;
+
+private:
+	FReadFile m_ReadFile;
 	mutable CLock m_Mutex;
 	// Pictures that are missing are kept as well, as `nullptr`
 	mutable std::map<std::string, std::shared_ptr<const CMapresImage>, std::less<>> m_Cache GUARDED_BY(m_Mutex);
@@ -77,21 +95,45 @@ class CMapresFromStorage : public IMapres
 	std::shared_ptr<const CMapresImage> FindPath(const char *pPath) const REQUIRES(!m_Mutex);
 
 public:
-	explicit CMapresFromStorage(IStorage *pStorage) :
-		m_pStorage(pStorage) {}
+	/**
+	 * @param ReadFile Gives the files.
+	 */
+	explicit CMapresFromFiles(FReadFile ReadFile) :
+		m_ReadFile(std::move(ReadFile)) {}
 
 	std::shared_ptr<const CMapresImage> Find(const char *pName, bool Teeworlds07) const override REQUIRES(!m_Mutex);
 	std::shared_ptr<const CMapresImage> FindDiff(const char *pName) const override REQUIRES(!m_Mutex);
 
 	/**
-	 * Reads a picture from a file.
+	 * The files that `Find` and `FindDiff` read for these pictures.
 	 *
-	 * @param pStorage The storage to read from.
-	 * @param pPath The path of the PNG file.
+	 * @param Pictures What a conversion asks for, see `MapConvertPictures`.
 	 *
-	 * @return The picture, or `nullptr` if it is missing or cannot be read.
+	 * @return The paths in the data directory.
 	 */
-	static std::shared_ptr<const CMapresImage> Load(IStorage *pStorage, const char *pPath);
+	static std::vector<std::string> Paths(const CMapConvertPictures &Pictures);
+
+	/**
+	 * Reads a picture from the bytes of a PNG file.
+	 *
+	 * @param vData The bytes.
+	 * @param pPath Where they are from, for what is told.
+	 *
+	 * @return The picture, or `nullptr` if it cannot be read.
+	 */
+	static std::shared_ptr<const CMapresImage> Load(const std::vector<uint8_t> &vData, const char *pPath);
+};
+
+/**
+ * The pictures of the data directory, read from a storage.
+ */
+class CMapresFromStorage : public CMapresFromFiles
+{
+public:
+	/**
+	 * @param pStorage The storage to read from.
+	 */
+	explicit CMapresFromStorage(IStorage *pStorage);
 };
 
 #endif

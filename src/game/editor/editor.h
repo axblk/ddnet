@@ -42,6 +42,7 @@
 #include <game/editor/mapitems/map.h>
 #include <game/editor/prompt.h>
 #include <game/editor/quick_action.h>
+#include <game/map/convert/map_convert.h>
 #include <game/mapitems.h>
 
 #include <deque>
@@ -332,6 +333,30 @@ public:
 	bool Save(const char *pFilename) override;
 	bool Load(const char *pFilename, int StorageType) override;
 	bool HandleMapDrop(const char *pFilename, int StorageType) override;
+	/**
+	 * Asks how to import a map that Teeworlds 0.7 made, if it has to be
+	 * converted to look the same in DDNet (`MapNeedsConversion`), see
+	 * `POPEVENT_IMPORT_07`. The answer opens or appends it, see `Import07`.
+	 *
+	 * @param Map The map as it arrived.
+	 * @param pFilename Where it is.
+	 * @param Append Whether to append it to the current map instead of opening it.
+	 *
+	 * @return Whether the editor asks.
+	 */
+	bool AskHowToImport07(IMap &Map, const char *pFilename, bool Append);
+	/**
+	 * Opens or appends the map `AskHowToImport07` asked about, converted.
+	 * Saving it asks for a file name, so that the map of Teeworlds 0.7 stays.
+	 *
+	 * @param Mode How to convert it.
+	 */
+	void Import07(EMapConvertMode Mode);
+	/**
+	 * @return Whether the diff tilesets are there that `EMapConvertMode::HYBRID`
+	 * embeds for the tiles DDNet does not have.
+	 */
+	bool HasDiffTilesets07() const;
 	void LoadIngameMap();
 	/**
 	 * Opens a map in a new tab once it and the files it names are here, see
@@ -406,6 +431,12 @@ public:
 	int m_Mode;
 	int m_Dialog;
 	bool m_CloseMapAfterSave = false;
+	// The map `AskHowToImport07` asks about
+	char m_aImport07Filename[IO_MAX_PATH_LENGTH] = "";
+	// Its bytes, which the answer converts
+	std::vector<uint8_t> m_vImport07Data;
+	bool m_Import07Append = false;
+	bool m_Import07Hybrid = true;
 	char m_aTooltip[256] = "";
 
 	bool m_BrushColorEnabled;
@@ -428,6 +459,8 @@ public:
 		POPEVENT_REMOVE_USED_SOUND,
 		POPEVENT_RESTART_SERVER,
 		POPEVENT_RESTARTING_SERVER,
+		// How to import a map that Teeworlds 0.7 made
+		POPEVENT_IMPORT_07,
 	};
 
 	int m_PopupEventType;

@@ -1728,8 +1728,9 @@ SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DD
 @test
 def client_07_is_told_that_the_map_has_no_07_version(test_env):
 	client = test_env.client()
-	# coverage has no version in maps7/, which no longer switches 0.7 off
-	server = test_env.server(["sv_map coverage"])
+	# coverage has no version in maps7/ and is not converted, which no longer
+	# switches 0.7 off
+	server = test_env.server(["sv_map coverage", "sv_map_convert off"])
 	server.wait_for_log_prefix("sixup: 0.7 clients cannot play this map", timeout=5)
 	wait_for_startup([client, server])
 	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
@@ -1751,7 +1752,7 @@ def client_07_is_told_that_the_map_has_no_07_version(test_env):
 @test
 def client_07_is_dropped_when_the_map_has_no_07_version(test_env):
 	client = test_env.client()
-	server = test_env.server()
+	server = test_env.server(["sv_map_convert off"])
 	wait_for_startup([client, server])
 	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
 	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
@@ -1813,7 +1814,7 @@ def client_07_follows_a_map_change_in_a_team_mode(test_env):
 def server_registers_07_while_the_map_has_a_07_version(test_env):
 	mastersrv = test_env.mastersrv()
 	mastersrv.wait_for_startup()
-	server = start_registered_server(test_env, mastersrv, ["sv_quic 0", "sv_webtransport 0"])
+	server = start_registered_server(test_env, mastersrv, ["sv_quic 0", "sv_webtransport 0", "sv_map_convert off"])
 	wait_for_server_addresses(mastersrv, legacy_addresses(server))
 	server.command("change_map coverage")
 	server.wait_for_log_exact("register: 0.7 clients cannot play the map, no longer registering for them", timeout=10)
@@ -1865,6 +1866,167 @@ def stock_07_client_plays_the_vanilla_maps(test_env):
 		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
 		if "sixup=1" not in join:
 			raise AssertionError(f"sixup=1 not found in {join!r}")
+		server.exit()
+		client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+		client.exit()
+		server.wait_for_exit()
+		client.wait_for_exit()
+
+
+def copy_map(test_env, source, name):
+	"""Copies a map of the data directory, e.g. `maps7/dm1`, into maps/ as `name`."""
+	os.makedirs(os.path.join(test_env.tmp_dir, "maps"), exist_ok=True)
+	shutil.copyfile(os.path.join(test_env.runner.data_dir, f"{source}.map"), os.path.join(test_env.tmp_dir, "maps", f"{name}.map"))
+
+
+def wait_for_conversion(server, map_name, direction, timeout=30):
+	"""Waits for the server to have converted a map and returns the sha256 of the conversion."""
+	prefix = f"mapconv: map={map_name} dir={direction} mode="
+	line = server.wait_for_log(lambda l: l.line.startswith(prefix) and " sha256=" in l.line, f"the conversion of {map_name} {direction}", timeout=timeout).line
+	return line.rsplit(" sha256=", 1)[1]
+
+
+def conversion_sha256(server, map_name, direction):
+	"""The sha256 of the last conversion of a map the server logged."""
+	prefix = f"mapconv: map={map_name} dir={direction} mode="
+	for line in reversed([Log.parse(line).line for line in server.full_stdout]):
+		if line.startswith(prefix) and " sha256=" in line:
+			return line.rsplit(" sha256=", 1)[1]
+	raise AssertionError(f"no conversion of {map_name} {direction}")
+
+
+def wait_for_download(client, map_name, sha256, timeout=10):
+	"""Waits for a client to download the version of a map with that sha256."""
+	client.wait_for_log(lambda l: l.line.startswith("client/network: starting to download map to") and f"{map_name}_{sha256}" in l.line, f"the download of {map_name} {sha256}", timeout=timeout)
+
+
+def wait_for_joins(server, sixups, timeout=10):
+	"""Waits for clients to enter the game, `sixups` says how many of each kind."""
+	joined = []
+	while len(joined) < len(sixups):
+		line = server.wait_for_log_prefix("server: player has entered the game", timeout=timeout).line
+		joined.append("sixup=1" in line)
+	if sorted(joined) != sorted(sixups):
+		raise AssertionError(f"expected {sixups!r} to enter the game, not {joined!r}")
+
+
+def stop(server, clients):
+	server.exit()
+	for client in clients:
+		client.exit()
+	server.wait_for_exit()
+	for client in clients:
+		client.wait_for_exit()
+
+
+@test
+def client_07_plays_a_converted_map(test_env):
+	# DDNet's ctf5 has no version in maps7/, 0.7 clients get a conversion,
+	# under a name of its own, as 0.7 comes with another ctf5
+	client = test_env.client(["stdout_output_level 2", "loglevel 2"])
+	server = test_env.server(["sv_gametype ctf", "sv_map ctf5"])
+	wait_for_startup([client, server])
+	sha256 = wait_for_conversion(server, "ctf5", "to07")
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	wait_for_download(client, "ctf5_ddnet", sha256)
+	wait_for_joins(server, [True])
+	stop(server, [client])
+
+
+@test
+def client_plays_a_converted_07_map(test_env):
+	# ctf5 as Teeworlds 0.7 ships it, DDNet clients get a conversion; the
+	# URL of the map server must not lead them to the map before it
+	copy_map(test_env, "test/maps07/ctf5", "ctf5_07")
+	client = test_env.client(["stdout_output_level 2", "loglevel 2"])
+	server = test_env.server(["sv_gametype ctf", "sv_map ctf5_07", "sv_maps_base_url http://127.0.0.1:1/"])
+	wait_for_startup([client, server])
+	sha256 = wait_for_conversion(server, "ctf5_07", "to06")
+	client.command(f"connect 127.0.0.1:{server.port}")
+	wait_for_download(client, "ctf5_07", sha256)
+	wait_for_joins(server, [False])
+	# 0.7 clients get the map as it is
+	client.command("disconnect")
+	client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	wait_for_joins(server, [True])
+	stop(server, [client])
+
+
+def map_pack_rotation(test_env, sixup_client):
+	"""
+	Plays a map pack of mostly 0.7 maps and a few DDNet ones with a DDNet and
+	a 0.7 client, and changes the map while one is being converted.
+	"""
+	for source, name in (
+		("maps7/dm1", "dm1_07"),
+		("maps7/ctf2", "ctf2_07"),
+		("test/maps07/ctf5", "ctf5_07"),
+		("test/maps07/lms1", "lms1_07"),
+		("maps/ctf5", "ctf5_ddnet"),
+		("maps/dm6", "dm6_ddnet"),
+	):
+		copy_map(test_env, source, name)
+	ddnet = test_env.client(["stdout_output_level 2", "loglevel 2"])
+	server = test_env.server(["sv_gametype dm", "sv_map dm6_ddnet"])
+	wait_for_startup([ddnet, server])
+	ddnet.command(f"connect 127.0.0.1:{server.port}")
+	sixup = sixup_client(server)
+	wait_for_joins(server, [False, True])
+
+	# A change while the first conversion of a 0.7 map is under way, which
+	# reads the pictures it embeds
+	server.command("change_map ctf5_07")
+	server.wait_for_log_exact("mapconv: map=ctf5_07 dir=to06 mode=hybrid converting for DDNet clients", timeout=10)
+	server.command("change_map lms1_07")
+	server.wait_for_log_exact("mapconv: map changed, the conversion for DDNet clients was stopped", timeout=10)
+	wait_for_joins(server, [False, True], timeout=30)
+	wait_for_download(ddnet, "lms1_07", conversion_sha256(server, "lms1_07", "to06"))
+	lines = [Log.parse(line).line for line in server.full_stdout]
+	if any(line.startswith("mapconv: map=ctf5_07 dir=to06 ") and " ms=" in line for line in lines):
+		raise AssertionError("the stopped conversion was served")
+
+	# The DDNet maps are converted for the 0.7 client, the 0.7 ones for the
+	# DDNet client; dm6 looks the same in both versions
+	for name, direction in (("ctf5_ddnet", "to07"), ("dm1_07", "to06"), ("ctf2_07", "to06"), ("ctf5_07", "to06"), ("dm6_ddnet", None)):
+		server.command(f"change_map {name}")
+		wait_for_joins(server, [False, True], timeout=30)
+		if direction is not None:
+			sha256 = conversion_sha256(server, name, direction)
+			if direction == "to06":
+				wait_for_download(ddnet, name, sha256)
+	return server, [ddnet, sixup]
+
+
+@test
+def map_pack_rotation_with_ddnet_and_07_clients(test_env):
+	def sixup_client(server):
+		client = test_env.client()
+		client.wait_for_startup()
+		client.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+		return client
+
+	server, clients = map_pack_rotation(test_env, sixup_client)
+	stop(server, clients)
+
+
+@test(requires_teeworlds_client=True, timeout=120)
+def map_pack_rotation_with_ddnet_and_stock_07_clients(test_env):
+	def sixup_client(server):
+		return test_env.teeworlds(["player_name stock-player", f"connect 127.0.0.1:{server.port}"])
+
+	server, clients = map_pack_rotation(test_env, sixup_client)
+	stop(server, clients)
+
+
+@test(requires_teeworlds_client=True)
+def stock_07_client_plays_converted_maps(test_env):
+	# DDNet's dm7 and ctf5 have no version in maps7/
+	for game_type, map_name in (("dm", "dm7"), ("ctf", "ctf5")):
+		server = test_env.server([f"sv_gametype {game_type}", f"sv_map {map_name}"])
+		server.wait_for_startup()
+		wait_for_conversion(server, map_name, "to07")
+		client = test_env.teeworlds(["player_name stock-player", f"connect 127.0.0.1:{server.port}"])
+		wait_for_joins(server, [True])
 		server.exit()
 		client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
 		client.exit()

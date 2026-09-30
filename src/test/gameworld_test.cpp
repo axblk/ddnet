@@ -1,5 +1,6 @@
 #include "test.h"
 
+#include <base/hash.h>
 #include <base/io.h>
 #include <base/logger.h>
 #include <base/mem.h>
@@ -16,8 +17,10 @@
 #include <engine/server/server_logger.h>
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/config.h>
+#include <engine/shared/datafile.h>
 #include <engine/shared/jsonwriter.h>
 #include <engine/shared/protocol_ex.h>
+#include <engine/storage.h>
 
 #include <generated/protocol.h>
 
@@ -49,9 +52,12 @@
 #include <game/version.h>
 
 #include <gtest/gtest.h>
+#include <zlib.h>
 
+#include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <thread>
 
 bool IsInterrupted()
@@ -97,11 +103,18 @@ public:
 		std::vector<unsigned char> m_vData;
 	};
 	std::vector<CMessage> m_vMatchReportMessages;
+	// what clients are told about the map
+	std::vector<CMessage> m_vMapMessages;
 
 	void AdvanceTick(int Ticks) { m_CurrentGameTick += Ticks; }
 
 	int SendMsg(CMsgPacker *pMsg, int Flags, int ClientId) override
 	{
+		if(pMsg->m_System && (pMsg->m_MsgId == NETMSG_MAP_DETAILS || pMsg->m_MsgId == NETMSG_MAP_CHANGE))
+		{
+			m_vMapMessages.push_back({pMsg->m_MsgId, Flags, ClientId, {pMsg->Data(), pMsg->Data() + pMsg->Size()}});
+			return 0;
+		}
 		if(pMsg->m_System || (pMsg->m_MsgId != NETMSG_MATCH_REPORT_START && pMsg->m_MsgId != NETMSG_MATCH_REPORT_CHUNK))
 			return CServer::SendMsg(pMsg, Flags, ClientId);
 		m_vMatchReportMessages.push_back({pMsg->m_MsgId, Flags, ClientId, {pMsg->Data(), pMsg->Data() + pMsg->Size()}});
@@ -458,9 +471,52 @@ static void ChangeMap(GameWorld *pWorld, const char *pMapName)
 	pWorld->m_pGameServer->OnInit(pWorld->m_pServer->m_pPersistentData);
 }
 
+// Until the map is converted for the clients who need it
+static void WaitForMapConversion(GameWorld *pWorld)
+{
+	for(int i = 0; i < 30000 && !pWorld->m_pServer->UpdateMapConversion(); i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	ASSERT_TRUE(pWorld->m_pServer->UpdateMapConversion()) << "the map was not converted in 30 seconds";
+}
+
+// The size a client was told about in the last map change it got
+static std::optional<int> ToldMapSize(CTestServer *pServer, int ClientId)
+{
+	for(auto It = pServer->m_vMapMessages.rbegin(); It != pServer->m_vMapMessages.rend(); ++It)
+	{
+		if(It->m_ClientId != ClientId || It->m_MsgId != NETMSG_MAP_CHANGE)
+			continue;
+		CUnpacker Unpacker;
+		Unpacker.Reset(It->m_vData.data(), It->m_vData.size());
+		Unpacker.GetString();
+		Unpacker.GetInt();
+		const int Size = Unpacker.GetInt();
+		if(Unpacker.Error())
+			return std::nullopt;
+		return Size;
+	}
+	return std::nullopt;
+}
+
+static void WriteMap(GameWorld *pWorld, const char *pFrom, const char *pTo)
+{
+	void *pData;
+	unsigned Size;
+	ASSERT_TRUE(pWorld->m_pStorage->ReadFile(pFrom, IStorage::TYPE_ALL, &pData, &Size)) << pFrom;
+	pWorld->m_pStorage->CreateFolder("maps", IStorage::TYPE_SAVE);
+	IOHANDLE File = pWorld->m_pStorage->OpenFile(pTo, IOFLAG_WRITE, IStorage::TYPE_SAVE);
+	ASSERT_TRUE(File) << pTo;
+	EXPECT_EQ(io_write(File, pData, Size), Size);
+	io_close(File);
+	free(pData);
+}
+
 TEST_F(GameWorld, SixupMapIsAMatterOfTheMap)
 {
-	// coverage has no version for 0.7, which leaves 0.7 on for the next map
+	// coverage has no version for 0.7, and is not converted with
+	// sv_map_convert off, which leaves 0.7 on for the next map
+	str_copy(g_Config.m_SvMapConvert, "off");
+	ChangeMap(this, "coverage");
 	EXPECT_FALSE(m_pServer->m_SixupMapAvailable);
 	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], 0u);
 	EXPECT_EQ(g_Config.m_SvSixup, 1);
@@ -495,6 +551,8 @@ TEST_F(GameWorld, SixupMapIsTheMapThatTeeworlds07Wrote)
 	io_close(File);
 	free(pData);
 
+	// Without converting, DDNet clients get it as it is, too
+	str_copy(g_Config.m_SvMapConvert, "off");
 	ChangeMap(this, "ctf1_07");
 	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
 	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], Size);
@@ -502,6 +560,140 @@ TEST_F(GameWorld, SixupMapIsTheMapThatTeeworlds07Wrote)
 	EXPECT_EQ(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), m_pServer->CurrentMapData(CServer::MAP_TYPE_SIX));
 	EXPECT_EQ(m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIX]);
 	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX]), 0);
+}
+
+TEST_F(GameWorld, DDNetClientsGetTheTeeworlds07MapConverted)
+{
+	// ctf5 as Teeworlds 0.7 ships it, which uses tiles DDNet has elsewhere
+	WriteMap(this, "test/maps07/ctf5.map", "maps/ctf5_07.map");
+	str_copy(g_Config.m_SvMapsBaseUrl, "https://maps.example/");
+	ChangeMap(this, "ctf5_07");
+	const IMap *pMap = GameServer()->Map();
+	EXPECT_TRUE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIX]);
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	WaitForMapConversion(this);
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIX]);
+
+	// 0.7 clients get the map
+	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
+	EXPECT_EQ(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), pMap->MapData());
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], (unsigned)pMap->Size());
+	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], pMap->Sha256()), 0);
+
+	// DDNet clients a conversion, which is what its size, crc and sha256 are of
+	const unsigned Size = m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIX];
+	const unsigned char *pData = m_pServer->CurrentMapData(CServer::MAP_TYPE_SIX);
+	ASSERT_NE(pData, pMap->MapData());
+	EXPECT_NE(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX], pMap->Sha256()), 0);
+	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX], sha256(pData, Size)), 0);
+	EXPECT_EQ(m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIX], crc32(0, pData, Size));
+	std::vector<uint8_t> vData(pData, pData + Size);
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("ctf5_07", vData, "memory"));
+	EXPECT_FALSE(IsTeeworlds07Map(Reader));
+
+	// Never the URL of the map before it was converted
+	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(pMap->Sha256(), aSha256, sizeof(aSha256));
+	EXPECT_EQ(str_find(m_pServer->m_aMapDownloadUrl, aSha256), nullptr) << m_pServer->m_aMapDownloadUrl;
+	sha256_str(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX], aSha256, sizeof(aSha256));
+	EXPECT_NE(str_find(m_pServer->m_aMapDownloadUrl, aSha256), nullptr) << m_pServer->m_aMapDownloadUrl;
+	EXPECT_TRUE(str_startswith(m_pServer->m_aMapDownloadUrl, "https://maps.example/ctf5_07_"));
+
+	// The map itself stays what the game knows it by
+	EXPECT_EQ(sha256_comp(pMap->Sha256(), sha256(pMap->MapData(), pMap->Size())), 0);
+}
+
+TEST_F(GameWorld, SixupClientsWaitForTheConversion)
+{
+	// ctf5 has no version in maps7/, 0.7 clients get a conversion
+	ChangeMap(this, "ctf5");
+	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
+	EXPECT_TRUE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIX]);
+
+	CServer::CClient &Sixup = m_pServer->m_aClients[0];
+	CServer::CClient &DDNet = m_pServer->m_aClients[1];
+	Sixup.m_State = CServer::CClient::STATE_CONNECTING;
+	Sixup.m_Sixup = true;
+	DDNet.m_State = CServer::CClient::STATE_CONNECTING;
+	DDNet.m_Sixup = false;
+	m_pServer->m_vMapMessages.clear();
+	m_pServer->SendMap(0);
+	m_pServer->SendMap(1);
+
+	// Only the one who needs the conversion waits, and is told nothing,
+	// not even a size of 0
+	EXPECT_EQ(ToldMapSize(m_pServer, 0), std::nullopt);
+	EXPECT_TRUE(Sixup.m_WaitingForMap);
+	EXPECT_EQ(ToldMapSize(m_pServer, 1), GameServer()->Map()->Size());
+	EXPECT_FALSE(DDNet.m_WaitingForMap);
+
+	WaitForMapConversion(this);
+	EXPECT_FALSE(Sixup.m_WaitingForMap);
+	const unsigned Size = m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP];
+	EXPECT_GT(Size, 0u);
+	EXPECT_EQ(ToldMapSize(m_pServer, 0), (int)Size);
+	const unsigned char *pData = m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP);
+	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], sha256(pData, Size)), 0);
+	std::vector<uint8_t> vData(pData, pData + Size);
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("ctf5", vData, "memory"));
+	EXPECT_TRUE(IsTeeworlds07Map(Reader));
+	// under a name of its own, as Teeworlds 0.7 comes with another ctf5
+	EXPECT_STREQ(m_pServer->m_aSixupMapName, "ctf5_ddnet");
+	// DDNet clients were not bothered again
+	EXPECT_EQ(std::count_if(m_pServer->m_vMapMessages.begin(), m_pServer->m_vMapMessages.end(), [](const CTestServer::CMessage &Message) { return Message.m_ClientId == 1; }), 2);
+
+	// Loading the same map again takes the conversion there is
+	ChangeMap(this, "ctf5");
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], Size);
+
+	Sixup.m_State = CServer::CClient::STATE_EMPTY;
+	Sixup.m_Sixup = false;
+	DDNet.m_State = CServer::CClient::STATE_EMPTY;
+}
+
+TEST_F(GameWorld, MapThatLooksTheSameIsNotConverted)
+{
+	// dm6 looks the same in both versions; under this name there is no version in maps7/
+	WriteMap(this, "maps/dm6.map", "maps/dm6_copy.map");
+	ChangeMap(this, "dm6_copy");
+	// which is found out without a conversion
+	EXPECT_EQ(m_pServer->m_pMapConversionJob, nullptr);
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	EXPECT_TRUE(m_pServer->m_SixupMapAvailable);
+	EXPECT_EQ(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), GameServer()->Map()->MapData());
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIX]);
+	EXPECT_EQ(m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapCrc[CServer::MAP_TYPE_SIX]);
+	EXPECT_EQ(sha256_comp(m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIXUP], m_pServer->m_aCurrentMapSha256[CServer::MAP_TYPE_SIX]), 0);
+}
+
+TEST_F(GameWorld, MapChangeStopsTheConversion)
+{
+	ChangeMap(this, "ctf5");
+	EXPECT_TRUE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	ChangeMap(this, "Tutorial");
+	EXPECT_FALSE(m_pServer->m_aMapConverting[CServer::MAP_TYPE_SIXUP]);
+	EXPECT_EQ(m_pServer->m_pMapConversionJob, nullptr);
+	WaitForMapConversion(this);
+	for(int i = 0; i < 30000 && !m_pServer->m_vpStoppedMapConversions.empty(); i++)
+	{
+		m_pServer->UpdateMapConversion();
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	EXPECT_TRUE(m_pServer->m_vpStoppedMapConversions.empty());
+
+	// What the stopped conversion gave is not served
+	void *pData;
+	unsigned Size;
+	ASSERT_TRUE(m_pStorage->ReadFile("maps7/Tutorial.map", IStorage::TYPE_ALL, &pData, &Size));
+	EXPECT_EQ(m_pServer->m_aCurrentMapSize[CServer::MAP_TYPE_SIXUP], Size);
+	EXPECT_EQ(mem_comp(m_pServer->CurrentMapData(CServer::MAP_TYPE_SIXUP), pData, Size), 0);
+	free(pData);
+	EXPECT_EQ(m_pServer->m_apMapConversion[CServer::MAP_TYPE_SIXUP], nullptr);
+	EXPECT_STREQ(m_pServer->m_aSixupMapName, "Tutorial");
 }
 
 TEST_F(GameWorld, ClosestCharacter)

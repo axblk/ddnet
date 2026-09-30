@@ -10,9 +10,11 @@
 #include <game/editor/mapitems/layer_tiles.h>
 #include <game/editor/mapitems/layer_tune.h>
 #include <game/editor/quad_art.h>
+#include <game/map/convert/map_convert.h>
 #include <game/mapitems.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -336,13 +338,15 @@ public:
 		int m_Envelopes;
 	};
 
-	CEditorActionAppendMap(CEditorMap *pMap, const char *pMapName, const SPrevInfo &PrevInfo, std::vector<int> &vImageIndexMap);
+	CEditorActionAppendMap(CEditorMap *pMap, const char *pMapName, std::optional<EMapConvertMode> ConvertMode, const SPrevInfo &PrevInfo, std::vector<int> &vImageIndexMap);
 
 	void Undo() override;
 	void Redo() override;
 
 private:
 	char m_aMapName[IO_MAX_PATH_LENGTH];
+	// How a map that Teeworlds 0.7 made was converted
+	std::optional<EMapConvertMode> m_ConvertMode;
 	SPrevInfo m_PrevInfo;
 	std::vector<int> m_vImageIndexMap;
 };

@@ -5,6 +5,7 @@
 
 #include "antibot.h"
 #include "authmanager.h"
+#include "map_conversion.h"
 #include "name_ban.h"
 #include "snap_id_pool.h"
 
@@ -21,6 +22,8 @@
 #include <engine/shared/quic_transport.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
+
+#include <game/map/convert/mapres.h>
 
 #include <chrono>
 #include <memory>
@@ -190,6 +193,9 @@ public:
 		int m_NextMapChunk;
 		// map data chunks sent since the last map change
 		int m_NumMapChunks;
+		// Told nothing about the map yet, because it is still being
+		// converted for the client; kept across `Reset`
+		bool m_WaitingForMap;
 		// per-tick preinput budget
 		int m_PreInputsTick;
 		int m_NumPreInputs;
@@ -322,10 +328,33 @@ public:
 	unsigned char *m_pCurrentMapDataSixup;
 	unsigned int m_aCurrentMapSize[NUM_MAP_TYPES];
 	// Whether 0.7 clients can play the current map: from its version in
-	// maps7/, or from the map itself if Teeworlds 0.7 wrote it. `sv_sixup` is
-	// only whether the operator lets them.
+	// maps7/, from the map itself if Teeworlds 0.7 wrote it or needs no
+	// converting, or from converting it, which may still be under way.
+	// `sv_sixup` is only whether the operator lets them.
 	bool m_SixupMapAvailable;
+	// Whether 0.7 clients cannot play the map because it could not be converted
+	bool m_SixupMapUnconvertible;
+	// The name 0.7 clients know the map by, see `Teeworlds07MapName`
+	char m_aSixupMapName[128];
 	char m_aMapDownloadUrl[256];
+
+	// The clients of a kind whose map is still being converted wait for it:
+	// they are told about the map when it is ready. See `PlanServedMaps`.
+	bool m_aMapConverting[NUM_MAP_TYPES];
+	// The conversion the clients of a kind get, while they get it
+	std::shared_ptr<const CMapConversion> m_apMapConversion[NUM_MAP_TYPES];
+	// The conversion under way, and which kind of client it is for
+	std::shared_ptr<CMapConversionJob> m_pMapConversionJob;
+	// Stopped conversions that may still be running
+	std::vector<std::shared_ptr<CMapConversionJob>> m_vpStoppedMapConversions;
+	int m_MapConversionType;
+	std::chrono::nanoseconds m_MapConversionStart;
+	// The last conversion, for loading the same map again
+	std::shared_ptr<const CMapConversion> m_pLastMapConversion;
+	// The pictures conversions embed, read once for the whole server
+	std::shared_ptr<CMapresFromStorage> m_pMapres;
+	// Automatic demos record the map DDNet clients get, so they wait for it
+	bool m_AutoDemoWaitsForMap;
 
 	CDemoRecorder m_aDemoRecorder[NUM_RECORDERS];
 	CAuthManager m_AuthManager;
@@ -412,6 +441,48 @@ public:
 	void SendCapabilities(int ClientId);
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
+	/**
+	 * Converts the current map for the clients of a kind, on the job pool,
+	 * or takes the last conversion if it was of the same map.
+	 *
+	 * @param MapType Kind of client.
+	 * @param Direction Version the map is converted for.
+	 * @param Mode How it is converted.
+	 */
+	void StartMapConversion(int MapType, EMapConvertDirection Direction, EMapConvertMode Mode);
+	/**
+	 * Serves what the conversion under way gave once it is done, and tells
+	 * the clients who wait for it about the map.
+	 *
+	 * @return Whether no conversion is under way any longer.
+	 */
+	bool UpdateMapConversion();
+	/**
+	 * Serves what a conversion gave to the clients of its kind: the
+	 * converted map, the map file itself if it needs no converting, or, if
+	 * the conversion failed, the map file itself to DDNet clients and nothing
+	 * to 0.7 clients.
+	 *
+	 * @param MapType Kind of client.
+	 * @param pConversion What the conversion gave.
+	 * @param Again Whether it is the last conversion, of the same map.
+	 */
+	void ServeMapConversion(int MapType, const std::shared_ptr<const CMapConversion> &pConversion, bool Again);
+	/**
+	 * Stops the conversion under way, if any, for loading another map.
+	 */
+	void CancelMapConversion();
+	/**
+	 * Stops the conversion under way, if any, and waits until no stopped
+	 * conversion uses anything of the server any longer.
+	 */
+	void StopMapConversion();
+	void UpdateMapDownloadUrl();
+	/**
+	 * Updates the name 0.7 clients are told for the map they get, see
+	 * `Teeworlds07MapName`.
+	 */
+	void UpdateSixupMapName();
 	bool LoadTlsCertificate();
 	bool StartQuic();
 	// Logs the lines a connect link is made from, for each transport with TLS that runs.

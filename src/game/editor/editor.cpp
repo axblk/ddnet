@@ -30,6 +30,7 @@
 #include <engine/map.h>
 #include <engine/sessions.h>
 #include <engine/shared/config.h>
+#include <engine/shared/datafile.h>
 #include <engine/storage.h>
 #include <engine/textrender.h>
 
@@ -46,6 +47,7 @@
 #include <game/editor/mapitems/image.h>
 #include <game/editor/mapitems/sound.h>
 #include <game/localization.h>
+#include <game/map/convert/map07_tables.h>
 
 #include <algorithm>
 #include <chrono>
@@ -122,6 +124,12 @@ bool CEditor::CallbackAppendMap(const char *pFilename, int StorageType, void *pU
 			pEditor->ShowFileDialogError("%s", pErrorMessage);
 			log_error("editor/append", "%s", pErrorMessage);
 		};
+		// A map of Teeworlds 0.7 is appended once the user said how to convert it.
+		if(pAppended != nullptr && pEditor->AskHowToImport07(*pAppended, Filename.c_str(), true))
+		{
+			pEditor->OnDialogClose();
+			return;
+		}
 		CEditorMap NewMap(pEditor);
 		if(pAppended != nullptr && NewMap.Load(std::move(pAppended), Filename.c_str(), Files, ErrorHandler))
 		{
@@ -4066,7 +4074,7 @@ void CEditor::Render()
 	{
 		static SPopupMenuId s_PopupEventId;
 		constexpr float PopupWidth = 400.0f;
-		constexpr float PopupHeight = 150.0f;
+		const float PopupHeight = m_PopupEventType == POPEVENT_IMPORT_07 ? 190.0f : 150.0f;
 		Ui()->DoPopupMenu(&s_PopupEventId, Width / 2.0f - PopupWidth / 2.0f, Height / 2.0f - PopupHeight / 2.0f, PopupWidth, PopupHeight, this, PopupEvent);
 		m_PopupEventActivated = false;
 		m_PopupEventWasActivated = true;
@@ -5176,6 +5184,9 @@ void CEditor::LoadIngameMap()
 		ShowFileDialogError("Error: Failed to open map file. See local console for details.");
 		return;
 	}
+	// A map of Teeworlds 0.7 is opened once the user said how to convert it.
+	if(AskHowToImport07(**pMap, Path.c_str(), false))
+		return;
 	const bool ValidSaveFilename = !str_startswith(Path.c_str(), "downloadedmaps/") && Storage()->FileExists(Path.c_str(), IStorage::TYPE_SAVE);
 	const vec2 Center = pGameClient->m_Camera.Center();
 	CEditorFiles Files;
@@ -5211,6 +5222,97 @@ bool CEditor::HandleMapDrop(const char *pFilename, int StorageType)
 	auto pOpened = std::make_shared<std::optional<bool>>();
 	OpenMap(pFilename, StorageType, [pOpened](bool Opened) { *pOpened = Opened; });
 	return pOpened->value_or(true);
+}
+
+bool CEditor::AskHowToImport07(IMap &Map, const char *pFilename, bool Append)
+{
+	if(!IsTeeworlds07Map(&Map))
+		return false;
+	std::vector<uint8_t> vData(Map.MapData(), Map.MapData() + Map.Size());
+	CDataFileReader Reader;
+	if(!Reader.OpenFromMemory(Map.FullName(), vData, pFilename))
+		return false; // loading it says what is wrong
+	const bool Ask = MapNeedsConversion(Reader, EMapConvertDirection::TO06);
+	Reader.Close();
+	if(!Ask)
+		return false;
+	str_copy(m_aImport07Filename, pFilename);
+	m_vImport07Data = std::move(vData);
+	m_Import07Append = Append;
+	m_Import07Hybrid = HasDiffTilesets07();
+	m_PopupEventType = POPEVENT_IMPORT_07;
+	m_PopupEventActivated = true;
+	return true;
+}
+
+void CEditor::Import07(EMapConvertMode Mode)
+{
+	if(m_aImport07Filename[0] == '\0')
+		return;
+	const std::string Filename = m_aImport07Filename;
+	const bool Append = m_Import07Append;
+	m_aImport07Filename[0] = '\0';
+	const auto &&ErrorHandler = [this, Append](const char *pErrorMessage) {
+		ShowFileDialogError("%s", pErrorMessage);
+		log_error(Append ? "editor/append" : "editor/load", "%s", pErrorMessage);
+	};
+	// A `std::function` is copied, so what it takes over is shared.
+	auto pSource = std::make_shared<std::vector<uint8_t>>(std::move(m_vImport07Data));
+	m_vImport07Data.clear();
+	auto pMap = std::make_shared<std::unique_ptr<IMap>>();
+	CEditorFiles Files;
+	CEditorMap::AddConvertFiles07(*pSource, Filename.c_str(), Mode, Files, m_AssetLoader, Storage());
+	WhenFilesArrive(Filename.c_str(), std::move(Files), [this, pSource, pMap, Filename, Append, Mode, ErrorHandler](CEditorFiles &ArrivedFiles) {
+		if(*pMap == nullptr)
+		{
+			// First the pictures converting embeds, then what the converted
+			// map names, which are other pictures than the source names.
+			*pMap = CreateMap();
+			if(!CEditorMap::LoadConverted07(**pMap, std::move(*pSource), Filename.c_str(), Mode, ArrivedFiles, Storage(), ErrorHandler))
+			{
+				ShowFileDialogError("Failed to load map from file '%s'.", Filename.c_str());
+				return true;
+			}
+			const size_t NumFiles = ArrivedFiles.Num();
+			CEditorMap::AddNamedFiles(**pMap, ArrivedFiles, m_AssetLoader, Storage());
+			if(ArrivedFiles.Num() != NumFiles)
+				return false;
+		}
+		if(Append)
+		{
+			CEditorMap NewMap(this);
+			if(NewMap.Load(std::move(*pMap), Filename.c_str(), ArrivedFiles, ErrorHandler))
+				Map()->Append(NewMap, Filename.c_str(), false, Mode);
+			else
+				ShowFileDialogError("Failed to load map from file '%s'.", Filename.c_str());
+		}
+		else if(OpenLoadedMap(std::move(*pMap), Filename.c_str(), ArrivedFiles))
+		{
+			// The file is still the map of Teeworlds 0.7, which saving asks
+			// before it replaces
+			Map()->m_ValidSaveFilename = false;
+			Map()->OnModify();
+		}
+		else
+		{
+			ShowFileDialogError("Failed to load map from file '%s'.", Filename.c_str());
+		}
+		return true;
+	});
+}
+
+bool CEditor::HasDiffTilesets07() const
+{
+	for(const char *pName : Map07Tables::DIFFS06)
+	{
+		if(pName == nullptr)
+			continue;
+		char aPath[IO_MAX_PATH_LENGTH];
+		str_format(aPath, sizeof(aPath), "convert/%s.png", pName);
+		if(!Storage()->FileExists(aPath, IStorage::TYPE_ALL))
+			return false;
+	}
+	return true;
 }
 
 bool CEditor::Load(const char *pFilename, int StorageType)
@@ -5264,6 +5366,13 @@ void CEditor::OpenMap(const char *pFilename, int StorageType, std::function<void
 {
 	const std::string Filename = pFilename;
 	WhenMapArrives(pFilename, StorageType, [this, Filename, Done = std::move(OnOpened)](std::unique_ptr<IMap> pMap, const CEditorFiles &Files) {
+		// A map of Teeworlds 0.7 is opened once the user said how to convert it.
+		if(pMap != nullptr && AskHowToImport07(*pMap, Filename.c_str(), false))
+		{
+			if(m_Dialog == DIALOG_FILE)
+				OnDialogClose();
+			return;
+		}
 		Done(pMap != nullptr && OpenLoadedMap(std::move(pMap), Filename.c_str(), Files));
 	});
 }

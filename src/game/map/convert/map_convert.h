@@ -198,6 +198,31 @@ bool MapNeedsConversion(CDataFileReader &Source, EMapConvertDirection Direction)
 bool ConvertMap(CDataFileReader &Source, const CMapConvertOptions &Options, const IMapres &Mapres, CMapConvertResult &Result);
 
 /**
+ * The pictures `ConvertMap` asks its `IMapres` for, so that they can be
+ * fetched ahead.
+ */
+class CMapConvertPictures
+{
+public:
+	/** The names `IMapres::Find` is asked for. */
+	std::vector<std::string> m_vImages;
+	/** What `IMapres::Find` is told about Teeworlds 0.7. */
+	bool m_Teeworlds07 = false;
+	/** The names `IMapres::FindDiff` may be asked for. */
+	std::vector<std::string> m_vDiffs;
+};
+
+/**
+ * Tells which pictures converting a map asks for, without converting it.
+ *
+ * @param Source The map, open.
+ * @param Options Direction and mode, as for `ConvertMap`.
+ *
+ * @return The pictures; none if the map stays as it is.
+ */
+CMapConvertPictures MapConvertPictures(CDataFileReader &Source, const CMapConvertOptions &Options);
+
+/**
  * The flags of a tile that is drawn like `Fix` applied to the tile first and
  * then `Flags`: flipping horizontally (XFLIP), vertically (YFLIP) and turning
  * right (ROTATE) are the eight symmetries of a square. OPAQUE is left out.

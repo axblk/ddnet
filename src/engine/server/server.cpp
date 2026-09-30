@@ -65,6 +65,7 @@ using namespace std::chrono_literals;
 
 // why a 0.7 client is dropped, or not let in, while the map has no 0.7 version
 static constexpr const char *SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DDNet client to play it.";
+static constexpr const char *SIXUP_MAP_UNCONVERTIBLE = "This map could not be converted for Teeworlds 0.7. Join with the DDNet client to play it.";
 
 #if defined(CONF_PLATFORM_ANDROID)
 extern std::vector<std::string> FetchAndroidServerCommandQueue();
@@ -282,10 +283,20 @@ CServer::CServer()
 
 	m_pCurrentMapDataSixup = nullptr;
 	m_SixupMapAvailable = false;
+	m_SixupMapUnconvertible = false;
+	m_aSixupMapName[0] = '\0';
 	for(unsigned int &MapSize : m_aCurrentMapSize)
 	{
 		MapSize = 0;
 	}
+	for(bool &Converting : m_aMapConverting)
+	{
+		Converting = false;
+	}
+	m_MapConversionType = MAP_TYPE_SIX;
+	m_MapConversionStart = 0ns;
+	m_AutoDemoWaitsForMap = false;
+	m_pEngine = nullptr;
 
 	m_MapReload = false;
 	m_SameMapReload = false;
@@ -312,6 +323,7 @@ CServer::CServer()
 
 CServer::~CServer()
 {
+	StopMapConversion();
 	free(m_pCurrentMapDataSixup);
 
 	if(m_RunServer != UNINITIALIZED)
@@ -1280,6 +1292,7 @@ int CServer::ClientRejoinCallback(int ClientId, void *pUser, bool Sixup, bool Va
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
 	pThis->m_aClients[ClientId].m_DDNetVersionSettled = false;
 
+	pThis->m_aClients[ClientId].m_WaitingForMap = false;
 	pThis->m_aClients[ClientId].Reset();
 	// Keep game slot
 	pThis->m_aClients[ClientId].m_IngameBeforeRejoin = true;
@@ -1302,6 +1315,7 @@ int CServer::NewClientNoAuthCallback(int ClientId, void *pUser)
 	pThis->m_aClients[ClientId].m_DnsblState = EDnsblState::NONE;
 
 	pThis->m_aClients[ClientId].m_State = CClient::STATE_CONNECTING;
+	pThis->m_aClients[ClientId].m_WaitingForMap = false;
 	pThis->m_aClients[ClientId].m_aName[0] = 0;
 	pThis->m_aClients[ClientId].m_aClan[0] = 0;
 	pThis->m_aClients[ClientId].m_Country = CountryCode::DEFAULT;
@@ -1353,6 +1367,7 @@ int CServer::NewClientCallback(int ClientId, void *pUser, bool Sixup)
 	pThis->m_aClients[ClientId].m_DDNetVersion = VERSION_NONE;
 	pThis->m_aClients[ClientId].m_GotDDNetVersionPacket = false;
 	pThis->m_aClients[ClientId].m_DDNetVersionSettled = false;
+	pThis->m_aClients[ClientId].m_WaitingForMap = false;
 	pThis->m_aClients[ClientId].Reset();
 	pThis->m_aClients[ClientId].m_Sixup = Sixup;
 
@@ -1457,6 +1472,7 @@ int CServer::DelClientCallback(int ClientId, const char *pReason, void *pUser)
 	pThis->m_aClients[ClientId].m_RedirectDropTime = 0;
 	pThis->m_aClients[ClientId].m_IngameBeforeRejoin = false;
 	pThis->m_aClients[ClientId].m_HasPersistentData = false;
+	pThis->m_aClients[ClientId].m_WaitingForMap = false;
 
 	pThis->GameServer()->TeehistorianRecordPlayerDrop(ClientId, pReason);
 	pThis->Antibot()->OnEngineClientDrop(ClientId, pReason);
@@ -1491,14 +1507,21 @@ void CServer::SendCapabilities(int ClientId)
 
 void CServer::SendMap(int ClientId)
 {
+	dbg_assert(0 <= ClientId && ClientId < MAX_CLIENTS, "Invalid ClientId: %d", ClientId);
 	int MapType = IsSixup(ClientId) ? MAP_TYPE_SIXUP : MAP_TYPE_SIX;
 	// A 0.7 client takes a map of size 0 as invalid. Without a 0.7 version
 	// of the map, it is dropped with the reason instead.
 	if(MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable)
 		return;
+	// Nothing about a map that is still being converted for the client, not
+	// even its size: it hears about the map when it is ready
+	m_aClients[ClientId].m_WaitingForMap = m_aMapConverting[MapType];
+	if(m_aMapConverting[MapType])
+		return;
+	const char *pMapName = MapType == MAP_TYPE_SIXUP ? m_aSixupMapName : GameServer()->Map()->BaseName();
 	{
 		CMsgPacker Msg(NETMSG_MAP_DETAILS, true);
-		Msg.AddString(GameServer()->Map()->BaseName(), 0);
+		Msg.AddString(pMapName, 0);
 		Msg.AddRaw(&m_aCurrentMapSha256[MapType].data, sizeof(m_aCurrentMapSha256[MapType].data));
 		Msg.AddInt(m_aCurrentMapCrc[MapType]);
 		Msg.AddInt(m_aCurrentMapSize[MapType]);
@@ -1514,7 +1537,7 @@ void CServer::SendMap(int ClientId)
 	}
 	{
 		CMsgPacker Msg(NETMSG_MAP_CHANGE, true);
-		Msg.AddString(GameServer()->Map()->BaseName(), 0);
+		Msg.AddString(pMapName, 0);
 		Msg.AddInt(m_aCurrentMapCrc[MapType]);
 		Msg.AddInt(m_aCurrentMapSize[MapType]);
 		if(MapType == MAP_TYPE_SIXUP)
@@ -1697,6 +1720,8 @@ const unsigned char *CServer::CurrentMapData(int MapType)
 {
 	dbg_assert(MapType == MAP_TYPE_SIX || MapType == MAP_TYPE_SIXUP, "Map type invalid: %d", MapType);
 
+	if(m_apMapConversion[MapType] != nullptr)
+		return m_apMapConversion[MapType]->m_Result.m_vData.data();
 	if(MapType == MAP_TYPE_SIXUP && m_pCurrentMapDataSixup != nullptr)
 		return m_pCurrentMapDataSixup;
 	return GameServer()->Map()->MapData();
@@ -1708,11 +1733,11 @@ bool CServer::UpdateQuicMaps()
 		return true;
 	for(uint32_t MapType = MAP_TYPE_SIX; MapType <= MAP_TYPE_SIXUP; ++MapType)
 	{
-		if(MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable)
+		if((MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable) || m_aMapConverting[MapType])
 			continue;
 		if(!m_QuicTransport.SetMap(
 			   MapType,
-			   GameServer()->Map()->BaseName(),
+			   MapType == MAP_TYPE_SIXUP ? m_aSixupMapName : GameServer()->Map()->BaseName(),
 			   m_aCurrentMapCrc[MapType],
 			   m_aCurrentMapSha256[MapType],
 			   CurrentMapData(MapType),
@@ -2102,6 +2127,10 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 		{
 			if(m_aClients[ClientId].m_State < CClient::STATE_CONNECTING)
 				return;
+			// Still about the previous map, and no chunk of the one being
+			// converted for the client exists yet
+			if(m_aClients[ClientId].m_WaitingForMap)
+				return;
 			if(m_aClients[ClientId].m_Quic)
 			{
 				if(!m_aClients[ClientId].m_Sixup)
@@ -2393,7 +2422,7 @@ void CServer::OnNetMsgInfo(int ClientId, const char *pVersion, const char *pPass
 
 	if(IsSixup(ClientId) && !m_SixupMapAvailable)
 	{
-		DropClient(ClientId, SIXUP_MAP_MISSING);
+		DropClient(ClientId, m_SixupMapUnconvertible ? SIXUP_MAP_UNCONVERTIBLE : SIXUP_MAP_MISSING);
 		return;
 	}
 
@@ -3822,50 +3851,81 @@ int CServer::LoadMap(const char *pMapName)
 	// downloads the bytes it is holding instead of a second copy.
 	m_aCurrentMapSize[MAP_TYPE_SIX] = GameServer()->Map()->Size();
 
-	if(Config()->m_SvMapsBaseUrl[0])
+	// A conversion of the previous map is of no use any longer
+	CancelMapConversion();
+	for(int MapType = MAP_TYPE_SIX; MapType < NUM_MAP_TYPES; MapType++)
 	{
-		char aEscaped[256];
-		str_format(aBuf, sizeof(aBuf), "%s_%s.map", pMapName, aSha256);
-		str_url_encode(aEscaped, aBuf);
-		str_format(m_aMapDownloadUrl, sizeof(m_aMapDownloadUrl), "%s%s", Config()->m_SvMapsBaseUrl, aEscaped);
+		m_aMapConverting[MapType] = false;
+		m_apMapConversion[MapType] = nullptr;
 	}
-	else
+	for(CClient &Client : m_aClients)
 	{
-		m_aMapDownloadUrl[0] = '\0';
+		// Told about the new map with everyone else
+		Client.m_WaitingForMap = false;
+	}
+	m_AutoDemoWaitsForMap = false;
+	m_SixupMapUnconvertible = false;
+	UpdateMapDownloadUrl();
+
+	std::optional<EMapConvertMode> ConvertMode;
+	if(!ParseServerMapConvert(Config()->m_SvMapConvert, ConvertMode))
+	{
+		log_error("mapconv", "sv_map_convert is none of hybrid, remap, embed and off, converting with hybrid");
+		ConvertMode = EMapConvertMode::HYBRID;
 	}
 
-	// The map 0.7 clients download: its version in maps7/, or the map itself
-	// if Teeworlds 0.7 wrote it. Without either, 0.7 clients cannot play it,
-	// which is a matter of this map only.
+	// What each kind of client gets: the map, its version in maps7/, or a
+	// conversion, which is found out by the map's contents alone
 	free(m_pCurrentMapDataSixup);
 	m_pCurrentMapDataSixup = nullptr;
 	str_format(aBuf, sizeof(aBuf), "maps7/%s.map", pMapName);
-	void *pData;
-	if(Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pData, &m_aCurrentMapSize[MAP_TYPE_SIXUP]))
+	void *pData = nullptr;
+	unsigned Maps7Size = 0;
+	const bool HasMaps7 = Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pData, &Maps7Size);
+	const bool Teeworlds07Map = IsTeeworlds07Map(GameServer()->Map());
+	const CServedMaps Served = PlanServedMaps(Teeworlds07Map, HasMaps7, ConvertMode.has_value());
+	switch(Served.m_Teeworlds07)
 	{
+	case EServedMap::MAPS7:
 		m_pCurrentMapDataSixup = (unsigned char *)pData;
+		pData = nullptr;
+		m_aCurrentMapSize[MAP_TYPE_SIXUP] = Maps7Size;
 		m_aCurrentMapSha256[MAP_TYPE_SIXUP] = sha256(m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
 		m_aCurrentMapCrc[MAP_TYPE_SIXUP] = crc32(0, m_pCurrentMapDataSixup, m_aCurrentMapSize[MAP_TYPE_SIXUP]);
 		m_SixupMapAvailable = true;
 		sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIXUP], aSha256, sizeof(aSha256));
 		str_format(aBufMsg, sizeof(aBufMsg), "%s sha256 is %s", aBuf, aSha256);
 		Console()->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "sixup", aBufMsg);
-	}
-	else if(IsTeeworlds07Map(GameServer()->Map()))
-	{
+		break;
+	case EServedMap::ORIGINAL:
 		m_aCurrentMapSha256[MAP_TYPE_SIXUP] = m_aCurrentMapSha256[MAP_TYPE_SIX];
 		m_aCurrentMapCrc[MAP_TYPE_SIXUP] = m_aCurrentMapCrc[MAP_TYPE_SIX];
 		m_aCurrentMapSize[MAP_TYPE_SIXUP] = m_aCurrentMapSize[MAP_TYPE_SIX];
 		m_SixupMapAvailable = true;
 		log_info("sixup", "Teeworlds 0.7 wrote the map, 0.7 clients get it as it is");
-	}
-	else
-	{
+		break;
+	case EServedMap::CONVERTED:
+		// The map itself, unless it has to be converted, which 0.7 clients
+		// wait for then
+		m_aCurrentMapSha256[MAP_TYPE_SIXUP] = m_aCurrentMapSha256[MAP_TYPE_SIX];
+		m_aCurrentMapCrc[MAP_TYPE_SIXUP] = m_aCurrentMapCrc[MAP_TYPE_SIX];
+		m_aCurrentMapSize[MAP_TYPE_SIXUP] = m_aCurrentMapSize[MAP_TYPE_SIX];
+		m_SixupMapAvailable = true;
+		break;
+	case EServedMap::NONE:
 		m_aCurrentMapSize[MAP_TYPE_SIXUP] = 0;
 		m_SixupMapAvailable = false;
 		if(Config()->m_SvSixup)
-			log_info("sixup", "0.7 clients cannot play this map: Teeworlds 0.7 did not write it and there is no %s", aBuf);
+			log_info("sixup", "0.7 clients cannot play this map: Teeworlds 0.7 did not write it, there is no %s and sv_map_convert is off", aBuf);
+		break;
 	}
+	free(pData);
+	m_aSixupMapName[0] = '\0';
+	if(Served.m_Teeworlds07 == EServedMap::CONVERTED)
+		StartMapConversion(MAP_TYPE_SIXUP, EMapConvertDirection::TO07, *ConvertMode);
+	if(Served.m_DDNet == EServedMap::CONVERTED)
+		StartMapConversion(MAP_TYPE_SIX, EMapConvertDirection::TO06, *ConvertMode);
+	UpdateSixupMapName();
 	if(m_pRegister)
 		m_pRegister->OnSixupMapChange(m_SixupMapAvailable);
 
@@ -3878,6 +3938,200 @@ int CServer::LoadMap(const char *pMapName)
 	}
 
 	return 1;
+}
+
+void CServer::UpdateMapDownloadUrl()
+{
+	if(!Config()->m_SvMapsBaseUrl[0])
+	{
+		m_aMapDownloadUrl[0] = '\0';
+		return;
+	}
+	// The name has the sha256 of the map DDNet clients get, so that the URL
+	// never leads them to the map before it was converted for them
+	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(m_aCurrentMapSha256[MAP_TYPE_SIX], aSha256, sizeof(aSha256));
+	char aFilename[IO_MAX_PATH_LENGTH];
+	str_format(aFilename, sizeof(aFilename), "%s_%s.map", GameServer()->Map()->FullName(), aSha256);
+	char aEscaped[256];
+	str_url_encode(aEscaped, aFilename);
+	str_format(m_aMapDownloadUrl, sizeof(m_aMapDownloadUrl), "%s%s", Config()->m_SvMapsBaseUrl, aEscaped);
+}
+
+void CServer::UpdateSixupMapName()
+{
+	// Nothing to name while the map is being converted for them
+	if(m_aMapConverting[MAP_TYPE_SIXUP])
+		return;
+	const char *pMapName = GameServer()->Map()->BaseName();
+	char aSixupMapName[sizeof(m_aSixupMapName)];
+	const bool OwnName = Teeworlds07MapName(aSixupMapName, sizeof(aSixupMapName), pMapName, m_aCurrentMapCrc[MAP_TYPE_SIXUP], m_aCurrentMapSize[MAP_TYPE_SIXUP]);
+	if(str_comp(aSixupMapName, m_aSixupMapName) == 0)
+		return;
+	str_copy(m_aSixupMapName, aSixupMapName);
+	if(!OwnName && m_SixupMapAvailable)
+		log_info("sixup", "Teeworlds 0.7 comes with another map called '%s', 0.7 clients get this one as '%s'", pMapName, m_aSixupMapName);
+}
+
+void CServer::StartMapConversion(int MapType, EMapConvertDirection Direction, EMapConvertMode Mode)
+{
+	const IMap *pMap = GameServer()->Map();
+	if(m_pLastMapConversion != nullptr && m_pLastMapConversion->IsFor(pMap->Sha256(), Direction, Mode))
+	{
+		ServeMapConversion(MapType, m_pLastMapConversion, true);
+		return;
+	}
+
+	// Most maps look the same in both versions. Finding that out is quick,
+	// and both kinds of clients get the map file then, without waiting.
+	const std::chrono::nanoseconds CheckStart = time_get_nanoseconds();
+	std::vector<uint8_t> vSource(pMap->MapData(), pMap->MapData() + pMap->Size());
+	if(!MapDataNeedsConversion(pMap->BaseName(), vSource, Direction))
+	{
+		log_info("mapconv", "map=%s dir=%s needs no conversion, check_ms=%.1f", pMap->BaseName(), MapConvertDirectionName(Direction), std::chrono::duration<double, std::milli>(time_get_nanoseconds() - CheckStart).count());
+		return;
+	}
+
+	if(m_pMapres == nullptr)
+		m_pMapres = std::make_shared<CMapresFromStorage>(Storage());
+	CMapConversionRequest Request;
+	Request.m_MapName = pMap->BaseName();
+	Request.m_vSource = std::move(vSource);
+	Request.m_Options.m_Direction = Direction;
+	Request.m_Options.m_Mode = Mode;
+	Request.m_pMapres = m_pMapres;
+	if(Config()->m_SvMapConvertCache)
+	{
+		Request.m_pCacheStorage = Storage();
+		Request.m_CacheFolder = Config()->m_SvMapConvertCacheDir;
+		Request.m_CacheMaxSize = (int64_t)Config()->m_SvMapConvertCacheSize * 1024 * 1024;
+	}
+	m_pMapConversionJob = std::make_shared<CMapConversionJob>(std::move(Request));
+	m_MapConversionType = MapType;
+	m_MapConversionStart = time_get_nanoseconds();
+	m_aMapConverting[MapType] = true;
+	log_info("mapconv", "map=%s dir=%s mode=%s converting for %s clients", pMap->BaseName(), MapConvertDirectionName(Direction), MapConvertModeName(Mode), MapType == MAP_TYPE_SIX ? "DDNet" : "0.7");
+	Engine()->AddJob(m_pMapConversionJob);
+}
+
+bool CServer::UpdateMapConversion()
+{
+	std::erase_if(m_vpStoppedMapConversions, [](const std::shared_ptr<CMapConversionJob> &pJob) { return !pJob->InUse(); });
+	if(m_pMapConversionJob == nullptr)
+		return true;
+	if(m_pMapConversionJob->State() != IJob::STATE_DONE)
+		return false;
+	std::shared_ptr<const CMapConversion> pConversion = m_pMapConversionJob->Conversion();
+	m_pMapConversionJob = nullptr;
+	if(pConversion->m_Ok)
+		m_pLastMapConversion = pConversion;
+	ServeMapConversion(m_MapConversionType, pConversion, false);
+	return true;
+}
+
+void CServer::ServeMapConversion(int MapType, const std::shared_ptr<const CMapConversion> &pConversion, bool Again)
+{
+	m_aMapConverting[MapType] = false;
+	const char *pMapName = GameServer()->Map()->BaseName();
+	const char *pDirection = MapConvertDirectionName(pConversion->m_Direction);
+	const double WaitMs = Again ? 0.0 : std::chrono::duration<double, std::milli>(time_get_nanoseconds() - m_MapConversionStart).count();
+	const CMapConvertResult &Result = pConversion->m_Result;
+	if(pConversion->m_Ok && Result.m_Converted)
+	{
+		m_apMapConversion[MapType] = pConversion;
+		m_aCurrentMapSha256[MapType] = Result.m_Sha256;
+		m_aCurrentMapCrc[MapType] = Result.m_Crc;
+		m_aCurrentMapSize[MapType] = Result.m_vData.size();
+		char aSha256[SHA256_MAXSTRSIZE];
+		sha256_str(Result.m_Sha256, aSha256, sizeof(aSha256));
+		const CMapConvertStats &Stats = Result.m_Stats;
+		const char *pFrom = "conversion";
+		if(Again)
+			pFrom = "memory";
+		else if(pConversion->m_FromCache)
+			pFrom = "cache";
+		log_info("mapconv", "map=%s dir=%s mode=%s ms=%.1f wait_ms=%.1f bytes=%u source_bytes=%d from=%s embedded=%d remapped=%d split_layers=%d diff_images=%d diff_tiles=%d lost_tiles=%d sha256=%s",
+			pMapName, pDirection, MapConvertModeName(Result.m_Mode), pConversion->m_DurationUs / 1000.0, WaitMs, m_aCurrentMapSize[MapType], GameServer()->Map()->Size(), pFrom,
+			Stats.m_EmbeddedImages, Stats.m_RemappedImages, Stats.m_SplitLayers, Stats.m_DiffImages, Stats.m_DiffTiles, Stats.m_LostTiles, aSha256);
+		if(!Again)
+		{
+			for(const std::string &Warning : Result.m_vWarnings)
+			{
+				// The converter tells about falling back to remap itself
+				if(!str_startswith(Warning.c_str(), "diff tileset "))
+					log_warn("mapconv", "map=%s: %s", pMapName, Warning.c_str());
+			}
+		}
+	}
+	else
+	{
+		// The map file itself, for a map that looks the same in both versions
+		m_aCurrentMapSha256[MapType] = GameServer()->Map()->Sha256();
+		m_aCurrentMapCrc[MapType] = GameServer()->Map()->Crc();
+		m_aCurrentMapSize[MapType] = GameServer()->Map()->Size();
+		if(pConversion->m_Ok)
+		{
+			log_info("mapconv", "map=%s dir=%s needs no conversion, ms=%.1f wait_ms=%.1f", pMapName, pDirection, pConversion->m_DurationUs / 1000.0, WaitMs);
+		}
+		else if(MapType == MAP_TYPE_SIX)
+		{
+			log_error("mapconv", "map=%s dir=%s could not be converted, DDNet clients get the map as it is: %s", pMapName, pDirection, Result.m_Error.c_str());
+		}
+		else
+		{
+			log_error("mapconv", "map=%s dir=%s could not be converted, 0.7 clients cannot play it: %s", pMapName, pDirection, Result.m_Error.c_str());
+			m_aCurrentMapSize[MAP_TYPE_SIXUP] = 0;
+			m_SixupMapAvailable = false;
+			m_SixupMapUnconvertible = true;
+			if(m_pRegister)
+				m_pRegister->OnSixupMapChange(false);
+		}
+	}
+
+	if(MapType == MAP_TYPE_SIX)
+		UpdateMapDownloadUrl();
+	else
+		UpdateSixupMapName();
+	if(!UpdateQuicMaps())
+		log_error("server", "could not register the converted map with QUIC");
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CClient &Client = m_aClients[ClientId];
+		if(!Client.m_WaitingForMap || Client.m_State == CClient::STATE_EMPTY || (Client.m_Sixup ? MAP_TYPE_SIXUP : MAP_TYPE_SIX) != MapType)
+			continue;
+		Client.m_WaitingForMap = false;
+		if(MapType == MAP_TYPE_SIXUP && !m_SixupMapAvailable)
+			DropClient(ClientId, SIXUP_MAP_UNCONVERTIBLE);
+		else
+			SendMap(ClientId);
+	}
+	if(MapType == MAP_TYPE_SIX && m_AutoDemoWaitsForMap)
+	{
+		m_AutoDemoWaitsForMap = false;
+		DemoRecorder_HandleAutoStart();
+	}
+	ExpireServerInfo();
+}
+
+void CServer::CancelMapConversion()
+{
+	if(m_pMapConversionJob == nullptr)
+		return;
+	m_pMapConversionJob->Abort();
+	log_info("mapconv", "map changed, the conversion for %s clients was stopped", m_MapConversionType == MAP_TYPE_SIX ? "DDNet" : "0.7");
+	m_vpStoppedMapConversions.push_back(std::move(m_pMapConversionJob));
+	m_pMapConversionJob = nullptr;
+}
+
+void CServer::StopMapConversion()
+{
+	CancelMapConversion();
+	for(const std::shared_ptr<CMapConversionJob> &pJob : m_vpStoppedMapConversions)
+	{
+		while(pJob->InUse())
+			std::this_thread::sleep_for(1ms);
+	}
+	m_vpStoppedMapConversions.clear();
 }
 
 void CServer::UpdateDebugDummies(bool ForceDisconnect)
@@ -4100,7 +4354,6 @@ int CServer::Run()
 
 	WritePortFile();
 
-	m_pEngine = Kernel()->RequestInterface<IEngine>();
 	char aQuicFragment[160];
 	char aWebTransportFragment[160];
 	FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
@@ -4230,7 +4483,7 @@ int CServer::Run()
 					for(int ClientId = 0; ClientId < MAX_CLIENTS && !m_SixupMapAvailable; ClientId++)
 					{
 						if(m_aClients[ClientId].m_State != CClient::STATE_EMPTY && m_aClients[ClientId].m_Sixup)
-							DropClient(ClientId, SIXUP_MAP_MISSING);
+							DropClient(ClientId, m_SixupMapUnconvertible ? SIXUP_MAP_UNCONVERTIBLE : SIXUP_MAP_MISSING);
 					}
 
 					if(ErrorShutdown())
@@ -4246,6 +4499,8 @@ int CServer::Run()
 					str_copy(Config()->m_SvMap, GameServer()->Map()->FullName());
 				}
 			}
+
+			UpdateMapConversion();
 
 			while(LastTime > TickStartTime(m_CurrentGameTick + 1))
 			{
@@ -4426,7 +4681,8 @@ int CServer::Run()
 			}
 			else if(NonActive &&
 				!m_aDemoRecorder[RECORDER_MANUAL].IsRecording() &&
-				!m_aDemoRecorder[RECORDER_AUTO].IsRecording())
+				!m_aDemoRecorder[RECORDER_AUTO].IsRecording() &&
+				m_pMapConversionJob == nullptr)
 			{
 				net_socket_read_wait(m_NetServer.Socket(), QuicWait(1s));
 			}
@@ -4499,6 +4755,7 @@ int CServer::Run()
 	m_Econ.Shutdown();
 	m_Fifo.Shutdown();
 	m_pHttp->Shutdown();
+	StopMapConversion();
 	Engine()->ShutdownJobs();
 
 	GameServer()->OnShutdown(nullptr);
@@ -4859,6 +5116,12 @@ void CServer::ConShutdown(IConsole::IResult *pResult, void *pUser)
 
 void CServer::DemoRecorder_HandleAutoStart()
 {
+	if(Config()->m_SvAutoDemoRecord && m_aMapConverting[MAP_TYPE_SIX])
+	{
+		// The demo embeds the map DDNet clients get, which is not ready yet
+		m_AutoDemoWaitsForMap = true;
+		return;
+	}
 	if(Config()->m_SvAutoDemoRecord)
 	{
 		m_aDemoRecorder[RECORDER_AUTO].Stop(IDemoRecorder::EStopMode::KEEP_FILE);
@@ -5524,6 +5787,7 @@ void CServer::RegisterCommands()
 	m_pHttp = Kernel()->RequestInterface<IEngineHttp>();
 	m_pStorage = Kernel()->RequestInterface<IStorage>();
 	m_pAntibot = Kernel()->RequestInterface<IEngineAntibot>();
+	m_pEngine = Kernel()->RequestInterface<IEngine>();
 
 	CNetBase::RegisterLogCommand(Console(), Storage());
 

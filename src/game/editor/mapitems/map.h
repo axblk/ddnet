@@ -22,9 +22,11 @@
 #include <game/editor/proof_mode.h>
 #include <game/editor/quad_art.h>
 #include <game/editor/quad_knife.h>
+#include <game/map/convert/map_convert.h>
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class CAssetLoader;
@@ -199,7 +201,39 @@ public:
 	// I/O
 	bool Save(const char *pFilename, const FErrorHandler &ErrorHandler);
 	bool PerformPreSaveSanityChecks(const FErrorHandler &ErrorHandler);
-	bool Load(const char *pFilename, int StorageType, const FErrorHandler &ErrorHandler);
+	/**
+	 * Loads a map file.
+	 *
+	 * @param pFilename The map file.
+	 * @param StorageType Where it is.
+	 * @param ErrorHandler Told what went wrong.
+	 * @param ConvertMode How to convert a map that Teeworlds 0.7 made for
+	 * DDNet, see `MapNeedsConversion`; `std::nullopt` to load it as it is.
+	 *
+	 * @return Whether the map could be loaded.
+	 */
+	bool Load(const char *pFilename, int StorageType, const FErrorHandler &ErrorHandler, std::optional<EMapConvertMode> ConvertMode = std::nullopt);
+	/**
+	 * Reads a map that Teeworlds 0.7 made, converted to look the same in
+	 * DDNet.
+	 *
+	 * @param Map Reads the converted map.
+	 * @param vSource The bytes of the map file.
+	 * @param pFilename Where it is, for what is told.
+	 * @param Mode How to convert it, see `MapNeedsConversion`.
+	 * @param Files The pictures that converting embeds, fetched ahead, see
+	 * `AddConvertFiles07`. What is not among them is read from the storage.
+	 * @param pStorage The storage.
+	 * @param ErrorHandler Told what went wrong.
+	 *
+	 * @return Whether the map could be converted and read.
+	 */
+	static bool LoadConverted07(IMap &Map, std::vector<uint8_t> vSource, const char *pFilename, EMapConvertMode Mode, const CEditorFiles &Files, IStorage *pStorage, const FErrorHandler &ErrorHandler);
+	/**
+	 * Adds the pictures `LoadConverted07` embeds to a set, so that they are
+	 * fetched ahead where they are fetched.
+	 */
+	static void AddConvertFiles07(const std::vector<uint8_t> &vSource, const char *pFilename, EMapConvertMode Mode, CEditorFiles &Files, CAssetLoader &Loader, IStorage *pStorage);
 	/**
 	 * Loads a map that was read already, with what it names besides: its
 	 * external images and sounds and the automapper rules of its images.
@@ -216,15 +250,27 @@ public:
 	 * fetched ahead where they are fetched.
 	 */
 	static void AddNamedFiles(IMap &Map, CEditorFiles &Files, CAssetLoader &Loader, IStorage *pStorage);
-	bool Append(const char *pFilename, int StorageType, bool IgnoreHistory, const FErrorHandler &ErrorHandler);
+	/**
+	 * Adds the contents of a map file to this map.
+	 *
+	 * @param pFilename The map file.
+	 * @param StorageType Where it is.
+	 * @param IgnoreHistory Whether to leave it out of the history.
+	 * @param ErrorHandler Told what went wrong.
+	 * @param ConvertMode How to convert it first, see `Load`.
+	 *
+	 * @return Whether the map could be loaded.
+	 */
+	bool Append(const char *pFilename, int StorageType, bool IgnoreHistory, const FErrorHandler &ErrorHandler, std::optional<EMapConvertMode> ConvertMode = std::nullopt);
 	/**
 	 * Adds what another map holds to this one.
 	 *
 	 * @param NewMap The map, which gives up what is added.
 	 * @param pFilename Where it was read from, for the history.
 	 * @param IgnoreHistory Whether to leave it out of the history.
+	 * @param ConvertMode How it was converted, for redoing it, see `Load`.
 	 */
-	void Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory);
+	void Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory, std::optional<EMapConvertMode> ConvertMode = std::nullopt);
 	void PerformSanityChecks(const FErrorHandler &ErrorHandler);
 	bool PerformAutosave(const FErrorHandler &ErrorHandler);
 

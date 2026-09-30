@@ -826,7 +826,7 @@ if(DISCORD_DYNAMIC)
     message(SEND_ERROR "You must enable the DISCORD flag if you want to link the Discord SDK")
   endif()
 endif()
-if((CLIENT OR TOOLS) AND NOT(PNG_FOUND))
+if((CLIENT OR SERVER OR TOOLS) AND NOT(PNG_FOUND))
   message(SEND_ERROR "You must install libpng to compile ${CMAKE_PROJECT_NAME}")
 endif()
 if(CLIENT AND NOT(FREETYPE_FOUND))
@@ -3636,6 +3636,7 @@ if(CLIENT)
       $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-convert>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-end
@@ -3653,6 +3654,7 @@ if(CLIENT)
       $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-convert>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-end
@@ -3670,6 +3672,7 @@ if(CLIENT)
       $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-convert>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-end
@@ -4053,6 +4056,8 @@ if(SERVER)
     databases/mysql.cpp
     databases/sqlite.cpp
     main.cpp
+    map_conversion.cpp
+    map_conversion.h
     name_ban.cpp
     name_ban.h
     register.cpp
@@ -4193,6 +4198,8 @@ if(SERVER)
   set(LIBS_SERVER
     ${MINIUPNPC_LIBRARIES}
     ${MYSQL_LIBRARIES}
+    # The server reads the pictures converted maps embed.
+    ${PNG_LIBRARIES}
     ${SQLite3_LIBRARIES}
     ${TARGET_ANTIBOT}
 
@@ -4223,9 +4230,11 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-convert>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-sort
@@ -4238,9 +4247,11 @@ if(SERVER)
       ${SERVER_VERSIONINFO}
       $<TARGET_OBJECTS:game-server-without-main>
       # tidy-alphabetical-sort
+      $<TARGET_OBJECTS:engine-gfx>
       $<TARGET_OBJECTS:engine-net>
       $<TARGET_OBJECTS:engine-quic>
       $<TARGET_OBJECTS:engine-shared>
+      $<TARGET_OBJECTS:game-map-convert>
       $<TARGET_OBJECTS:game-shared>
       $<TARGET_OBJECTS:rust-bridge-shared>
       # tidy-alphabetical-sort
@@ -4514,6 +4525,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     jsonwriter_test.cpp
     linereader_test.cpp
     map_context_test.cpp
+    map_conversion_test.cpp
     map_convert_test.cpp
     mapbugs_test.cpp
     mapitems_test.cpp
@@ -4723,9 +4735,11 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
   set(TARGET_VANILLA_GOLDEN vanilla-golden-current)
   add_executable(${TARGET_VANILLA_GOLDEN} EXCLUDE_FROM_ALL
     scripts/vanilla_golden/current_runner.cpp
+    $<TARGET_OBJECTS:engine-gfx>
     $<TARGET_OBJECTS:engine-net>
     $<TARGET_OBJECTS:engine-quic>
     $<TARGET_OBJECTS:engine-shared>
+    $<TARGET_OBJECTS:game-map-convert>
     $<TARGET_OBJECTS:game-server-without-main>
     $<TARGET_OBJECTS:game-shared>
     $<TARGET_OBJECTS:rust-bridge-shared>

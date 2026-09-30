@@ -1,5 +1,7 @@
 #include "mapres.h"
 
+#include "map_convert.h"
+
 #include <base/log.h>
 #include <base/str.h>
 
@@ -14,19 +16,12 @@
 #include <cstdlib>
 #include <vector>
 
-std::shared_ptr<const CMapresImage> CMapresFromStorage::Load(IStorage *pStorage, const char *pPath)
+std::shared_ptr<const CMapresImage> CMapresFromFiles::Load(const std::vector<uint8_t> &vData, const char *pPath)
 {
-	void *pFileData;
-	unsigned FileSize;
-	if(!pStorage->ReadFile(pPath, IStorage::TYPE_ALL, &pFileData, &FileSize))
-	{
-		return nullptr;
-	}
 	CImageInfo Image;
 	int PngliteIncompatible;
-	CByteBufferReader Reader(static_cast<const uint8_t *>(pFileData), FileSize);
+	CByteBufferReader Reader(vData.data(), vData.size());
 	const bool Loaded = CImageLoader::LoadPng(Reader, pPath, Image, PngliteIncompatible);
-	free(pFileData);
 	if(!Loaded)
 	{
 		log_error("mapconv", "could not read the picture '%s'", pPath);
@@ -82,21 +77,48 @@ std::shared_ptr<const CMapresImage> CMapresFromStorage::Load(IStorage *pStorage,
 	return pImage;
 }
 
-std::shared_ptr<const CMapresImage> CMapresFromStorage::Find(const char *pName, bool Teeworlds07) const
+static void ImagePath(const char *pName, bool Teeworlds07, char *pPath, size_t PathSize)
+{
+	str_format(pPath, PathSize, "mapres/%s%s.png", pName, Teeworlds07 && IsMapImageRedrawnFor07(pName) ? "_0.7" : "");
+}
+
+static void DiffPath(const char *pName, char *pPath, size_t PathSize)
+{
+	str_format(pPath, PathSize, "convert/%s.png", pName);
+}
+
+std::shared_ptr<const CMapresImage> CMapresFromFiles::Find(const char *pName, bool Teeworlds07) const
 {
 	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "mapres/%s%s.png", pName, Teeworlds07 && IsMapImageRedrawnFor07(pName) ? "_0.7" : "");
+	ImagePath(pName, Teeworlds07, aPath, sizeof(aPath));
 	return FindPath(aPath);
 }
 
-std::shared_ptr<const CMapresImage> CMapresFromStorage::FindDiff(const char *pName) const
+std::shared_ptr<const CMapresImage> CMapresFromFiles::FindDiff(const char *pName) const
 {
 	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "convert/%s.png", pName);
+	DiffPath(pName, aPath, sizeof(aPath));
 	return FindPath(aPath);
 }
 
-std::shared_ptr<const CMapresImage> CMapresFromStorage::FindPath(const char *pPath) const
+std::vector<std::string> CMapresFromFiles::Paths(const CMapConvertPictures &Pictures)
+{
+	std::vector<std::string> vPaths;
+	char aPath[IO_MAX_PATH_LENGTH];
+	for(const std::string &Name : Pictures.m_vImages)
+	{
+		ImagePath(Name.c_str(), Pictures.m_Teeworlds07, aPath, sizeof(aPath));
+		vPaths.emplace_back(aPath);
+	}
+	for(const std::string &Name : Pictures.m_vDiffs)
+	{
+		DiffPath(Name.c_str(), aPath, sizeof(aPath));
+		vPaths.emplace_back(aPath);
+	}
+	return vPaths;
+}
+
+std::shared_ptr<const CMapresImage> CMapresFromFiles::FindPath(const char *pPath) const
 {
 	const CLockScope Lock(m_Mutex);
 	const auto Found = m_Cache.find(pPath);
@@ -104,7 +126,23 @@ std::shared_ptr<const CMapresImage> CMapresFromStorage::FindPath(const char *pPa
 	{
 		return Found->second;
 	}
-	std::shared_ptr<const CMapresImage> pImage = Load(m_pStorage, pPath);
+	std::vector<uint8_t> vData;
+	std::shared_ptr<const CMapresImage> pImage = m_ReadFile(pPath, vData) ? Load(vData, pPath) : nullptr;
 	m_Cache.emplace(pPath, pImage);
 	return pImage;
+}
+
+CMapresFromStorage::CMapresFromStorage(IStorage *pStorage) :
+	CMapresFromFiles([pStorage](const char *pPath, std::vector<uint8_t> &vData) {
+		void *pData;
+		unsigned Size;
+		if(!pStorage->ReadFile(pPath, IStorage::TYPE_ALL, &pData, &Size))
+		{
+			return false;
+		}
+		vData.assign(static_cast<uint8_t *>(pData), static_cast<uint8_t *>(pData) + Size);
+		free(pData);
+		return true;
+	})
+{
 }

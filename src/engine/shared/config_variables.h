@@ -544,6 +544,10 @@ MACRO_CONFIG_INT(SvMaxPacketsPerRecv, sv_max_packets_per_recv, 2048, 0, 1000000,
 MACRO_CONFIG_INT(SvPreConnDecompressPerSecond, sv_preconn_decompress_per_second, 800, 0, 1000000, CFGFLAG_SERVER, "Maximum number of compressed packets from addresses without a connection that are decompressed per second, only the vanilla antispoof handshake needs these (0 for no limit)")
 MACRO_CONFIG_INT(SvBanRepliesPerSecond, sv_ban_replies_per_second, 200, 0, 1000000, CFGFLAG_SERVER, "Maximum number of banned addresses that are told about their ban per second (0 for no limit)")
 MACRO_CONFIG_INT(SvSixup, sv_sixup, 1, 0, 1, CFGFLAG_SERVER, "Accept 0.7 clients (sixup)")
+MACRO_CONFIG_STR(SvMapConvert, sv_map_convert, 16, "hybrid", CFGFLAG_SERVER, "How a map that looks different in the other version is converted for its clients, from the next map on: hybrid, remap, embed or off")
+MACRO_CONFIG_INT(SvMapConvertCache, sv_map_convert_cache, 0, 0, 1, CFGFLAG_SERVER, "Keep converted maps on disk, in sv_map_convert_cache_dir")
+MACRO_CONFIG_STR(SvMapConvertCacheDir, sv_map_convert_cache_dir, 128, "mapcache", CFGFLAG_SERVER, "Folder in the save directory that converted maps are kept in")
+MACRO_CONFIG_INT(SvMapConvertCacheSize, sv_map_convert_cache_size, 256, 0, 65536, CFGFLAG_SERVER, "Most MiB of converted maps kept on disk, the oldest go first (0 for no limit)")
 MACRO_CONFIG_INT(SvSkillLevel, sv_skill_level, 1, SERVERINFO_LEVEL_MIN, SERVERINFO_LEVEL_MAX, CFGFLAG_SERVER, "Difficulty level for Teeworlds 0.7 (0: Casual, 1: Normal, 2: Competitive)")
 
 MACRO_CONFIG_STR(EcBindaddr, ec_bindaddr, 128, "localhost", CFGFLAG_ECON, "Address to bind the external console to. Anything but 'localhost' is dangerous")

@@ -23,6 +23,8 @@
 #include <game/editor/editor_actions.h>
 #include <game/editor/editor_files.h>
 #include <game/gamecore.h>
+#include <game/map/convert/map_convert.h>
+#include <game/map/convert/mapres.h>
 #include <game/mapitems_ex.h>
 
 // compatibility with old sound layers
@@ -466,10 +468,72 @@ bool CEditorMap::PerformPreSaveSanityChecks(const FErrorHandler &ErrorHandler)
 	return Success;
 }
 
-bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandler &ErrorHandler)
+// A map that Teeworlds 0.7 made, converted to look the same in DDNet
+static bool LoadConverted(IMap &Map, IStorage *pStorage, const char *pFilename, int StorageType, EMapConvertMode Mode, const FErrorHandler &ErrorHandler)
+{
+	void *pData;
+	unsigned Size;
+	if(!pStorage->ReadFile(pFilename, StorageType, &pData, &Size))
+		return false;
+	std::vector<uint8_t> vSource(static_cast<uint8_t *>(pData), static_cast<uint8_t *>(pData) + Size);
+	free(pData);
+	return CEditorMap::LoadConverted07(Map, std::move(vSource), pFilename, Mode, CEditorFiles(), pStorage, ErrorHandler);
+}
+
+static CMapConvertOptions Convert07Options(EMapConvertMode Mode)
+{
+	CMapConvertOptions Options;
+	Options.m_Direction = EMapConvertDirection::TO06;
+	Options.m_Mode = Mode;
+	return Options;
+}
+
+void CEditorMap::AddConvertFiles07(const std::vector<uint8_t> &vSource, const char *pFilename, EMapConvertMode Mode, CEditorFiles &Files, CAssetLoader &Loader, IStorage *pStorage)
+{
+	CDataFileReader Reader;
+	if(!Reader.OpenFromMemory(fs_filename(pFilename), vSource, pFilename))
+		return; // converting it says what is wrong
+	for(const std::string &Path : CMapresFromFiles::Paths(MapConvertPictures(Reader, Convert07Options(Mode))))
+		Files.Add(Loader, pStorage, Path.c_str(), IStorage::TYPE_ALL);
+}
+
+bool CEditorMap::LoadConverted07(IMap &Map, std::vector<uint8_t> vSource, const char *pFilename, EMapConvertMode Mode, const CEditorFiles &Files, IStorage *pStorage, const FErrorHandler &ErrorHandler)
+{
+	char aName[IO_MAX_PATH_LENGTH];
+	fs_split_file_extension(fs_filename(pFilename), aName, sizeof(aName));
+
+	CDataFileReader Reader;
+	if(!Reader.OpenFromMemory(aName, vSource, pFilename))
+		return false;
+	const CMapresFromFiles Mapres([&Files, pStorage](const char *pPath, std::vector<uint8_t> &vData) {
+		return Files.ReadFile(pStorage, pPath, IStorage::TYPE_ALL, vData);
+	});
+	CMapConvertResult Result;
+	const bool Converted = ConvertMap(Reader, Convert07Options(Mode), Mapres, Result);
+	Reader.Close();
+	if(!Converted)
+	{
+		char aError[256];
+		str_format(aError, sizeof(aError), "Error: Failed to convert the Teeworlds 0.7 map: %s", Result.m_Error.c_str());
+		ErrorHandler(aError);
+		return false;
+	}
+	for(const std::string &Warning : Result.m_vWarnings)
+		log_warn("editor/load", "%s: %s", pFilename, Warning.c_str());
+	if(!Result.m_Converted)
+		return Map.LoadFromMemory(aName, std::move(vSource), pFilename);
+	log_info("editor/load", "converted '%s' from Teeworlds 0.7 with %s: %d tiles moved, %d drawn from diff tilesets, %d left out, %d pictures embedded",
+		pFilename, MapConvertModeName(Result.m_Mode), Result.m_Stats.m_RemappedTiles, Result.m_Stats.m_DiffTiles, Result.m_Stats.m_LostTiles, Result.m_Stats.m_EmbeddedImages + Result.m_Stats.m_DiffImages + Result.m_Stats.m_QuadImages);
+	return Map.LoadFromMemory(aName, std::move(Result.m_vData), pFilename);
+}
+
+bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandler &ErrorHandler, std::optional<EMapConvertMode> ConvertMode)
 {
 	std::unique_ptr<IMap> pMap = CreateMap();
-	if(!pMap->Load(Editor()->Storage(), pFilename, StorageType))
+	const bool Loaded = ConvertMode.has_value() ?
+				    LoadConverted(*pMap, Editor()->Storage(), pFilename, StorageType, *ConvertMode, ErrorHandler) :
+				    pMap->Load(Editor()->Storage(), pFilename, StorageType);
+	if(!Loaded)
 	{
 		ErrorHandler("Error: Failed to open map file. See local console for details.");
 		return false;
@@ -1166,16 +1230,16 @@ bool CEditorMap::Load(std::unique_ptr<IMap> pMap, const char *pFilename, const C
 	return true;
 }
 
-bool CEditorMap::Append(const char *pFilename, int StorageType, bool IgnoreHistory, const FErrorHandler &ErrorHandler)
+bool CEditorMap::Append(const char *pFilename, int StorageType, bool IgnoreHistory, const FErrorHandler &ErrorHandler, std::optional<EMapConvertMode> ConvertMode)
 {
 	CEditorMap NewMap(Editor());
-	if(!NewMap.Load(pFilename, StorageType, ErrorHandler))
+	if(!NewMap.Load(pFilename, StorageType, ErrorHandler, ConvertMode))
 		return false;
-	Append(NewMap, pFilename, IgnoreHistory);
+	Append(NewMap, pFilename, IgnoreHistory, ConvertMode);
 	return true;
 }
 
-void CEditorMap::Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory)
+void CEditorMap::Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory, std::optional<EMapConvertMode> ConvertMode)
 {
 	CEditorActionAppendMap::SPrevInfo Info{
 		(int)m_vpGroups.size(),
@@ -1302,7 +1366,7 @@ void CEditorMap::Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHi
 	auto IndexMap = SortImages();
 
 	if(!IgnoreHistory)
-		m_EditorHistory.RecordAction(std::make_shared<CEditorActionAppendMap>(this, pFilename, Info, IndexMap));
+		m_EditorHistory.RecordAction(std::make_shared<CEditorActionAppendMap>(this, pFilename, ConvertMode, Info, IndexMap));
 
 	CheckIntegrity();
 	OnModify();

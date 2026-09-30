@@ -5,6 +5,7 @@
 #include "editor_actions.h"
 
 #include <base/color.h>
+#include <base/fs.h>
 
 #include <engine/font_icons.h>
 #include <engine/gfx/image_manipulation.h>
@@ -20,6 +21,7 @@
 #include <game/editor/mapitems/sound.h>
 
 #include <limits>
+#include <optional>
 
 CUi::EPopupMenuFunctionResult CEditor::PopupMenuFile(void *pContext, CUIRect View, bool Active)
 {
@@ -1780,7 +1782,7 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 
 	const char *pTitle;
 	const char *pMessage;
-	char aMessageBuf[128 + IO_MAX_PATH_LENGTH];
+	char aMessageBuf[512 + IO_MAX_PATH_LENGTH];
 	if(pEditor->m_PopupEventType == POPEVENT_EXIT)
 	{
 		pTitle = "Exit the editor";
@@ -1871,6 +1873,16 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 			return CUi::POPUP_CLOSE_CURRENT;
 		}
 	}
+	else if(pEditor->m_PopupEventType == POPEVENT_IMPORT_07)
+	{
+		pTitle = "Teeworlds 0.7 map";
+		str_format(aMessageBuf, sizeof(aMessageBuf), "'%s' was made for Teeworlds 0.7, whose tilesets have some tiles in other places than DDNet's.\n\n%s\n\nEmbed keeps every tile where it is and embeds the tilesets of Teeworlds 0.7 that differ.",
+			fs_filename(pEditor->m_aImport07Filename),
+			pEditor->m_Import07Hybrid ?
+				"Hybrid moves the tiles to their places in DDNet's tilesets and embeds pictures of the few tiles DDNet does not have." :
+				"Remap moves the tiles to their places in DDNet's tilesets. The pictures of the few tiles DDNet does not have are missing, so these tiles are left out.");
+		pMessage = aMessageBuf;
+	}
 	else
 	{
 		dbg_assert_failed("m_PopupEventType invalid");
@@ -1892,6 +1904,39 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEvent(void *pContext, CUIRect View, 
 
 	// button bar
 	ButtonBar.VSplitLeft(110.0f, &Button, &ButtonBar);
+	if(pEditor->m_PopupEventType == POPEVENT_IMPORT_07)
+	{
+		static int s_CancelImportButton = 0;
+		if(pEditor->DoButton_Editor(&s_CancelImportButton, "Cancel", 0, &Button, BUTTONFLAG_LEFT, nullptr))
+		{
+			pEditor->m_aImport07Filename[0] = '\0';
+			pEditor->m_vImport07Data.clear();
+			pEditor->m_PopupEventWasActivated = false;
+			return CUi::POPUP_CLOSE_CURRENT;
+		}
+
+		// The default is hybrid, unless its diff tilesets are missing
+		const bool Hybrid = pEditor->m_Import07Hybrid;
+		const bool Enter = Active && pEditor->Ui()->ConsumeHotkey(CUi::HOTKEY_ENTER);
+		CUIRect EmbedButton, HybridButton;
+		ButtonBar.VSplitRight(110.0f, &ButtonBar, &HybridButton);
+		ButtonBar.VSplitRight(10.0f, &ButtonBar, nullptr);
+		ButtonBar.VSplitRight(110.0f, &ButtonBar, &EmbedButton);
+		static int s_HybridButton = 0;
+		static int s_EmbedButton = 0;
+		std::optional<EMapConvertMode> Mode;
+		if(pEditor->DoButton_Editor(&s_HybridButton, Hybrid ? "Hybrid" : "Remap", Hybrid ? EditorButtonChecked::POSITIVE_ACTION : 0, &HybridButton, BUTTONFLAG_LEFT, nullptr) || (Enter && Hybrid))
+			Mode = EMapConvertMode::HYBRID;
+		else if(pEditor->DoButton_Editor(&s_EmbedButton, "Embed", Hybrid ? 0 : EditorButtonChecked::POSITIVE_ACTION, &EmbedButton, BUTTONFLAG_LEFT, nullptr) || (Enter && !Hybrid))
+			Mode = EMapConvertMode::EMBED;
+		if(Mode.has_value())
+		{
+			pEditor->m_PopupEventWasActivated = false;
+			pEditor->Import07(*Mode);
+			return CUi::POPUP_CLOSE_CURRENT;
+		}
+		return CUi::POPUP_KEEP_OPEN;
+	}
 	if(pEditor->m_PopupEventType != POPEVENT_LARGELAYER &&
 		pEditor->m_PopupEventType != POPEVENT_PREVENTUNUSEDTILES &&
 		pEditor->m_PopupEventType != POPEVENT_IMAGEDIV16 &&

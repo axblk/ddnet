@@ -1205,8 +1205,8 @@ void CEditorActionEditLayersGroupAndOrder::Redo()
 
 // -----------------------------------
 
-CEditorActionAppendMap::CEditorActionAppendMap(CEditorMap *pMap, const char *pMapName, const SPrevInfo &PrevInfo, std::vector<int> &vImageIndexMap) :
-	IEditorAction(pMap), m_PrevInfo(PrevInfo), m_vImageIndexMap(vImageIndexMap)
+CEditorActionAppendMap::CEditorActionAppendMap(CEditorMap *pMap, const char *pMapName, std::optional<EMapConvertMode> ConvertMode, const SPrevInfo &PrevInfo, std::vector<int> &vImageIndexMap) :
+	IEditorAction(pMap), m_ConvertMode(ConvertMode), m_PrevInfo(PrevInfo), m_vImageIndexMap(vImageIndexMap)
 {
 	str_copy(m_aMapName, pMapName);
 	str_format(m_aDisplayText, sizeof(m_aDisplayText), "Append %s", m_aMapName);
@@ -1280,7 +1280,7 @@ void CEditorActionAppendMap::Redo()
 		log_error("editor/append", "%s", pErrorMessage);
 	};
 	// Redo is just re-appending the same map
-	Map()->Append(m_aMapName, IStorage::TYPE_ALL, true, ErrorHandler);
+	Map()->Append(m_aMapName, IStorage::TYPE_ALL, true, ErrorHandler, m_ConvertMode);
 }
 
 // ---------------------------

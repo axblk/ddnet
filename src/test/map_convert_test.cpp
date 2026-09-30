@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 static constexpr int ORIENTATION = TILEFLAG_XFLIP | TILEFLAG_YFLIP | TILEFLAG_ROTATE;
@@ -998,6 +999,51 @@ TEST_F(MapConvert, SameOutputEveryTime)
 		ASSERT_TRUE(Back.m_Converted);
 		EXPECT_EQ(Back.m_vData, Convert(vTeeworlds07, EMapConvertDirection::TO06, Mode).m_vData);
 	}
+}
+
+TEST_F(MapConvert, PicturesCanBeFetchedAhead)
+{
+	const std::vector<std::pair<std::vector<uint8_t>, EMapConvertDirection>> vMaps = {
+		{DDNetMap("dm2"), EMapConvertDirection::TO07},
+		{DDNetMap("ctf2"), EMapConvertDirection::TO07},
+		{Teeworlds07Map("ctf5"), EMapConvertDirection::TO06},
+		{Teeworlds07Map("dm2"), EMapConvertDirection::TO06},
+		{Teeworlds07Map("dm1"), EMapConvertDirection::TO06},
+	};
+	size_t NumListed = 0;
+	for(const auto &[vSource, Direction] : vMaps)
+	{
+		for(EMapConvertMode Mode : {EMapConvertMode::REMAP, EMapConvertMode::HYBRID, EMapConvertMode::EMBED})
+		{
+			CMapConvertOptions Options;
+			Options.m_Direction = Direction;
+			Options.m_Mode = Mode;
+			CDataFileReader Reader;
+			ASSERT_TRUE(Reader.OpenFromMemory("map", vSource, "memory"));
+			const std::vector<std::string> vListed = CMapresFromFiles::Paths(MapConvertPictures(Reader, Options));
+			Reader.Close();
+
+			// Only what was listed is there, as if only that was fetched
+			std::set<std::string> Asked;
+			const CMapresFromFiles Fetched([&](const char *pPath, std::vector<uint8_t> &vData) {
+				Asked.emplace(pPath);
+				if(std::find(vListed.begin(), vListed.end(), pPath) == vListed.end())
+					return false;
+				vData = ReadMapFile(m_pStorage.get(), pPath, IStorage::TYPE_ALL);
+				return !vData.empty();
+			});
+			ASSERT_TRUE(Reader.OpenFromMemory("map", vSource, "memory"));
+			CMapConvertResult Result;
+			ASSERT_TRUE(ConvertMap(Reader, Options, Fetched, Result)) << Result.m_Error;
+			const CMapConvertResult Expected = Convert(vSource, Direction, Mode);
+			EXPECT_EQ(Result.m_vData, Expected.m_vData) << MapConvertModeName(Mode);
+			EXPECT_EQ(Result.m_Mode, Expected.m_Mode) << MapConvertModeName(Mode);
+			// And nothing was listed that is not asked for
+			EXPECT_EQ(Asked, std::set<std::string>(vListed.begin(), vListed.end())) << MapConvertModeName(Mode);
+			NumListed += vListed.size();
+		}
+	}
+	EXPECT_GT(NumListed, 0u);
 }
 
 TEST_F(MapConvert, NeverTwiceTheSameWay)

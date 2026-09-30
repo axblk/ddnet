@@ -14,6 +14,7 @@
 #include <engine/client.h>
 #include <engine/client/asset_loader.h>
 #include <engine/client/updater.h>
+#include <engine/client/viewer_fullscreen.h>
 #include <engine/config.h>
 #include <engine/editor.h>
 #include <engine/font_icons.h>
@@ -529,6 +530,25 @@ void CMenus::RenderMenubar(CUIRect Box, IClient::EClientState ClientState)
 		NewPage = PAGE_SETTINGS;
 	}
 	Ui()->DoToolTip(&s_SettingsButton, &Button, Localize("Settings"));
+
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// In a browser the page fills the screen, not a window (an iPhone
+	// cannot). The button acts in the frame after the mouse was released,
+	// outside the browser's event handler, which the browser still counts
+	// as the user's action for a few seconds after the press.
+	if(ViewerFullscreen::Supported(Window()))
+	{
+		const bool Fullscreen = ViewerFullscreen::Active(Window());
+		Box.VSplitRight(10.0f, &Box, nullptr);
+		Box.VSplitRight(33.0f, &Box, &Button);
+		static CButtonContainer s_FullscreenButton;
+		if(DoButton_MenuTab(&s_FullscreenButton, Fullscreen ? FontIcon::COMPRESS : FontIcon::EXPAND, 0, &Button, IGraphics::CORNER_T, &m_aAnimatorsSmallPage[SMALL_TAB_FULLSCREEN]))
+		{
+			ViewerFullscreen::Toggle(Window());
+		}
+		Ui()->DoToolTip(&s_FullscreenButton, &Button, Fullscreen ? Localize("Exit fullscreen") : Localize("Fullscreen"));
+	}
+#endif
 
 	Box.VSplitRight(10.0f, &Box, nullptr);
 	Box.VSplitRight(33.0f, &Box, &Button);

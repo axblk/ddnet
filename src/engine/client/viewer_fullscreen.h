@@ -7,7 +7,8 @@ class IGraphicsWindow;
 
 /**
  * Filling the screen with a viewer, which has no settings to ask the client's
- * way. In a browser the page's loader does it.
+ * way, or with the client in a browser, where only the page can. In a browser
+ * the page's loader does it.
  */
 namespace ViewerFullscreen
 {

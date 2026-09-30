@@ -30,6 +30,7 @@ namespace FontIcon
 	inline const char *const CLAPPERBOARD = "\uE131";
 	inline const char *const COMMENT = "\uF075";
 	inline const char *const COMMENT_SLASH = "\uF4B3";
+	inline const char *const COMPRESS = "\uF066";
 	inline const char *const DICE_FIVE = "\uF523";
 	inline const char *const DICE_FOUR = "\uF524";
 	inline const char *const DICE_ONE = "\uF525";
@@ -38,6 +39,7 @@ namespace FontIcon
 	inline const char *const DICE_TWO = "\uF528";
 	inline const char *const EARTH_AMERICAS = "\uF57D";
 	inline const char *const ELLIPSIS = "\uF141";
+	inline const char *const EXPAND = "\uF065";
 	inline const char *const EYE = "\uF06E";
 	inline const char *const EYE_DROPPER = "\uF1FB";
 	inline const char *const EYE_SLASH = "\uF070";

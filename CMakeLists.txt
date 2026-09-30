@@ -3334,8 +3334,10 @@ if(CLIENT)
   list(FILTER ENGINE_CLIENT_DEMO INCLUDE REGEX "src/engine/client/demo_(client_base|player_client|render_client)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_DEMO})
   # The controls the demo player and the map viewer draw over what they show.
+  # Filling the screen stays in the client, whose menu has a button for it in
+  # a browser.
   set(ENGINE_CLIENT_VIEWER ${ENGINE_CLIENT})
-  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|fullscreen|gestures)\\.(cpp|h)$")
+  list(FILTER ENGINE_CLIENT_VIEWER INCLUDE REGEX "src/engine/client/viewer_(controls|gestures)\\.(cpp|h)$")
   list(REMOVE_ITEM ENGINE_CLIENT ${ENGINE_CLIENT_VIEWER})
   # What the web tools stand on in place of SDL: the canvas, its events and an
   # audio worklet (see src/engine/client/web/web_platform.h). The client keeps
@@ -3845,6 +3847,8 @@ if(CLIENT)
       src/engine/client/keyboard.h
       src/engine/client/keynames.cpp
       src/engine/client/keynames.h
+      src/engine/client/viewer_fullscreen.cpp
+      src/engine/client/viewer_fullscreen.h
       src/engine/client/window_sdl.cpp
       src/engine/client/window_sdl.h
       src/game/map/standalone/map_viewer_main.cpp

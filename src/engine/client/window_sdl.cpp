@@ -1039,6 +1039,12 @@ int CGraphicsWindow_SDL::OpenWindow(SGraphicsBackendInit &BackendInit)
 {
 	m_Surface = {};
 	BackendInit = {};
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// In a browser only the page fills the screen (see viewer_fullscreen.h),
+	// and not without the user's action: SDL's modes would only resize the
+	// canvas to the size of the screen.
+	g_Config.m_GfxFullscreen = 0;
+#endif
 	// The flags have to be kept consistent with SetWindowParamsImpl()!
 	const bool IsPurelyWindowed = g_Config.m_GfxFullscreen == 0;
 	const bool ExclusiveFullscreen = !m_Hidden && g_Config.m_GfxFullscreen == 1;
@@ -1537,6 +1543,10 @@ void CGraphicsWindow_SDL::GotResized(int w, int h, int RefreshRate)
 
 void CGraphicsWindow_SDL::SetWindowParams(int FullscreenMode, bool IsBorderless)
 {
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// Not in a browser, see OpenWindow().
+	FullscreenMode = 0;
+#endif
 	g_Config.m_GfxFullscreen = std::clamp(FullscreenMode, 0, 3);
 	g_Config.m_GfxBorderless = (int)IsBorderless;
 

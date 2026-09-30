@@ -4,6 +4,7 @@
 
 #include <base/str.h>
 
+#include <engine/client/viewer_fullscreen.h>
 #include <engine/graphics.h>
 #include <engine/graphics_window.h>
 #include <engine/shared/config.h>
@@ -115,6 +116,26 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 	}
 
 	// switches
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// In a browser only the page can fill the screen, as the menu bar's button
+	// does, and whether it does is the browser's to say (Esc leaves). SDL's
+	// modes would only resize the canvas. Where the page cannot (an iPhone)
+	// there is nothing to choose.
+	if(ViewerFullscreen::Supported(Window()))
+	{
+		CUIRect WindowModeDropDown;
+		MainView.HSplitTop(20.0f, &WindowModeDropDown, &MainView);
+
+		const char *apWindowModes[] = {Localize("Windowed"), Localize("Fullscreen")};
+		const int OldWindowMode = ViewerFullscreen::Active(Window()) ? 1 : 0;
+
+		static CUi::SDropDownState s_WindowModeDropDownState;
+		static CScrollRegion s_WindowModeDropDownScrollRegion;
+		s_WindowModeDropDownState.m_SelectionPopupContext.m_pScrollRegion = &s_WindowModeDropDownScrollRegion;
+		if(Ui()->DoDropDown(&WindowModeDropDown, OldWindowMode, apWindowModes, std::size(apWindowModes), s_WindowModeDropDownState) != OldWindowMode)
+			ViewerFullscreen::Toggle(Window());
+	}
+#else
 	CUIRect WindowModeDropDown;
 	MainView.HSplitTop(20.0f, &WindowModeDropDown, &MainView);
 
@@ -140,6 +161,7 @@ void CMenus::RenderSettingsGraphics(CUIRect MainView)
 		else if(NewWindowMode == 4)
 			Window()->SetWindowParams(1, false);
 	}
+#endif
 
 	if(Window()->GetNumScreens() > 1)
 	{

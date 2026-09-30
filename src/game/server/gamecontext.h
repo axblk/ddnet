@@ -362,6 +362,7 @@ public:
 	void OnChangeInfoNetMessage(const CNetMsg_Cl_ChangeInfo *pMsg, int ClientId);
 	void OnEmoticonNetMessage(const CNetMsg_Cl_Emoticon *pMsg, int ClientId);
 	void OnEnableSpectatorCountNetMessage(const CNetMsg_Cl_EnableSpectatorCount *pMsg, int ClientId);
+	void OnEnableReadyStateNetMessage(const CNetMsg_Cl_EnableReadyState *pMsg, int ClientId);
 	void OnStartInfoNetMessage(const CNetMsg_Cl_StartInfo *pMsg, int ClientId);
 
 	bool OnClientDataPersist(int ClientId, void *pData) override;

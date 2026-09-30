@@ -408,7 +408,9 @@ void CGameClient::OnConsoleInit()
 	// add basic console commands
 	Console()->Register("team", "i[team-id]", CFGFLAG_CLIENT, ConTeam, this, "Switch team");
 	Console()->Register("kill", "", CFGFLAG_CLIENT, ConKill, this, "Kill yourself to restart");
-	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReadyChange7, this, "Change ready state (0.7 only)");
+	Console()->Register("ready", "", CFGFLAG_CLIENT, ConReady, this, "Say that you are ready, or pause the game until everybody is, on a server with ready mode");
+	// the name of the command in Teeworlds 0.7
+	Console()->Register("ready_change", "", CFGFLAG_CLIENT, ConReady, this, "Same as ready");
 
 	// register game commands to allow the client prediction to load settings from the map
 	Console()->Register("tune", "s[tuning] ?f[value]", CFGFLAG_GAME, ConTuneParam, this, "Tune variable to value");
@@ -3650,6 +3652,19 @@ void CGameClient::ProcessSnapshot(CSessionId SessionId)
 			ClientNetwork()->SendPackMsg(IClient::CONN_DUMMY, &Msg, MSGFLAG_VITAL);
 			DummyRuntime.m_EnableSpectatorCount = g_Config.m_ClShowhudSpectatorCount;
 		}
+		// both seats show the ready state themselves
+		for(CGameState *pSeatState : {pMainState, pDummyState})
+		{
+			CGameState::CRuntimeState &SeatRuntime = pSeatState->m_Runtime;
+			if(pSeatState == pDummyState && !DummyConnected())
+				continue;
+			if(SeatRuntime.m_EnableReadyState == g_Config.m_ClShowhudReady)
+				continue;
+			CNetMsg_Cl_EnableReadyState Msg;
+			Msg.m_Enable = g_Config.m_ClShowhudReady;
+			ClientNetwork()->SendPackMsg(pSeatState == pMainState ? IClient::CONN_MAIN : IClient::CONN_DUMMY, &Msg, MSGFLAG_VITAL);
+			SeatRuntime.m_EnableReadyState = g_Config.m_ClShowhudReady;
+		}
 
 		// Each seat is told what the view it is shown in covers. On a single
 		// screen that is the view the player looks through, for both of them as
@@ -4181,17 +4196,27 @@ void CGameClient::SendKill() const
 	}
 }
 
-void CGameClient::SendReadyChange7() // NOLINT(readability-make-member-function-const)
+void CGameClient::SendReadyChange()
 {
-	if(Sessions()->FocusedSessionId() != NetworkSessionId())
+	// tools play without a network
+	IClientNetwork *pNetwork = ClientNetwork();
+	if(pNetwork == nullptr || Sessions()->FocusedSessionId() != NetworkSessionId())
 		return;
-	if(!Sessions()->IsSixup(NetworkSessionId()))
+	if(Sessions()->IsSixup(NetworkSessionId()))
 	{
-		log_error("client", "You have to be connected to a 0.7 server to use 'ready_change'");
-		return;
+		protocol7::CNetMsg_Cl_ReadyChange Msg;
+		pNetwork->SendPackMsg(InputSeat(), &Msg, MSGFLAG_VITAL, true);
 	}
-	protocol7::CNetMsg_Cl_ReadyChange Msg;
-	ClientNetwork()->SendPackMsg(InputSeat(), &Msg, MSGFLAG_VITAL, true);
+	else if(InputState().HasReadyState())
+	{
+		CNetMsg_Cl_ReadyChange Msg;
+		pNetwork->SendPackMsg(InputSeat(), &Msg, MSGFLAG_VITAL);
+	}
+	else
+	{
+		// a server without the ready state, like ddnet-insta, takes it in chat
+		m_Chat.SendChat(0, "/ready");
+	}
 }
 
 void CGameClient::ConTeam(IConsole::IResult *pResult, void *pUserData)
@@ -4204,11 +4229,11 @@ void CGameClient::ConKill(IConsole::IResult *pResult, void *pUserData)
 	((CGameClient *)pUserData)->SendKill();
 }
 
-void CGameClient::ConReadyChange7(IConsole::IResult *pResult, void *pUserData)
+void CGameClient::ConReady(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameClient *pClient = static_cast<CGameClient *>(pUserData);
 	if(pClient->Client()->IsOnline())
-		pClient->SendReadyChange7();
+		pClient->SendReadyChange();
 }
 
 void CGameClient::ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)

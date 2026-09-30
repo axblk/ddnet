@@ -186,6 +186,8 @@ public:
 	int64_t m_LastKickVote;
 	bool m_ShowAll;
 	bool m_EnableSpectatorCount;
+	// the client shows who is ready itself, from the ready state objects
+	bool m_EnableReadyState;
 	vec2 m_ShowDistance;
 
 	// camera info is used sparingly for converting aim target to absolute world coordinates

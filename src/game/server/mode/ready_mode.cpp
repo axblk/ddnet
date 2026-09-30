@@ -10,6 +10,7 @@
 #include <generated/protocol7.h>
 
 #include <game/server/mode/game_services.h>
+#include <game/server/player.h>
 
 // how often 0.6 clients are told whom the game waits for
 static constexpr int READY_BROADCAST_SECONDS = 8;
@@ -246,10 +247,10 @@ void CReadyMode::SendBroadcasts(bool Clear)
 		}
 	}
 
-	// 0.7 clients show who is ready themselves
+	// 0.7 clients and those that got the ready state show who is ready themselves
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
 	{
-		if(!m_Services.Player(ClientId) || !pServer->ClientIngame(ClientId) || pServer->IsSixup(ClientId))
+		if(!m_Services.Player(ClientId) || !pServer->ClientIngame(ClientId) || pServer->IsSixup(ClientId) || ShowsReadyState(ClientId))
 			continue;
 		if(Clear)
 		{
@@ -262,6 +263,54 @@ void CReadyMode::SendBroadcasts(bool Clear)
 		else
 			str_copy(aBuf, aWaiting);
 		m_Services.SendBroadcast(aBuf, ClientId);
+	}
+}
+
+void CReadyMode::OnPlayerShowsReadyStateChanged(int ClientId)
+{
+	// a client can only say so once it is in the game, after its first broadcast
+	if(!m_BroadcastSent || m_Services.Server()->IsSixup(ClientId))
+		return;
+	if(ShowsReadyState(ClientId))
+		m_Services.SendBroadcast("", ClientId);
+	else
+		m_NextBroadcastTick = m_Services.Server()->Tick();
+}
+
+bool CReadyMode::ShowsReadyState(int SnappingClient) const
+{
+	if(SnappingClient == SERVER_DEMO_CLIENT)
+		return true;
+	const CPlayer *pPlayer = m_Services.Player(SnappingClient);
+	return pPlayer && pPlayer->m_EnableReadyState && !m_Services.Server()->IsSixup(SnappingClient);
+}
+
+void CReadyMode::Snap(int SnappingClient)
+{
+	// the object says the server has ready mode, so it is there even while nothing waits
+	if(!IsOn() || !ShowsReadyState(SnappingClient))
+		return;
+
+	CNetObj_ReadyState ReadyState = {};
+	switch(m_ReadyCheck.Wait())
+	{
+	case CReadyCheck::EWait::NONE: ReadyState.m_Wait = READYWAIT_NONE; break;
+	case CReadyCheck::EWait::START: ReadyState.m_Wait = READYWAIT_START; break;
+	case CReadyCheck::EWait::RESUME: ReadyState.m_Wait = READYWAIT_RESUME; break;
+	}
+	ReadyState.m_ForceReadyTick = ForceReadyTick();
+	m_Services.Server()->SnapNewItem(0, ReadyState);
+	if(!m_ReadyCheck.IsWaiting())
+		return;
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		int TranslatedId = ClientId;
+		if(!m_Game.IsReadyParticipant(ClientId) || !m_Services.Server()->Translate(TranslatedId, SnappingClient))
+			continue;
+		CNetObj_PlayerReady PlayerReady = {};
+		PlayerReady.m_Ready = m_ReadyCheck.IsReady(ClientId);
+		m_Services.Server()->SnapNewItem(TranslatedId, PlayerReady);
 	}
 }
 

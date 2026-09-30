@@ -224,7 +224,26 @@ void CMenus::RenderGame(CUIRect MainView)
 		}
 	}
 
-	if(GameClient()->ReceivedDDNetPlayer() && GameClient()->Snap().m_pLocalInfo && (ShowDDRaceButtons || !GameClient()->IsTeamPlay()))
+	// the ready mode of the server takes the place of pausing oneself
+	const CGameState &InputGameState = GameClient()->InputState();
+	const bool ReadyMode = InputGameState.HasReadyState();
+	if(ReadyMode && GameClient()->Snap().m_pLocalInfo && GameClient()->Snap().m_pLocalInfo->m_Team != TEAM_SPECTATORS)
+	{
+		// ready while nothing waits, and a player who is not ready pauses the game
+		const char *pLabel = Localize("Pause");
+		if(InputGameState.IsWaitingForReady())
+			pLabel = InputGameState.IsWaitingForPlayer(InputGameState.LocalClientId()) ? Localize("Ready") : Localize("Not ready");
+		ButtonBar.VSplitLeft(90.0f, &Button, &ButtonBar);
+		ButtonBar.VSplitLeft(5.0f, nullptr, &ButtonBar);
+		static CButtonContainer s_ReadyButton;
+		if(DoButton_Menu(&s_ReadyButton, pLabel, 0, &Button))
+		{
+			GameClient()->SendReadyChange();
+			SetActive(false);
+		}
+	}
+
+	if(!ReadyMode && GameClient()->ReceivedDDNetPlayer() && GameClient()->Snap().m_pLocalInfo && (ShowDDRaceButtons || !GameClient()->IsTeamPlay()))
 	{
 		if(GameClient()->Snap().m_pLocalInfo->m_Team != TEAM_SPECTATORS || Paused || Spec)
 		{

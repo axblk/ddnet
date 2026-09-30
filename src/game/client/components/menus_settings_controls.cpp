@@ -70,6 +70,7 @@ void CMenusSettingsControls::OnInterfacesInit(CGameClient *pClient)
 		{EBindOptionGroup::MOVEMENT, Localizable("Hook collisions"), "+showhookcoll"},
 		{EBindOptionGroup::MOVEMENT, Localizable("Pause"), "say /pause"},
 		{EBindOptionGroup::MOVEMENT, Localizable("Kill"), "kill"},
+		{EBindOptionGroup::MOVEMENT, Localizable("Ready"), "ready"},
 		{EBindOptionGroup::MOVEMENT, Localizable("Zoom in"), "zoom+"},
 		{EBindOptionGroup::MOVEMENT, Localizable("Zoom out"), "zoom-"},
 		{EBindOptionGroup::MOVEMENT, Localizable("Default zoom"), "zoom"},

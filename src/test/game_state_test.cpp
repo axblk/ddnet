@@ -109,6 +109,52 @@ TEST(GameState, SnapshotDataFindsLocalClientAndClearsSpectatorInfo)
 	EXPECT_FALSE(State.HasSpectatorCount());
 }
 
+TEST(GameState, ReadyStateCountsWhomTheGameWaitsFor)
+{
+	const auto pState = std::make_unique<CGameState>();
+	CGameState &State = *pState;
+	auto pClients = std::make_unique<CClients>();
+	for(int ClientId : {1, 2, 3})
+	{
+		(*pClients)[ClientId].m_Active = true;
+		(*pClients)[ClientId].m_HasPlayerInfo = true;
+	}
+	(*pClients)[1].m_PlayerInfo.m_Local = 1;
+	(*pClients)[1].m_HasPlayerReady = true;
+	(*pClients)[2].m_HasPlayerReady = true;
+	(*pClients)[2].m_PlayerReady.m_Ready = 1;
+	// 3 is a spectator, who has no ready state
+	State.ApplySnapshotData(10, *pClients);
+
+	// a server without ready mode
+	EXPECT_FALSE(State.HasReadyState());
+	EXPECT_FALSE(State.IsWaitingForReady());
+	EXPECT_FALSE(State.IsWaitingForPlayer(1));
+	EXPECT_EQ(State.NumNotReady(), 0);
+
+	// ready mode while nothing waits
+	CNetObj_ReadyState ReadyState = {};
+	ReadyState.m_Wait = READYWAIT_NONE;
+	State.ApplyReadyState(ReadyState);
+	EXPECT_TRUE(State.HasReadyState());
+	EXPECT_FALSE(State.IsWaitingForReady());
+	EXPECT_EQ(State.NumNotReady(), 0);
+
+	ReadyState.m_Wait = READYWAIT_RESUME;
+	State.ApplyReadyState(ReadyState);
+	EXPECT_TRUE(State.IsWaitingForReady());
+	EXPECT_TRUE(State.IsWaitingForPlayer(1));
+	EXPECT_FALSE(State.IsWaitingForPlayer(2));
+	EXPECT_FALSE(State.IsWaitingForPlayer(3));
+	EXPECT_FALSE(State.IsWaitingForPlayer(-1));
+	EXPECT_EQ(State.NumNotReady(), 1);
+
+	// the next snapshot says it anew
+	State.ApplySnapshotData(11, *pClients);
+	EXPECT_FALSE(State.HasReadyState());
+	EXPECT_EQ(State.NumNotReady(), 0);
+}
+
 TEST(GameState, ResetClearsStateData)
 {
 	const auto pState = std::make_unique<CGameState>();

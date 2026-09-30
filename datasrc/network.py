@@ -46,6 +46,8 @@ LaserTypes = ["RIFLE", "SHOTGUN", "DOOR", "FREEZE", "DRAGGER", "GUN", "PLASMA"]
 DraggerTypes = ["WEAK", "WEAK_NW", "NORMAL", "NORMAL_NW", "STRONG", "STRONG_NW"]
 GunTypes = ["UNFREEZE", "EXPLOSIVE", "FREEZE", "EXPFREEZE"]
 SaveStates = ["PENDING", "DONE", "FALLBACKFILE", "WARNING", "ERROR"]
+# what the game waits for the players to be ready for, see CReadyCheck
+ReadyWaits = ["NONE", "START", "RESUME"]
 
 Emoticons = ["OOP", "EXCLAMATION", "HEARTS", "DROP", "DOTDOT", "MUSIC", "SORRY", "GHOST", "SUSHI", "SPLATTEE", "DEVILTEE", "ZOMG", "ZZZ", "WTF", "EYES", "QUESTION"]
 
@@ -95,6 +97,7 @@ Enums = [
 	Enum("LASERGUNTYPE", GunTypes),
 	Enum("TEAM", Teams, -2),
 	Enum("SAVESTATE", SaveStates),
+	Enum("READYWAIT", ReadyWaits),
 ]
 
 Flags = [
@@ -406,6 +409,19 @@ Objects = [
 	NetEventEx("MapSoundWorld:Common", "map-sound-world@netevent.ddnet.org", [
 		NetIntAny("m_SoundId"),
 	]),
+
+	# The ready mode of Teeworlds 0.7 (sv_player_ready_mode), while it is on,
+	# to the clients that asked for it with Cl_EnableReadyState
+	NetObjectEx("ReadyState", "ready-state@netobj.ddnet.org", [
+		NetIntRange("m_Wait", 'READYWAIT_NONE', 'READYWAIT_RESUME'),
+		# when the game goes on even if not everybody is ready, 0 for never
+		NetTick("m_ForceReadyTick"),
+	]),
+
+	# Whether a player in the game is ready, while the game waits for them
+	NetObjectEx("PlayerReady", "player-ready@netobj.ddnet.org", [
+		NetBool("m_Ready"),
+	]),
 ]
 
 Messages = [
@@ -674,5 +690,14 @@ Messages = [
 	
 	NetMessageEx("Sv_MapInfo", "map-info@netmsg.ddnet.org", [
 		NetString("m_pDescription"),
+	]),
+
+	# The ready change of Teeworlds 0.7: ready, or not any more
+	NetMessageEx("Cl_ReadyChange", "ready-change@netmsg.ddnet.org", []),
+
+	# The client shows the ready state (ReadyState, PlayerReady) itself,
+	# instead of being told in broadcasts
+	NetMessageEx("Cl_EnableReadyState", "enable-ready-state@netmsg.ddnet.org", [
+		NetBool("m_Enable"),
 	]),
 ]

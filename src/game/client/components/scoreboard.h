@@ -36,6 +36,8 @@ class CScoreboard : public CComponent
 	void RenderTitle(const CRenderContext &Context, CUIRect TitleLabel, int Team, const char *pTitle, float TitleFontSize);
 	void RenderTitleBar(const CRenderContext &Context, CUIRect TitleBar, int Team, const char *pTitle);
 	void RenderGoals(const CRenderContext &Context, CUIRect Goals);
+	// whom the game waits for in ready mode, and the local player's ready button
+	void RenderReadyBar(const CRenderContext &Context, CUIRect ReadyBar);
 	void RenderSpectators(const CRenderContext &Context, CUIRect Spectators);
 	void RenderMouseHint(CUIRect MouseHint);
 	void RenderScoreboard(const CRenderContext &Context, CUIRect Scoreboard, int Team, int CountStart, int CountEnd, CScoreboardRenderState &State, int NumPlayersForSize = -1);
@@ -96,6 +98,7 @@ class CScoreboard : public CComponent
 		static CUi::EPopupMenuFunctionResult Render(void *pContext, CUIRect View, bool Active);
 	} m_MapTitlePopupContext;
 	char m_MapTitleButtonId;
+	char m_ReadyButtonId;
 
 	enum
 	{
@@ -148,6 +151,8 @@ class CScoreboard : public CComponent
 		CUuid m_ReportMatchId = UUID_ZEROED;
 		bool m_Active = false;
 		bool m_HasMapTitleRect = false;
+		CUIRect m_ReadyRect;
+		bool m_HasReadyRect = false;
 
 		bool Matches(const CRenderContext &Context) const;
 	};
@@ -158,6 +163,7 @@ class CScoreboard : public CComponent
 	int m_HighlightClientId = -1;
 	bool m_HighlightMapTitle = false;
 	int m_HighlightReportAction = -1;
+	bool m_HighlightReady = false;
 	bool m_ApplicationOverlayReady = false;
 	bool IsHighlighted(const CRenderContext &Context, int ClientId) const;
 

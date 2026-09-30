@@ -302,6 +302,8 @@ void CBinds::SetDefaults()
 
 	Bind(KEY_F3, "vote yes");
 	Bind(KEY_F4, "vote no");
+	// the ready mode of a server, R in Teeworlds 0.7
+	Bind(KEY_F5, "ready");
 
 	Bind(KEY_K, "kill");
 	Bind(KEY_Q, "say /spec");
@@ -551,5 +553,10 @@ void CBinds::SetDDRaceBinds(bool FreeOnly)
 		Bind(KEY_W, "+jump", FreeOnly);
 	}
 
-	g_Config.m_ClDDRaceBindsSet = 3;
+	if(g_Config.m_ClDDRaceBindsSet < 4)
+	{
+		Bind(KEY_F5, "ready", FreeOnly);
+	}
+
+	g_Config.m_ClDDRaceBindsSet = 4;
 }

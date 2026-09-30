@@ -324,6 +324,7 @@ public:
 		bool m_DDRaceMsgSent = false;
 		int m_ShowOthers = -1;
 		int m_EnableSpectatorCount = -1;
+		int m_EnableReadyState = -1;
 		int m_SwitchStateTeam = -1;
 		float m_PlayerRecord = -1.0f;
 		int m_LegacyPredictedTick = -1;
@@ -359,6 +360,7 @@ public:
 		bool m_HasPrevExtendedCharacter = false;
 		bool m_HasDDNetPlayer = false;
 		bool m_HasSpecChar = false;
+		bool m_HasPlayerReady = false;
 		CNetObj_PlayerInfo m_PlayerInfo = {};
 		CNetObj_ClientInfo m_ClientInfo = {};
 		CNetObj_Character m_Character = {};
@@ -368,6 +370,7 @@ public:
 		int m_PrevExtendedTargetY = 0;
 		CNetObj_DDNetPlayer m_DDNetPlayer = {};
 		CNetObj_SpecChar m_SpecChar = {};
+		CNetObj_PlayerReady m_PlayerReady = {};
 	};
 
 	class CRenderedClient
@@ -554,6 +557,8 @@ private:
 	CNetObj_SpectatorCount m_SpectatorCount = {};
 	bool m_HasDDNetSpectatorInfo = false;
 	CNetObj_DDNetSpectatorInfo m_DDNetSpectatorInfo = {};
+	bool m_HasReadyState = false;
+	CNetObj_ReadyState m_ReadyState = {};
 	CGameInfo m_CoreGameInfo;
 	CTeamsCore m_Teams;
 	bool m_PredictionInitialized = false;
@@ -650,6 +655,20 @@ public:
 	}
 	bool HasDDNetSpectatorInfo() const { return m_HasDDNetSpectatorInfo; }
 	const CNetObj_DDNetSpectatorInfo &DDNetSpectatorInfo() const { return m_DDNetSpectatorInfo; }
+	void ApplyReadyState(const CNetObj_ReadyState &ReadyState)
+	{
+		m_HasReadyState = true;
+		m_ReadyState = ReadyState;
+	}
+	// whether the server has the ready mode of Teeworlds 0.7 on, see CNetObj_ReadyState
+	bool HasReadyState() const { return m_HasReadyState; }
+	const CNetObj_ReadyState &ReadyState() const { return m_ReadyState; }
+	// whether the game waits for its players to be ready, to start a match or to end a pause
+	bool IsWaitingForReady() const { return m_HasReadyState && m_ReadyState.m_Wait != READYWAIT_NONE; }
+	// whether the game waits for this player, who is in the game and not ready
+	bool IsWaitingForPlayer(int ClientId) const;
+	// how many players the game waits for
+	int NumNotReady() const;
 };
 
 #endif // GAME_CLIENT_GAME_STATE_H

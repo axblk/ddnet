@@ -111,6 +111,8 @@ class CHud : public CComponent
 
 	void RenderSpectatorHud(const CRenderContext &Context);
 	void RenderWarmupTimer(const CRenderContext &Context);
+	// whom the game waits for in ready mode, as Teeworlds 0.7 shows it
+	void RenderReadyNotification(const CRenderContext &Context);
 	void RenderLocalTime(const CRenderContext &Context, float x);
 
 	static constexpr float MOVEMENT_INFORMATION_LINE_HEIGHT = 8.0f;

@@ -261,6 +261,7 @@ void CGameState::CRuntimeState::Reset()
 	m_DDRaceMsgSent = false;
 	m_ShowOthers = -1;
 	m_EnableSpectatorCount = -1;
+	m_EnableReadyState = -1;
 	m_SwitchStateTeam = -1;
 	m_PlayerRecord = -1.0f;
 	m_LegacyPredictedTick = -1;
@@ -321,6 +322,8 @@ void CGameState::Reset()
 	m_SpectatorCount = {};
 	m_HasDDNetSpectatorInfo = false;
 	m_DDNetSpectatorInfo = {};
+	m_HasReadyState = false;
+	m_ReadyState = {};
 	m_CoreGameInfo = {};
 	m_Teams.Reset();
 	m_FullyPredicted = false;
@@ -397,6 +400,8 @@ void CGameState::ApplySnapshot(const ISessions &Sessions)
 	std::vector<CEntitySnapshot> vEntityEx;
 	CNetObj_DDNetSpectatorInfo DDNetSpectatorInfo = {};
 	bool HasDDNetSpectatorInfo = false;
+	CNetObj_ReadyState ReadyState = {};
+	bool HasReadyState = false;
 	for(int i = 0; i < NumItems; i++)
 	{
 		const ISessions::CSnapItem Item = Sessions.SnapGetItem(SessionId, ISessions::SNAP_CURRENT, i);
@@ -419,6 +424,11 @@ void CGameState::ApplySnapshot(const ISessions &Sessions)
 		{
 			HasDDNetSpectatorInfo = true;
 			DDNetSpectatorInfo = *static_cast<const CNetObj_DDNetSpectatorInfo *>(Item.m_pData);
+		}
+		else if(Item.m_Type == NETOBJTYPE_READYSTATE)
+		{
+			HasReadyState = true;
+			ReadyState = *static_cast<const CNetObj_ReadyState *>(Item.m_pData);
 		}
 		else if(Item.m_Type == NETOBJTYPE_ENTITYEX)
 		{
@@ -504,6 +514,10 @@ void CGameState::ApplySnapshot(const ISessions &Sessions)
 				SnapshotClient.m_HasSpecChar = true;
 				SnapshotClient.m_SpecChar = *static_cast<const CNetObj_SpecChar *>(Item.m_pData);
 				break;
+			case NETOBJTYPE_PLAYERREADY:
+				SnapshotClient.m_HasPlayerReady = true;
+				SnapshotClient.m_PlayerReady = *static_cast<const CNetObj_PlayerReady *>(Item.m_pData);
+				break;
 			}
 		}
 	}
@@ -525,6 +539,25 @@ void CGameState::ApplySnapshot(const ISessions &Sessions)
 		ApplySpectatorCount(SpectatorCount);
 	if(HasDDNetSpectatorInfo)
 		ApplyDDNetSpectatorInfo(DDNetSpectatorInfo);
+	if(HasReadyState)
+		ApplyReadyState(ReadyState);
+}
+
+bool CGameState::IsWaitingForPlayer(int ClientId) const
+{
+	if(!IsWaitingForReady() || ClientId < 0 || ClientId >= MAX_CLIENTS)
+		return false;
+	const CClientSnapshot &Client = m_aClients[ClientId];
+	return Client.m_HasPlayerReady && !Client.m_PlayerReady.m_Ready;
+}
+
+int CGameState::NumNotReady() const
+{
+	int NumNotReady = 0;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		if(IsWaitingForPlayer(ClientId))
+			NumNotReady++;
+	return NumNotReady;
 }
 
 void CGameState::ApplySnapshotData(int Tick, const std::array<CClientSnapshot, MAX_CLIENTS> &aClients, const CNetObj_GameInfo *pGameInfo, std::vector<CEntitySnapshot> vEntities)
@@ -553,6 +586,8 @@ void CGameState::ApplySnapshotData(int Tick, const std::array<CClientSnapshot, M
 	m_SpectatorCount = {};
 	m_HasDDNetSpectatorInfo = false;
 	m_DDNetSpectatorInfo = {};
+	m_HasReadyState = false;
+	m_ReadyState = {};
 	int LocalClientId = -1;
 	bool HasUnsetDDNetFinishTimes = false;
 	bool HasTrueMillisecondFinishTimes = false;

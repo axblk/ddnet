@@ -16,8 +16,9 @@ class CGameServices;
  * both wait for everybody in the game, and a player who is not ready any more
  * pauses a running game. This decides when a wait begins and ends, takes the
  * players' changes of mind, and tells the players whom the game waits for:
- * 0.7 clients from PLAYERFLAG_READY (see IsReady), all others in broadcasts.
- * Who is ready is kept by CReadyCheck.
+ * 0.7 clients from PLAYERFLAG_READY (see IsReady), DDNet clients that asked for
+ * it from the ready state objects, and all others in broadcasts. Who is ready
+ * is kept by CReadyCheck.
  *
  * What waiting, starting, pausing and resuming mean is up to the game it is a
  * part of, see IGame.
@@ -63,6 +64,7 @@ public:
 	bool IsOn() const;
 
 	void Tick();
+	void Snap(int SnappingClient);
 
 	/**
 	 * A player says that they are ready, or not any more, as the ready change of Teeworlds 0.7 does.
@@ -80,6 +82,8 @@ public:
 	void ForceReady(int ClientId);
 	// the player left the server and is not ready when coming back
 	void OnPlayerLeave(int ClientId);
+	// the client of a player started or stopped showing the ready state itself, see ShowsReadyState
+	void OnPlayerShowsReadyStateChanged(int ClientId);
 
 	// whether a player counts as ready, which everybody does while the game waits for nobody
 	bool IsReady(int ClientId) const { return m_ReadyCheck.IsReady(ClientId); }
@@ -106,6 +110,8 @@ private:
 	// the tick the game goes on anyway with sv_force_ready_all, 0 for never
 	int ForceReadyTick() const;
 	void SendBroadcasts(bool Clear);
+	// DDNet clients that asked for it and server demos get the ready state as objects
+	bool ShowsReadyState(int SnappingClient) const;
 
 	static void ConReady(IConsole::IResult *pResult, void *pUserData);
 };

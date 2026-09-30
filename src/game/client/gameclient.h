@@ -83,6 +83,8 @@
 #include <unordered_map>
 #include <vector>
 
+class CSnapshotBuilder;
+class CTranslationContext;
 class IMap;
 
 class CSnapEntities
@@ -263,7 +265,7 @@ private:
 
 	static void ConTeam(IConsole::IResult *pResult, void *pUserData);
 	static void ConKill(IConsole::IResult *pResult, void *pUserData);
-	static void ConReadyChange7(IConsole::IResult *pResult, void *pUserData);
+	static void ConReady(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainLanguageUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
@@ -558,6 +560,8 @@ public:
 	int OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo) override;
 	void *TranslateGameMsg(CSessionId SessionId, int *pMsgId, CUnpacker *pUnpacker);
 	int TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSix, CSnapshot *pSnapSrcSeven) override;
+	// what 0.7 says about who is ready, as the ready state objects of DDNet
+	static void TranslateReadyState7(const CTranslationContext &TranslationContext, const CClientMask &PlayerInfos, CSnapshotBuilder &Builder);
 	void OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacker) override;
 	void InvalidateSnapshot(CSessionId SessionId) override;
 	void OnNewSnapshot(CSessionId SessionId) override;
@@ -640,7 +644,8 @@ public:
 	void SendDummyInfo(bool Start) override;
 	void SendConnectionInfo(int Conn, bool Start);
 	void SendKill() const;
-	void SendReadyChange7(); // NOLINT(readability-make-member-function-const)
+	// says the player is ready, or not any more, in the ready mode of the server
+	void SendReadyChange();
 
 	// DDRace
 

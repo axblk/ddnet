@@ -2152,6 +2152,14 @@ void CGameContext::OnMessage(int MsgId, CUnpacker *pUnpacker, int ClientId)
 		case NETMSGTYPE_CL_ENABLESPECTATORCOUNT:
 			OnEnableSpectatorCountNetMessage(static_cast<CNetMsg_Cl_EnableSpectatorCount *>(pRawMsg), ClientId);
 			break;
+		case NETMSGTYPE_CL_READYCHANGE:
+			// unlike 0.7, the player is told why nothing happened, as for /ready
+			if(const char *pRefusal = m_GameHost.Controller()->ReadyMode().OnPlayerReadyChange(ClientId))
+				SendChatTarget(ClientId, pRefusal);
+			break;
+		case NETMSGTYPE_CL_ENABLEREADYSTATE:
+			OnEnableReadyStateNetMessage(static_cast<CNetMsg_Cl_EnableReadyState *>(pRawMsg), ClientId);
+			break;
 		default:
 			break;
 		}
@@ -2685,6 +2693,18 @@ void CGameContext::OnEnableSpectatorCountNetMessage(const CNetMsg_Cl_EnableSpect
 		return;
 
 	pPlayer->m_EnableSpectatorCount = pMsg->m_Enable;
+}
+
+void CGameContext::OnEnableReadyStateNetMessage(const CNetMsg_Cl_EnableReadyState *pMsg, int ClientId)
+{
+	CPlayer *pPlayer = m_apPlayers[ClientId];
+	if(!pPlayer)
+		return;
+
+	if(pPlayer->m_EnableReadyState == (bool)pMsg->m_Enable)
+		return;
+	pPlayer->m_EnableReadyState = pMsg->m_Enable;
+	m_GameHost.Controller()->ReadyMode().OnPlayerShowsReadyStateChanged(ClientId);
 }
 
 void CGameContext::OnStartInfoNetMessage(const CNetMsg_Cl_StartInfo *pMsg, int ClientId)

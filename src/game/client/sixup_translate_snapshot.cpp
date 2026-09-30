@@ -24,6 +24,8 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 	std::fill(std::begin(TranslationContext.m_apPlayerInfosRace), std::end(TranslationContext.m_apPlayerInfosRace), nullptr);
 
 	int SpectatorId = -3;
+	// the players of this snapshot, whose ready state 0.7 tells in their flags
+	CClientMask PlayerInfos;
 
 	for(int i = 0; i < pSnapSrcSeven->NumItems(); i++)
 	{
@@ -280,6 +282,7 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 				Info6.m_Team = TranslationContext.m_aClients[pItem7->Id()].m_Team;
 				TranslationContext.m_aClients[pItem7->Id()].m_PlayerFlags7 = pInfo7->m_PlayerFlags;
 				SourceState.Protocol7Client(pItem7->Id()).m_PlayerFlags = pInfo7->m_PlayerFlags;
+				PlayerInfos.set(pItem7->Id());
 			}
 			Info6.m_Score = pInfo7->m_Score;
 			Info6.m_Latency = pInfo7->m_Latency;
@@ -434,7 +437,45 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 		Builder.NewItem(NETOBJTYPE_GAMEDATA, 0, &GameData, sizeof(GameData));
 	}
 
+	TranslateReadyState7(TranslationContext, PlayerInfos, Builder);
+
 	return Builder.FinishIfNoDroppedItems(pSnapDstSix);
+}
+
+void CGameClient::TranslateReadyState7(const CTranslationContext &TranslationContext, const CClientMask &PlayerInfos, CSnapshotBuilder &Builder)
+{
+	// 0.7 waits for its players while a warmup or a pause has no end, and
+	// only says who is ready; a 0.7 client counts who is not
+	const int Flags = TranslationContext.m_GameStateFlags7;
+	const int WaitFlags = protocol7::GAMESTATEFLAG_WARMUP | protocol7::GAMESTATEFLAG_PAUSED;
+	const int OtherFlags = protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_GAMEOVER | protocol7::GAMESTATEFLAG_ROUNDOVER;
+	if((Flags & WaitFlags) == 0 || (Flags & OtherFlags) != 0 || TranslationContext.m_GameStateEndTick7 != 0)
+		return;
+	CClientMask Players;
+	bool AnyNotReady = false;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		const CTranslationContext::CClientData &Client = TranslationContext.m_aClients[ClientId];
+		if(!PlayerInfos.test(ClientId) || Client.m_Team == TEAM_SPECTATORS)
+			continue;
+		Players.set(ClientId);
+		AnyNotReady |= (Client.m_PlayerFlags7 & protocol7::PLAYERFLAG_READY) == 0;
+	}
+	// a warmup that waits for more players, or a pause of the server without ready mode
+	if(!AnyNotReady)
+		return;
+
+	CNetObj_ReadyState ReadyState = {};
+	ReadyState.m_Wait = (Flags & protocol7::GAMESTATEFLAG_WARMUP) ? READYWAIT_START : READYWAIT_RESUME;
+	Builder.NewItem(NETOBJTYPE_READYSTATE, 0, &ReadyState, sizeof(ReadyState));
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if(!Players.test(ClientId))
+			continue;
+		CNetObj_PlayerReady PlayerReady = {};
+		PlayerReady.m_Ready = (TranslationContext.m_aClients[ClientId].m_PlayerFlags7 & protocol7::PLAYERFLAG_READY) != 0;
+		Builder.NewItem(NETOBJTYPE_PLAYERREADY, ClientId, &PlayerReady, sizeof(PlayerReady));
+	}
 }
 
 int CGameClient::OnDemoRecSnap7(CSessionId SessionId, CSnapshot *pFrom, CSnapshotBuffer *pTo)

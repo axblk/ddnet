@@ -1102,6 +1102,7 @@ void IGameController::Snap(int SnappingClient)
 		Server()->SnapNewItem(0, GameData);
 	}
 
+	m_ReadyMode.Snap(SnappingClient);
 	SnapMode(SnappingClient);
 }
 

@@ -228,6 +228,7 @@ void CScoreboard::OnReset()
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
 	m_HighlightReportAction = -1;
+	m_HighlightReady = false;
 	m_ApplicationOverlayReady = false;
 }
 
@@ -426,6 +427,47 @@ void CScoreboard::RenderGoals(const CRenderContext &Context, CUIRect Goals)
 		str_format(aBuf, sizeof(aBuf), Localize("Round %d/%d"), pGameInfoObj->m_RoundCurrent, pGameInfoObj->m_RoundNum);
 		Ui()->DoLabel(&Goals, aBuf, FontSize, TEXTALIGN_MR);
 	}
+}
+
+void CScoreboard::RenderReadyBar(const CRenderContext &Context, CUIRect ReadyBar)
+{
+	GameClient()->m_Backdrop.DrawSurface(ReadyBar, ColorRGBA(0.0f, 0.0f, 0.0f, 0.5f), IGraphics::CORNER_ALL, 7.5f);
+	ReadyBar.VMargin(5.0f, &ReadyBar);
+
+	constexpr float FontSize = 10.0f;
+	const CGameState &State = Context.m_State;
+	const int NumNotReady = State.NumNotReady();
+	char aBuf[128];
+	if(NumNotReady == 1)
+		str_copy(aBuf, Localize("1 player not ready"));
+	else
+		str_format(aBuf, sizeof(aBuf), Localize("%d players not ready"), NumNotReady);
+	Ui()->DoLabel(&ReadyBar, aBuf, FontSize, TEXTALIGN_ML);
+
+	// the local player's state, and a button to change it
+	const int LocalClientId = State.LocalClientId();
+	if(Context.m_Time.m_IsDemoPlayback || LocalClientId < 0 || !State.Client(LocalClientId).m_HasPlayerReady)
+		return;
+	const bool Ready = State.Client(LocalClientId).m_PlayerReady.m_Ready;
+	char aKey[64];
+	GameClient()->m_Binds.GetKey("ready", aKey, sizeof(aKey));
+	const char *pLabel = Ready ? Localize("Not ready") : Localize("Ready");
+	char aLabel[128];
+	if(aKey[0])
+		str_format(aLabel, sizeof(aLabel), "%s (%s)", pLabel, aKey);
+	else
+		str_copy(aLabel, pLabel);
+	CUIRect Button;
+	ReadyBar.VSplitRight(std::max(80.0f, TextRender()->TextWidth(FontSize, aLabel) + 16.0f), nullptr, &Button);
+	Button.HMargin(3.0f, &Button);
+	if(m_pCurrentInteractionLayout != nullptr)
+	{
+		m_pCurrentInteractionLayout->m_ReadyRect = Button;
+		m_pCurrentInteractionLayout->m_HasReadyRect = true;
+	}
+	const float Alpha = m_HighlightReady ? 0.45f : 0.3f;
+	Button.Draw(Ready ? ColorRGBA(1.0f, 1.0f, 1.0f, Alpha - 0.12f) : ColorRGBA(0.1f, 1.0f, 0.1f, Alpha), IGraphics::CORNER_ALL, 5.0f);
+	Ui()->DoLabel(&Button, aLabel, FontSize, TEXTALIGN_MC);
 }
 
 void CScoreboard::RenderSpectators(const CRenderContext &Context, CUIRect Spectators)
@@ -938,8 +980,8 @@ void CScoreboard::RenderScoreboard(const CRenderContext &Context, CUIRect Scoreb
 				}
 				Player.m_Name.Render(TextRender(), vec2(NameOffset, TextY), NameColor);
 
-				// ready / watching
-				if(Context.m_Session.Protocol() == EGameProtocol::SIXUP && (Context.m_State.Protocol7Client(ClientId).m_PlayerFlags & protocol7::PLAYERFLAG_READY) != 0)
+				// ready, while the game waits for its players
+				if(Context.m_State.IsWaitingForReady() && SnapshotClient.m_HasPlayerReady && SnapshotClient.m_PlayerReady.m_Ready)
 				{
 					Player.m_ReadyMark.Update(TextRender(), "✓", FontSize);
 					Player.m_ReadyMark.Render(TextRender(), vec2(NameOffset + Player.m_Name.Width(), TextY), ColorRGBA(0.1f, 1.0f, 0.1f, TextColor.a));
@@ -1439,6 +1481,13 @@ void CScoreboard::OnRender(const CRenderContext &Context)
 		Spectators.HSplitTop(ScoreboardSpacing, nullptr, &Spectators);
 		RenderGoals(Context, Goals);
 	}
+	if(GameState.IsWaitingForReady())
+	{
+		CUIRect ReadyBar;
+		Spectators.HSplitTop(25.0f, &ReadyBar, &Spectators);
+		Spectators.HSplitTop(ScoreboardSpacing, nullptr, &Spectators);
+		RenderReadyBar(Context, ReadyBar);
+	}
 	RenderSpectators(Context, Spectators);
 
 	if(!m_MouseUnlocked)
@@ -1463,6 +1512,7 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
 	m_HighlightReportAction = -1;
+	m_HighlightReady = false;
 
 	if(m_MouseUnlocked && pLayout->m_HasMapTitleRect)
 	{
@@ -1482,6 +1532,12 @@ bool CScoreboard::UpdateApplicationOverlay(const CRenderContext &Context)
 			Ui()->DoPopupMenu(&m_MapTitlePopupContext, Ui()->MouseX(), Ui()->MouseY(), TextWidth + Margin * 2, TextHeight + Margin * 2, &m_MapTitlePopupContext, CMapTitlePopupContext::Render);
 		}
 		m_HighlightMapTitle = Ui()->HotItem() == &m_MapTitleButtonId;
+	}
+	if(m_MouseUnlocked && pLayout->m_HasReadyRect)
+	{
+		if(Ui()->DoButtonLogic(&m_ReadyButtonId, 0, &pLayout->m_ReadyRect, BUTTONFLAG_LEFT))
+			GameClient()->SendReadyChange();
+		m_HighlightReady = Ui()->HotItem() == &m_ReadyButtonId;
 	}
 	for(int Action = 0; m_MouseUnlocked && pLayout->m_ReportMatchId != UUID_ZEROED && Action < NUM_REPORT_ACTIONS; ++Action)
 	{
@@ -1531,6 +1587,7 @@ void CScoreboard::PrepareApplicationOverlay(const CRenderContext &Context)
 	m_HighlightClientId = -1;
 	m_HighlightMapTitle = false;
 	m_HighlightReportAction = -1;
+	m_HighlightReady = false;
 	if(!Context.m_Time.m_IsGameActive || !IsActive(Context))
 	{
 		if(m_MouseUnlocked)

@@ -4635,3 +4635,66 @@ TEST_F(GameWorld, ReadyModeIsNotForDDRace)
 	EXPECT_EQ(GameServer()->Console()->GetCommandInfo("ready", CFGFLAG_CHAT, false), nullptr);
 	LeavePlayer(0);
 }
+
+TEST_F(GameWorld, ReadyModeTellsDDNetClientsWhoIsReady)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvForceReadyAll = 2;
+	SelectGameMode("dm");
+	CPlayer *pFirst = JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	JoinPlayer(2, TEAM_SPECTATORS, "spectator");
+	RunTicks(this, 10);
+
+	// the client sees the players by the ids it was told
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+	{
+		m_pServer->GetIdMap(0)[ClientId] = ClientId;
+		m_pServer->GetReverseIdMap(0)[ClientId] = ClientId;
+	}
+	const auto &&Snap = [this](int SnappingClient, CSnapshotBuffer &Buffer) {
+		m_pServer->m_SnapshotBuilder.Init(false);
+		GameController()->Snap(SnappingClient);
+		m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+		return Buffer.AsSnapshot();
+	};
+	CSnapshotBuffer Buffer;
+	// only to the clients that asked for it
+	EXPECT_EQ(Snap(0, Buffer)->FindItem(NETOBJTYPE_READYSTATE, 0), nullptr);
+	pFirst->m_EnableReadyState = true;
+	const auto *pState = static_cast<const CNetObj_ReadyState *>(Snap(0, Buffer)->FindItem(NETOBJTYPE_READYSTATE, 0));
+	ASSERT_NE(pState, nullptr);
+	// the server has ready mode even while nothing waits
+	EXPECT_EQ(pState->m_Wait, READYWAIT_NONE);
+	EXPECT_EQ(Snap(0, Buffer)->FindItem(NETOBJTYPE_PLAYERREADY, 0), nullptr);
+
+	const int StartTick = m_pServer->Tick();
+	CUnpacker Unpacker;
+	Unpacker.Reset(nullptr, 0);
+	GameServer()->OnMessage(NETMSGTYPE_CL_READYCHANGE, &Unpacker, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	RunTicks(this, m_pServer->TickSpeed());
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	const CSnapshot *pSnapshot = Snap(0, Buffer);
+	pState = static_cast<const CNetObj_ReadyState *>(pSnapshot->FindItem(NETOBJTYPE_READYSTATE, 0));
+	ASSERT_NE(pState, nullptr);
+	EXPECT_EQ(pState->m_Wait, READYWAIT_RESUME);
+	EXPECT_EQ(pState->m_ForceReadyTick, StartTick + 2 * 60 * m_pServer->TickSpeed());
+	const auto *pFirstReady = static_cast<const CNetObj_PlayerReady *>(pSnapshot->FindItem(NETOBJTYPE_PLAYERREADY, 0));
+	const auto *pSecondReady = static_cast<const CNetObj_PlayerReady *>(pSnapshot->FindItem(NETOBJTYPE_PLAYERREADY, 1));
+	ASSERT_NE(pFirstReady, nullptr);
+	ASSERT_NE(pSecondReady, nullptr);
+	EXPECT_FALSE(pFirstReady->m_Ready);
+	EXPECT_TRUE(pSecondReady->m_Ready);
+	// spectators are not waited for
+	EXPECT_EQ(pSnapshot->FindItem(NETOBJTYPE_PLAYERREADY, 2), nullptr);
+	// and server demos keep it
+	EXPECT_NE(Snap(SERVER_DEMO_CLIENT, Buffer)->FindItem(NETOBJTYPE_PLAYERREADY, 1), nullptr);
+
+	// the capability comes in a message
+	CMsgPacker Packer(NETMSGTYPE_CL_ENABLEREADYSTATE, false);
+	Packer.AddInt(1);
+	Unpacker.Reset(Packer.Data(), Packer.Size());
+	GameServer()->OnMessage(NETMSGTYPE_CL_ENABLEREADYSTATE, &Unpacker, 2);
+	EXPECT_TRUE(GameServer()->m_apPlayers[2]->m_EnableReadyState);
+}

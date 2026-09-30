@@ -26,6 +26,7 @@
 #include <game/layers.h>
 #include <game/localization.h>
 
+#include <algorithm>
 #include <cmath>
 
 CHud::CHud()
@@ -1694,6 +1695,49 @@ void CHud::RenderLocalTime(const CRenderContext &Context, float x)
 	m_LocalTimeText.Render(TextRender(), vec2(x - 25.0f, (12.5f - 5.f) / 2.f), TextRender()->DefaultTextColor());
 }
 
+void CHud::RenderReadyNotification(const CRenderContext &Context)
+{
+	const CGameState &State = Context.m_State;
+	if(!State.IsWaitingForReady())
+		return;
+
+	const float Half = 150.0f * Context.AspectRatio(Graphics()->ScreenAspect());
+	const auto &&Centered = [&](const char *pText, float Y, float FontSize) {
+		TextRender()->Text(Half - TextRender()->TextWidth(FontSize, pText) / 2.0f, Y, FontSize, pText);
+	};
+
+	// a pause says so itself, a warmup that waits for the players has no timer to show
+	if(State.ReadyState().m_Wait == READYWAIT_START)
+		Centered(Localize("Warmup"), 50.0f, 20.0f);
+
+	char aBuf[128];
+	const int NumNotReady = State.NumNotReady();
+	if(NumNotReady == 1)
+		str_copy(aBuf, Localize("1 player not ready"));
+	else
+		str_format(aBuf, sizeof(aBuf), Localize("%d players not ready"), NumNotReady);
+	Centered(aBuf, 75.0f, 16.0f);
+
+	const int ForceReadyTick = State.ReadyState().m_ForceReadyTick;
+	if(ForceReadyTick > 0)
+	{
+		const int Seconds = std::max(0, (ForceReadyTick - Context.m_Time.m_GameTick) / Context.m_Time.m_GameTickSpeed);
+		str_format(aBuf, sizeof(aBuf), Localize("The game goes on in %d:%02d"), Seconds / 60, Seconds % 60);
+		Centered(aBuf, 95.0f, 12.0f);
+	}
+
+	// only the one who plays can get ready
+	if(Context.m_Time.m_IsDemoPlayback || Context.m_IsVideoOutput || !State.IsWaitingForPlayer(State.LocalClientId()))
+		return;
+	char aKey[64];
+	GameClient()->m_Binds.GetKey("ready", aKey, sizeof(aKey));
+	if(aKey[0])
+		str_format(aBuf, sizeof(aBuf), Localize("When ready, press <%s>"), aKey);
+	else
+		str_copy(aBuf, Localize("When ready, use the 'ready' command"));
+	Centered(aBuf, 30.0f, 16.0f);
+}
+
 void CHud::OnRender(const CRenderContext &Context)
 {
 	if(!Context.m_Time.m_IsGameActive)
@@ -1758,6 +1802,7 @@ void CHud::OnRender(const CRenderContext &Context)
 			RenderScoreHud(Context);
 		RenderDummyActions(Context);
 		RenderWarmupTimer(Context);
+		RenderReadyNotification(Context);
 		RenderTextInfo(Context);
 		RenderLocalTime(Context, (m_Width / 7) * 3);
 		if(!Context.m_Time.m_IsDemoPlayback)

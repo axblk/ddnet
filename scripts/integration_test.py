@@ -2093,6 +2093,148 @@ def vanilla_ctf_stock_07_match_lifecycle(test_env):
 	observer.wait_for_exit()
 
 
+def pvp_rcon_until(server, client, client_id, command, done_prefix):
+	"""Repeats an RCON command, like a hit, until the server logs a line starting with done_prefix."""
+	description = f"log line with prefix `{done_prefix}`"
+	for _ in range(80):
+		observed = vanilla_dm_rcon(server, client, client_id, command, observed_prefix=done_prefix)
+		if observed is not None:
+			return observed
+		try:
+			return server.wait_for_log_prefix(done_prefix, timeout=0.25)
+		except TimeoutError as error:
+			if str(error) != f"timeout waiting for {description}":
+				raise
+	raise TimeoutError(f"timeout waiting for {description}")
+
+
+def pvp_rcon_until_client_sees(server, client, client_id, command, observer, suffix):
+	"""Repeats an RCON command, like a hit, until the observer logs a line ending with suffix."""
+	description = f"log line with suffix `{suffix}`"
+	for _ in range(80):
+		vanilla_dm_rcon(server, client, client_id, command)
+		try:
+			return observer.wait_for_log_suffix(suffix, timeout=0.25)
+		except TimeoutError as error:
+			if str(error) != f"timeout waiting for {description}":
+				raise
+	raise TimeoutError(f"timeout waiting for {description}")
+
+
+def pvp_connect_stock_07(test_env, server, name):
+	client = test_env.teeworlds([f"player_name {name}", f"connect 127.0.0.1:{server.port}"])
+	client.wait_for_log(lambda l: "version 0.7" in l.line, "the version of the 0.7 client", timeout=10)
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in join:
+		raise AssertionError(f"sixup=1 not found in {join!r}")
+	return client, int(join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+
+def pvp_connect(server, client):
+	client.command(f"connect localhost:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in join:
+		raise AssertionError(f"sixup=0 not found in {join!r}")
+	return int(join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+
+def pvp_shutdown(server, clients, stock_clients=()):
+	server.exit()
+	for client in stock_clients:
+		client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	for client in clients:
+		client.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	for client in [*clients, *stock_clients]:
+		client.exit()
+	server.wait_for_exit()
+	for client in [*clients, *stock_clients]:
+		client.wait_for_exit()
+
+
+@test
+def instagib_gctf_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server([
+		"sv_gametype gctf",
+		"sv_map ctf1",
+		"sv_test_cmds 1",
+		# as on the official gCTF servers
+		"sv_grenade_ammo_regen 1",
+		"sv_grenade_ammo_regen_num 4",
+		"sv_grenade_ammo_regen_time 1000",
+		"sv_sprayprotection 1",
+		# the PvP layer tells of the kill
+		"sv_killingspree_kills 1",
+	])
+	wait_for_startup([attacker, victim, server])
+	pvp_connect(server, attacker)
+	victim_id = pvp_connect(server, victim)
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+
+	# a grenade that does enough damage kills at once; the server logs what an RCON command causes only to the RCON client
+	pvp_rcon_until_client_sees(server, attacker, attacker_id, f"damage_player {victim_id} {attacker_id} 4 3", victim, "*** 'attacker' is on a killing spree with 1 kills!")
+	# and the next round begins with everybody again, after a warmup of a second
+	vanilla_dm_rcon(server, attacker, attacker_id, "restart 1")
+	server.wait_for_log_exact("game: start round type='TestgCTF' teamplay='1'", timeout=15)
+	pvp_shutdown(server, [attacker, victim])
+
+
+@test(requires_teeworlds_client=True)
+def zcatch_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server(["sv_gametype zcatch", "sv_map Tutorial", "sv_test_cmds 1", "sv_zcatch_min_players 2", "sv_spawn_weapons laser"])
+	wait_for_startup([attacker, server])
+	pvp_connect(server, attacker)
+	# alone it is a release game
+	attacker.wait_for_log_suffix("*** Waiting for more players to start the round.", timeout=5)
+
+	victim, victim_id = pvp_connect_stock_07(test_env, server, "stock-victim")
+	server.wait_for_log_exact("game: start round type='TestzCatch' teamplay='0'", timeout=15)
+	attacker.wait_for_log_suffix("*** Enough players connected. Starting game!", timeout=5)
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+
+	# the 0.7 client is caught and dead, and the last one standing wins the round
+	pvp_rcon_until(server, attacker, attacker_id, f"damage_player {victim_id} {attacker_id} 100 4", "game: end round type='TestzCatch'")
+	victim.wait_for_log_suffix("*** You are spectator until 'attacker' dies", timeout=5)
+	attacker.wait_for_log_suffix("*** 'attacker' won the round and gained 0 points.", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestzCatch' teamplay='0'", timeout=15)
+	pvp_shutdown(server, [attacker], [victim])
+
+
+@test
+def catch16_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype catch16", "sv_map Tutorial", "sv_test_cmds 1", "sv_spawn_weapons laser"])
+	wait_for_startup([attacker, victim, server])
+	pvp_connect(server, attacker)
+	victim_id = pvp_connect(server, victim)
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+
+	# the one hit comes back in the colour of the attacker, and one colour is left
+	pvp_rcon_until(server, attacker, attacker_id, f"damage_player {victim_id} {attacker_id} 100 4", "game: end round type='Testcatch16'")
+	victim.wait_for_log(lambda l: l.line.startswith("broadcast: You are now in Team 'attacker' ("), "the team of the attacker", timeout=5)
+	victim.wait_for_log(lambda l: l.line.startswith("broadcast: Team '") and l.line.endswith(" of player 'attacker' won the round!"), "the team that won", timeout=5)
+	server.wait_for_log_exact("game: start round type='Testcatch16' teamplay='0'", timeout=15)
+	pvp_shutdown(server, [attacker, victim])
+
+
+@test(requires_teeworlds_client=True)
+def fng_stock_07_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server(["sv_gametype fng", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, server])
+	pvp_connect(server, attacker)
+	victim, victim_id = pvp_connect_stock_07(test_env, server, "stock-victim")
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+
+	# a hit freezes the 0.7 client instead of killing it, and the freeze scores for the team
+	pvp_rcon_until(server, attacker, attacker_id, f"damage_player {victim_id} {attacker_id} 100 4", "game: end round type='Testfng'")
+	server.wait_for_log_exact("game: start round type='Testfng' teamplay='1'", timeout=15)
+	pvp_shutdown(server, [attacker], [victim])
+
+
 SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DDNet client to play it."
 
 

@@ -5515,3 +5515,164 @@ TEST_F(GameWorld, FngFamily)
 	g_Config.m_SvFngHammer = 1;
 	EXPECT_NE(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_PREDICT_FNG, 0);
 }
+
+// What the DDNet client is told about every PvP mode, see the flag table of the report.
+TEST_F(GameWorld, PvPModesTellTheClientWhatTheyAre)
+{
+	constexpr int VanillaFlags = GAMEINFOFLAG_GAMETYPE_VANILLA | GAMEINFOFLAG_BUG_VANILLA_BOUNCE | GAMEINFOFLAG_PREDICT_VANILLA | GAMEINFOFLAG_ENTITIES_VANILLA | GAMEINFOFLAG_DONT_MASK_ENTITIES;
+	constexpr int InstagibFlags = VanillaFlags | GAMEINFOFLAG_UNLIMITED_AMMO;
+	constexpr int FngFlags = InstagibFlags | GAMEINFOFLAG_GAMETYPE_FNG | GAMEINFOFLAG_ENTITIES_FNG;
+	constexpr int HudFlags = GAMEINFOFLAG2_HUD_AMMO | GAMEINFOFLAG2_HUD_HEALTH_ARMOR | GAMEINFOFLAG2_PREDICT_EVENTS;
+	// a hit decides, health and armour say nothing
+	constexpr int HudInstagibFlags = GAMEINFOFLAG2_HUD_AMMO | GAMEINFOFLAG2_PREDICT_EVENTS;
+	struct SMode
+	{
+		const char *m_pName;
+		int m_Flags;
+		int m_Flags2;
+		// the PvP layer, which allows zooming with sv_allow_zoom
+		bool m_PvP;
+	};
+	const SMode aModes[] = {
+		{"dm", VanillaFlags, HudFlags, false},
+		{"tdm", VanillaFlags, HudFlags, false},
+		{"ctf", VanillaFlags, HudFlags, false},
+		{"lms", VanillaFlags, HudFlags, false},
+		{"lts", VanillaFlags, HudFlags, false},
+		{"idm", InstagibFlags, HudInstagibFlags, true},
+		{"itdm", InstagibFlags, HudInstagibFlags, true},
+		{"ictf", InstagibFlags, HudInstagibFlags, true},
+		{"gdm", InstagibFlags, HudInstagibFlags, true},
+		{"gtdm", InstagibFlags, HudInstagibFlags, true},
+		{"gctf", InstagibFlags, HudInstagibFlags, true},
+		{"zcatch", InstagibFlags, HudInstagibFlags, true},
+		{"catch16", InstagibFlags, HudInstagibFlags, true},
+		{"fng", FngFlags, HudInstagibFlags, true},
+		{"boomfng", FngFlags, HudInstagibFlags, true},
+		{"solofng", FngFlags, HudInstagibFlags, true},
+		{"bolofng", FngFlags, HudInstagibFlags, true},
+	};
+	for(const SMode &Mode : aModes)
+	{
+		SCOPED_TRACE(Mode.m_pName);
+		g_Config.m_SvAllowZoom = 0;
+		g_Config.m_SvFngHammer = 0;
+		SelectGameMode(Mode.m_pName);
+		EXPECT_EQ(GameController()->GameInfoFlags(-1), Mode.m_Flags);
+		EXPECT_EQ(GameController()->GameInfoFlags2(-1), Mode.m_Flags2);
+		g_Config.m_SvAllowZoom = 1;
+		EXPECT_EQ(GameController()->GameInfoFlags(-1), Mode.m_PvP ? Mode.m_Flags | GAMEINFOFLAG_ALLOW_ZOOM : Mode.m_Flags);
+		// only with the hammer the client predicts
+		g_Config.m_SvAllowZoom = 0;
+		g_Config.m_SvFngHammer = 1;
+		EXPECT_EQ(GameController()->GameInfoFlags(-1), Mode.m_Flags & GAMEINFOFLAG_GAMETYPE_FNG ? Mode.m_Flags | GAMEINFOFLAG_PREDICT_FNG : Mode.m_Flags);
+	}
+}
+
+TEST_F(GameWorld, ReadyModeWaitsInEveryPvPMode)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvCountdown = -1;
+	const int TickSpeed = m_pServer->TickSpeed();
+	for(const char *pMode : {"idm", "itdm", "ictf", "gdm", "gtdm", "gctf", "zcatch", "catch16", "fng", "boomfng", "solofng", "bolofng"})
+	{
+		SCOPED_TRACE(pMode);
+		g_Config.m_SvZcatchMinPlayers = 2;
+		SelectGameMode(pMode);
+		AddSpawnPoints(this);
+		JoinPlayer(0, TEAM_GAME, "first");
+		JoinPlayer(1, TEAM_GAME, "second");
+		RunTicks(this, 2);
+
+		// the match waits for everybody to be ready
+		GameController()->RestartAfterWarmup(-1);
+		RunTicks(this, 1);
+		EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+		EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+		EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+		RunTicks(this, 1);
+		EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+		EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(1), nullptr);
+		RunTicks(this, 2);
+		EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+		EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+
+		// and a player who is not ready any more pauses it
+		RunTicks(this, TickSpeed);
+		EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+		EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+		EXPECT_TRUE(GameController()->IsGamePaused());
+		RunTicks(this, TickSpeed);
+		GameController()->ReadyMode().OnPlayerReadyChange(0);
+		GameController()->ReadyMode().OnPlayerReadyChange(1);
+		RunTicks(this, 2);
+		EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+		EXPECT_FALSE(GameController()->IsGamePaused());
+
+		LeavePlayer(0);
+		LeavePlayer(1);
+	}
+}
+
+TEST_F(GameWorld, ReadyModeZCatchDoesNotWaitForTheCaught)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvCountdown = -1;
+	StartZCatch(this, 3);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 2, 0);
+	ASSERT_TRUE(IsCaught(this, 2));
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(2));
+
+	// who is caught is not in the game until the catcher dies
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(2), nullptr);
+	EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(1), nullptr);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	RunTicks(this, m_pServer->TickSpeed());
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	// and stays caught
+	EXPECT_TRUE(IsCaught(this, 2));
+}
+
+TEST_F(GameWorld, PvPAnticamperClockStandsStillInAPause)
+{
+	g_Config.m_SvAnticamper = 1;
+	g_Config.m_SvAnticamperTime = 5;
+	g_Config.m_SvAnticamperFreeze = 7;
+	g_Config.m_SvCountdown = -1;
+	SelectGameMode("idm");
+	CCharacter *pCamper = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCamper, nullptr);
+	for(int Tick = 0; Tick < 3 * SERVER_TICK_SPEED; Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	// a pause longer than the time to camp, as one that waits for the players to be ready
+	GameController()->DoPause(-1);
+	for(int Tick = 0; Tick < 10 * SERVER_TICK_SPEED; Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	GameController()->DoPause(0);
+	for(int Tick = 0; Tick < 3 * SERVER_TICK_SPEED; Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	EXPECT_EQ(pCamper->m_FreezeTime, 0);
+	// the clock started anew after the pause
+	for(int Tick = 0; Tick <= 2 * SERVER_TICK_SPEED; Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	EXPECT_EQ(pCamper->m_FreezeTime, 7 * SERVER_TICK_SPEED);
+}

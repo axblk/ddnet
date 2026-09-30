@@ -42,6 +42,8 @@
 #include <game/server/gameworld.h>
 #include <game/server/interactions.h>
 #include <game/server/mode/game_mode_registry.h>
+#include <game/server/modes/catch16/groups.h>
+#include <game/server/modes/fng/fng.h>
 #include <game/server/modes/vanilla/ctf.h>
 #include <game/server/modes/vanilla/dead_spectators.h>
 #include <game/server/modes/vanilla/dm.h>
@@ -5310,4 +5312,206 @@ TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
 	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
 	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, SevenCatcherId);
+}
+
+TEST_F(GameWorld, Catch16WhoIsHitComesBackInTheColourOfTheShooter)
+{
+	str_copy(g_Config.m_SvSpawnWeapons, "laser");
+	SelectGameMode("catch16");
+	AddSpawnPoints(this);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		JoinPlayer(ClientId, TEAM_GAME, ClientId == 0 ? "founder" : "other");
+	CPlayer *pVictim = GameServer()->m_apPlayers[1];
+	pVictim->SetTeeInfos("default", true, 0x123456, 0x654321);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	GameController()->Tick();
+	EXPECT_EQ(pVictim->TeeInfos().m_ColorBody, Catch16::GroupColors(0).m_Body);
+	EXPECT_EQ(pVictim->OwnTeeInfos().m_ColorBody, 0x123456);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 1);
+	RunTicks(this, 3);
+	ASSERT_NE(pVictim->GetCharacter(), nullptr);
+
+	// the group only pushes itself
+	CCharacter *pMember = ZCatchCharacter(this, 1);
+	pMember->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	EXPECT_TRUE(pMember->IsAlive());
+
+	// and wins with the last one
+	ZCatchCharacter(this, 0);
+	Hit(this, 2, 1);
+	GameController()->Tick();
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 1 + 5);
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	const CMatchStanding *pStanding = Received.m_Report.Standing(EMatchSubjectKind::PARTICIPANT, Received.m_LocalParticipantId);
+	ASSERT_NE(pStanding, nullptr);
+	EXPECT_EQ(pStanding->m_Outcome, EMatchOutcome::WIN);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "converts"), 1);
+}
+
+TEST_F(GameWorld, Catch16NewPlayersJoinTheBiggestGroupAndFounderLeavingSplitsIt)
+{
+	str_copy(g_Config.m_SvSpawnWeapons, "laser");
+	SelectGameMode("catch16");
+	AddSpawnPoints(this);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		JoinPlayer(ClientId, TEAM_GAME, "player");
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	JoinPlayer(3, TEAM_GAME, "late");
+	GameController()->Tick();
+	EXPECT_EQ(GameServer()->m_apPlayers[3]->TeeInfos().m_ColorBody, Catch16::GroupColors(0).m_Body);
+	LeavePlayer(0);
+	GameController()->Tick();
+	EXPECT_EQ(GameServer()->m_apPlayers[1]->TeeInfos().m_ColorBody, Catch16::GroupColors(1).m_Body);
+	EXPECT_EQ(GameServer()->m_apPlayers[3]->TeeInfos().m_ColorBody, Catch16::GroupColors(3).m_Body);
+}
+
+namespace
+{
+	class CTestFng : public CGameControllerFng<CGameControllerVanillaTDM, WEAPON_LASER>
+	{
+	public:
+		using CGameControllerFng::CGameControllerFng;
+		using CGameControllerFng::OnSpike;
+	};
+
+	// red 0 and 2 against blue 1 and 3, all standing
+	CTestFng &StartFng(GameWorld *pWorld)
+	{
+		CTestFng &Controller = pWorld->SelectController<CTestFng>("fng");
+		for(int ClientId = 0; ClientId < 4; ClientId++)
+		{
+			pWorld->JoinPlayer(ClientId, ClientId % 2 == 0 ? TEAM_RED : TEAM_BLUE, "player");
+			ZCatchCharacter(pWorld, ClientId);
+		}
+		return Controller;
+	}
+
+	int Score(GameWorld *pWorld, int ClientId)
+	{
+		return pWorld->GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWorld->GameServer()->m_apPlayers[ClientId]);
+	}
+
+	CCharacter *Character(GameWorld *pWorld, int ClientId)
+	{
+		return pWorld->GameServer()->m_apPlayers[ClientId]->GetCharacter();
+	}
+}
+
+TEST_F(GameWorld, FngHitFreezesInsteadOfKilling)
+{
+	StartFng(this);
+	EXPECT_TRUE(Character(this, 0)->GetWeaponGot(WEAPON_HAMMER));
+	EXPECT_EQ(Character(this, 0)->GetActiveWeapon(), WEAPON_LASER);
+	Character(this, 1)->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	ASSERT_NE(Character(this, 1), nullptr);
+	EXPECT_EQ(Character(this, 1)->m_FreezeTime, 10 * SERVER_TICK_SPEED);
+	EXPECT_EQ(Score(this, 0), 1);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 1);
+	// a frozen tee is not frozen again
+	Character(this, 1)->TakeDamage(vec2(), 0, 2, WEAPON_LASER);
+	EXPECT_EQ(Score(this, 2), 0);
+	// and cannot kill itself
+	GameController()->OnPlayerKill(1);
+	EXPECT_NE(Character(this, 1), nullptr);
+}
+
+TEST_F(GameWorld, FngSpikesScoreForWhoFroze)
+{
+	CTestFng &Controller = StartFng(this);
+	Character(this, 1)->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	Controller.OnSpike(Character(this, 1), Fng::ESpike::NORMAL);
+	EXPECT_EQ(Character(this, 1), nullptr);
+	EXPECT_EQ(Score(this, 0), 1 + 3);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 1 + 5);
+
+	// a tee that is not frozen just dies
+	Controller.OnSpike(Character(this, 3), Fng::ESpike::NORMAL);
+	EXPECT_EQ(Character(this, 3), nullptr);
+	EXPECT_EQ(Score(this, 0), 4);
+	GameController()->EndRound();
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "freezes"), 1);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "spike_kills"), 1);
+}
+
+TEST_F(GameWorld, FngTheSpikesOfTheOtherTeamCost)
+{
+	CTestFng &Controller = StartFng(this);
+	Character(this, 1)->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	Controller.OnSpike(Character(this, 1), Fng::ESpike::BLUE);
+	EXPECT_EQ(Score(this, 0), 1 - 5);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 1);
+	EXPECT_EQ(Character(this, 0)->m_FreezeTime, 10 * SERVER_TICK_SPEED);
+
+	// the own team's spikes are worth more
+	Character(this, 3)->TakeDamage(vec2(), 0, 2, WEAPON_LASER);
+	Controller.OnSpike(Character(this, 3), Fng::ESpike::RED);
+	EXPECT_EQ(Score(this, 2), 1 + 5);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 1 + 1 + 10);
+}
+
+TEST_F(GameWorld, FngATeamMateTouchProtects)
+{
+	CTestFng &Controller = StartFng(this);
+	Character(this, 1)->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	Character(this, 1)->TakeDamage(vec2(1.0f, 0.0f), 0, 3, WEAPON_HAMMER);
+	Controller.OnSpike(Character(this, 1), Fng::ESpike::NORMAL);
+	EXPECT_EQ(Score(this, 0), 1);
+	EXPECT_EQ(Score(this, 3), 0);
+}
+
+TEST_F(GameWorld, FngTheLastTouchGetsTheKill)
+{
+	CTestFng &Controller = StartFng(this);
+	Character(this, 1)->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	Character(this, 1)->TakeDamage(vec2(1.0f, 0.0f), 0, 2, WEAPON_HAMMER);
+	Controller.OnSpike(Character(this, 1), Fng::ESpike::GOLD);
+	EXPECT_EQ(Score(this, 0), 1);
+	EXPECT_EQ(Score(this, 2), 6);
+}
+
+TEST_F(GameWorld, FngTheHammerMeltsFrozenTeamMates)
+{
+	StartFng(this);
+	CCharacter *pMate = Character(this, 2);
+	pMate->Freeze(10);
+	pMate->TakeDamage(vec2(), 0, 0, WEAPON_HAMMER);
+	EXPECT_EQ(pMate->m_FreezeTime, 7 * SERVER_TICK_SPEED);
+	EXPECT_EQ(Score(this, 0), 0);
+	pMate->m_FreezeTime = SERVER_TICK_SPEED;
+	pMate->TakeDamage(vec2(), 0, 0, WEAPON_HAMMER);
+	EXPECT_EQ(pMate->m_FreezeTime, 2);
+	EXPECT_EQ(Score(this, 0), 1);
+	// and never freezes or hurts
+	Character(this, 1)->TakeDamage(vec2(), 3, 0, WEAPON_HAMMER);
+	EXPECT_EQ(Character(this, 1)->m_FreezeTime, 0);
+	EXPECT_EQ(Character(this, 1)->GetHealth(), 10);
+}
+
+TEST_F(GameWorld, FngFamily)
+{
+	SelectGameMode("solofng");
+	EXPECT_FALSE(GameController()->IsTeamPlay());
+	CCharacter *pLaser = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pLaser, nullptr);
+	EXPECT_EQ(pLaser->GetActiveWeapon(), WEAPON_LASER);
+	DeletePlayers();
+	SelectGameMode("bolofng");
+	CCharacter *pGrenade = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pGrenade, nullptr);
+	EXPECT_EQ(pGrenade->GetActiveWeapon(), WEAPON_GRENADE);
+	DeletePlayers();
+	SelectGameMode("boomfng");
+	EXPECT_TRUE(GameController()->IsTeamPlay());
+	const int Flags = GameController()->GameInfoFlags(-1);
+	EXPECT_NE(Flags & GAMEINFOFLAG_GAMETYPE_FNG, 0);
+	EXPECT_NE(Flags & GAMEINFOFLAG_ENTITIES_FNG, 0);
+	EXPECT_EQ(Flags & GAMEINFOFLAG_PREDICT_FNG, 0);
+	g_Config.m_SvFngHammer = 1;
+	EXPECT_NE(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_PREDICT_FNG, 0);
 }

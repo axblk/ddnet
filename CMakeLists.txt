@@ -4137,6 +4137,15 @@ if(SERVER)
     mode/ready_check.h
     mode/ready_mode.cpp
     mode/ready_mode.h
+    modes/catch16/catch16.cpp
+    modes/catch16/config_variables.h
+    modes/catch16/groups.cpp
+    modes/catch16/groups.h
+    modes/fng/config_variables.h
+    modes/fng/fng.cpp
+    modes/fng/fng.h
+    modes/fng/spikes.cpp
+    modes/fng/spikes.h
     modes/insta/config_variables.h
     modes/insta/grenade_ammo.cpp
     modes/insta/grenade_ammo.h

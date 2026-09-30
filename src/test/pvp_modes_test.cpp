@@ -1,4 +1,10 @@
 // The rules of the building blocks the PvP modes share, and of the modes, without a game world.
+#include <base/str.h>
+
+#include <engine/shared/config.h>
+
+#include <game/server/modes/catch16/groups.h>
+#include <game/server/modes/fng/spikes.h>
 #include <game/server/modes/insta/grenade_ammo.h>
 #include <game/server/modes/insta/instagib.h>
 #include <game/server/modes/pvp/anticamper.h>
@@ -246,4 +252,176 @@ TEST(Catches, WhoLeavesIsLetGoAndLetsGo)
 	EXPECT_FALSE(Catches.IsCaught(2));
 	Catches.Clear();
 	EXPECT_EQ(Catches.LeaderId(), CCatches::NONE);
+}
+
+TEST(Catch16Groups, WhoIsHitJoinsTheGroup)
+{
+	CCatch16Groups Groups;
+	EXPECT_EQ(Groups.Group(3), 3);
+	EXPECT_TRUE(Groups.Join(3, 1));
+	EXPECT_FALSE(Groups.Join(3, 1));
+	EXPECT_TRUE(Groups.SameGroup(1, 3));
+	// the founder can be caught by another group, the group stays
+	EXPECT_TRUE(Groups.Join(1, 2));
+	EXPECT_EQ(Groups.Group(3), 1);
+	Groups.Leave(3);
+	EXPECT_EQ(Groups.Group(3), 3);
+}
+
+TEST(Catch16Groups, AGroupEndsWithItsFounder)
+{
+	CCatch16Groups Groups;
+	Groups.Join(3, 1);
+	Groups.Join(4, 1);
+	Groups.Join(1, 2);
+	EXPECT_EQ(Groups.Dissolve(1), (std::vector<int>{3, 4}));
+	EXPECT_EQ(Groups.Group(3), 3);
+	EXPECT_EQ(Groups.Group(1), 1);
+}
+
+TEST(Catch16Groups, RoundIsOverWithOneGroup)
+{
+	CCatch16Groups Groups;
+	std::bitset<MAX_CLIENTS> Playing;
+	Playing.set(0);
+	EXPECT_EQ(Groups.OnlyGroup(Playing), -1);
+	Playing.set(1);
+	Playing.set(2);
+	EXPECT_EQ(Groups.OnlyGroup(Playing), -1);
+	Groups.Join(1, 0);
+	EXPECT_EQ(Groups.OnlyGroup(Playing), -1);
+	Groups.Join(2, 0);
+	EXPECT_EQ(Groups.OnlyGroup(Playing), 0);
+	// who does not play does not count
+	Groups.Join(0, 5);
+	Playing.reset(0);
+	EXPECT_EQ(Groups.OnlyGroup(Playing), 0);
+}
+
+TEST(Catch16Groups, NewPlayersGoIntoTheBiggestGroups)
+{
+	CCatch16Groups Groups;
+	std::bitset<MAX_CLIENTS> Playing;
+	for(int ClientId = 0; ClientId < 6; ClientId++)
+		Playing.set(ClientId);
+	EXPECT_TRUE(Groups.BiggestGroups(Playing).empty());
+	Groups.Join(1, 0);
+	Groups.Join(3, 2);
+	EXPECT_EQ(Groups.BiggestGroups(Playing), (std::vector<int>{0, 2}));
+	Groups.Join(4, 2);
+	EXPECT_EQ(Groups.BiggestGroups(Playing), std::vector<int>{2});
+}
+
+TEST(Catch16Groups, ColorsAfterCatch64)
+{
+	// cherry, the first of 16 hues
+	EXPECT_EQ(Catch16::GroupColors(0).m_Body, 0x00FF00);
+	EXPECT_EQ(Catch16::GroupColors(0).m_Feet, 0x00FF00);
+	// cyan
+	EXPECT_EQ(Catch16::GroupColors(1).m_Body, 0x80FF00);
+	// then with white feet, a black body and a white body
+	EXPECT_EQ(Catch16::GroupColors(17).m_Feet, 0x00FFFF);
+	EXPECT_EQ(Catch16::GroupColors(33).m_Body, 0x000000);
+	EXPECT_EQ(Catch16::GroupColors(49).m_Body, 0x00FFFF);
+	EXPECT_EQ(Catch16::GroupColors(49).m_Feet, 0x80FF00);
+	char aName[32];
+	Catch16::GroupColorName(1, aName, sizeof(aName));
+	EXPECT_STREQ(aName, "cyan");
+	Catch16::GroupColorName(33, aName, sizeof(aName));
+	EXPECT_STREQ(aName, "black-cyan");
+	for(int Founder = 0; Founder < 16; Founder++)
+		for(int Other = Founder + 1; Other < 16; Other++)
+			EXPECT_NE(Catch16::GroupColors(Founder).m_Body, Catch16::GroupColors(Other).m_Body);
+}
+
+// the settings as the server starts with them, for the rules that read them
+class FngRules : public ::testing::Test // NOLINT(readability-identifier-naming)
+{
+	CConfig m_Backup = g_Config;
+
+public:
+	FngRules()
+	{
+#define MACRO_CONFIG_INT(Name, ScriptName, Def, Min, Max, Flags, Desc) g_Config.m_##Name = Def;
+#define MACRO_CONFIG_COL(Name, ScriptName, Def, Flags, Desc) g_Config.m_##Name = Def;
+#define MACRO_CONFIG_STR(Name, ScriptName, Len, Def, Flags, Desc) str_copy(g_Config.m_##Name, Def);
+#include <engine/shared/config_variables.h>
+#undef MACRO_CONFIG_INT
+#undef MACRO_CONFIG_COL
+#undef MACRO_CONFIG_STR
+	}
+	~FngRules() override { g_Config = m_Backup; }
+};
+
+TEST(Fng, SpikesOfTheTiles)
+{
+	EXPECT_EQ(Fng::SpikeOfTile(7), Fng::ESpike::GOLD);
+	EXPECT_EQ(Fng::SpikeOfTile(8), Fng::ESpike::NORMAL);
+	EXPECT_EQ(Fng::SpikeOfTile(9), Fng::ESpike::RED);
+	EXPECT_EQ(Fng::SpikeOfTile(10), Fng::ESpike::BLUE);
+	EXPECT_EQ(Fng::SpikeOfTile(14), Fng::ESpike::GREEN);
+	EXPECT_EQ(Fng::SpikeOfTile(15), Fng::ESpike::PURPLE);
+	EXPECT_EQ(Fng::SpikeOfTile(1), Fng::ESpike::NONE);
+}
+
+TEST(Fng, TheNearestSpikeUnderTheTee)
+{
+	// a gold spike right of the tile the tee is in, a normal one below
+	const auto Tiles = [](int x, int y) {
+		if(x == 3 && y == 2)
+			return Fng::ESpike::GOLD;
+		if(x == 2 && y == 3)
+			return Fng::ESpike::NORMAL;
+		return Fng::ESpike::NONE;
+	};
+	// the corners reach a third of the radius of 28 around the centre
+	EXPECT_EQ(Fng::TouchedSpike(vec2(80.0f, 80.0f), 28.0f, 10, 10, Tiles), Fng::ESpike::NONE);
+	EXPECT_EQ(Fng::TouchedSpike(vec2(90.0f, 80.0f), 28.0f, 10, 10, Tiles), Fng::ESpike::GOLD);
+	EXPECT_EQ(Fng::TouchedSpike(vec2(80.0f, 90.0f), 28.0f, 10, 10, Tiles), Fng::ESpike::NORMAL);
+	EXPECT_EQ(Fng::TouchedSpike(vec2(92.0f, 90.0f), 28.0f, 10, 10, Tiles), Fng::ESpike::GOLD);
+	EXPECT_EQ(Fng::TouchedSpike(vec2(90.0f, 92.0f), 28.0f, 10, 10, Tiles), Fng::ESpike::NORMAL);
+}
+
+TEST_F(FngRules, WhatTheSpikesAreWorth)
+{
+	const Fng::CSpikePoints Normal = Fng::SpikePoints(Fng::ESpike::NORMAL, TEAM_RED, true);
+	EXPECT_EQ(Normal.m_Player, 3);
+	EXPECT_EQ(Normal.m_Team, 5);
+	EXPECT_FALSE(Normal.m_Wrong);
+	EXPECT_EQ(Fng::SpikePoints(Fng::ESpike::GOLD, TEAM_RED, true).m_Player, 6);
+	EXPECT_EQ(Fng::SpikePoints(Fng::ESpike::GREEN, TEAM_RED, true).m_Team, 15);
+	EXPECT_EQ(Fng::SpikePoints(Fng::ESpike::PURPLE, TEAM_RED, true).m_Player, 10);
+	const Fng::CSpikePoints Own = Fng::SpikePoints(Fng::ESpike::RED, TEAM_RED, true);
+	EXPECT_EQ(Own.m_Player, 5);
+	EXPECT_EQ(Own.m_Team, 10);
+	const Fng::CSpikePoints Wrong = Fng::SpikePoints(Fng::ESpike::BLUE, TEAM_RED, true);
+	EXPECT_TRUE(Wrong.m_Wrong);
+	EXPECT_EQ(Wrong.m_Player, -5);
+	EXPECT_EQ(Wrong.m_Team, 0);
+	// without teams every team spike is right
+	EXPECT_FALSE(Fng::SpikePoints(Fng::ESpike::BLUE, TEAM_GAME, false).m_Wrong);
+}
+
+TEST_F(FngRules, TheHammerTheDDNetClientPredicts)
+{
+	EXPECT_FALSE(Fng::IsPredictedHammer());
+	g_Config.m_SvFngHammer = 1;
+	EXPECT_TRUE(Fng::IsPredictedHammer());
+	const vec2 Push = vec2(0.0f, -1.0f) + normalize(vec2(1.0f, 0.0f) + vec2(0.0f, -1.1f)) * 10.0f;
+	const vec2 Force = Fng::HammerForce(vec2(0.0f, 0.0f), vec2(10.0f, 0.0f), false);
+	EXPECT_FLOAT_EQ(Force.x, Push.x * 3.2f);
+	EXPECT_FLOAT_EQ(Force.y, Push.y * 1.2f);
+	const vec2 Melt = Fng::HammerForce(vec2(0.0f, 0.0f), vec2(10.0f, 0.0f), true);
+	EXPECT_FLOAT_EQ(Melt.x, Push.x * 0.5f);
+	g_Config.m_SvHammerScaleX = 300;
+	EXPECT_FALSE(Fng::IsPredictedHammer());
+}
+
+TEST(Fng, MeltingTakesThreeSeconds)
+{
+	bool Thawed;
+	EXPECT_EQ(Fng::MeltFreeze(500, 50, &Thawed), 350);
+	EXPECT_FALSE(Thawed);
+	EXPECT_EQ(Fng::MeltFreeze(100, 50, &Thawed), 2);
+	EXPECT_TRUE(Thawed);
 }

@@ -1455,6 +1455,25 @@ def server_reloads_wss_certificate(test_env):
 		runnable.wait_for_exit()
 
 
+@test(requires_websockets=True)
+def client_can_connect_websockets_on_bindaddr(test_env):
+	# An IPv4 bindaddr used to make libwebsockets retry an IPv6 bind forever,
+	# on the server and on the client.
+	client = test_env.client(["bindaddr 127.0.0.1", "dbg_websockets 1", "stdout_output_level 1"])
+	server = test_env.server(["bindaddr 127.0.0.1", "dbg_websockets 1", "stdout_output_level 1"])
+	wait_for_startup([client, server])
+	client.command(f"connect ddnet-20+ws://127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+	server.exit()
+	client.wait_for_log_exact("client: offline error='Server shutdown'")
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+	bind_errors = [line for line in server.full_stdout + client.full_stdout if "ERROR on binding" in line]
+	if bind_errors:
+		raise AssertionError(f"websockets could not bind: {bind_errors[:3]!r}")
+
+
 @test
 def open_editor(test_env):
 	client = test_env.client(["maps/coverage.map"])

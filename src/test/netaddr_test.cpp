@@ -1,3 +1,4 @@
+#include <base/mem.h>
 #include <base/net.h>
 
 #include <gtest/gtest.h>
@@ -271,4 +272,23 @@ TEST(NetAddr, IsLocal)
 
 	net_addr_from_str(&Addr, "[2001:db8::1]");
 	EXPECT_FALSE(net_addr_is_local(&Addr));
+}
+
+TEST(NetAddr, BindaddrTypes)
+{
+	NETADDR Addr;
+	mem_zero(&Addr, sizeof(Addr));
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_ALL), NETTYPE_ALL);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_IPV4), NETTYPE_IPV4);
+
+	ASSERT_EQ(net_addr_from_str(&Addr, "0.0.0.0"), 0);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_ALL), NETTYPE_ALL);
+	ASSERT_EQ(net_addr_from_str(&Addr, "[::]"), 0);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_ALL), NETTYPE_ALL);
+
+	ASSERT_EQ(net_addr_from_str(&Addr, "127.0.0.1"), 0);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_ALL), NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4);
+	ASSERT_EQ(net_addr_from_str(&Addr, "[::1]"), 0);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_ALL), NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
+	EXPECT_EQ(net_bindaddr_types(&Addr, NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4), 0);
 }

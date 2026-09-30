@@ -198,6 +198,21 @@ int net_addr_from_str(NETADDR *addr, const char *string);
  */
 int net_host_lookup(const char *hostname, NETADDR *addr, int types);
 
+/**
+ * Chooses the socket types to open on a bind address. An address belongs to
+ * one family: asking for the other one as well fails for UDP, and makes
+ * libwebsockets retry the bind forever.
+ *
+ * @ingroup Network-Address
+ *
+ * @param addr The bind address, all zero if none is configured.
+ * @param types The socket types to choose from.
+ *
+ * @return The types of `types` in the family of `addr`, all of them for the
+ * unspecified address (none, `0.0.0.0` or `::`).
+ */
+int net_bindaddr_types(const NETADDR *addr, int types);
+
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 /**
  * Selects whether websockets are opened as `wss` or `ws`.

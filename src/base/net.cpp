@@ -714,6 +714,16 @@ static int net_host_lookup_fallback(const char *hostname, NETADDR *addr, int typ
 	return -1;
 }
 
+int net_bindaddr_types(const NETADDR *addr, int types)
+{
+	static const unsigned char s_aAny[sizeof(addr->ip)] = {0};
+	if(mem_comp(addr->ip, s_aAny, sizeof(s_aAny)) == 0)
+		return types;
+	if(addr->type & NETTYPE_IPV4)
+		return types & (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4);
+	return types & (NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
+}
+
 int net_host_lookup(const char *hostname, NETADDR *addr, int types)
 {
 	if(str_startswith(hostname, "ws://") != nullptr)

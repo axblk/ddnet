@@ -1299,7 +1299,7 @@ void CClient::ResetSocket()
 		log_error("client", "The configured bindaddr '%s' cannot be resolved.", g_Config.m_Bindaddr);
 		return;
 	}
-	BindAddr.type = NETTYPE_ALL;
+	BindAddr.type = net_bindaddr_types(&BindAddr, NETTYPE_ALL);
 	for(size_t Conn = 0; Conn < std::size(m_aNetClient); Conn++)
 	{
 		char aError[256];
@@ -3920,7 +3920,7 @@ bool CClient::InitNetworkClient(char *pError, size_t ErrorSize)
 		str_format(pError, ErrorSize, "The configured bindaddr '%s' cannot be resolved.", g_Config.m_Bindaddr);
 		return false;
 	}
-	BindAddr.type = NETTYPE_ALL;
+	BindAddr.type = net_bindaddr_types(&BindAddr, NETTYPE_ALL);
 	for(size_t i = 0; i < std::size(m_aNetClient); i++)
 	{
 		if(!InitNetworkClientImpl(BindAddr, i, pError, ErrorSize))

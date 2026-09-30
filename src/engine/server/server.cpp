@@ -4012,7 +4012,12 @@ int CServer::Run()
 		log_error("server", "The configured bindaddr '%s' cannot be resolved", g_Config.m_Bindaddr);
 		return -1;
 	}
-	BindAddr.type = Config()->m_SvIpv4Only ? (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4) : NETTYPE_ALL;
+	BindAddr.type = net_bindaddr_types(&BindAddr, Config()->m_SvIpv4Only ? (NETTYPE_IPV4 | NETTYPE_WEBSOCKET_IPV4) : NETTYPE_ALL);
+	if(BindAddr.type == 0)
+	{
+		log_error("server", "The configured bindaddr '%s' is not an IPv4 address, but sv_ipv4only is set", g_Config.m_Bindaddr);
+		return -1;
+	}
 
 	int Port = Config()->m_SvPort;
 	for(BindAddr.port = Port != 0 ? Port : 8303; !m_NetServer.Open(BindAddr, &m_ServerBan, Config()->m_SvMaxClients, Config()->m_SvMaxClientsPerIp); BindAddr.port++)

@@ -3,6 +3,7 @@
 #ifndef GAME_CLIENT_GAMECLIENT_H
 #define GAME_CLIENT_GAMECLIENT_H
 
+#include "first_frame_gate.h"
 #include "game_state.h"
 #include "game_view.h"
 #include "local_player_profile.h"
@@ -913,6 +914,7 @@ private:
 	bool m_CoreImagesPending = false;
 	bool m_StartupAssetsPending = false;
 	int64_t m_StartupAssetsStart = 0;
+	CFirstFrameGate m_FirstFrameGate;
 	std::vector<CStartupImageLoad> m_vStartupImageLoads;
 	std::vector<CAssetPackLoad> m_vAssetPackLoads;
 	std::unordered_map<std::string, CImageInfo> m_DecodedAssetImages;

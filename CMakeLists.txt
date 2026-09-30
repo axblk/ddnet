@@ -3064,6 +3064,8 @@ if(CLIENT)
     components/touch_controls.h
     components/voting.cpp
     components/voting.h
+    first_frame_gate.cpp
+    first_frame_gate.h
     frontend.h
     game_prediction.cpp
     game_prediction.h

@@ -145,6 +145,7 @@ bool CStandaloneMapView::OpenWindow(int Width, int Height, IEngineGraphicsWindow
 
 bool CStandaloneMapView::LoadMap(const char *pPath, int StorageType)
 {
+	const int64_t StartTime = time_get();
 	UnloadMap();
 
 	std::unique_ptr<IMap> pMap(CreateMap());
@@ -161,9 +162,18 @@ bool CStandaloneMapView::LoadMap(const char *pPath, int StorageType)
 
 	m_pMap = std::move(pMap);
 	m_Layers.Init(m_pMap.get(), false, true);
+	const int64_t ImagesStart = time_get();
+	// Waits for the map's images, so that the first frame has all of them.
 	m_pMapImages = std::make_unique<MapViewSupport::CToolMapImages>(m_pGraphics, m_pStorage.get(), &m_AssetLoader, m_pMap.get(), &m_Layers, m_pLogContext);
+	const int64_t LayersStart = time_get();
 	m_pEnvelopeEval = std::make_unique<MapViewSupport::CMapRenderEnvelopeEval>(m_pMap.get(), 0);
 	m_MapRenderer.Load(RENDERTYPE_FULL_DESIGN, &m_Layers, m_pMapImages.get(), m_pEnvelopeEval.get(), std::nullopt, m_pEngine);
+	// Where the time went: reading the file, getting the images - fetched and
+	// decoded at once, then uploaded one by one - and making the layers.
+	const int64_t End = time_get();
+	const auto Ms = [](int64_t Ticks) { return Ticks * 1000.0 / time_freq(); };
+	log_info(m_pLogContext, "Loaded map '%s' with its images in %.0f ms: file %.0f ms, %d images %.0f ms (uploading %.0f ms), layers %.0f ms",
+		pPath, Ms(End - StartTime), Ms(ImagesStart - StartTime), m_pMapImages->NumLoaded(), Ms(LayersStart - ImagesStart), Ms(m_pMapImages->UploadTime()), Ms(End - LayersStart));
 	return true;
 }
 

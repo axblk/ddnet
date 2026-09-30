@@ -652,6 +652,8 @@ void CGameClient::OnInit()
 
 	FinishLoadingCoreImages();
 	m_InitComplete = true;
+	if(m_pFrontend != nullptr)
+		m_FirstFrameGate.Begin(CFirstFrameGate::EScene::MENUS, CSessionId(), OnInitStart, m_AssetLoader);
 
 	OnSessionClosed(Sessions()->FocusedSessionId());
 
@@ -1480,6 +1482,15 @@ void CGameClient::OnRender()
 	const bool IsVideoOutput = m_PreparedVideoOutput;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
 	const bool NoGame = Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK;
+	if(NoGame)
+	{
+		if(m_pFrontend != nullptr)
+			m_FirstFrameGate.OnDrawn(CFirstFrameGate::EScene::MENUS, CSessionId(), m_AssetLoader);
+	}
+	else
+	{
+		m_FirstFrameGate.OnDrawn(CFirstFrameGate::EScene::GAME, Sessions()->FocusedSessionId(), m_AssetLoader);
+	}
 	if(m_PreparedIsolatedVideoOutput || !m_Backdrop.Begin(ClearColor, NoGame || BackdropWanted()))
 		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 	auto RenderInView = [this](const CViewport &Viewport, const auto &Render) {
@@ -2475,6 +2486,10 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 
 void CGameClient::OnStateChange(int NewState, int OldState)
 {
+	// Joining a server, a new map on it and opening a demo all begin here.
+	const auto &&Loading = [](int State) { return State == IClient::STATE_CONNECTING || State == IClient::STATE_LOADING; };
+	if(Loading(NewState) && !Loading(OldState))
+		m_FirstFrameGate.Begin(CFirstFrameGate::EScene::GAME, Sessions()->FocusedSessionId(), time_get(), m_AssetLoader);
 	for(auto &pComponent : m_vpAll)
 		pComponent->OnStateChange(NewState, OldState);
 }

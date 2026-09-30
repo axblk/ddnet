@@ -12,6 +12,7 @@
 #include <engine/shared/jobs.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -136,6 +137,14 @@ class CAssetLoader
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
+	// What arrives while a report of late assets runs, see `ReportLateAssets`
+	std::string m_LateWhat;
+	int64_t m_LateStart = 0;
+	int64_t m_LateEnd = 0;
+	std::vector<std::pair<std::string, int64_t>> m_vLateAssets;
+	void NoteFinishedJob(const CAssetJob &Job);
+	void FinishLateReport();
+
 	CLock m_ReaderLock;
 	CSemaphore m_ReaderSemaphore;
 	std::deque<std::shared_ptr<CAssetJob>> m_vpUnreadJobs GUARDED_BY(m_ReaderLock);
@@ -180,6 +189,22 @@ public:
 	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	void Update() REQUIRES(!m_ReaderLock);
 	void Shutdown() REQUIRES(!m_ReaderLock);
+
+	/**
+	 * Notes every asset that finishes from now on for a while, and logs them
+	 * in one line when the while is over. Called when something is first
+	 * drawn: an asset that arrives after it can pop in. A report that still
+	 * runs is logged first.
+	 *
+	 * @param pWhat What was drawn, for the log.
+	 * @param Window For how long assets are noted.
+	 */
+	void ReportLateAssets(const char *pWhat, std::chrono::nanoseconds Window);
+	/**
+	 * Logs a report of late assets that still runs, when something else
+	 * begins to load: what arrives from then on is what that loads.
+	 */
+	void EndLateReport();
 };
 
 /**

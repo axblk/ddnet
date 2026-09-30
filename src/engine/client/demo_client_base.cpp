@@ -92,6 +92,7 @@ bool CDemoClientBase::InitGame(IEngineGraphicsWindow *pWindow, IEngineInput *pIn
 		return false;
 	}
 
+	const int64_t SoundStart = time_get();
 	GameClient()->InitializeLanguage();
 	if(Sound()->Init() != 0 && m_Settings.m_Audio)
 	{
@@ -101,12 +102,19 @@ bool CDemoClientBase::InitGame(IEngineGraphicsWindow *pWindow, IEngineInput *pIn
 #if defined(CONF_VIDEORECORDER)
 	InitVideoBackend();
 #endif
+	const int64_t TextStart = time_get();
 	m_pTextRender = Kernel()->RequestInterface<IEngineTextRender>();
 	m_pTextRender->Init();
 	if(pInput != nullptr)
 		pInput->Init();
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
+	const int64_t GameStart = time_get();
 	GameClient()->OnInit();
+	// Where the start went, the game being what asks for its pictures and
+	// sounds, which arrive later, see "startup assets complete".
+	const int64_t End = time_get();
+	const auto Ms = [](int64_t Ticks) { return Ticks * 1000.0 / time_freq(); };
+	log_info("client", "Started in %.0f ms: graphics %.0f ms, sound %.0f ms, text %.0f ms, game %.0f ms", Ms(End - m_GlobalStartTime), Ms(SoundStart - m_GlobalStartTime), Ms(TextStart - SoundStart), Ms(GameStart - TextStart), Ms(End - GameStart));
 	return true;
 }
 
@@ -163,16 +171,23 @@ const char *CDemoClientBase::PlayDemo(CSessionId SessionId)
 		SetState(IClient::STATE_LOADING);
 	else
 		Source.SetState(ESessionState::LOADING_MAP);
+	const int64_t StartTime = time_get();
 	if(const char *pError = LoadDemo(SessionId, m_aDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE))
 		return pError;
 	if(Watched)
 		SetState(IClient::STATE_DEMOPLAYBACK);
 	else
 		Source.SetState(ESessionState::READY);
+	const int64_t GameStart = time_get();
 	GameClient()->OnConnected(SessionId);
 	Source.PrepareSnapshots();
 	Source.m_DemoPlayer.Play();
 	GameClient()->OnEnterGame(SessionId);
+	// The demo with its map, then the game setting the map up for drawing;
+	// what that asks for arrives later, see "The game was first drawn".
+	const int64_t End = time_get();
+	const auto Ms = [](int64_t Ticks) { return Ticks * 1000.0 / time_freq(); };
+	log_info("client", "Opened the demo in %.0f ms: demo and map %.0f ms, game %.0f ms", Ms(End - StartTime), Ms(GameStart - StartTime), Ms(End - GameStart));
 	return nullptr;
 }
 

@@ -6,7 +6,9 @@
 #include <base/io.h>
 #include <base/log.h>
 #include <base/mem.h>
+#include <base/str.h>
 #include <base/thread.h>
+#include <base/time.h>
 
 #include <engine/engine.h>
 #include <engine/gfx/image_loader.h>
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <utility>
 
 namespace
@@ -326,9 +329,81 @@ void CAssetLoader::Update()
 	StartDeferredFetches();
 	UpdateReadJobs();
 	m_vpRunningJobs.erase(
-		std::remove_if(m_vpRunningJobs.begin(), m_vpRunningJobs.end(), [](const auto &pJob) { return pJob->Done(); }),
+		std::remove_if(m_vpRunningJobs.begin(), m_vpRunningJobs.end(), [this](const auto &pJob) {
+			if(!pJob->Done())
+				return false;
+			NoteFinishedJob(*pJob);
+			return true;
+		}),
 		m_vpRunningJobs.end());
 	StartPendingJobs();
+	if(!m_LateWhat.empty() && time_get() >= m_LateEnd)
+		FinishLateReport();
+}
+
+void CAssetLoader::ReportLateAssets(const char *pWhat, std::chrono::nanoseconds Window)
+{
+	if(!m_LateWhat.empty())
+		FinishLateReport();
+	m_LateWhat = pWhat;
+	m_LateStart = time_get();
+	// In milliseconds, nanoseconds times the tick frequency overflow after a few seconds.
+	m_LateEnd = m_LateStart + std::chrono::duration_cast<std::chrono::milliseconds>(Window).count() * time_freq() / 1'000;
+	m_vLateAssets.clear();
+}
+
+void CAssetLoader::NoteFinishedJob(const CAssetJob &Job)
+{
+	// An aborted asset was not wanted any more, so it cannot pop in.
+	if(m_LateWhat.empty() || Job.State() != IJob::STATE_DONE)
+		return;
+	m_vLateAssets.emplace_back(Job.Path(), time_get() - m_LateStart);
+}
+
+void CAssetLoader::EndLateReport()
+{
+	if(!m_LateWhat.empty())
+		FinishLateReport();
+}
+
+void CAssetLoader::FinishLateReport()
+{
+	// Cut short when something else began to load, see `EndLateReport`.
+	const int64_t WindowMs = (std::min(time_get(), m_LateEnd) - m_LateStart) * 1000 / time_freq();
+	if(m_vLateAssets.empty())
+	{
+		log_debug("asset_loader", "No asset arrived in the %" PRId64 " ms after the %s was first drawn", WindowMs, m_LateWhat.c_str());
+	}
+	else
+	{
+		// The first line counts them by folder, so that logs compare at a
+		// glance; the lines after it name them all.
+		std::map<std::string, int> Folders;
+		for(const auto &[Path, Time] : m_vLateAssets)
+		{
+			const size_t Slash = Path.find('/');
+			++Folders[Slash == std::string::npos ? std::string(".") : Path.substr(0, Slash)];
+		}
+		std::string Counts;
+		for(const auto &[Folder, Count] : Folders)
+			Counts += (Counts.empty() ? "" : ", ") + std::to_string(Count) + " " + Folder;
+		log_debug("asset_loader", "%" PRIzu " assets arrived in the %" PRId64 " ms after the %s was first drawn: %s", m_vLateAssets.size(), WindowMs, m_LateWhat.c_str(), Counts.c_str());
+		char aList[1024] = "";
+		for(size_t i = 0; i < m_vLateAssets.size(); ++i)
+		{
+			const auto &[Path, Time] = m_vLateAssets[i];
+			char aEntry[IO_MAX_PATH_LENGTH + 32];
+			str_format(aEntry, sizeof(aEntry), "%s%s (+%" PRId64 " ms)", aList[0] == '\0' ? "" : ", ", Path.c_str(), Time * 1000 / time_freq());
+			str_append(aList, aEntry);
+			if(i + 1 == m_vLateAssets.size() || str_length(aList) + IO_MAX_PATH_LENGTH + 32 >= (int)sizeof(aList))
+			{
+				log_debug("asset_loader", "Arrived after the %s was first drawn: %s", m_LateWhat.c_str(), aList);
+				aList[0] = '\0';
+			}
+		}
+	}
+	m_LateWhat.clear();
+	m_vLateAssets.clear();
 }
 
 void CAssetLoader::Shutdown()

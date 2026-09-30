@@ -3,6 +3,7 @@
 
 #include <base/log.h>
 #include <base/str.h>
+#include <base/time.h>
 
 #include <engine/client/asset_loader.h>
 #include <engine/engine.h>
@@ -110,6 +111,9 @@ namespace MapViewSupport
 		int m_Count;
 		IGraphics::CTextureHandle m_EntitiesTexture;
 		bool m_EntitiesTried = false;
+		// For the log, see `NumLoaded` and `UploadTime`
+		int m_NumLoaded = 0;
+		int64_t m_UploadTime = 0;
 
 	public:
 		CToolMapImages(IGraphics *pGraphics, IStorage *pStorage, CAssetLoader *pAssetLoader, IMap *pMap, CLayers *pLayers, const char *pLogContext) :
@@ -315,7 +319,10 @@ namespace MapViewSupport
 					if(It->m_Resource.IsReady())
 					{
 						CImageInfo Image = It->m_Resource.TakeImage();
+						const int64_t UploadStart = time_get();
 						m_aTextures[It->m_Index] = m_pGraphics->LoadTextureRawMove(Image, It->m_LoadFlags, It->m_Resource.Path());
+						m_UploadTime += time_get() - UploadStart;
+						++m_NumLoaded;
 					}
 					else
 					{
@@ -329,6 +336,15 @@ namespace MapViewSupport
 				}
 			}
 		}
+
+		/**
+		 * How many of the map's images are on the graphics card.
+		 */
+		int NumLoaded() const { return m_NumLoaded; }
+		/**
+		 * How long handing them to the graphics card took, see `time_get`.
+		 */
+		int64_t UploadTime() const { return m_UploadTime; }
 
 		IGraphics::CTextureHandle Get(int Index) const override
 		{

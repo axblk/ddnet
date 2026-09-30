@@ -1098,6 +1098,8 @@ class CTextRender : public IEngineTextRender
 	std::vector<CFontIndex::SDeferredFontFile> m_vUnrequestedFontFiles;
 	bool m_FontsLoading = false;
 	bool m_FontsSuccess = true;
+	// When the fonts began to load, for the log
+	int64_t m_FontsLoadStart = 0;
 	char m_aLanguageFile[IO_MAX_PATH_LENGTH] = "";
 
 	unsigned m_RenderFlags;
@@ -1175,6 +1177,7 @@ class CTextRender : public IEngineTextRender
 		dbg_assert(!m_FontsLoading, "Fonts are already being loaded");
 		m_FontsLoading = true;
 		m_FontsSuccess = true;
+		m_FontsLoadStart = time_get();
 		m_FontIndexResource = m_FontLoader.LoadFile(Storage(), FONT_INDEX_PATH, IStorage::TYPE_ALL);
 		PollFontLoading();
 	}
@@ -1245,15 +1248,23 @@ class CTextRender : public IEngineTextRender
 
 	void CommitFonts()
 	{
+		// Getting the files, then reading their faces: where the time goes.
+		const int64_t CommitStart = time_get();
+		size_t Bytes = 0;
 		for(auto &Resource : m_vFontFileResources)
 		{
+			if(Resource.IsReady())
+				Bytes += Resource.Result().Text().size();
 			if(!AddFontFile(Resource))
 				m_FontsSuccess = false;
 		}
+		const size_t NumFiles = m_vFontFileResources.size();
 		m_vFontFileResources.clear();
 		if(!SelectFaces())
 			m_FontsSuccess = false;
 		m_FontsLoading = false;
+		const int64_t End = time_get();
+		log_info("textrender", "Loaded %d font files (%d KiB) in %.0f ms, reading them took %.0f ms", (int)NumFiles, (int)(Bytes / 1024), (End - m_FontsLoadStart) * 1000.0 / time_freq(), (End - CommitStart) * 1000.0 / time_freq());
 	}
 
 	// Whether a deferred font file is still loading or not requested yet

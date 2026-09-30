@@ -3331,11 +3331,10 @@ void CGameContext::ConchainSpecialMotdupdate(IConsole::IResult *pResult, void *p
 void CGameContext::ConchainSettingUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)
 {
 	pfnCallback(pResult, pCallbackUserData);
-	if(pResult->NumArguments())
-	{
-		CGameContext *pSelf = (CGameContext *)pUserData;
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	// the startup config sets them before there is a mode, and anybody to tell
+	if(pResult->NumArguments() && pSelf->GameHost().Controller())
 		pSelf->SendSettings(-1);
-	}
 }
 
 void CGameContext::ConchainTeleOthersAuthLevel(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData)

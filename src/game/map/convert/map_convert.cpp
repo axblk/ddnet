@@ -1285,6 +1285,10 @@ bool CMapConverter::Needed() const
 	{
 		return true;
 	}
+	if(!m_To07 && m_Reader.ItemSizesWrong())
+	{
+		return true; // Other DDNet clients refuse the map, the conversion writes the sizes right
+	}
 	for(const CImage &Image : m_vImages)
 	{
 		if(!Image.m_External)

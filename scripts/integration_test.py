@@ -1858,6 +1858,28 @@ def stock_07_client_keeps_the_settings_of_a_big_server(test_env):
 
 
 @test(requires_teeworlds_client=True)
+def stock_07_client_gets_only_messages_it_knows(test_env):
+	# The chat commands and the vote options came between messages named by a
+	# UUID, which 0.7 does not know
+	server = test_env.server(["sv_gametype dm", "sv_map dm1", 'add_vote "Restart" "restart"', 'add_vote "Warmup" "sv_warmup 10"'])
+	server.wait_for_startup()
+	client = test_env.teeworlds(["player_name stock-player", f"connect 127.0.0.1:{server.port}"])
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.wait_for_log(lambda l: "adding server chat command: name='help'" in l.line, "the chat commands", timeout=10)
+	server.command("say marker")
+	client.wait_for_log(lambda l: "marker" in l.line, "the marker", timeout=10)
+	lines = [Log.parse(line).line for line in client.full_stdout]
+	dropped = [line for line in lines if "dropped weird message" in line]
+	if dropped:
+		raise AssertionError(f"the client dropped messages: {dropped!r}")
+	server.exit()
+	client.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	client.exit()
+	server.wait_for_exit()
+	client.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
 def stock_07_client_plays_the_vanilla_maps(test_env):
 	for game_type, map_name in (("ctf", "ctf2"), ("dm", "dm6")):
 		server = test_env.server([f"sv_gametype {game_type}", f"sv_map {map_name}"])

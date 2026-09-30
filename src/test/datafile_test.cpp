@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <vector>
 
@@ -308,4 +309,43 @@ TEST(Datafile, CompressesRawDataThatIsNotCompressed)
 	ASSERT_TRUE(Reader.GetRawData(0, First));
 	ASSERT_TRUE(Reader.GetRawData(1, Second));
 	EXPECT_TRUE(std::equal(First.Data().begin(), First.Data().end(), Second.Data().begin(), Second.Data().end()));
+}
+
+// Teeworlds 0.7 reads an item with the size it takes in the file, whatever the
+// item says, and some 0.7 maps say too small a size for their envelope points
+TEST(Datafile, ReadsAnItemThatSaysAWrongSize)
+{
+	const int32_t aItem[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+	CDataFileWriter Writer;
+	Writer.AddItem(1, 0, sizeof(aItem), aItem);
+	Writer.AddItem(2, 0, sizeof(aItem), aItem);
+	std::vector<uint8_t> vFile = Writer.FinishToMemory();
+	const std::vector<uint8_t> vRight = vFile;
+
+	// The items follow the header, the item types, the item offsets and the
+	// data offsets and sizes; the size of an item follows its type and ID
+	int32_t aHeader[9];
+	ASSERT_GE(vFile.size(), sizeof(aHeader));
+	std::copy_n(vFile.begin(), sizeof(aHeader), reinterpret_cast<uint8_t *>(aHeader));
+	const size_t ItemStart = sizeof(aHeader) + aHeader[4] * 3 * sizeof(int32_t) + aHeader[5] * sizeof(int32_t) + aHeader[6] * 2 * sizeof(int32_t);
+	int32_t Size;
+	std::copy_n(vFile.begin() + ItemStart + sizeof(int32_t), sizeof(Size), reinterpret_cast<uint8_t *>(&Size));
+	ASSERT_EQ(Size, (int)sizeof(aItem));
+	Size = 5 * sizeof(int32_t);
+	std::copy_n(reinterpret_cast<const uint8_t *>(&Size), sizeof(Size), vFile.begin() + ItemStart + sizeof(int32_t));
+
+	CDataFileReader Reader;
+	ASSERT_TRUE(Reader.OpenFromMemory("memory_map", vFile, "memory"));
+	ASSERT_EQ(Reader.NumItems(), 2);
+	for(int Index = 0; Index < 2; Index++)
+	{
+		ASSERT_EQ(Reader.GetItemSize(Index), (int)sizeof(aItem));
+		const int32_t *pItem = static_cast<const int32_t *>(Reader.GetItem(Index));
+		EXPECT_TRUE(std::equal(std::begin(aItem), std::end(aItem), pItem));
+	}
+	EXPECT_TRUE(Reader.ItemSizesWrong());
+
+	CDataFileReader Right;
+	ASSERT_TRUE(Right.OpenFromMemory("memory_map", vRight, "memory"));
+	EXPECT_FALSE(Right.ItemSizesWrong());
 }

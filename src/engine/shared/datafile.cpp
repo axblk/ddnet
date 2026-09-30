@@ -389,6 +389,19 @@ public:
 		return static_cast<CDatafileItem *>(static_cast<void *>(m_Info.m_pItemStart + m_Info.m_pItemOffsets[Index]));
 	}
 
+	// See `Validate`, which takes such an item
+	bool ItemSizesWrong() const
+	{
+		for(int Index = 0; Index < m_Header.m_NumItems; Index++)
+		{
+			if(GetItem(Index)->m_Size != GetItemSize(Index))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool OverrideItemData(int Index, const void *pData, size_t Size) // NOLINT(readability-make-member-function-const)
 	{
 		const CDatafileItem *pCurrentItem = GetItem(Index);
@@ -479,7 +492,13 @@ public:
 				}
 				Check(pItem->m_Size >= 0, "map item size invalid. type_index=%d item_index=%d size=%d", TypeIndex, ItemIndex, pItem->m_Size);
 				Check(pItem->m_Size % sizeof(int) == 0, "map item size not integer aligned. type_index=%d item_index=%d size=%d", TypeIndex, ItemIndex, pItem->m_Size);
-				Check(pItem->m_Size == GetItemSize(ItemIndex), "map item size does not match file. type_index=%d item_index=%d size=%d file_size=%d", TypeIndex, ItemIndex, pItem->m_Size, GetItemSize(ItemIndex));
+				// Items are read with the size they take in the file. Teeworlds 0.7
+				// never looks at the size an item says, and some 0.7 maps say a
+				// wrong one, so it is not reason enough to refuse a map.
+				if(pItem->m_Size != GetItemSize(ItemIndex))
+				{
+					log_warn("datafile", "map item size does not match file, using the size in the file. type_index=%d item_index=%d size=%d file_size=%d", TypeIndex, ItemIndex, pItem->m_Size, GetItemSize(ItemIndex));
+				}
 				TotalItemSize += FileItemSize;
 				if(TotalItemSize > m_Header.m_ItemSize)
 				{
@@ -946,6 +965,13 @@ int CDataFileReader::GetItemSize(int Index) const
 	dbg_assert(m_pDataFile != nullptr, "File not open");
 
 	return m_pDataFile->GetItemSize(Index);
+}
+
+bool CDataFileReader::ItemSizesWrong() const
+{
+	dbg_assert(m_pDataFile != nullptr, "File not open");
+
+	return m_pDataFile->ItemSizesWrong();
 }
 
 int CDataFileReader::GetExternalItemType(int InternalType, CUuid *pUuid)

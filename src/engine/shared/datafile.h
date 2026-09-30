@@ -119,6 +119,12 @@ public:
 	int NumData() const;
 
 	int GetItemSize(int Index) const;
+	/**
+	 * @return Whether an item says another size than it takes in the file.
+	 * The reader takes the size in the file, as Teeworlds 0.7 does; older
+	 * DDNet versions refuse such a map.
+	 */
+	bool ItemSizesWrong() const;
 	void *GetItem(int Index, int *pType = nullptr, int *pId = nullptr, CUuid *pUuid = nullptr);
 	void GetType(int Type, int *pStart, int *pNum);
 	int FindItemIndex(int Type, int Id);

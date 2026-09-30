@@ -972,7 +972,11 @@ static inline bool RepackMsg(const CMsgPacker *pMsg, CPacker &Packer, bool Sixup
 		}
 		else
 		{
-			if(MsgId >= 0 && MsgId < OFFSET_UUID)
+			// 0.7 has no game messages named by a UUID, a client drops them
+			// as "weird" and says so in its log
+			if(MsgId >= OFFSET_UUID)
+				return false;
+			if(MsgId >= 0)
 				MsgId = Msg_SixToSeven(MsgId);
 
 			if(MsgId < 0)
@@ -1008,8 +1012,8 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		CPacker Pack6, Pack7;
 		if(!RepackMsg(pMsg, Pack6, false))
 			return -1;
-		if(!RepackMsg(pMsg, Pack7, true))
-			return -1;
+		// A message that 0.7 does not know goes to the other clients alone
+		const bool SendSixup = RepackMsg(pMsg, Pack7, true);
 
 		// write message to demo recorders
 		if(!(Flags & MSGFLAG_NORECORD))
@@ -1023,7 +1027,7 @@ int CServer::SendMsg(CMsgPacker *pMsg, int Flags, int ClientId)
 		{
 			for(int i = 0; i < MAX_CLIENTS; i++)
 			{
-				if(m_aClients[i].m_State == CClient::STATE_INGAME)
+				if(m_aClients[i].m_State == CClient::STATE_INGAME && (SendSixup || !m_aClients[i].m_Sixup))
 				{
 					CPacker *pPack = m_aClients[i].m_Sixup ? &Pack7 : &Pack6;
 					Packet.m_pData = pPack->Data();

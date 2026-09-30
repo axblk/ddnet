@@ -162,7 +162,8 @@ bool ReadMapConvertProvenance(CDataFileReader &Reader, CMapConvertProvenance &Pr
  * picture that looks different there, and
  * - to 0.7: when it uses an external picture that 0.7 clients do not have;
  * - to DDNet: when it embeds an RGB picture or uses `easter` or
- *   `generic_shadows`, which DDNet has only as 0.7 pictures.
+ *   `generic_shadows`, which DDNet has only as 0.7 pictures, or when an item
+ *   says another size than it takes (`CDataFileReader::ItemSizesWrong`).
  * Nothing else: 0.7 clients read image items of version 1 and skip what they
  * do not know, DDNet reads tileskip, 0.7 envelopes and image items of
  * version 2. Only the tile and quad layers of the pictures that changed are

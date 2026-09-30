@@ -1318,6 +1318,34 @@ TEST_F(MapConvert, EnvelopesKeepTheirCurves)
 	EXPECT_EQ(Num, 0);
 }
 
+// Some 0.7 maps in circulation say too small a size for an item, which
+// Teeworlds 0.7 reads, but older DDNet versions do not
+TEST_F(MapConvert, To06WritesWrongItemSizesRight)
+{
+	std::vector<uint8_t> vMap = Convert(DDNetMap("dm6"), EMapConvertDirection::TO07, EMapConvertMode::MARK).m_vData;
+	ASSERT_TRUE(Is07(vMap));
+	EXPECT_FALSE(NeedsConversion(vMap, EMapConvertDirection::TO06));
+
+	// The items follow the header, the item types, the item offsets and the
+	// data offsets and sizes; the size of an item follows its type and ID
+	int32_t aHeader[9];
+	ASSERT_GE(vMap.size(), sizeof(aHeader));
+	mem_copy(aHeader, vMap.data(), sizeof(aHeader));
+	const size_t SizeOffset = sizeof(aHeader) + aHeader[4] * 3 * sizeof(int32_t) + aHeader[5] * sizeof(int32_t) + aHeader[6] * 2 * sizeof(int32_t) + sizeof(int32_t);
+	int32_t Size;
+	mem_copy(&Size, vMap.data() + SizeOffset, sizeof(Size));
+	ASSERT_GT(Size, 0);
+	Size -= sizeof(int32_t);
+	mem_copy(vMap.data() + SizeOffset, &Size, sizeof(Size));
+
+	EXPECT_TRUE(NeedsConversion(vMap, EMapConvertDirection::TO06));
+	const CMapConvertResult Result = Convert(vMap, EMapConvertDirection::TO06, EMapConvertMode::REMAP);
+	ASSERT_TRUE(Result.m_Converted);
+	CDataFileReader Output;
+	ASSERT_TRUE(Output.OpenFromMemory("output", Result.m_vData, "memory"));
+	EXPECT_FALSE(Output.ItemSizesWrong());
+}
+
 TEST_F(MapConvert, MarkAs07)
 {
 	for(const char *pName : {"dm6", "ctf3"})

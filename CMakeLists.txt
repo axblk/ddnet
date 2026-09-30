@@ -4139,6 +4139,12 @@ if(SERVER)
     mode/ready_mode.h
     modes/insta/insta.cpp
     modes/insta/rules.h
+    modes/pvp/anticamper.cpp
+    modes/pvp/anticamper.h
+    modes/pvp/config_variables.h
+    modes/pvp/killing_spree.cpp
+    modes/pvp/killing_spree.h
+    modes/pvp/pvp.h
     modes/vanilla/ctf.cpp
     modes/vanilla/ctf.h
     modes/vanilla/dead_spectators.h
@@ -4551,6 +4557,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     packer_test.cpp
     png_decode_zlib_test.cpp
     prng_test.cpp
+    pvp_modes_test.cpp
     ready_check_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp

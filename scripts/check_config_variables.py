@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import glob
 import os
 import re
 import sys
@@ -52,6 +53,9 @@ def find_config_variables(config_variables):
 
 def main():
 	lines = read_all_lines("src/engine/shared/config_variables.h")
+	# the game modes keep their settings next to them
+	for filename in sorted(glob.glob("src/game/server/modes/**/config_variables.h", recursive=True)):
+		lines += read_all_lines(filename)
 	config_variables = parse_config_variables(lines)
 	config_variables_not_found = find_config_variables(config_variables)
 	for variable_code in config_variables_not_found:

@@ -1,4 +1,5 @@
 #include <game/server/modes/insta/rules.h>
+#include <game/server/modes/pvp/pvp.h>
 #include <game/server/modes/vanilla/dm.h>
 
 #include <array>
@@ -6,9 +7,9 @@
 
 namespace
 {
-	class CGameControllerZCatch final : public CGameControllerLaserInstagib<CGameControllerVanillaDM>
+	class CGameControllerZCatch final : public CGameControllerLaserInstagib<CGameControllerPvP<CGameControllerVanillaDM>>
 	{
-		using CBase = CGameControllerLaserInstagib<CGameControllerVanillaDM>;
+		using CBase = CGameControllerLaserInstagib<CGameControllerPvP<CGameControllerVanillaDM>>;
 
 		std::array<int, MAX_CLIENTS> m_aCatcherIds;
 

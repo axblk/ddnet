@@ -223,6 +223,22 @@ public:
 		m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_EMPTY;
 	}
 
+	// ForceSpawn replaces the character without removing it, the server only spawns players that have none
+	CCharacter *Respawn(CPlayer *pPlayer, vec2 Pos)
+	{
+		if(CCharacter *pAlive = pPlayer->GetCharacter())
+		{
+			pAlive->Reset();
+			delete pAlive;
+		}
+		else
+		{
+			// a dead character is removed by the player's tick
+			pPlayer->Tick();
+		}
+		return pPlayer->ForceSpawn(Pos);
+	}
+
 	/**
 	 * The reports the client received, put together the way the client does it.
 	 *
@@ -3301,6 +3317,101 @@ TEST_F(GameWorld, GrenadeInstagibDMVerticalSlice)
 	EXPECT_TRUE(GameController()->OnEntity({ENTITY_SPAWN, 1, 1, LAYER_GAME, 0, true, 0}));
 	EXPECT_FALSE(GameController()->OnEntity({ENTITY_HEALTH_1, 1, 1, LAYER_GAME, 0, true, 0}));
 	EXPECT_FALSE(GameController()->OnEntity({ENTITY_WEAPON_GRENADE, 1, 1, LAYER_GAME, 0, true, 0}));
+}
+
+TEST_F(GameWorld, PvPSpawnProtectionGuardsBothSides)
+{
+	g_Config.m_SvRespawnProtectionMs = 1000;
+	SelectGameMode("idm");
+	CCharacter *pAttacker = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	CCharacter *pVictim = SpawnPlayer(1, vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	pVictim->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	EXPECT_TRUE(pVictim->IsAlive());
+
+	// a victim that has been around for a while, hit by a fresh attacker
+	pVictim->m_SpawnTick -= 2 * SERVER_TICK_SPEED;
+	pVictim->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	EXPECT_TRUE(pVictim->IsAlive());
+
+	pAttacker->m_SpawnTick -= 2 * SERVER_TICK_SPEED;
+	pVictim->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	EXPECT_FALSE(pVictim->IsAlive());
+}
+
+TEST_F(GameWorld, PvPShotHeldDownSinceTheSpawnWaits)
+{
+	SelectGameMode("idm");
+	CCharacter *pCharacter = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	CTuningParams Tuning;
+	CWeaponFireContext Held = {pCharacter, WEAPON_LASER, vec2(1, 0), vec2(1, 0), pCharacter->m_Pos, &Tuning, false};
+	EXPECT_FALSE(GameController()->OnCharacterFireWeapon(Held).m_Fired);
+	CWeaponFireContext Clicked = Held;
+	Clicked.m_Pressed = true;
+	EXPECT_TRUE(GameController()->OnCharacterFireWeapon(Clicked).m_Fired);
+	pCharacter->m_SpawnTick -= SERVER_TICK_SPEED;
+	EXPECT_TRUE(GameController()->OnCharacterFireWeapon(Held).m_Fired);
+}
+
+TEST_F(GameWorld, PvPAnticamperFreezesOrKillsWhoStays)
+{
+	g_Config.m_SvAnticamper = 1;
+	g_Config.m_SvAnticamperTime = 5;
+	g_Config.m_SvAnticamperFreeze = 7;
+	SelectGameMode("idm");
+	CCharacter *pCamper = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCamper, nullptr);
+	for(int Tick = 0; Tick <= 5 * SERVER_TICK_SPEED; Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	EXPECT_EQ(pCamper->m_FreezeTime, 7 * SERVER_TICK_SPEED);
+	GameController()->TickCharacterPreCore(pCamper);
+	EXPECT_EQ(pCamper->m_FreezeTime, 7 * SERVER_TICK_SPEED - 1);
+
+	pCamper->Unfreeze();
+	g_Config.m_SvAnticamperFreeze = 0;
+	for(int Tick = 0; Tick <= 5 * SERVER_TICK_SPEED && pCamper->IsAlive(); Tick++)
+	{
+		m_pServer->AdvanceTick(1);
+		GameController()->Tick();
+	}
+	EXPECT_FALSE(pCamper->IsAlive());
+}
+
+TEST_F(GameWorld, PvPKillingSpreeIsReported)
+{
+	g_Config.m_SvKillingspreeKills = 2;
+	SelectGameMode("idm");
+	CPlayer *pKiller = JoinPlayer(0, TEAM_GAME, "killer");
+	CPlayer *pVictim = JoinPlayer(1, TEAM_GAME, "victim");
+	ASSERT_NE(pKiller->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	for(int Kill = 0; Kill < 3; Kill++)
+	{
+		CCharacter *pVictimCharacter = Respawn(pVictim, vec2(128.0f, 96.0f));
+		ASSERT_NE(pVictimCharacter, nullptr);
+		pVictimCharacter->m_SpawnTick -= SERVER_TICK_SPEED;
+		pVictimCharacter->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+		ASSERT_FALSE(pVictimCharacter->IsAlive());
+	}
+	pKiller->KillCharacter(WEAPON_SELF);
+	ASSERT_NE(pKiller->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	CCharacter *pVictimCharacter = Respawn(pVictim, vec2(128.0f, 96.0f));
+	pVictimCharacter->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	GameController()->EndRound();
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "best_spree"), 3);
+}
+
+TEST_F(GameWorld, PvPZoomOnlyWithSvAllowZoom)
+{
+	SelectGameMode("idm");
+	EXPECT_EQ(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_ALLOW_ZOOM, 0);
+	g_Config.m_SvAllowZoom = 1;
+	EXPECT_NE(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_ALLOW_ZOOM, 0);
 }
 
 TEST_F(GameWorld, ZCatchReleasesOwnershipOnCatcherDeathAndDisconnect)

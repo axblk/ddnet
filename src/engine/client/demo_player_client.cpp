@@ -1075,6 +1075,7 @@ bool CDemoPlayerClient::StartExport(const CVideoExportSettings &Settings, int Sp
 			m_VideoLastTick = pInfo->m_FirstTick + round_truncate(m_ClipEnd * (float)SERVER_TICK_SPEED);
 			ExportPlayer.SeekTime(m_ClipStart);
 		}
+		WaitUntilReadyToRender(m_ExportSessionId);
 		pError = StartVideo();
 	}
 	if(pError != nullptr)

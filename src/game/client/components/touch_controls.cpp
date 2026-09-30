@@ -775,6 +775,17 @@ void CTouchControls::CBindToggleTouchButtonBehavior::WriteToConfiguration(CJsonW
 void CTouchControls::OnInit()
 {
 	InitVisibilityFunctions();
+	// The menus edit the configuration. Without them it is only needed once
+	// the controls are turned on, which they are not by default outside of
+	// Android and iOS.
+	m_ConfigurationRequested = false;
+	if(GameClient()->Frontend() != nullptr || g_Config.m_ClTouchControls)
+		StartLoadingConfiguration();
+}
+
+void CTouchControls::StartLoadingConfiguration()
+{
+	m_ConfigurationRequested = true;
 	m_ConfigurationResource = GameClient()->AssetLoader().LoadFile(Storage(), CONFIGURATION_FILENAME, IStorage::TYPE_ALL);
 }
 
@@ -882,6 +893,8 @@ bool CTouchControls::UpdateController(CGameView &View, std::span<const IInput::C
 		CancelController(vTouchFingerStates);
 		return false;
 	}
+	if(!m_ConfigurationRequested)
+		StartLoadingConfiguration();
 	std::vector<IInput::CTouchFingerState> vLocalTouchFingerStates(vTouchFingerStates.begin(), vTouchFingerStates.end());
 	const CViewport &Viewport = View.Viewport();
 	if(Viewport.m_Width > 0 && Viewport.m_Height > 0)

@@ -123,11 +123,13 @@ protected:
 	void Update();
 	/**
 	 * Holds the demo where it stands until everything a frame of it draws has
-	 * loaded - the map's images and the skins of its tees - so that a video
-	 * does not begin with frames that lack them. Gives up after a while, which
-	 * is logged.
+	 * loaded - the map's images, the skins of its tees and the flags of the
+	 * scoreboard - so that a video does not begin with frames that lack them.
+	 * Gives up after a while, which is logged.
+	 *
+	 * @param SessionId The session of the demo the video is made of.
 	 */
-	void WaitUntilReadyToRender();
+	void WaitUntilReadyToRender(CSessionId SessionId);
 	/**
 	 * What the demo of a session is, as a JSON object: its `file` and `size`,
 	 * the `version`, `netversion`, `type` and `date` its header gives, its

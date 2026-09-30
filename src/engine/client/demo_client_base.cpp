@@ -229,16 +229,17 @@ void CDemoClientBase::Update()
 	GameClient()->OnUpdate();
 }
 
-void CDemoClientBase::WaitUntilReadyToRender()
+void CDemoClientBase::WaitUntilReadyToRender(CSessionId SessionId)
 {
 	// A skin that is fetched from somewhere can take its time, or never come.
 	constexpr int MaxWaitSeconds = 10;
-	const bool WasPaused = DemoPlayer().BaseInfo()->m_Paused;
-	DemoPlayer().Pause();
+	CDemoPlayer &Player = DemoSource(SessionId).m_DemoPlayer;
+	const bool WasPaused = Player.BaseInfo()->m_Paused;
+	Player.Pause();
 	const int64_t Deadline = time_get() + time_freq() * MaxWaitSeconds;
-	while(!GameClient()->IsSessionReadyToRender(m_DemoSessionId))
+	while(!GameClient()->IsSessionReadyToRender(SessionId))
 	{
-		if(State() == IClient::STATE_QUITTING || SessionState(m_DemoSessionId) != ESessionState::READY)
+		if(State() == IClient::STATE_QUITTING || SessionState(SessionId) != ESessionState::READY)
 			break;
 		if(time_get() >= Deadline)
 		{
@@ -250,7 +251,7 @@ void CDemoClientBase::WaitUntilReadyToRender()
 		thread_sleep_idle(std::chrono::milliseconds(1));
 	}
 	if(!WasPaused)
-		DemoPlayer().Unpause();
+		Player.Unpause();
 }
 
 std::string CDemoClientBase::DemoInfo(CSessionId SessionId)

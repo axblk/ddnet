@@ -63,6 +63,12 @@ class CSounds : public CComponent
 	};
 	std::vector<CSoundLoad> m_vSoundLoads;
 	bool m_WaitForSoundJob = false;
+	// The sets that are fetched when they are first played, see `Preloaded`.
+	std::vector<int> m_vDeferredSets;
+
+	bool Preloaded(int SetId) const;
+	void StartLoadingSet(int SetId, EAssetPriority Priority);
+	void LoadDeferredSet(int SetId);
 
 	void UpdateChannels();
 	void FinishSoundLoads();

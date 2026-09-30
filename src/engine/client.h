@@ -445,9 +445,10 @@ public:
 	/**
 	 * Collects what the asset loader has finished for a session and reports
 	 * whether a frame of it would be complete: the core images every frame draws,
-	 * the images of the session's map and the skins of the tees that are drawn.
-	 * All of them load in the background, and a frame drawn before they are in
-	 * is drawn without them.
+	 * the images of the session's map, the skins of the tees that are drawn and
+	 * the flags of the scoreboard. All of them load in the background, and a
+	 * frame drawn before they are in is drawn without them. Asked before a
+	 * video starts, which keeps every frame as it was drawn.
 	 *
 	 * @param SessionId The session about to be drawn.
 	 * @return Whether none of it is still loading.

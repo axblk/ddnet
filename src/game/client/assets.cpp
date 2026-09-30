@@ -14,6 +14,24 @@
 
 #include <algorithm>
 
+// The images only the menus, the console and the editor draw with. A program
+// without the front end has none of them, and does not load these.
+static bool FrontendImage(int ImageId)
+{
+	switch(ImageId)
+	{
+	case IMAGE_AUDIO_SOURCE:
+	case IMAGE_BACKGROUND_NOISE:
+	case IMAGE_BANNER:
+	case IMAGE_GUIBUTTONS:
+	case IMAGE_GUIICONS:
+	case IMAGE_SPEEDUP_ARROW:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void CGameClient::StartLoadingCoreImages()
 {
 	m_vStartupImageLoads.clear();
@@ -21,6 +39,8 @@ void CGameClient::StartLoadingCoreImages()
 
 	for(int ImageId = 0; ImageId < g_pData->m_NumImages; ++ImageId)
 	{
+		if(m_pFrontend == nullptr && m_pEditor == nullptr && FrontendImage(ImageId))
+			continue;
 		if(ImageId == IMAGE_GAME)
 			LoadGameSkin(g_Config.m_ClAssetGame);
 		else if(ImageId == IMAGE_EMOTICONS)

@@ -17,6 +17,8 @@
 #include <game/client/gameclient.h>
 #include <game/localization.h>
 
+#include <algorithm>
+
 CSoundAssetJob::CSoundAssetJob(ISound *pSound, IStorage *pStorage, const char *pPath) :
 	CAssetJob(pStorage, pPath, IStorage::TYPE_ALL),
 	m_pSound(pSound)
@@ -78,6 +80,10 @@ int CSounds::GetSampleId(int SetId)
 	if(!g_Config.m_SndEnable || !Sound()->IsSoundEnabled() || SetId < 0 || SetId >= g_pData->m_NumSounds)
 		return -1;
 
+	// Silent this once: it is here the next time.
+	if(!m_vDeferredSets.empty())
+		LoadDeferredSet(SetId);
+
 	CDataSoundset *pSet = &g_pData->m_aSounds[SetId];
 	if(!pSet->m_NumSounds)
 		return -1;
@@ -99,10 +105,13 @@ void CSounds::OnInit()
 {
 	UpdateChannels();
 	ClearQueue();
+	m_vDeferredSets.clear();
 	for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 	{
 		for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
 			g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_Id = -1;
+		if(!Preloaded(SetId))
+			m_vDeferredSets.push_back(SetId);
 	}
 
 	// load sounds
@@ -112,11 +121,8 @@ void CSounds::OnInit()
 		{
 			for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 			{
-				for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
-				{
-					const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
-					m_vSoundLoads.push_back({SetId, SoundId, GameClient()->AssetLoader().Load(std::make_shared<CSoundAssetJob>(Sound(), Storage(), pFilename), EAssetPriority::BACKGROUND)});
-				}
+				if(Preloaded(SetId))
+					StartLoadingSet(SetId, EAssetPriority::BACKGROUND);
 			}
 		}
 		m_WaitForSoundJob = !m_vSoundLoads.empty();
@@ -126,6 +132,8 @@ void CSounds::OnInit()
 	{
 		for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 		{
+			if(!Preloaded(SetId))
+				continue;
 			for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
 				g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_Id = Sound()->LoadWV(g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename);
 			GameClient()->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading sound files"), 1);
@@ -134,9 +142,39 @@ void CSounds::OnInit()
 	}
 }
 
+bool CSounds::Preloaded(int SetId) const
+{
+	// The music of the menus, and the highlight, which the chat and the votes
+	// play only outside of a demo: without the front end, the client itself
+	// never plays them, and neither does a server of the game - it would have
+	// to send their ids. So a program that only shows a demo fetches them
+	// the first time they are asked for rather than at the start.
+	return GameClient()->Frontend() != nullptr || (SetId != SOUND_MENU && SetId != SOUND_CHAT_HIGHLIGHT);
+}
+
+void CSounds::StartLoadingSet(int SetId, EAssetPriority Priority)
+{
+	for(int SoundId = 0; SoundId < g_pData->m_aSounds[SetId].m_NumSounds; ++SoundId)
+	{
+		const char *pFilename = g_pData->m_aSounds[SetId].m_aSounds[SoundId].m_pFilename;
+		m_vSoundLoads.push_back({SetId, SoundId, GameClient()->AssetLoader().Load(std::make_shared<CSoundAssetJob>(Sound(), Storage(), pFilename), Priority)});
+	}
+}
+
+void CSounds::LoadDeferredSet(int SetId)
+{
+	const auto Deferred = std::find(m_vDeferredSets.begin(), m_vDeferredSets.end(), SetId);
+	if(Deferred == m_vDeferredSets.end())
+		return;
+	m_vDeferredSets.erase(Deferred);
+	StartLoadingSet(SetId, EAssetPriority::NORMAL);
+	m_WaitForSoundJob = true;
+}
+
 void CSounds::OnShutdown()
 {
 	m_vSoundLoads.clear();
+	m_vDeferredSets.clear();
 	m_WaitForSoundJob = false;
 }
 

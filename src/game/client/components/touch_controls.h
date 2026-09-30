@@ -594,6 +594,8 @@ private:
 	bool m_EditingChanges = false;
 
 	CTypedAssetResource<CFileAssetJob> m_ConfigurationResource;
+	bool m_ConfigurationRequested = false;
+	void StartLoadingConfiguration();
 
 	void InitVisibilityFunctions();
 	int NextActiveAction(int Action) const;

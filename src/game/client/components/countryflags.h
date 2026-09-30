@@ -59,14 +59,24 @@ public:
 	void Render(const CCountryFlag &Flag, ColorRGBA Color, float x, float y, float w, float h);
 	void Render(int CountryCode, ColorRGBA Color, float x, float y, float w, float h);
 	bool StartupAssetsLoaded() const;
+	/**
+	 * Asks for the index and the default flag, which are otherwise loaded
+	 * when the first flag is drawn.
+	 */
+	void Preload();
+	/**
+	 * Whether what `Preload` asked for is here.
+	 */
+	bool Preloaded() const;
 
 private:
 	CTypedAssetResource<CFileAssetJob> m_IndexResource;
+	bool m_IndexRequested = false;
 	std::vector<CCountryFlag> m_vCountryFlags;
 	size_t m_aCountryCodeToIndexTable[CountryCode::MAXIMUM - CountryCode::MINIMUM + 1];
 
 	int m_FlagsQuadContainerIndex = -1;
-	bool m_LoadsPending = true;
+	bool m_LoadsPending = false;
 
 	static bool ValidateCountryCodeString(const char *pString);
 	void StartLoadingIndexfile();

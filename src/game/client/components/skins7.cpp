@@ -399,7 +399,7 @@ void CSkins7::OnUpdate()
 	const std::chrono::nanoseconds StartTime = time_get_nanoseconds();
 	const std::chrono::nanoseconds MaxTime = std::chrono::milliseconds(std::clamp(round_to_int(Client()->RenderFrameTime() * 50000.0f), 25, 500));
 	if(m_PartUpdateTime.has_value() && StartTime - m_PartUpdateTime.value() < MaxTime &&
-		!GameClient()->StartupAssetsPending())
+		!GameClient()->StartupAssetsPending() && !WornPartsLoading())
 	{
 		return;
 	}
@@ -408,8 +408,11 @@ void CSkins7::OnUpdate()
 	FinishSkinLoads();
 	FinishLoads();
 	StartPendingLoads();
-	m_XmasHatResource.FinishTexture(Graphics(), m_XmasHatTexture);
-	m_BotResource.FinishTexture(Graphics(), m_BotTexture);
+	// A tee made before these were here holds no texture for them.
+	const bool HatLanded = m_XmasHatResource.FinishTexture(Graphics(), m_XmasHatTexture);
+	const bool BotLanded = m_BotResource.FinishTexture(Graphics(), m_BotTexture);
+	if(HatLanded || BotLanded)
+		GameClient()->OnSkin7PartsLoaded();
 }
 
 void CSkins7::OnShutdown()
@@ -434,15 +437,29 @@ bool CSkins7::StartupAssetsLoaded() const
 {
 	if(m_XmasHatResource || m_BotResource || !m_vSkinLoads.empty())
 		return false;
-	return std::all_of(std::begin(m_avSkinParts), std::end(m_avSkinParts), [](const std::vector<CSkinPart> &vSkinParts) {
-		return std::none_of(vSkinParts.begin(), vSkinParts.end(), [](const CSkinPart &Part) { return Part.m_LoadPending || Part.m_LoadResource; });
+	const bool LoadAll = m_LoadEveryPart;
+	return std::all_of(std::begin(m_avSkinParts), std::end(m_avSkinParts), [LoadAll](const std::vector<CSkinPart> &vSkinParts) {
+		return std::none_of(vSkinParts.begin(), vSkinParts.end(), [LoadAll](const CSkinPart &Part) { return (Part.m_LoadPending && (LoadAll || Part.m_Wanted)) || Part.m_LoadResource; });
 	});
 }
 
 bool CSkins7::WornPartsLoading() const
 {
+	if(m_XmasHatResource || m_BotResource)
+		return true;
 	return std::any_of(std::begin(m_avSkinParts), std::end(m_avSkinParts), [](const std::vector<CSkinPart> &vSkinParts) {
 		return std::any_of(vSkinParts.begin(), vSkinParts.end(), [](const CSkinPart &Part) { return Part.m_Wanted && (Part.m_LoadPending || Part.m_LoadResource); });
+	});
+}
+
+void CSkins7::StartLoadingDecorations()
+{
+	m_DecorationsRequested = true;
+	m_XmasHatResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/xmas_hat.png", IStorage::TYPE_ALL, [](CImageInfo &Info) {
+		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Height % 4 == 0;
+	});
+	m_BotResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/bot.png", IStorage::TYPE_ALL, [](CImageInfo &Info) {
+		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Width % 12 == 0 && Info.m_Height % 5 == 0;
 	});
 }
 
@@ -497,12 +514,13 @@ void CSkins7::Refresh(TSkinLoadedCallback &&SkinLoadedCallback)
 		StartLoadingSkinList(SkinLoadedCallback);
 	}
 
-	m_XmasHatResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/xmas_hat.png", IStorage::TYPE_ALL, [](CImageInfo &Info) {
-		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Height % 4 == 0;
-	});
-	m_BotResource = GameClient()->AssetLoader().LoadImageFile(Storage(), SKINS_DIR "/bot.png", IStorage::TYPE_ALL, [](CImageInfo &Info) {
-		return Info.m_Format == CImageInfo::FORMAT_RGBA && Info.m_Width % 12 == 0 && Info.m_Height % 5 == 0;
-	});
+	// The menus list every part. Without them only a tee of 0.7 shows parts,
+	// so the parts and the hat and the bot's decoration wait for the first
+	// one, and a demo of 0.6 loads none of them.
+	m_LoadEveryPart = GameClient()->Frontend() != nullptr;
+	m_DecorationsRequested = false;
+	if(m_LoadEveryPart)
+		StartLoadingDecorations();
 	SkinLoadedCallback();
 
 	m_LastRefreshTime = time_get_nanoseconds();
@@ -519,6 +537,8 @@ void CSkins7::StartPendingLoads()
 	// tee is not drawn at all.
 	for(const bool Wanted : {true, false})
 	{
+		if(!Wanted && !m_LoadEveryPart)
+			break;
 		for(auto &vSkinParts : m_avSkinParts)
 		{
 			for(CSkinPart &SkinPart : vSkinParts)
@@ -527,6 +547,11 @@ void CSkins7::StartPendingLoads()
 					return;
 				if(!SkinPart.m_LoadPending || SkinPart.m_Wanted != Wanted)
 					continue;
+				// Once there is one, every part follows it, so that a tee
+				// that comes later finds its parts here as it did before.
+				m_LoadEveryPart = true;
+				if(!m_DecorationsRequested)
+					StartLoadingDecorations();
 
 				char aFilename[IO_MAX_PATH_LENGTH];
 				str_format(aFilename, sizeof(aFilename), SKINS_DIR "/%s/%s.png", ms_apSkinPartNames[SkinPart.m_Type], SkinPart.m_aName);

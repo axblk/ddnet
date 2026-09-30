@@ -134,6 +134,8 @@ private:
 	IGraphics::CTextureHandle m_BotTexture;
 	CImageResource m_XmasHatResource;
 	CImageResource m_BotResource;
+	bool m_DecorationsRequested = false;
+	bool m_LoadEveryPart = false;
 	std::optional<std::chrono::nanoseconds> m_PartUpdateTime;
 
 	class CSkinLoad
@@ -146,6 +148,7 @@ private:
 	std::vector<CSkinLoad> m_vSkinLoads;
 	bool m_SkinListRequested = false;
 
+	void StartLoadingDecorations();
 	static int SkinPartScan(const char *pName, int IsDir, int DirType, void *pUser);
 	bool RegisterSkinPart(int PartType, const char *pName, int DirType);
 	static int SkinScan(const char *pName, int IsDir, int DirType, void *pUser);

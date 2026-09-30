@@ -254,7 +254,7 @@ bool CDemoRenderClient::RenderDemo(const SJob &Job)
 			else
 				SetSpectateName(m_aFollow);
 		}
-		WaitUntilReadyToRender();
+		WaitUntilReadyToRender(m_DemoSessionId);
 		pError = StartVideo();
 	}
 	if(pError != nullptr)

@@ -64,14 +64,7 @@ bool CCountryFlags::ValidateCountryCodeString(const char *pString)
 
 void CCountryFlags::StartLoadingIndexfile()
 {
-	// The default flag is used until the index is loaded
-	m_vCountryFlags.clear();
-	CCountryFlag DefaultFlag;
-	DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
-	str_copy(DefaultFlag.m_aCountryCodeString, "default");
-	DefaultFlag.m_State = CCountryFlag::EState::PENDING;
-	m_vCountryFlags.push_back(std::move(DefaultFlag));
-	BuildCountryCodeTable();
+	m_IndexRequested = true;
 	m_IndexResource = GameClient()->AssetLoader().LoadFile(Storage(), COUNTRY_FLAGS_INDEX_PATH, IStorage::TYPE_ALL);
 }
 
@@ -155,7 +148,19 @@ void CCountryFlags::ParseIndexfile(std::string_view Index)
 
 void CCountryFlags::OnInit()
 {
-	StartLoadingIndexfile();
+	// The default flag is used until the index is loaded
+	m_vCountryFlags.clear();
+	CCountryFlag DefaultFlag;
+	DefaultFlag.m_CountryCode = CountryCode::DEFAULT;
+	str_copy(DefaultFlag.m_aCountryCodeString, "default");
+	m_vCountryFlags.push_back(std::move(DefaultFlag));
+	BuildCountryCodeTable();
+	m_IndexRequested = false;
+	// The menus show flags from the start. Without them only the scoreboard
+	// does, so the index and the default flag wait for it to draw one - or
+	// for a video, which cannot show them a frame late.
+	if(GameClient()->Frontend() != nullptr)
+		Preload();
 
 	m_FlagsQuadContainerIndex = Graphics()->CreateQuadContainer(false);
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -289,7 +294,21 @@ void CCountryFlags::Render(const CCountryFlag &Flag, ColorRGBA Color, float x, f
 	}
 }
 
+void CCountryFlags::Preload()
+{
+	if(!m_IndexRequested)
+		StartLoadingIndexfile();
+	m_LoadsPending |= GetByCountryCode(CountryCode::DEFAULT).RequestLoad();
+}
+
+bool CCountryFlags::Preloaded() const
+{
+	return m_IndexRequested && !m_IndexResource && StartupAssetsLoaded();
+}
+
 void CCountryFlags::Render(int CountryCode, ColorRGBA Color, float x, float y, float w, float h)
 {
+	if(!m_IndexRequested)
+		StartLoadingIndexfile();
 	Render(GetByCountryCode(CountryCode), Color, x, y, w, h);
 }

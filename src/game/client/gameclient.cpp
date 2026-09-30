@@ -1088,7 +1088,11 @@ bool CGameClient::IsSessionReadyToRender(CSessionId SessionId)
 	// A session that is not on the screen has nothing else that collects its
 	// finished images, so asking has to do it.
 	const bool MapImagesPending = SessionPresentation(SessionId).UpdateMapImages();
-	return !m_CoreImagesPending && !MapImagesPending && !TeeSkinsLoading();
+	// A frame is kept in the video as it was drawn, so the flags the
+	// scoreboard shows are here before it starts rather than a frame after
+	// the scoreboard first asks for them.
+	m_CountryFlags.Preload();
+	return !m_CoreImagesPending && !MapImagesPending && !TeeSkinsLoading() && m_CountryFlags.Preloaded();
 }
 
 bool CGameClient::TeeSkinsLoading()

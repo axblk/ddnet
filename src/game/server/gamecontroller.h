@@ -28,6 +28,7 @@ class CGameControllerDDRace;
 class CDbConnectionPool;
 class CInteractions;
 class CPlayer;
+class CProjectile;
 class CTuningParams;
 
 namespace protocol7
@@ -43,6 +44,8 @@ struct CWeaponFireContext
 	vec2 m_MouseTarget;
 	vec2 m_ProjectileStartPosition;
 	const CTuningParams *m_pTuning;
+	// whether fire was pressed anew for the shot, rather than held down
+	bool m_Pressed = false;
 };
 
 struct CWeaponFireResult
@@ -93,6 +96,8 @@ struct CGameExplosionContext
 	int m_ActivatedTeam;
 	CClientMask m_Mask;
 	int m_AttackerTeam;
+	// the characters it may push or hurt, from the projectile that exploded
+	CClientMask m_AffectMask = CClientMask().set();
 };
 
 struct CMapEntityContext
@@ -106,6 +111,28 @@ struct CMapEntityContext
 	bool m_Initial;
 	// the switch number of an entity on the switch layer
 	int m_Number;
+};
+
+/**
+ * A hit on a character, as the mode gets to decide about it.
+ *
+ * Everything that hurts or pushes a character comes through here, so a mode
+ * can tell weapons, owners and the way a shot went apart.
+ */
+struct CGameDamageContext
+{
+	vec2 m_Force = vec2(0.0f, 0.0f);
+	// 0 for the damage of the weapon as the mode sees it
+	int m_Damage = 0;
+	// the client id of the attacker, the victim for a self hit
+	int m_From = -1;
+	int m_Weapon = -1;
+	// false for a hit that may push but not hurt
+	bool m_CanDamage = true;
+	// the team of an attacker who is gone, TEAM_SPECTATORS if it is not known
+	int m_AttackerTeam = TEAM_SPECTATORS;
+	// how often the laser bounced off a wall before it hit, 0 for everything else
+	int m_Bounces = 0;
 };
 
 struct CGameCharacterDeathContext
@@ -184,11 +211,21 @@ protected:
 	int m_SixupRoundCount = -1;
 	void DoActivityCheck();
 	void FinalizeCharacterDeath(const CGameCharacterDeathContext &Context, int ModeSpecial = 0);
+	// the player dies by the kill key and respawns, unless sv_kill_delay has not passed since the last time
+	void SelfKill(CPlayer *pPlayer);
 	// counts a metric of the mode's own for the match report, pMetricId must be a static string
 	void AddMatchMetric(CPlayer *pPlayer, const char *pMetricId, int64_t Value = 1);
 	void AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage);
 	// a metric of the whole match, like the number of rounds in it; pMetricId must be a static string
 	void SetMatchMetric(const char *pMetricId, int64_t Value);
+	/**
+	 * Who won the match, for a mode without teams where that is not who scored most.
+	 *
+	 * Call it before EndRound. The match report ranks the winners first and the others after them by score.
+	 *
+	 * @param vpWinners The players who won.
+	 */
+	void SetMatchWinners(const std::vector<const CPlayer *> &vpWinners);
 	CMatchReport MatchReportHeader(CUuid MatchId, int StartTick) const;
 	// the live statistics the player asked for, the running round by default
 	virtual bool BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId);
@@ -251,7 +288,18 @@ public:
 				weapon when switching team or player suicides.
 	*/
 	virtual void OnCharacterDeath(const CGameCharacterDeathContext &Context);
-	virtual bool OnCharacterTakeDamage(class CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam = TEAM_SPECTATORS);
+	/**
+	 * A character is hit.
+	 *
+	 * @param pVictim The character that is hit.
+	 * @param Context Who hit it with what, see CGameDamageContext.
+	 *
+	 * The mode also decides whether the hit thaws a frozen character: by
+	 * default, as in DDRace, the laser and the hammer do.
+	 *
+	 * @return false if the character died of it.
+	 */
+	virtual bool OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context);
 	void OnCharacterFiredWeapon(CCharacter *pCharacter, int Weapon);
 	virtual bool CanCharacterHitCharacter(CCharacter *pAttacker, CCharacter *pTarget) const;
 	virtual bool CanSeeInteraction(const CInteractions &, int) const { return true; }
@@ -260,6 +308,13 @@ public:
 	virtual CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position);
 	virtual int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const { return 0; }
 	virtual CGameProjectileRules ProjectileRules(const CGameProjectileContext &Context) const;
+	/**
+	 * A projectile was just made, by a weapon or the map.
+	 *
+	 * The mode can give it what the moment it was fired decides, like the
+	 * characters its explosion may reach (CProjectile::SetAffectMask).
+	 */
+	virtual void OnProjectileCreated(CProjectile *pProjectile) {}
 	virtual void OnExplosion(const CGameExplosionContext &Context);
 	/*
 		Function: OnCharacterSpawn
@@ -271,6 +326,7 @@ public:
 	virtual void OnCharacterSpawn(class CCharacter *pChr);
 	virtual bool CanSnapCharacter(CCharacter *pCharacter, int SnappingClient) const { return true; }
 	virtual void SnapCharacterMode(CCharacter *pCharacter, int SnappingClient, int TranslatedId) {}
+	// whether the mode sends the DDNet objects of characters and entities, as DDRace does; without them a client sees a freeze only as a ninja
 	virtual bool UseDDNetEntityNetObjs() const { return false; }
 	virtual bool IsTeamPractice(int Team) const { return false; }
 	// Complete mode-owned phases around the shared CharacterCore tick.
@@ -298,7 +354,15 @@ public:
 	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
 	virtual void OnPlayerMappingChanged(int ClientId) {}
 	virtual void OnPlayerSetTeam(int ClientId, int Team);
+	// the kill key; checks that the game runs and the player is alive, then leaves it to OnPlayerKillKey
 	virtual void OnPlayerKill(int ClientId);
+	/**
+	 * What the kill key does for a player who is alive and not paused, while the game runs.
+	 *
+	 * By default the player kills themself (SelfKill). A mode can give the key
+	 * another meaning, or refuse it for a while.
+	 */
+	virtual void OnPlayerKillKey(CPlayer *pPlayer);
 	virtual void OnPlayerCallKickVote(int ClientId, int TargetId, const char *pReason);
 	virtual void OnPlayerCallSpectateVote(int ClientId, int TargetId, const char *pReason);
 	virtual bool CanPlayerVoteOnTargetVote(int VoteCreatorId, int VoterId) const;

@@ -13,6 +13,8 @@
 
 #include <game/alloc.h>
 
+#include <optional>
+
 class CCharacter;
 class CGameContext;
 class CGameServices;
@@ -105,10 +107,21 @@ public:
 	// appended after the list was fully sent follow it.
 	const CVoteOptionServer *m_pLastSentVoteOption;
 
+	// what everybody sees of the player, their own choice unless the mode shows something else
 	const CTeeInfo &TeeInfos() const { return m_TeeInfos; }
+	// what the player chose
+	const CTeeInfo &OwnTeeInfos() const { return m_OwnTeeInfos; }
 	void SetTeeInfos(const CTeeInfo &TeeInfos);
 	// Sets the 0.6 tee infos, deriving the 0.7 skin parts from them unless the client is 0.7
 	void SetTeeInfos(const char *pSkinName, bool UseCustomColor, int ColorBody, int ColorFeet);
+	/**
+	 * Shows the player differently from their own choice, until the mode clears it.
+	 *
+	 * 0.7 clients are told about the change right away, 0.6 clients see it in the next snapshot.
+	 *
+	 * @param Override What to show, std::nullopt for the player's own choice.
+	 */
+	void SetTeeInfoOverride(const std::optional<CTeeInfoOverride> &Override);
 	// The snapped client info is the same for every snapping client, so it is cached
 	// and only rebuilt once the name, clan, country or tee infos have changed
 	void InvalidateClientInfo() { m_ClientInfoValid = false; }
@@ -127,7 +140,11 @@ public:
 	} m_Latency;
 
 private:
+	CTeeInfo m_OwnTeeInfos;
+	std::optional<CTeeInfoOverride> m_TeeInfoOverride;
+	// m_OwnTeeInfos with the override applied
 	CTeeInfo m_TeeInfos;
+	void UpdateTeeInfos();
 	CNetObj_ClientInfo m_ClientInfo = {};
 	bool m_ClientInfoValid = false;
 

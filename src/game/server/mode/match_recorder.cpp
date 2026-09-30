@@ -15,6 +15,7 @@ void CMatchRecorder::Start(CMatchReport Header)
 	m_vParticipants.clear();
 	m_TeamScores.reset();
 	m_vMatchMetrics.clear();
+	m_vWinners.clear();
 	m_Overflow = false;
 }
 
@@ -162,10 +163,31 @@ CMatchReport CMatchRecorder::Report(int Tick, EMatchTermination Termination, boo
 	}
 	else
 	{
+		const auto IsWinner = [&](const CParticipant *pParticipant) {
+			return std::find(m_vWinners.begin(), m_vWinners.end(), pParticipant->m_UniqueClientId) != m_vWinners.end();
+		};
 		std::vector<const CParticipant *> vpRanked;
 		vpRanked.reserve(m_vParticipants.size());
 		for(const CParticipant &Participant : m_vParticipants)
 			vpRanked.push_back(&Participant);
+		if(!m_vWinners.empty())
+		{
+			// the winners the mode named come first, whatever their score; the others after them by score
+			std::stable_sort(vpRanked.begin(), vpRanked.end(), [&](const CParticipant *pLeft, const CParticipant *pRight) {
+				if(IsWinner(pLeft) != IsWinner(pRight))
+					return IsWinner(pLeft);
+				return pLeft->m_Score > pRight->m_Score;
+			});
+			int Rank = 0;
+			for(size_t i = 0; i < vpRanked.size(); i++)
+			{
+				const bool Won = IsWinner(vpRanked[i]);
+				if(i == 0 || Won != IsWinner(vpRanked[i - 1]) || (!Won && vpRanked[i]->m_Score != vpRanked[i - 1]->m_Score))
+					Rank = (int)i + 1;
+				Report.m_vStandings.push_back({EMatchSubjectKind::PARTICIPANT, vpRanked[i]->m_Info.m_ParticipantId, Rank, Outcome(Won, false)});
+			}
+			return Report;
+		}
 		std::stable_sort(vpRanked.begin(), vpRanked.end(), [](const CParticipant *pLeft, const CParticipant *pRight) { return pLeft->m_Score > pRight->m_Score; });
 		const bool TopTied = vpRanked.size() > 1 && vpRanked[0]->m_Score == vpRanked[1]->m_Score;
 		int Rank = 0;

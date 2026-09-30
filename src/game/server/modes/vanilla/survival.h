@@ -1,6 +1,8 @@
 #ifndef GAME_SERVER_MODES_VANILLA_SURVIVAL_H
 #define GAME_SERVER_MODES_VANILLA_SURVIVAL_H
 
+#include "dead_spectators.h"
+
 #include <base/log.h>
 #include <base/str.h>
 
@@ -14,14 +16,13 @@
 #include <game/server/player.h>
 
 #include <array>
-#include <limits>
 
 /**
  * Rounds inside a match, as Teeworlds 0.7 plays LMS and LTS.
  *
  * Everybody starts a round with every weapon, and nobody who dies comes back
  * before the next one: a dead player watches somebody who is still in, of the
- * own team in a team mode. The mode decides when a round is over and who
+ * own team in a team mode (CGameControllerDeadSpectators). The mode decides when a round is over and who
  * scores for it, and the score limit decides when the match is over. Between
  * two rounds the winners are shown for a moment, and a new round counts down
  * before it starts. There are no pickups.
@@ -30,8 +31,10 @@
  * spectator and is told in broadcasts what happens with the round.
  */
 template<typename TBase>
-class CGameControllerSurvival : public TBase
+class CGameControllerSurvival : public CGameControllerDeadSpectators<TBase>
 {
+	using CBase = CGameControllerDeadSpectators<TBase>;
+
 	static constexpr int ROUND_OVER_SECONDS = 5;
 	static constexpr int WAITING_BROADCAST_SECONDS = 8;
 
@@ -47,26 +50,16 @@ class CGameControllerSurvival : public TBase
 	// of the match, from 0
 	int m_Round = 0;
 	int m_NextWaitingBroadcastTick = 0;
-	// a player who dies now stays dead until the next round
-	std::array<bool, MAX_CLIENTS> m_aRespawnDisabled{};
 
 protected:
+	using CBase::IsAlive;
+	using CBase::IsPlaying;
+	using CBase::SetRespawnLocked;
+	using CBase::UnlockAllRespawns;
+	using CBase::UpdateDeadSpectators;
 	using TBase::Match;
 	using TBase::Server;
 	using TBase::Services;
-
-	// in the game, not still loading the map
-	bool IsPlaying(int ClientId) const
-	{
-		const CPlayer *pPlayer = Services().Player(ClientId);
-		return pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS && Server()->ClientIngame(ClientId);
-	}
-
-	// the one who plays still counts as alive while waiting to spawn
-	bool IsAlive(int ClientId) const
-	{
-		return IsPlaying(ClientId) && (!m_aRespawnDisabled[ClientId] || Services().Player(ClientId)->GetCharacter());
-	}
 
 	bool IsRoundTimeUp() const
 	{
@@ -113,63 +106,43 @@ protected:
 	}
 
 public:
-	using TBase::TBase;
-
-	bool IsPlayerDeadSpectator(int ClientId) const override
-	{
-		const CPlayer *pPlayer = Services().Player(ClientId);
-		return pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS && m_aRespawnDisabled[ClientId] && !pPlayer->GetCharacter();
-	}
-
-	bool CanPlayerSpectate(int ClientId, int SpectatorId) const override
-	{
-		return !IsPlayerDeadSpectator(ClientId) || CanFollow(ClientId, SpectatorId);
-	}
+	using CBase::CBase;
+	using CBase::IsPlayerDeadSpectator;
 
 	bool OnEntity(const CMapEntityContext &Context) override
 	{
 		// no pickups, everybody starts with every weapon
 		if(Context.m_Index < ENTITY_SPAWN || Context.m_Index > ENTITY_SPAWN_BLUE)
 			return false;
-		return TBase::OnEntity(Context);
+		return CBase::OnEntity(Context);
 	}
 
 	void OnCharacterSpawn(CCharacter *pCharacter) override
 	{
-		TBase::OnCharacterSpawn(pCharacter);
+		CBase::OnCharacterSpawn(pCharacter);
 		static constexpr std::array<std::pair<int, int>, 3> s_aLoadout = {{{WEAPON_SHOTGUN, 10}, {WEAPON_GRENADE, 10}, {WEAPON_LASER, 5}}};
 		for(const auto &[Weapon, Ammo] : s_aLoadout)
 		{
 			pCharacter->SetWeaponGot(Weapon, true);
 			pCharacter->SetWeaponAmmo(Weapon, Ammo);
 		}
-		m_aRespawnDisabled[pCharacter->GetPlayer()->GetCid()] = RespawnDisabledFromNow();
+		SetRespawnLocked(pCharacter->GetPlayer()->GetCid(), RespawnDisabledFromNow());
 	}
 
 	void OnCharacterDeath(const CGameCharacterDeathContext &Context) override
 	{
-		TBase::OnCharacterDeath(Context);
+		CBase::OnCharacterDeath(Context);
 		const int VictimId = Context.m_pVictim->GetPlayer()->GetCid();
 		UpdateDeadSpectators();
 		if(Context.m_Weapon != WEAPON_GAME && IsPlayerDeadSpectator(VictimId))
 			Services().SendLegacyBroadcast("Wait for the next round", VictimId);
 	}
 
-	bool CanSpawn(int Team, vec2 *pOutPos, int ClientId) override
-	{
-		return !m_aRespawnDisabled[ClientId] && TBase::CanSpawn(Team, pOutPos, ClientId);
-	}
-
-	int PlayerAutoRespawnTick(const CPlayer *pPlayer) const override
-	{
-		return m_aRespawnDisabled[pPlayer->GetCid()] ? std::numeric_limits<int>::max() : TBase::PlayerAutoRespawnTick(pPlayer);
-	}
-
 	void OnPlayerConnect(CPlayer *pPlayer) override
 	{
 		const int ClientId = pPlayer->GetCid();
-		m_aRespawnDisabled[ClientId] = RespawnDisabledFromNow();
-		TBase::OnPlayerConnect(pPlayer);
+		SetRespawnLocked(ClientId, RespawnDisabledFromNow());
+		CBase::OnPlayerConnect(pPlayer);
 		if(IsPlayerDeadSpectator(ClientId))
 		{
 			UpdateDeadSpectators();
@@ -177,20 +150,14 @@ public:
 		}
 	}
 
-	void OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason) override
-	{
-		TBase::OnPlayerDisconnect(pPlayer, pReason);
-		m_aRespawnDisabled[pPlayer->GetCid()] = false;
-	}
-
 	void DoTeamChange(CPlayer *pPlayer, int Team, bool DoChatMsg) override
 	{
 		const int ClientId = pPlayer->GetCid();
 		const int OldTeam = pPlayer->GetTeam();
-		TBase::DoTeamChange(pPlayer, Team, DoChatMsg);
+		CBase::DoTeamChange(pPlayer, Team, DoChatMsg);
 		if(pPlayer->GetTeam() == OldTeam || pPlayer->GetTeam() == TEAM_SPECTATORS)
 			return;
-		m_aRespawnDisabled[ClientId] = RespawnDisabledFromNow();
+		SetRespawnLocked(ClientId, RespawnDisabledFromNow());
 		if(IsPlayerDeadSpectator(ClientId))
 		{
 			UpdateDeadSpectators();
@@ -200,7 +167,7 @@ public:
 
 	void DoWarmup(int Seconds) override
 	{
-		TBase::DoWarmup(Seconds);
+		CBase::DoWarmup(Seconds);
 		if(!Match().IsWarmup() && !HasEnoughPlayers())
 			Match().WaitForPlayers();
 		if(Match().IsWarmup())
@@ -212,11 +179,11 @@ public:
 	{
 		m_Round = 0;
 		m_RoundState = ERoundState::RUNNING;
-		m_aRespawnDisabled.fill(false);
+		UnlockAllRespawns();
 		if(!HasEnoughPlayers())
 			Match().WaitForPlayers();
 		// its first round begins with the match
-		TBase::StartRound();
+		CBase::StartRound();
 		if(Match().IsWaitingForPlayers())
 			EnterWarmup();
 	}
@@ -224,17 +191,17 @@ public:
 	// the end of a match
 	void EndRound() override
 	{
-		TBase::EndRound();
+		CBase::EndRound();
 		if(!Match().IsGameOver())
 			return;
 		// the final scores show everybody in their team
 		m_RoundState = ERoundState::RUNNING;
-		m_aRespawnDisabled.fill(false);
+		UnlockAllRespawns();
 	}
 
 	void Tick() override
 	{
-		TBase::Tick();
+		CBase::Tick();
 		if(Match().IsWaitingForPlayers())
 		{
 			if(HasEnoughPlayers())
@@ -255,18 +222,10 @@ public:
 		switch(m_RoundState)
 		{
 		case ERoundState::ROUND_OVER:
-			UpdateDeadSpectators();
 			if(Server()->Tick() >= m_RoundStateEndTick)
 				StartNextRound();
 			break;
 		case ERoundState::RUNNING:
-			UpdateDeadSpectators();
-			for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-			{
-				// waiting for the next round is not being inactive
-				if(IsPlayerDeadSpectator(ClientId))
-					Services().Player(ClientId)->m_LastActionTick++;
-			}
 			// as in 0.7, nothing is decided while the game stands still
 			if(!Services().World().ResetRequested() && !this->IsGamePaused())
 				DoWincheckRound();
@@ -282,12 +241,12 @@ protected:
 		if(Start)
 			str_format(pBuf, BufSize, "Round %d starts in %d", m_Round + 1, Seconds);
 		else
-			TBase::FormatCountdown(pBuf, BufSize, Seconds, Start);
+			CBase::FormatCountdown(pBuf, BufSize, Seconds, Start);
 	}
 
 	void OnCountdownEnd(bool Start) override
 	{
-		TBase::OnCountdownEnd(Start);
+		CBase::OnCountdownEnd(Start);
 		if(!Start)
 			return;
 		log_info("game", "survival round %d starts", m_Round + 1);
@@ -301,7 +260,7 @@ protected:
 
 	void UpdateGameDataSixup(protocol7::CNetObj_GameData &GameData, int SnappingClient) override
 	{
-		TBase::UpdateGameDataSixup(GameData, SnappingClient);
+		CBase::UpdateGameDataSixup(GameData, SnappingClient);
 		if(!Match().IsRunning())
 			return;
 		if(m_RoundState == ERoundState::ROUND_OVER)
@@ -321,40 +280,11 @@ private:
 		return Match().IsRunning() && !this->IsStartCountdown();
 	}
 
-	bool CanFollow(int ClientId, int SpectatorId) const
-	{
-		const CPlayer *pPlayer = Services().Player(ClientId);
-		const CPlayer *pTarget = Services().Player(SpectatorId);
-		return pPlayer && pTarget && SpectatorId != ClientId && IsAlive(SpectatorId) && pTarget->GetTeam() == pPlayer->GetTeam();
-	}
-
-	// a dead player watches somebody who is still in, the one watched so far if possible
-	void UpdateDeadSpectators()
-	{
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-		{
-			CPlayer *pPlayer = Services().Player(ClientId);
-			if(!pPlayer || !IsPlayerDeadSpectator(ClientId) || CanFollow(ClientId, pPlayer->SpectatorId()))
-				continue;
-			int Follow = SPEC_FREEVIEW;
-			for(int Candidate = 0; Candidate < MAX_CLIENTS; Candidate++)
-			{
-				if(CanFollow(ClientId, Candidate))
-				{
-					Follow = Candidate;
-					break;
-				}
-			}
-			if(Follow != pPlayer->SpectatorId())
-				pPlayer->SetSpectatorId(Follow);
-		}
-	}
-
 	// respawning is fine while there is no round to play
 	void EnterWarmup()
 	{
 		m_RoundState = ERoundState::RUNNING;
-		m_aRespawnDisabled.fill(false);
+		UnlockAllRespawns();
 		m_NextWaitingBroadcastTick = Server()->Tick();
 		this->SetGamePaused(false);
 	}
@@ -369,7 +299,7 @@ private:
 
 	void StartNextRound()
 	{
-		m_aRespawnDisabled.fill(false);
+		UnlockAllRespawns();
 		this->ResetGame();
 		if(!HasEnoughPlayers())
 		{

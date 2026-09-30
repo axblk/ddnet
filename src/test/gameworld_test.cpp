@@ -43,6 +43,7 @@
 #include <game/server/interactions.h>
 #include <game/server/mode/game_mode_registry.h>
 #include <game/server/modes/vanilla/ctf.h>
+#include <game/server/modes/vanilla/dead_spectators.h>
 #include <game/server/modes/vanilla/dm.h>
 #include <game/server/modes/vanilla/flag.h>
 #include <game/server/modes/vanilla/tdm.h>
@@ -1127,6 +1128,58 @@ TEST_F(GameWorld, MatchReportEndsOnceAndARestartEndsItWithoutResult)
 	EXPECT_TRUE(ReceivedMatchReports(0).empty());
 }
 
+namespace
+{
+	class CNamedWinnerController : public CGameControllerVanillaDM
+	{
+	public:
+		using CGameControllerVanillaDM::CGameControllerVanillaDM;
+		using CGameControllerVanillaDM::SetMatchWinners;
+		using CGameControllerVanillaDM::VanillaPlayer;
+	};
+}
+
+TEST_F(GameWorld, MatchReportRanksTheWinnerTheModeNames)
+{
+	CNamedWinnerController &Controller = SelectController<CNamedWinnerController>("dm");
+	CPlayer *pSurvivor = JoinPlayer(0, TEAM_GAME, "survivor");
+	JoinPlayer(1, TEAM_GAME, "scorer");
+	JoinPlayer(2, TEAM_GAME, "other");
+	Controller.VanillaPlayer(0)->m_Score = 1;
+	Controller.VanillaPlayer(1)->m_Score = 5;
+	Controller.VanillaPlayer(2)->m_Score = 3;
+	Controller.SetMatchWinners({pSurvivor});
+	GameController()->EndRound();
+
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	const auto Standing = [&](const char *pName) {
+		const int Id = Received.Participant(pName)->m_ParticipantId;
+		for(const CMatchStanding &Candidate : Received.m_Report.m_vStandings)
+			if(Candidate.m_SubjectKind == EMatchSubjectKind::PARTICIPANT && Candidate.m_SubjectId == Id)
+				return Candidate;
+		return CMatchStanding{};
+	};
+	EXPECT_EQ(Standing("survivor").m_Rank, 1);
+	EXPECT_EQ(Standing("survivor").m_Outcome, EMatchOutcome::WIN);
+	EXPECT_EQ(Standing("scorer").m_Rank, 2);
+	EXPECT_EQ(Standing("scorer").m_Outcome, EMatchOutcome::LOSS);
+	EXPECT_EQ(Standing("other").m_Rank, 3);
+
+	// the next match ranks by score again
+	GameController()->StartRound();
+	Controller.VanillaPlayer(1)->m_Score = 5;
+	GameController()->EndRound();
+	const CReceivedMatchReport Next = ReceivedMatchReport(0);
+	const int ScorerId = Next.Participant("scorer")->m_ParticipantId;
+	for(const CMatchStanding &Candidate : Next.m_Report.m_vStandings)
+	{
+		if(Candidate.m_SubjectId == ScorerId)
+		{
+			EXPECT_EQ(Candidate.m_Outcome, EMatchOutcome::WIN);
+		}
+	}
+}
+
 TEST_F(GameWorld, MatchReportKeepsTheParticipantsThatFit)
 {
 	SelectGameMode("dm");
@@ -1388,6 +1441,71 @@ TEST_F(GameWorld, CharacterTickPhasesAreModeOwned)
 	const int ModFreezeBefore = pModCharacter->m_FreezeTime;
 	pModCharacter->Tick();
 	EXPECT_EQ(pModCharacter->m_FreezeTime, ModFreezeBefore - 1);
+}
+
+TEST_F(GameWorld, WhetherAHitThawsIsModeOwned)
+{
+	// DDRace: the laser and the hammer thaw
+	SelectGameMode("ddnet");
+	CCharacter *pRaceVictim = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(SpawnPlayer(1, vec2(128.0f, 96.0f)), nullptr);
+	ASSERT_NE(pRaceVictim, nullptr);
+	EXPECT_TRUE(pRaceVictim->Freeze(5));
+	pRaceVictim->TakeDamage(vec2(), 0, 1, WEAPON_LASER);
+	EXPECT_EQ(pRaceVictim->m_FreezeTime, 0);
+	EXPECT_TRUE(pRaceVictim->Freeze(5));
+	pRaceVictim->TakeDamage(vec2(), 0, 1, WEAPON_HAMMER);
+	EXPECT_EQ(pRaceVictim->m_FreezeTime, 0);
+	EXPECT_TRUE(pRaceVictim->Freeze(5));
+	pRaceVictim->TakeDamage(vec2(), 0, 1, WEAPON_GRENADE);
+	EXPECT_GT(pRaceVictim->m_FreezeTime, 0);
+	DeletePlayers();
+
+	// the vanilla modes know no freeze of their own and leave it be
+	SelectGameMode("dm");
+	CCharacter *pVanillaVictim = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(SpawnPlayer(1, vec2(128.0f, 96.0f)), nullptr);
+	ASSERT_NE(pVanillaVictim, nullptr);
+	EXPECT_TRUE(pVanillaVictim->Freeze(5));
+	pVanillaVictim->TakeDamage(vec2(), 1, 1, WEAPON_HAMMER);
+	EXPECT_GT(pVanillaVictim->m_FreezeTime, 0);
+	pVanillaVictim->TakeDamage(vec2(), 1, 1, WEAPON_LASER);
+	EXPECT_GT(pVanillaVictim->m_FreezeTime, 0);
+}
+
+TEST_F(GameWorld, FreezeWithoutTheDDRaceCharacter)
+{
+	SelectGameMode("dm");
+	CCharacter *pCharacter = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	CNetObj_PlayerInput Input = {};
+	Input.m_Direction = 1;
+	Input.m_Hook = 1;
+	Input.m_TargetX = 1;
+	pCharacter->OnPredictedInput(&Input);
+	EXPECT_FALSE(pCharacter->TickFreeze());
+
+	ASSERT_TRUE(pCharacter->Freeze(1));
+	int FrozenTicks = 0;
+	while(pCharacter->TickFreeze())
+		FrozenTicks++;
+	EXPECT_EQ(FrozenTicks, SERVER_TICK_SPEED - 2);
+	EXPECT_EQ(pCharacter->m_FreezeTime, 0);
+
+	// a DDNet client learns about the freeze from the ninja, the vanilla modes send no DDNet character
+	ASSERT_TRUE(pCharacter->Freeze(1));
+	m_pServer->m_aClients[0].m_State = CServer::CClient::STATE_INGAME;
+	m_pServer->SetClientDDNetVersion(0, VERSION_DDNET_NEW_HUD);
+	GameServer()->m_PlayerMapping.InitPlayerMap(0);
+	m_pServer->m_SnapshotBuilder.Init(false);
+	pCharacter->Snap(0);
+	CSnapshotBuffer Buffer;
+	m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+	int TranslatedId = 0;
+	ASSERT_TRUE(m_pServer->Translate(TranslatedId, 0));
+	const auto *pSnapped = static_cast<const CNetObj_Character *>(Buffer.AsSnapshot()->FindItem(NETOBJTYPE_CHARACTER, TranslatedId));
+	ASSERT_NE(pSnapped, nullptr);
+	EXPECT_EQ(pSnapped->m_Weapon, WEAPON_NINJA);
 }
 
 TEST_F(GameWorld, CharacterSpawnInitializationIsModeOwned)
@@ -1840,6 +1958,38 @@ TEST_F(GameWorld, PlayerKillOperationIsModeOwned)
 	EXPECT_TRUE(pRaceCharacter->IsAlive());
 }
 
+namespace
+{
+	// a mode whose kill key only counts the presses
+	class CKillKeyController : public CGameControllerVanillaDM
+	{
+	public:
+		using CGameControllerVanillaDM::CGameControllerVanillaDM;
+		int m_Presses = 0;
+		void OnPlayerKillKey(CPlayer *pPlayer) override { m_Presses++; }
+	};
+}
+
+TEST_F(GameWorld, KillKeyMeaningIsModeOwned)
+{
+	CKillKeyController &Controller = SelectController<CKillKeyController>("dm");
+	CCharacter *pCharacter = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	CPlayer *pPlayer = pCharacter->GetPlayer();
+	GameController()->OnPlayerKill(0);
+	GameController()->OnPlayerKill(0);
+	EXPECT_EQ(Controller.m_Presses, 2);
+	EXPECT_EQ(pPlayer->GetCharacter(), pCharacter);
+
+	// only while the game runs and for the living
+	GameController()->SetGamePaused(true);
+	GameController()->OnPlayerKill(0);
+	GameController()->SetGamePaused(false);
+	pPlayer->KillCharacter();
+	GameController()->OnPlayerKill(0);
+	EXPECT_EQ(Controller.m_Presses, 2);
+}
+
 TEST_F(GameWorld, TargetVoteOperationsAreModeOwned)
 {
 	constexpr int CallerId = 0;
@@ -2230,6 +2380,34 @@ TEST_F(GameWorld, PlayerSnapshotContributionsAreModeOwned)
 	EXPECT_NE(pRaceSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, TranslatedId), nullptr);
 	EXPECT_NE(pRaceSnapshot->FindItem(NETOBJTYPE_DDNETPLAYER, TranslatedId), nullptr);
 	EXPECT_NE(pRaceSnapshot->FindItem(NETOBJTYPE_DDNETSPECTATORINFO, TranslatedId), nullptr);
+}
+
+TEST_F(GameWorld, ModeShowsOtherColorsAndKeepsThePlayersOwn)
+{
+	CPlayer *pPlayer = JoinPlayer(0, TEAM_GAME, "painted");
+	pPlayer->SetTeeInfos("pinky", true, 0x112233, 0x445566);
+	pPlayer->SetTeeInfoOverride(CTeeInfoOverride::Colors(0xA0FF00));
+	EXPECT_EQ(pPlayer->TeeInfos().m_ColorBody, 0xA0FF00);
+	EXPECT_EQ(pPlayer->OwnTeeInfos().m_ColorBody, 0x112233);
+
+	// what the player changes meanwhile stays theirs, under the colour of the mode
+	pPlayer->SetTeeInfos("default", true, 0x778899, 0x445566);
+	EXPECT_STREQ(pPlayer->TeeInfos().m_aSkinName, "default");
+	EXPECT_EQ(pPlayer->TeeInfos().m_ColorBody, 0xA0FF00);
+
+	GameServer()->m_PlayerMapping.InitPlayerMap(0);
+	int TranslatedId = 0;
+	ASSERT_TRUE(m_pServer->Translate(TranslatedId, 0));
+	m_pServer->m_SnapshotBuilder.Init(false);
+	pPlayer->Snap(0);
+	CSnapshotBuffer Buffer;
+	m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+	const auto *pClientInfo = static_cast<const CNetObj_ClientInfo *>(Buffer.AsSnapshot()->FindItem(NETOBJTYPE_CLIENTINFO, TranslatedId));
+	ASSERT_NE(pClientInfo, nullptr);
+	EXPECT_EQ(pClientInfo->m_ColorBody, 0xA0FF00);
+
+	pPlayer->SetTeeInfoOverride(std::nullopt);
+	EXPECT_EQ(pPlayer->TeeInfos().m_ColorBody, 0x778899);
 }
 
 TEST_F(GameWorld, CharacterSnapshotContributionsAreModeOwned)
@@ -2806,8 +2984,13 @@ TEST_F(GameWorld, VanillaTDMTeamDamage)
 	pEnemy->SetHealth(10);
 	g_Config.m_SvTeamdamage = 0;
 
-	Controller.OnCharacterTakeDamage(pTeammate, vec2(2, 0), 1, pAttacker->GetPlayer()->GetCid(), WEAPON_GUN, true, TEAM_SPECTATORS);
-	Controller.OnCharacterTakeDamage(pEnemy, vec2(2, 0), 1, pAttacker->GetPlayer()->GetCid(), WEAPON_GUN, true, TEAM_SPECTATORS);
+	CGameDamageContext Hit;
+	Hit.m_Force = vec2(2, 0);
+	Hit.m_Damage = 1;
+	Hit.m_From = pAttacker->GetPlayer()->GetCid();
+	Hit.m_Weapon = WEAPON_GUN;
+	Controller.OnCharacterTakeDamage(pTeammate, Hit);
+	Controller.OnCharacterTakeDamage(pEnemy, Hit);
 	const int TeammateHealth = pTeammate->GetHealth();
 	const int EnemyHealth = pEnemy->GetHealth();
 	const float TeammateVelocityX = pTeammate->GetCore().m_Vel.x;
@@ -3374,6 +3557,57 @@ namespace
 		RunTicks(pWorld, 3 * TickSpeed + 2);
 		EXPECT_EQ(SnapGameData7(pWorld).m_GameStateFlags, 0);
 	}
+}
+
+namespace
+{
+	class CDeadSpectatorsController : public CGameControllerDeadSpectators<CGameControllerVanillaDM>
+	{
+	public:
+		using CGameControllerDeadSpectators::CGameControllerDeadSpectators;
+		using CGameControllerDeadSpectators::SetRespawnLocked;
+		// only player 2 may be watched, if at all
+		bool m_OnlyTwo = false;
+		bool CanDeadSpectatorFollow(int ClientId, int TargetId) const override
+		{
+			if(m_OnlyTwo)
+				return TargetId == 2 && IsAlive(2);
+			return CGameControllerDeadSpectators::CanDeadSpectatorFollow(ClientId, TargetId);
+		}
+	};
+}
+
+TEST_F(GameWorld, DeadSpectatorsWaitUntilTheModeLetsThemBack)
+{
+	CDeadSpectatorsController &Controller = SelectController<CDeadSpectatorsController>("dm");
+	CPlayer *pDead = JoinPlayer(0, TEAM_GAME, "dead");
+	JoinPlayer(1, TEAM_GAME, "first");
+	JoinPlayer(2, TEAM_GAME, "second");
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ASSERT_NE(GameServer()->m_apPlayers[ClientId]->ForceSpawn(vec2(64.0f + 32.0f * ClientId, 96.0f)), nullptr);
+
+	Controller.SetRespawnLocked(0, true);
+	EXPECT_FALSE(Controller.IsPlayerDeadSpectator(0));
+	pDead->KillCharacter(WEAPON_WORLD);
+	EXPECT_TRUE(Controller.IsPlayerDeadSpectator(0));
+	EXPECT_EQ(Controller.PlayerAutoRespawnTick(pDead), std::numeric_limits<int>::max());
+	vec2 SpawnPos;
+	EXPECT_FALSE(Controller.CanSpawn(TEAM_GAME, &SpawnPos, 0));
+	const int LastActionTick = pDead->m_LastActionTick;
+	Controller.Tick();
+	EXPECT_EQ(pDead->SpectatorId(), 1);
+	EXPECT_EQ(pDead->m_LastActionTick, LastActionTick + 1);
+	EXPECT_FALSE(Controller.CanPlayerSpectate(0, 0));
+	EXPECT_TRUE(Controller.CanPlayerSpectate(0, 2));
+
+	Controller.m_OnlyTwo = true;
+	Controller.Tick();
+	EXPECT_EQ(pDead->SpectatorId(), 2);
+	EXPECT_FALSE(Controller.CanPlayerSpectate(0, 1));
+
+	Controller.SetRespawnLocked(0, false);
+	EXPECT_FALSE(Controller.IsPlayerDeadSpectator(0));
+	EXPECT_NE(Controller.PlayerAutoRespawnTick(pDead), std::numeric_limits<int>::max());
 }
 
 TEST_F(GameWorld, LMSWaitsForASecondPlayer)
@@ -4115,6 +4349,46 @@ TEST_F(GameWorld, ExplosionPolicyIsModeOwned)
 	delete GameServer()->m_apPlayers[VictimId];
 	GameServer()->m_apPlayers[VictimId] = nullptr;
 	SelectGameMode("ddnet");
+}
+
+namespace
+{
+	// a mode that lets the grenades of player 0 reach nobody but player 2
+	class CAffectMaskController : public CGameControllerVanillaDM
+	{
+	public:
+		using CGameControllerVanillaDM::CGameControllerVanillaDM;
+		void OnProjectileCreated(CProjectile *pProjectile) override
+		{
+			if(pProjectile->GetOwnerId() == 0)
+				pProjectile->SetAffectMask(CClientMask().set(2));
+		}
+	};
+}
+
+TEST_F(GameWorld, ProjectileTellsItsExplosionWhomItMayReach)
+{
+	SelectController<CAffectMaskController>("dm");
+	ASSERT_NE(SpawnPlayer(0, vec2(-256.0f, 0.0f)), nullptr);
+	CCharacter *pSpared = SpawnPlayer(1, vec2(0.0f, 0.0f));
+	CCharacter *pReached = SpawnPlayer(2, vec2(8.0f, 0.0f));
+	ASSERT_NE(pSpared, nullptr);
+	ASSERT_NE(pReached, nullptr);
+	pSpared->SetHealth(10);
+	pReached->SetHealth(10);
+
+	auto *pGrenade = new CProjectile(&GameServer()->m_World, WEAPON_GRENADE, 0, vec2(4.0f, 0.0f), vec2(1, 0), 0, false, true, -1, vec2(1, 0));
+	EXPECT_TRUE(pGrenade->AffectMask().test(2));
+	EXPECT_FALSE(pGrenade->AffectMask().test(1));
+	// it explodes right away, among both
+	pGrenade->Tick();
+	EXPECT_EQ(pSpared->GetHealth(), 10);
+	EXPECT_EQ(pSpared->GetCore().m_Vel, vec2(0.0f, 0.0f));
+	EXPECT_LT(pReached->GetHealth(), 10);
+
+	// someone else's grenade reaches everybody
+	auto *pOther = new CProjectile(&GameServer()->m_World, WEAPON_GRENADE, 1, vec2(4.0f, 0.0f), vec2(1, 0), 0, false, true, -1, vec2(1, 0));
+	EXPECT_TRUE(pOther->AffectMask().all());
 }
 
 TEST_F(GameWorld, VanillaTeamsSwapAfterAMatch)

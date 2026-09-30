@@ -137,18 +137,34 @@ void CPlayer::Reset()
 
 void CPlayer::SetTeeInfos(const CTeeInfo &TeeInfos)
 {
-	m_TeeInfos = TeeInfos;
-	InvalidateClientInfo();
+	m_OwnTeeInfos = TeeInfos;
+	UpdateTeeInfos();
 }
 
 void CPlayer::SetTeeInfos(const char *pSkinName, bool UseCustomColor, int ColorBody, int ColorFeet)
 {
-	str_copy(m_TeeInfos.m_aSkinName, pSkinName);
-	m_TeeInfos.m_UseCustomColor = UseCustomColor;
-	m_TeeInfos.m_ColorBody = ColorBody;
-	m_TeeInfos.m_ColorFeet = ColorFeet;
+	str_copy(m_OwnTeeInfos.m_aSkinName, pSkinName);
+	m_OwnTeeInfos.m_UseCustomColor = UseCustomColor;
+	m_OwnTeeInfos.m_ColorBody = ColorBody;
+	m_OwnTeeInfos.m_ColorFeet = ColorFeet;
 	if(!Server()->IsSixup(m_ClientId))
-		m_TeeInfos.ToSixup();
+		m_OwnTeeInfos.ToSixup();
+	UpdateTeeInfos();
+}
+
+void CPlayer::SetTeeInfoOverride(const std::optional<CTeeInfoOverride> &Override)
+{
+	if(Override == m_TeeInfoOverride)
+		return;
+	m_TeeInfoOverride = Override;
+	UpdateTeeInfos();
+	if(Server()->ClientIngame(m_ClientId))
+		GameServer()->SendSkinChange7(m_ClientId);
+}
+
+void CPlayer::UpdateTeeInfos()
+{
+	m_TeeInfos = m_TeeInfoOverride ? m_TeeInfoOverride->Apply(m_OwnTeeInfos) : m_OwnTeeInfos;
 	InvalidateClientInfo();
 }
 

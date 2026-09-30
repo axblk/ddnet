@@ -59,6 +59,7 @@ CProjectile::CProjectile(
 		m_InteractState.FillOwnerDisconnected();
 
 	GameWorld()->InsertEntity(this);
+	GameServer()->GameHost().Controller()->OnProjectileCreated(this);
 }
 
 void CProjectile::Reset()
@@ -176,7 +177,8 @@ void CProjectile::Tick()
 					m_Owner == -1 && !m_OwnerDetached,
 					m_OwnerDetached || !pTargetChr ? -1 : pTargetChr->Team(),
 					m_TeamMask,
-					m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
+					m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS,
+					m_AffectMask);
 				GameServer()->CreateSound(ColPos, m_SoundImpact, m_TeamMask);
 			}
 		}
@@ -276,7 +278,8 @@ void CProjectile::Tick()
 				m_Owner == -1 && !m_OwnerDetached,
 				m_OwnerDetached || !pOwnerChar ? -1 : pOwnerChar->Team(),
 				m_TeamMask,
-				m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS);
+				m_OwnerDetached ? m_OwnerTeam : TEAM_SPECTATORS,
+				m_AffectMask);
 			GameServer()->CreateSound(ColPos, m_SoundImpact, m_TeamMask);
 		}
 		m_MarkedForDestroy = true;

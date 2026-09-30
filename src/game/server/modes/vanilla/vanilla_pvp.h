@@ -12,7 +12,7 @@ public:
 
 	CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team) override;
 	bool OnEntity(const CMapEntityContext &Context) override;
-	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
+	bool OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context) override;
 	CWeaponFireResult OnCharacterFireWeapon(const CWeaponFireContext &Context) override;
 	CGamePickupResult OnCharacterPickup(CCharacter *pCharacter, int Type, int Subtype, vec2 Position) override;
 	int PickupInitialSpawnDelaySeconds(int Type, int Subtype) const override;
@@ -51,6 +51,19 @@ protected:
 	virtual void BeginMatch() { StartCountdown(true); }
 	void UpdateGameDataSixup(protocol7::CNetObj_GameData &GameData, int SnappingClient) override;
 
+	/**
+	 * A hit that may hurt: it passed the rules of the mode, like those about
+	 * friendly fire, and pushed the victim already.
+	 *
+	 * By default the damage goes to armour and health as in vanilla, with
+	 * damage indicators and pain.
+	 *
+	 * @return false if the victim died of it.
+	 */
+	virtual bool OnCharacterHurt(CCharacter *pVictim, const CGameDamageContext &Context);
+	// a sound only for a player and whoever watches them, like the sound of a hit for the attacker
+	void CreateSoundFor(int ClientId, int Sound);
+	void CreateHitSound(int AttackerId) { CreateSoundFor(AttackerId, SOUND_HIT); }
 	static int DeathScoreDelta(int VictimId, int KillerId, int Weapon, bool TeamKill = false);
 	CPlayerVanilla *VanillaPlayer(int ClientId) const;
 	void SetRespawnDelay(int VictimId, int Weapon);

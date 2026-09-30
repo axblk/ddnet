@@ -81,12 +81,34 @@ bool CGameControllerVanillaPvP::OnEntity(const CMapEntityContext &Context)
 	return IGameController::OnEntity(Context);
 }
 
-bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
+bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context)
 {
-	pVictim->AddVelocity(Force);
-	if(!CanDamage)
+	pVictim->AddVelocity(Context.m_Force);
+	if(!Context.m_CanDamage)
 		return true;
+	return OnCharacterHurt(pVictim, Context);
+}
 
+void CGameControllerVanillaPvP::CreateSoundFor(int ClientId, int Sound)
+{
+	const CPlayer *pPlayer = Services().Player(ClientId);
+	if(!pPlayer)
+		return;
+	CClientMask Mask = CClientMask().set(ClientId);
+	for(int SpectatorId = 0; SpectatorId < MAX_CLIENTS; SpectatorId++)
+	{
+		const CPlayer *pSpectator = Services().Player(SpectatorId);
+		if(pSpectator && (pSpectator->GetTeam() == TEAM_SPECTATORS || IsPlayerDeadSpectator(SpectatorId)) && pSpectator->SpectatorId() == ClientId)
+			Mask.set(SpectatorId);
+	}
+	Services().CreateSound(pPlayer->m_ViewPos, Sound, Mask);
+}
+
+bool CGameControllerVanillaPvP::OnCharacterHurt(CCharacter *pVictim, const CGameDamageContext &Context)
+{
+	const int From = Context.m_From;
+	const int Weapon = Context.m_Weapon;
+	int Damage = Context.m_Damage;
 	if(Damage == 0 && Weapon >= WEAPON_HAMMER && Weapon < NUM_WEAPONS)
 		Damage = g_pData->m_Weapons.m_aId[Weapon].m_Damage;
 	if(Damage <= 0)
@@ -131,16 +153,7 @@ bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 
 
 	CPlayer *pAttackerPlayer = From != VictimId ? Services().Player(From) : nullptr;
 	if(pAttackerPlayer)
-	{
-		CClientMask Mask = CClientMask().set(From);
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-		{
-			const CPlayer *pSpectator = Services().Player(ClientId);
-			if(pSpectator && (pSpectator->GetTeam() == TEAM_SPECTATORS || IsPlayerDeadSpectator(ClientId)) && pSpectator->SpectatorId() == From)
-				Mask.set(ClientId);
-		}
-		Services().CreateSound(pAttackerPlayer->m_ViewPos, SOUND_HIT, Mask);
-	}
+		CreateHitSound(From);
 
 	if(Health <= 0)
 	{

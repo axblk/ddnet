@@ -23,7 +23,7 @@ protected:
 public:
 	CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo);
 
-	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override;
+	bool OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context) override;
 	void Tick() override;
 	void StartRound() override;
 	bool CanSpawn(int Team, vec2 *pOutPos, int ClientId) override;

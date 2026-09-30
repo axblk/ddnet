@@ -131,6 +131,8 @@ public:
 
 	void SendChatTarget(int To, const char *pText, int VersionFlags = FLAG_SIX | FLAG_SIXUP) const;
 	void SendChatTeam(int Team, const char *pText) const;
+	// a kill for the kill feed, also without anybody dying, like a freeze in FNG
+	void SendKillMessage(int Killer, int Victim, int Weapon, int ModeSpecial = 0) const;
 	void SendChat(int ClientId, int Team, const char *pText, int SpamProtectionClientId = -1, int VersionFlags = FLAG_SIX | FLAG_SIXUP) const;
 	void SendBroadcast(const char *pText, int ClientId, bool IsImportant = true) const;
 	// true if the player is muted or sends too much, and tells them so

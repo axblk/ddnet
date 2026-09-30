@@ -59,11 +59,12 @@ public:
 		pCharacter->SetWeapon(TRules::WEAPON);
 	}
 
-	bool OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam) override
+	bool OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context) override
 	{
-		if(Weapon == TRules::WEAPON)
-			TRules::AdjustDamage(From == pVictim->GetPlayer()->GetCid(), Damage, CanDamage);
-		return TBase::OnCharacterTakeDamage(pVictim, Force, Damage, From, Weapon, CanDamage, AttackerTeam);
+		CGameDamageContext Hit = Context;
+		if(Hit.m_Weapon == TRules::WEAPON)
+			TRules::AdjustDamage(Hit.m_From == pVictim->GetPlayer()->GetCid(), Hit.m_Damage, Hit.m_CanDamage);
+		return TBase::OnCharacterTakeDamage(pVictim, Hit);
 	}
 };
 

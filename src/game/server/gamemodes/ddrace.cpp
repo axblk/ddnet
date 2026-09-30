@@ -1727,6 +1727,8 @@ void CGameControllerDDRace::OnExplosion(const CGameExplosionContext &Context)
 	for(int i = 0; i < Num; i++)
 	{
 		auto *pCharacter = static_cast<CCharacter *>(apEntities[i]);
+		if(!Context.m_AffectMask.test(pCharacter->GetPlayer()->GetCid()))
+			continue;
 		const vec2 Difference = pCharacter->m_Pos - Context.m_Position;
 		const float Distance = length(Difference);
 		const vec2 ForceDirection = Distance > 0.0f ? normalize(Difference) : vec2(0.0f, 1.0f);

@@ -5,6 +5,8 @@
 
 #include <generated/protocol7.h>
 
+#include <optional>
+
 class CTeeInfo
 {
 public:
@@ -24,6 +26,32 @@ public:
 
 	void FromSixup();
 	void ToSixup();
+};
+
+/**
+ * What a mode shows of a player instead of the player's own choice, like the
+ * colour of the group the player is in.
+ *
+ * The player keeps their own skin and gets it back unchanged once the mode
+ * lets go, whatever they change in the meantime.
+ */
+class CTeeInfoOverride
+{
+	int m_ColorBody = 0;
+	std::optional<int> m_ColorFeet;
+
+public:
+	/**
+	 * Custom colours over the skin the player chose, packed HSL as 0.6 sends them.
+	 *
+	 * @param ColorBody The colour of the body, also of the decoration and the hands of a 0.7 skin.
+	 * @param ColorFeet The colour of the feet, the player's own if there is none.
+	 */
+	static CTeeInfoOverride Colors(int ColorBody, std::optional<int> ColorFeet = std::nullopt);
+
+	// the tee infos everybody sees
+	CTeeInfo Apply(const CTeeInfo &Own) const;
+	bool operator==(const CTeeInfoOverride &Other) const = default;
 };
 
 #endif // GAME_SERVER_TEEINFO_H

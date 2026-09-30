@@ -44,6 +44,8 @@ private:
 	std::optional<std::array<int, 2>> m_TeamScores;
 	// metrics of the match itself; the ids are static strings
 	std::vector<std::pair<const char *, int64_t>> m_vMatchMetrics;
+	// the unique client ids of who won, if the mode says so rather than the scores
+	std::vector<uint32_t> m_vWinners;
 	bool m_Overflow = false;
 
 public:
@@ -58,6 +60,8 @@ public:
 	void SetPlaying(CParticipant &Participant, bool Playing, int Tick);
 	void SetTeamScores(int Red, int Blue) { m_TeamScores = {Red, Blue}; }
 	void SetMatchMetric(const char *pMetricId, int64_t Value);
+	// who won a match without teams, whatever the scores say; by unique client id
+	void SetWinners(std::vector<uint32_t> vWinners) { m_vWinners = std::move(vWinners); }
 
 	static void AddCombat(CParticipant &Participant, EMatchCombatStat Stat, int Weapon, int64_t Value);
 	static void AddExtra(CParticipant &Participant, const char *pMetricId, int64_t Value);

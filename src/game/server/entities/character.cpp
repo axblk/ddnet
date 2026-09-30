@@ -193,7 +193,8 @@ void CCharacter::HandleJetpack()
 
 	// check if we gonna fire
 	bool WillFire = false;
-	if(CountInput(m_LatestPrevInput.m_Fire, m_LatestInput.m_Fire).m_Presses)
+	const bool Pressed = CountInput(m_LatestPrevInput.m_Fire, m_LatestInput.m_Fire).m_Presses;
+	if(Pressed)
 		WillFire = true;
 
 	if(FullAuto && (m_LatestInput.m_Fire & 1) && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo)
@@ -402,7 +403,8 @@ void CCharacter::FireWeapon()
 
 	// check if we gonna fire
 	bool WillFire = false;
-	if(CountInput(m_LatestPrevInput.m_Fire, m_LatestInput.m_Fire).m_Presses)
+	const bool Pressed = CountInput(m_LatestPrevInput.m_Fire, m_LatestInput.m_Fire).m_Presses;
+	if(Pressed)
 		WillFire = true;
 
 	if(FullAuto && (m_LatestInput.m_Fire & 1) && m_Core.m_ActiveWeapon >= 0 && m_Core.m_aWeapons[m_Core.m_ActiveWeapon].m_Ammo)
@@ -423,7 +425,7 @@ void CCharacter::FireWeapon()
 	}
 
 	vec2 ProjStartPos = m_Pos + Direction * GetProximityRadius() * 0.75f;
-	CWeaponFireContext FireContext = {this, m_Core.m_ActiveWeapon, Direction, MouseTarget, ProjStartPos, &m_Core.m_Tuning};
+	CWeaponFireContext FireContext = {this, m_Core.m_ActiveWeapon, Direction, MouseTarget, ProjStartPos, &m_Core.m_Tuning, Pressed};
 	const CWeaponFireResult FireResult = GameServer()->GameHost().Controller()->OnCharacterFireWeapon(FireContext);
 	if(FireResult.m_ReloadTicks > 0)
 		m_ReloadTimer = FireResult.m_ReloadTicks;
@@ -840,14 +842,7 @@ void CCharacter::FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int
 		m_Core.m_Id, Server()->ClientName(m_Core.m_Id), Weapon, ModeSpecial);
 
 	if(SendKillMessage)
-	{
-		CNetMsg_Sv_KillMsg Msg;
-		Msg.m_Killer = Killer;
-		Msg.m_Victim = m_Core.m_Id;
-		Msg.m_Weapon = Weapon;
-		Msg.m_ModeSpecial = ModeSpecial;
-		Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, -1);
-	}
+		GameServer()->SendKillMessage(Killer, m_Core.m_Id, Weapon, ModeSpecial);
 
 	// a nice sound, and bursting tee death effect
 	GameServer()->CreateSound(m_Pos, SOUND_PLAYER_DIE, TeamMask());
@@ -866,7 +861,19 @@ void CCharacter::FinalizeDeath(int Killer, int Weapon, bool SendKillMessage, int
 
 bool CCharacter::TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage, int AttackerTeam)
 {
-	return GameServer()->GameHost().Controller()->OnCharacterTakeDamage(this, Force, Dmg, From, Weapon, CanDamage, AttackerTeam);
+	CGameDamageContext Context;
+	Context.m_Force = Force;
+	Context.m_Damage = Dmg;
+	Context.m_From = From;
+	Context.m_Weapon = Weapon;
+	Context.m_CanDamage = CanDamage;
+	Context.m_AttackerTeam = AttackerTeam;
+	return TakeDamage(Context);
+}
+
+bool CCharacter::TakeDamage(const CGameDamageContext &Context)
+{
+	return GameServer()->GameHost().Controller()->OnCharacterTakeDamage(this, Context);
 }
 
 void CCharacter::SnapCharacter(int SnappingClient, int MapId)
@@ -888,8 +895,9 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 		pCore = &m_SendCore;
 	}
 
-	// use ninja graphic for old clients if player is frozen
-	if((m_Core.m_DeepFrozen || m_FreezeTime > 0) && SnappingClientVersion < VERSION_DDNET_NEW_HUD)
+	// use ninja graphic if the player is frozen, for old clients and for all where the mode sends no
+	// DDNet character objects, which is the only other way a client learns about the freeze
+	if((m_Core.m_DeepFrozen || m_FreezeTime > 0) && (SnappingClientVersion < VERSION_DDNET_NEW_HUD || !GameServer()->GameHost().Controller()->UseDDNetEntityNetObjs()))
 		Weapon = WEAPON_NINJA;
 
 	// solo, collision, jetpack and ninjajetpack prediction
@@ -979,8 +987,11 @@ void CCharacter::SnapCharacter(int SnappingClient, int MapId)
 		Character.m_Weapon = Weapon;
 		Character.m_AmmoCount = AmmoCount;
 
-		if(m_FreezeTime > 0 || m_Core.m_DeepFrozen)
+		// the tick the freeze ends, which 0.7 shows as the ninja bar
+		if(m_Core.m_DeepFrozen)
 			Character.m_AmmoCount = m_Core.m_FreezeStart + g_Config.m_SvFreezeDelay * GameWorld()->GameTickSpeed();
+		else if(m_FreezeTime > 0)
+			Character.m_AmmoCount = GameWorld()->GameTick() + m_FreezeTime;
 		else if(Weapon == WEAPON_NINJA)
 			Character.m_AmmoCount = m_Core.m_Ninja.m_ActivationTick + g_pData->m_Weapons.m_Ninja.m_Duration * GameWorld()->GameTickSpeed() / 1000;
 
@@ -1171,6 +1182,23 @@ bool CCharacter::Freeze(int Seconds)
 bool CCharacter::Freeze()
 {
 	return Freeze(g_Config.m_SvFreezeDelay);
+}
+
+bool CCharacter::TickFreeze()
+{
+	if(m_FreezeTime <= 0)
+		return false;
+	m_FreezeTime--;
+	if(m_FreezeTime <= 1)
+	{
+		Unfreeze();
+		m_Input = m_SavedInput;
+		return false;
+	}
+	m_Input.m_Direction = 0;
+	m_Input.m_Jump = 0;
+	m_Input.m_Hook = 0;
+	return true;
 }
 
 bool CCharacter::Unfreeze()

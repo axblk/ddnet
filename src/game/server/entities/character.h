@@ -15,6 +15,7 @@ class CTeamsCore;
 class CGameWorld;
 class IAntibot;
 struct CAntibotCharacterData;
+struct CGameDamageContext;
 struct CWeaponFireResult;
 
 enum
@@ -82,6 +83,8 @@ public:
 
 	virtual void Die(int Killer, int Weapon, bool SendKillMsg = true);
 	bool TakeDamage(vec2 Force, int Dmg, int From, int Weapon, bool CanDamage = true, int AttackerTeam = TEAM_SPECTATORS);
+	// false if the character died of the hit
+	bool TakeDamage(const CGameDamageContext &Context);
 
 	bool Spawn(class CPlayer *pPlayer, vec2 Pos);
 
@@ -191,6 +194,15 @@ public:
 	bool Freeze(int Seconds);
 	bool Freeze();
 	bool Unfreeze();
+	/**
+	 * Runs a freeze down by a tick, for modes that freeze without the DDRace character.
+	 *
+	 * A frozen tee does not move, jump or hook; it thaws when the freeze runs out.
+	 * Call it before the core tick, from IGameController::TickCharacterPreCore.
+	 *
+	 * @return Whether the tee is still frozen.
+	 */
+	bool TickFreeze();
 	void GiveAllWeapons();
 	void ResetPickups();
 	void ResetJumps();

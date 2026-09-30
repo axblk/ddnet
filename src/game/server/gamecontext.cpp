@@ -375,9 +375,9 @@ void CGameContext::CreateHammerHit(vec2 Pos, CClientMask Mask)
 	}
 }
 
-void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam) // NOLINT(readability-make-member-function-const)
+void CGameContext::CreateExplosion(vec2 Pos, int Owner, int Weapon, bool NoDamage, int ActivatedTeam, CClientMask Mask, int AttackerTeam, CClientMask AffectMask) // NOLINT(readability-make-member-function-const)
 {
-	m_GameHost.Controller()->OnExplosion({Pos, Owner, Weapon, NoDamage, ActivatedTeam, Mask, AttackerTeam});
+	m_GameHost.Controller()->OnExplosion({Pos, Owner, Weapon, NoDamage, ActivatedTeam, Mask, AttackerTeam, AffectMask});
 }
 
 void CGameContext::CreateExplosionEvent(vec2 Pos, CClientMask Mask)
@@ -620,6 +620,16 @@ void CGameContext::CallVote(int ClientId, const char *pDesc, const char *pCmd, c
 
 	CNetMsg_Sv_YourVote Msg = {pPlayer->m_Vote};
 	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, ClientId);
+}
+
+void CGameContext::SendKillMessage(int Killer, int Victim, int Weapon, int ModeSpecial) const
+{
+	CNetMsg_Sv_KillMsg Msg;
+	Msg.m_Killer = Killer;
+	Msg.m_Victim = Victim;
+	Msg.m_Weapon = Weapon;
+	Msg.m_ModeSpecial = ModeSpecial;
+	Server()->SendPackMsg(&Msg, MSGFLAG_VITAL, -1);
 }
 
 void CGameContext::SendChatTarget(int To, const char *pText, int VersionFlags) const
@@ -1949,12 +1959,12 @@ void *CGameContext::PreProcessMsg(int *pMsgId, CUnpacker *pUnpacker, int ClientI
 			TeeInfos.FromSixup();
 			pPlayer->SetTeeInfos(TeeInfos);
 
-			str_copy(s_aRawMsg + sizeof(*pMsg), pPlayer->TeeInfos().m_aSkinName, sizeof(s_aRawMsg) - sizeof(*pMsg));
+			str_copy(s_aRawMsg + sizeof(*pMsg), pPlayer->OwnTeeInfos().m_aSkinName, sizeof(s_aRawMsg) - sizeof(*pMsg));
 
 			pMsg->m_pSkin = s_aRawMsg + sizeof(*pMsg);
-			pMsg->m_UseCustomColor = pPlayer->TeeInfos().m_UseCustomColor;
-			pMsg->m_ColorBody = pPlayer->TeeInfos().m_ColorBody;
-			pMsg->m_ColorFeet = pPlayer->TeeInfos().m_ColorFeet;
+			pMsg->m_UseCustomColor = pPlayer->OwnTeeInfos().m_UseCustomColor;
+			pMsg->m_ColorBody = pPlayer->OwnTeeInfos().m_ColorBody;
+			pMsg->m_ColorFeet = pPlayer->OwnTeeInfos().m_ColorFeet;
 		}
 		else if(*pMsgId == protocol7::NETMSGTYPE_CL_SKINCHANGE)
 		{

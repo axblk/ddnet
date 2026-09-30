@@ -240,6 +240,11 @@ void CGameServices::SendChatTarget(int To, const char *pText, int VersionFlags) 
 	m_pGameServer->SendChatTarget(To, pText, VersionFlags);
 }
 
+void CGameServices::SendKillMessage(int Killer, int Victim, int Weapon, int ModeSpecial) const
+{
+	m_pGameServer->SendKillMessage(Killer, Victim, Weapon, ModeSpecial);
+}
+
 void CGameServices::SendChatTeam(int Team, const char *pText) const
 {
 	m_pGameServer->SendChatTeam(Team, pText);

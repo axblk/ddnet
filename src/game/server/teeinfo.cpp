@@ -151,3 +151,37 @@ void CTeeInfo::FromSixup()
 			      .UnclampLighting(ColorHSLA::DARKEST_LGT7)
 			      .Pack(ColorHSLA::DARKEST_LGT);
 }
+
+CTeeInfoOverride CTeeInfoOverride::Colors(int ColorBody, std::optional<int> ColorFeet)
+{
+	CTeeInfoOverride Override;
+	Override.m_ColorBody = ColorBody;
+	Override.m_ColorFeet = ColorFeet;
+	return Override;
+}
+
+CTeeInfo CTeeInfoOverride::Apply(const CTeeInfo &Own) const
+{
+	CTeeInfo Info = Own;
+	// feet without a colour of their own take that of the body rather than a black one
+	const int ColorFeet = m_ColorFeet.value_or(Own.m_UseCustomColor ? Own.m_ColorFeet : m_ColorBody);
+	Info.m_UseCustomColor = true;
+	Info.m_ColorBody = m_ColorBody;
+	Info.m_ColorFeet = ColorFeet;
+
+	// as ToSixup turns 0.6 colours into those of the 0.7 skin parts
+	const int ColorBody7 = ColorHSLA(m_ColorBody).UnclampLighting(ColorHSLA::DARKEST_LGT).Pack(ColorHSLA::DARKEST_LGT7);
+	for(int Part : {protocol7::SKINPART_BODY, protocol7::SKINPART_DECORATION, protocol7::SKINPART_HANDS})
+	{
+		Info.m_aUseCustomColors[Part] = true;
+		Info.m_aSkinPartColors[Part] = ColorBody7;
+	}
+	Info.m_aUseCustomColors[protocol7::SKINPART_MARKING] = true;
+	Info.m_aSkinPartColors[protocol7::SKINPART_MARKING] = 0x22FFFFFF;
+	if(m_ColorFeet || !Own.m_aUseCustomColors[protocol7::SKINPART_FEET])
+	{
+		Info.m_aUseCustomColors[protocol7::SKINPART_FEET] = true;
+		Info.m_aSkinPartColors[protocol7::SKINPART_FEET] = ColorHSLA(ColorFeet).UnclampLighting(ColorHSLA::DARKEST_LGT).Pack(ColorHSLA::DARKEST_LGT7);
+	}
+	return Info;
+}

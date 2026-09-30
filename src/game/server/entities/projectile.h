@@ -36,6 +36,12 @@ public:
 	void Snap(int SnappingClient) override;
 	void SwapClients(int Client1, int Client2) override;
 	void LoseOwner();
+	// the weapon that shot it
+	int Type() const { return m_Type; }
+
+	// the characters the explosion of the projectile may reach, all by default; set by the mode when the projectile is made
+	CClientMask AffectMask() const { return m_AffectMask; }
+	void SetAffectMask(CClientMask Mask) { m_AffectMask = Mask; }
 
 private:
 	vec2 m_Direction;
@@ -51,6 +57,7 @@ private:
 	// DDRace
 
 	CClientMask m_TeamMask;
+	CClientMask m_AffectMask = CClientMask().set();
 	int m_Bouncing;
 	bool m_Freeze;
 	int m_TuneZone;

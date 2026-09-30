@@ -22,17 +22,18 @@ CGameControllerVanillaTeamplay::CGameControllerVanillaTeamplay(CGameServices &Se
 {
 }
 
-bool CGameControllerVanillaTeamplay::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
+bool CGameControllerVanillaTeamplay::OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context)
 {
 	const int VictimId = pVictim->GetPlayer()->GetCid();
-	if(CPlayer *pAttacker = Services().Player(From))
-		AttackerTeam = pAttacker->GetTeam();
-	if(!g_Config.m_SvTeamdamage && From != VictimId && AttackerTeam >= TEAM_RED && AttackerTeam <= TEAM_BLUE && AttackerTeam == pVictim->GetPlayer()->GetTeam())
+	CGameDamageContext Hit = Context;
+	if(CPlayer *pAttacker = Services().Player(Context.m_From))
+		Hit.m_AttackerTeam = pAttacker->GetTeam();
+	if(!g_Config.m_SvTeamdamage && Hit.m_From != VictimId && Hit.m_AttackerTeam >= TEAM_RED && Hit.m_AttackerTeam <= TEAM_BLUE && Hit.m_AttackerTeam == pVictim->GetPlayer()->GetTeam())
 	{
-		pVictim->AddVelocity(Force);
+		pVictim->AddVelocity(Hit.m_Force);
 		return true;
 	}
-	return CGameControllerVanillaPvP::OnCharacterTakeDamage(pVictim, Force, Damage, From, Weapon, CanDamage, AttackerTeam);
+	return CGameControllerVanillaPvP::OnCharacterTakeDamage(pVictim, Hit);
 }
 
 std::array<int, NUM_TEAMS> CGameControllerVanillaTeamplay::TeamSizes(int ExceptClientId) const

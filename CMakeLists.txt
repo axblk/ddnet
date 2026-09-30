@@ -4141,6 +4141,7 @@ if(SERVER)
     modes/insta/rules.h
     modes/vanilla/ctf.cpp
     modes/vanilla/ctf.h
+    modes/vanilla/dead_spectators.h
     modes/vanilla/dm.cpp
     modes/vanilla/dm.h
     modes/vanilla/flag.cpp
@@ -4564,6 +4565,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     str_test.cpp
     swap_endian_test.cpp
     teehistorian_test.cpp
+    teeinfo_test.cpp
     test.cpp
     test.h
     thread_test.cpp

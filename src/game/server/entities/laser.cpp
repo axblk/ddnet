@@ -96,11 +96,11 @@ bool CLaser::HitCharacter(vec2 From, vec2 To)
 			pHit->ApplyMoveRestrictions();
 		}
 	}
-	else if(m_Type == WEAPON_LASER)
-	{
-		pHit->Unfreeze();
-	}
-	pHit->TakeDamage(vec2(0, 0), 0, m_Owner, m_Type);
+	CGameDamageContext Damage;
+	Damage.m_From = m_Owner;
+	Damage.m_Weapon = m_Type;
+	Damage.m_Bounces = m_Bounces;
+	pHit->TakeDamage(Damage);
 	return true;
 }
 

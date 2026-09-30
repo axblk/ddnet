@@ -200,6 +200,15 @@ void IGameController::SetMatchMetric(const char *pMetricId, int64_t Value)
 	m_MatchRecorder.SetMatchMetric(pMetricId, Value);
 }
 
+void IGameController::SetMatchWinners(const std::vector<const CPlayer *> &vpWinners)
+{
+	std::vector<uint32_t> vWinners;
+	vWinners.reserve(vpWinners.size());
+	for(const CPlayer *pWinner : vpWinners)
+		vWinners.push_back(pWinner->GetUniqueCid());
+	m_MatchRecorder.SetWinners(std::move(vWinners));
+}
+
 void IGameController::AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage)
 {
 	if(pAttacker == pVictim || Weapon < 0 || Weapon >= NUM_WEAPONS || Damage <= 0)
@@ -363,11 +372,20 @@ void IGameController::OnPlayerKill(int ClientId)
 		return;
 
 	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
-	if(pPlayer->m_LastKill && pPlayer->m_LastKill + Server()->TickSpeed() * g_Config.m_SvKillDelay > Server()->Tick())
-		return;
 	if(pPlayer->IsPaused() || !pPlayer->GetCharacter())
 		return;
+	OnPlayerKillKey(pPlayer);
+}
 
+void IGameController::OnPlayerKillKey(CPlayer *pPlayer)
+{
+	SelfKill(pPlayer);
+}
+
+void IGameController::SelfKill(CPlayer *pPlayer)
+{
+	if(pPlayer->m_LastKill && pPlayer->m_LastKill + Server()->TickSpeed() * g_Config.m_SvKillDelay > Server()->Tick())
+		return;
 	pPlayer->m_LastKill = Server()->Tick();
 	pPlayer->KillCharacter(WEAPON_SELF);
 	pPlayer->Respawn();
@@ -822,12 +840,15 @@ void IGameController::OnCharacterDeath(const CGameCharacterDeathContext &Context
 	FinalizeCharacterDeath(Context);
 }
 
-bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
+bool IGameController::OnCharacterTakeDamage(CCharacter *pVictim, const CGameDamageContext &Context)
 {
-	if(Damage)
+	// the laser and the hammer thaw a frozen tee in DDRace
+	if(Context.m_Weapon == WEAPON_LASER || Context.m_Weapon == WEAPON_HAMMER)
+		pVictim->Unfreeze();
+	if(Context.m_Damage)
 		pVictim->SetEmote(EMOTE_PAIN, Server()->Tick() + 500 * Server()->TickSpeed() / 1000);
 
-	pVictim->AddVelocity(Force);
+	pVictim->AddVelocity(Context.m_Force);
 	return true;
 }
 
@@ -881,7 +902,6 @@ CWeaponFireResult IGameController::OnCharacterFireWeapon(const CWeaponFireContex
 				g_pData->m_Weapons.m_Hammer.m_pBase->m_Damage,
 				Owner,
 				Context.m_Weapon);
-			pTarget->Unfreeze();
 			GameServer()->Antibot()->OnHammerHit(Owner, pTarget->GetPlayer()->GetCid());
 			Hits++;
 		}
@@ -963,6 +983,8 @@ void IGameController::OnExplosion(const CGameExplosionContext &Context)
 	for(int i = 0; i < Num; i++)
 	{
 		auto *pCharacter = static_cast<CCharacter *>(apEntities[i]);
+		if(!Context.m_AffectMask.test(pCharacter->GetPlayer()->GetCid()))
+			continue;
 		const vec2 Difference = pCharacter->m_Pos - Context.m_Position;
 		const float Distance = length(Difference);
 		const vec2 ForceDirection = Distance > 0.0f ? normalize(Difference) : vec2(0.0f, 1.0f);

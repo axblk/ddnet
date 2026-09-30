@@ -17,6 +17,7 @@
 #include <game/server/mode/game_services.h>
 #include <game/server/mode/match_lifecycle.h>
 #include <game/server/mode/match_recorder.h>
+#include <game/server/mode/ready_mode.h>
 #include <game/teamscore.h>
 
 #include <memory>
@@ -121,7 +122,7 @@ struct CGameCharacterDeathContext
 		Controls the main game logic. Keeping track of team and player score,
 		winning conditions and specific game logic.
 */
-class IGameController
+class IGameController : private CReadyMode::IGame
 {
 protected:
 	enum ESpawnType
@@ -145,12 +146,21 @@ private:
 	char m_aTestingGameType[32];
 	CMatchRecorder m_MatchRecorder;
 	CMatchReportSender m_MatchReportSender;
+	CReadyMode m_ReadyMode;
 
 	CGameContext *GameServer() const { return m_pGameServer; }
 	void StartMatchReport();
 	void UpdateMatchParticipants();
 	void FinishMatchReport(EMatchTermination Termination, bool SuddenDeath = false);
 	CMatchRecorder::CParticipant *MatchParticipant(CPlayer *pPlayer);
+
+	// CReadyMode::IGame, the match lifecycle and the pause of the mode for the ready mode
+	bool IsReadyParticipant(int ClientId) const override;
+	bool IsMatchWaitingForReady() const override { return Match().IsWaitingForReady(); }
+	bool IsRunningUnpaused() const override { return Match().IsRunning() && !IsGamePaused(); }
+	bool IsPausedUntilReady() const override { return IsPausedWithoutEnd() && !Match().IsGameOver(); }
+	void StartMatch() override;
+	void PauseUntilReady(bool Pause) override { DoPause(Pause ? -1 : 0); }
 
 protected:
 	IServer *Server() const { return m_pServer; }
@@ -319,8 +329,14 @@ public:
 	// the pause command, which a mode can also give another meaning
 	virtual void OnPauseCommand(IConsole::IResult *pResult);
 
+	// the ready mode of Teeworlds 0.7, which every mode that plays matches has
+	CReadyMode &ReadyMode() { return m_ReadyMode; }
+	const CReadyMode &ReadyMode() const { return m_ReadyMode; }
+
 	void SetGamePaused(bool Paused);
 	bool IsGamePaused() const;
+	// a pause that only a command or the players' ready state ends, see CReadyMode
+	virtual bool IsPausedWithoutEnd() const;
 	// players can join or leave the game while the world is not paused
 	virtual bool IsTeamChangeAllowed() const { return !IsGamePaused(); }
 	virtual void StartRound();

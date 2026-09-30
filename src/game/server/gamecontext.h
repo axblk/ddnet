@@ -145,6 +145,7 @@ class CGameContext : public IGameServer
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
 	static void ConPause(IConsole::IResult *pResult, void *pUserData);
 	static void ConPauseSeconds(IConsole::IResult *pResult, void *pUserData);
+	static void ConForceReady(IConsole::IResult *pResult, void *pUserData);
 	static void ConChangeMap(IConsole::IResult *pResult, void *pUserData);
 	static void ConRestart(IConsole::IResult *pResult, void *pUserData);
 	static void ConServerAlert(IConsole::IResult *pResult, void *pUserData);

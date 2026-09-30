@@ -338,6 +338,9 @@ void CPlayer::Snap(int SnappingClient)
 		PlayerInfo.m_PlayerFlags = PlayerFlags_SixToSeven(m_PlayerFlags);
 		if(DeadSpectator)
 			PlayerInfo.m_PlayerFlags |= protocol7::PLAYERFLAG_DEAD;
+		// everybody is ready while the game waits for nobody, as 0.7 tells its clients
+		if(GameServer()->GameHost().Controller()->ReadyMode().IsReady(m_ClientId))
+			PlayerInfo.m_PlayerFlags |= protocol7::PLAYERFLAG_READY;
 		if(SnappingClientVersion >= VERSION_DDRACE && (m_PlayerFlags & PLAYERFLAG_AIM))
 			PlayerInfo.m_PlayerFlags |= protocol7::PLAYERFLAG_AIM;
 		if(Server()->IsRconAuthed(m_ClientId) && ((SnappingClient >= 0 && Server()->IsRconAuthed(SnappingClient)) || !Server()->HasAuthHidden(m_ClientId)))

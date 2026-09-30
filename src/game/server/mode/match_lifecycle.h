@@ -5,7 +5,13 @@ class CMatchLifecycle
 {
 	int m_RoundStartTick;
 	int m_GameOverTick = -1;
-	// negative while waiting for players, which only the mode ends
+	// a warmup without an end, which the mode or the ready check ends
+	enum
+	{
+		WAITING_FOR_PLAYERS = -1,
+		WAITING_FOR_READY = -2,
+	};
+	// the ticks left of a warmup, or what a warmup without an end waits for
 	int m_WarmupTicks = 0;
 	int m_RoundCount = 0;
 	bool m_SuddenDeath = false;
@@ -17,7 +23,9 @@ public:
 	}
 
 	bool IsWarmup() const { return m_WarmupTicks != 0; }
-	bool IsWaitingForPlayers() const { return m_WarmupTicks < 0; }
+	bool IsWaitingForPlayers() const { return m_WarmupTicks == WAITING_FOR_PLAYERS; }
+	bool IsWaitingForReady() const { return m_WarmupTicks == WAITING_FOR_READY; }
+	bool IsWarmupWithoutEnd() const { return m_WarmupTicks < 0; }
 	bool IsGameOver() const { return m_GameOverTick >= 0; }
 	bool IsRunning() const { return !IsWarmup() && !IsGameOver(); }
 	bool IsSuddenDeath() const { return m_SuddenDeath; }
@@ -29,7 +37,9 @@ public:
 
 	void SetWarmupTicks(int Ticks) { m_WarmupTicks = Ticks; }
 	// a warmup without an end, until there are enough players for a match
-	void WaitForPlayers() { m_WarmupTicks = -1; }
+	void WaitForPlayers() { m_WarmupTicks = WAITING_FOR_PLAYERS; }
+	// a warmup until everybody is ready, see CReadyMode
+	void WaitForReady() { m_WarmupTicks = WAITING_FOR_READY; }
 	bool TickWarmup()
 	{
 		if(m_WarmupTicks <= 0)

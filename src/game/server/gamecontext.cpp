@@ -2042,6 +2042,13 @@ void *CGameContext::PreProcessMsg(int *pMsgId, CUnpacker *pUnpacker, int ClientI
 
 			pMsg->m_Vote = pMsg7->m_Vote;
 		}
+		else if(*pMsgId == protocol7::NETMSGTYPE_CL_READYCHANGE)
+		{
+			// 0.6 has no such message
+			if(Server()->ClientIngame(ClientId))
+				m_GameHost.Controller()->ReadyMode().OnPlayerReadyChange(ClientId);
+			return nullptr;
+		}
 
 		*pMsgId = Msg_SevenToSix(*pMsgId);
 
@@ -2854,6 +2861,13 @@ void CGameContext::ConPauseSeconds(IConsole::IResult *pResult, void *pUserData)
 		pSelf->GameHost().Controller()->OnPauseCommand(pResult);
 }
 
+void CGameContext::ConForceReady(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->ReadyMode().ForceReady(pResult->NumArguments() ? pResult->GetInteger(0) : -1);
+}
+
 void CGameContext::ConChangeMap(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
@@ -3417,9 +3431,11 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("mapbug", "s[mapbug]", CFGFLAG_SERVER | CFGFLAG_GAME, ConMapbug, this, "Enable map compatibility mode using the specified bug (example: grenade-doubleexplosion@ddnet.tw)");
 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
-	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort, in the vanilla modes: now)");
+	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort, in the vanilla modes: now; -1 = once everybody is ready with sv_player_ready_mode)");
 	// the chat command of the DDRace modes has the same name, and the rcon command pauses the player there
 	Console()->Register("pause", "?r[seconds|player name]", CFGFLAG_SERVER, ConPauseSeconds, this, "Pause the game for x seconds (no end if -1, 0 or nothing ends a pause after sv_countdown); in the DDRace modes pause yourself");
+	// for votes, like the team commands below
+	Console()->Register("force_ready", "?i[id]", CFGFLAG_SERVER, ConForceReady, this, "Set a player ready, or everybody without an id, while the game waits for its players (sv_player_ready_mode)");
 	Console()->Register("server_alert", "r[message]", CFGFLAG_SERVER, ConServerAlert, this, "Send a server alert message to all players");
 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");

@@ -4133,6 +4133,10 @@ if(SERVER)
     mode/match_lifecycle.h
     mode/match_recorder.cpp
     mode/match_recorder.h
+    mode/ready_check.cpp
+    mode/ready_check.h
+    mode/ready_mode.cpp
+    mode/ready_mode.h
     modes/insta/insta.cpp
     modes/insta/rules.h
     modes/vanilla/ctf.cpp
@@ -4546,6 +4550,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     packer_test.cpp
     png_decode_zlib_test.cpp
     prng_test.cpp
+    ready_check_test.cpp
     render_trace_test.cpp
     replace_words_test.cpp
     score_test.cpp

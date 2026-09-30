@@ -367,9 +367,8 @@ void CGameControllerVanillaPvP::Tick()
 
 void CGameControllerVanillaPvP::RestartAfterWarmup(int Seconds)
 {
-	if(Seconds <= 0)
+	if(Seconds == 0)
 	{
-		// 0.7 waits for the players to be ready for -1, without that mode there is nothing to wait for
 		Match().SetWarmupTicks(0);
 		StartRound();
 		return;
@@ -400,6 +399,12 @@ void CGameControllerVanillaPvP::DoPause(int Seconds)
 	m_PauseTicks = Seconds < 0 ? -1 : Seconds * Server()->TickSpeed();
 	SetGamePaused(true);
 	log_info("game", "game paused%s", Seconds < 0 ? "" : " for a while");
+}
+
+bool CGameControllerVanillaPvP::IsPausedWithoutEnd() const
+{
+	// not a countdown, and not the world standing still between two rounds
+	return m_PauseState == EPauseState::PAUSED && m_PauseTicks < 0;
 }
 
 bool CGameControllerVanillaPvP::IsTeamChangeAllowed() const

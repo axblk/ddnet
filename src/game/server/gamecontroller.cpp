@@ -37,7 +37,8 @@ IGameController::IGameController(CGameServices &Services, const CGameModeInfo &G
 	m_pGameServer(Services.GameServer()),
 	m_pServer(m_pGameServer->Server()),
 	m_GameModeInfo(GameModeInfo),
-	m_MatchLifecycle(m_pServer->Tick())
+	m_MatchLifecycle(m_pServer->Tick()),
+	m_ReadyMode(Services, *this)
 {
 	str_format(m_aTestingGameType, sizeof(m_aTestingGameType), "Test%s", m_GameModeInfo.m_pGameType);
 	m_pGameType = g_Config.m_SvTestingCommands ? m_aTestingGameType : m_GameModeInfo.m_pGameType;
@@ -62,8 +63,12 @@ void IGameController::Init(CDbConnectionPool *)
 {
 	GameServer()->m_World.SetDDNetPhysics(Info().m_DDRace);
 	RegisterCommands();
+	// the DDRace modes have no ready mode and keep their /pause
+	if(!Info().m_DDRace)
+		m_ReadyMode.Init();
 	InitGameSettings();
-	DoWarmup(g_Config.m_SvWarmup);
+	// the DDRace modes play no matches to warm up for
+	DoWarmup(Info().m_DDRace ? 0 : g_Config.m_SvWarmup);
 	TeamsCore().Reset();
 	StartMatchReport();
 }
@@ -631,6 +636,7 @@ void IGameController::OnPlayerConnect(CPlayer *pPlayer)
 
 void IGameController::OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason)
 {
+	m_ReadyMode.OnPlayerLeave(pPlayer->GetCid());
 	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pPlayer))
 	{
 		pParticipant->m_Score = SnapPlayerScore(SERVER_DEMO_CLIENT, pPlayer);
@@ -723,6 +729,12 @@ void IGameController::SetGamePaused(bool Paused)
 bool IGameController::IsGamePaused() const
 {
 	return GameServer()->m_World.m_Paused;
+}
+
+bool IGameController::IsPausedWithoutEnd() const
+{
+	// DoPause pauses without an end unless a mode says otherwise
+	return IsGamePaused() && !Match().IsGameOver();
 }
 
 void IGameController::StartRound()
@@ -980,7 +992,11 @@ void IGameController::TickCharacterPostCore(CCharacter *pCharacter)
 
 void IGameController::DoWarmup(int Seconds)
 {
-	Match().SetWarmupTicks(Seconds < 0 ? 0 : Seconds * Server()->TickSpeed());
+	// as in 0.7, a warmup without an end waits for everybody to be ready, which without ready mode is right away
+	if(Seconds < 0)
+		Match().WaitForReady();
+	else
+		Match().SetWarmupTicks(Seconds * Server()->TickSpeed());
 }
 
 void IGameController::SendGameInfoSixup(int ClientId)
@@ -1012,6 +1028,7 @@ void IGameController::Tick()
 		}
 	}
 
+	m_ReadyMode.Tick();
 	if(Match().TickWarmup())
 		StartRound();
 
@@ -1079,7 +1096,7 @@ void IGameController::Snap(int SnappingClient)
 		{
 			// a warmup that waits for players has no end to count down to
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_WARMUP;
-			GameData.m_GameStateEndTick = Match().IsWaitingForPlayers() ? 0 : Server()->Tick() + Match().WarmupTicks();
+			GameData.m_GameStateEndTick = Match().IsWarmupWithoutEnd() ? 0 : Server()->Tick() + Match().WarmupTicks();
 		}
 		UpdateGameDataSixup(GameData, SnappingClient);
 		Server()->SnapNewItem(0, GameData);
@@ -1180,4 +1197,17 @@ int IGameController::TileFlagsToPickupFlags(int TileFlags) const
 	if(TileFlags & TILEFLAG_ROTATE)
 		PickupFlags |= PICKUPFLAG_ROTATE;
 	return PickupFlags;
+}
+
+bool IGameController::IsReadyParticipant(int ClientId) const
+{
+	// who is still connecting is waited for once in the game
+	const CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+	return pPlayer && Server()->ClientIngame(ClientId) && pPlayer->GetTeam() != TEAM_SPECTATORS && !IsPlayerDeadSpectator(ClientId);
+}
+
+void IGameController::StartMatch()
+{
+	Match().SetWarmupTicks(0);
+	StartRound();
 }

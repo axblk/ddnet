@@ -2488,7 +2488,7 @@ TEST_F(GameWorld, PreparingMapReloadReplacesTeamState)
 TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 {
 	IConsole *pConsole = GameServer()->Console();
-	const char *const apModeChatCommands[] = {"info", "map", "mapinfo", "rank", "team", "practice", "tp", "hitothers", "save", "settings", "pause", "timer"};
+	const char *const apModeChatCommands[] = {"info", "map", "mapinfo", "rank", "team", "practice", "tp", "hitothers", "save", "settings", "timer"};
 	const char *const apModeAdminCommands[] = {"tele", "set_team_ddr", "save_dry", "random_map", "random_unfinished_map", "switch_open", "tune_zone", "tune_zone_dump", "tune_zone_reset", "tune_zone_enter", "tune_zone_leave"};
 	auto ExpectModeCommands = [&](bool Registered) {
 		for(const char *pName : apModeChatCommands)
@@ -2496,8 +2496,14 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 		for(const char *pName : apModeAdminCommands)
 			EXPECT_EQ(pConsole->GetCommandInfo(pName, CFGFLAG_SERVER, false) != nullptr, Registered) << pName;
 	};
+	// /pause is DDRace's own pause, and the ready mode's in the vanilla modes
+	auto ExpectPauseAndReady = [&](bool Pause, bool Ready) {
+		EXPECT_EQ(pConsole->GetCommandInfo("pause", CFGFLAG_CHAT, false) != nullptr, Pause);
+		EXPECT_EQ(pConsole->GetCommandInfo("ready", CFGFLAG_CHAT, false) != nullptr, Ready);
+	};
 
 	ExpectModeCommands(true);
+	ExpectPauseAndReady(true, false);
 	EXPECT_TRUE(RaceControllerOrNull() != nullptr);
 	RaceScore().SetCurrentRecord(12.5f);
 	ASSERT_TRUE(RaceScore().CurrentRecord().has_value());
@@ -2508,6 +2514,7 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 
 	GameServer()->GameHost().Shutdown();
 	ExpectModeCommands(false);
+	ExpectPauseAndReady(false, false);
 	EXPECT_FALSE(RaceControllerOrNull() != nullptr);
 	EXPECT_NE(pConsole->GetCommandInfo("help", CFGFLAG_CHAT, false), nullptr);
 	EXPECT_NE(pConsole->GetCommandInfo("showall", CFGFLAG_CHAT, false), nullptr);
@@ -2515,6 +2522,7 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 
 	SelectGameMode("dm");
 	ExpectModeCommands(false);
+	ExpectPauseAndReady(true, true);
 	EXPECT_FALSE(RaceControllerOrNull() != nullptr);
 	EXPECT_FALSE(RaceControllerOrNull() != nullptr);
 	const int VanillaClientId = 0;
@@ -2549,6 +2557,7 @@ TEST_F(GameWorld, ModeOwnedCommandsFollowControllerLifetime)
 	GameServer()->m_apPlayers[VanillaClientId] = nullptr;
 	SelectGameMode("ddnet");
 	ExpectModeCommands(true);
+	ExpectPauseAndReady(true, false);
 	EXPECT_TRUE(RaceControllerOrNull() != nullptr);
 	EXPECT_TRUE(RaceControllerOrNull() != nullptr);
 	EXPECT_FALSE(RaceScore().CurrentRecord().has_value());
@@ -4338,4 +4347,291 @@ TEST_F(GameWorld, VanillaCTFSpectatorsFollowAFlag)
 	pSpectator->SetSpectatorId(SPEC_FLAGBLUE);
 	pSpectator->PostTick();
 	EXPECT_EQ(pSpectator->m_ViewPos, vec2(0.0f, 0.0f));
+}
+
+namespace
+{
+	// what a 0.7 client is told about a player
+	int SnapPlayerFlags7(GameWorld *pWorld, int ClientId, int SnappingClient)
+	{
+		pWorld->m_pServer->m_aClients[SnappingClient].m_Sixup = true;
+		// a 0.7 client sees the players by the ids it was told
+		pWorld->m_pServer->GetIdMap(SnappingClient)[ClientId] = ClientId;
+		pWorld->m_pServer->GetReverseIdMap(SnappingClient)[ClientId] = ClientId;
+		pWorld->m_pServer->m_SnapshotBuilder.Init(true);
+		pWorld->GameServer()->m_apPlayers[ClientId]->Snap(SnappingClient);
+		CSnapshotBuffer Buffer;
+		pWorld->m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+		pWorld->m_pServer->m_aClients[SnappingClient].m_Sixup = false;
+		const auto *pInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(Buffer.AsSnapshot()->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, ClientId));
+		EXPECT_NE(pInfo, nullptr);
+		return pInfo ? pInfo->m_PlayerFlags : 0;
+	}
+}
+
+TEST_F(GameWorld, ReadyModeStartsAMatchOnceEverybodyIsReady)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvCountdown = 3;
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	JoinPlayer(2, TEAM_SPECTATORS, "spectator");
+	const int TickSpeed = m_pServer->TickSpeed();
+	RunTicks(this, TickSpeed);
+	// everybody is ready while the game waits for nobody
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_NE(SnapPlayerFlags7(this, 0, 1) & protocol7::PLAYERFLAG_READY, 0);
+
+	GameController()->RestartAfterWarmup(-1);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+	const protocol7::CNetObj_GameData Warmup = SnapGameData7(this);
+	EXPECT_EQ(Warmup.m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_EQ(Warmup.m_GameStateEndTick, 0);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	EXPECT_FALSE(GameController()->ReadyMode().IsReady(0));
+	EXPECT_EQ(SnapPlayerFlags7(this, 0, 1) & protocol7::PLAYERFLAG_READY, 0);
+	// a warmup without an end is nothing a 0.6 client could count down
+	EXPECT_EQ(SnapGameInfo6(this).m_WarmupTimer, 0);
+
+	// spectators do not count and cannot be ready
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(2), nullptr);
+	EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+	EXPECT_TRUE(GameController()->ReadyMode().IsReady(0));
+	EXPECT_NE(SnapPlayerFlags7(this, 0, 1) & protocol7::PLAYERFLAG_READY, 0);
+	RunTicks(this, 10 * TickSpeed);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+
+	// changing one's mind twice within a second does not count
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	EXPECT_TRUE(GameController()->ReadyMode().IsReady(1));
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	// the match counts down first, from the tick that started it
+	const protocol7::CNetObj_GameData Countdown = SnapGameData7(this);
+	EXPECT_EQ(Countdown.m_GameStateFlags, protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Countdown.m_GameStateEndTick, m_pServer->Tick() - 1 + 3 * TickSpeed);
+	RunTicks(this, 3 * TickSpeed);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	EXPECT_TRUE(GameController()->ReadyMode().IsReady(0));
+	EXPECT_TRUE(GameController()->ReadyMode().IsReady(2));
+}
+
+TEST_F(GameWorld, ReadyModeWaitsForWhoIsLeftInTheGame)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvWarmup = -1;
+	SelectGameMode("tdm");
+	// nobody there, so the match waits for somebody to be ready
+	RunTicks(this, 10);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+	JoinPlayer(0, TEAM_RED, "red");
+	CPlayer *pBlue = JoinPlayer(1, TEAM_BLUE, "blue");
+	JoinPlayer(2, TEAM_BLUE, "late");
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+
+	// who goes to the spectators is not waited for, and not ready on coming back
+	GameController()->DoTeamChange(pBlue, TEAM_SPECTATORS, false);
+	RunTicks(this, m_pServer->TickSpeed());
+	GameController()->DoTeamChange(pBlue, TEAM_BLUE, false);
+	RunTicks(this, 1);
+	EXPECT_FALSE(GameController()->ReadyMode().IsReady(1));
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+
+	// the last one who is not ready leaves
+	LeavePlayer(2);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+}
+
+TEST_F(GameWorld, RestartWithoutAnEndStartsRightAwayWithoutReadyMode)
+{
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "player");
+	GameController()->RestartAfterWarmup(-1);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, m_pServer->Tick());
+	// and nobody can pause the game with it
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// switching it off ends a wait
+	g_Config.m_SvPlayerReadyMode = 1;
+	GameController()->RestartAfterWarmup(-1);
+	RunTicks(this, 10);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::START);
+	g_Config.m_SvPlayerReadyMode = 0;
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+}
+
+TEST_F(GameWorld, ReadyModeAPlayerWhoIsNotReadyPausesTheGame)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvCountdown = 3;
+	SelectGameMode("ctf");
+	JoinPlayer(0, TEAM_RED, "red");
+	JoinPlayer(1, TEAM_BLUE, "blue");
+	const int TickSpeed = m_pServer->TickSpeed();
+	RunTicks(this, 3 * TickSpeed + 1);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+
+	CChatLogger Logger;
+	{
+		CLogScope Scope(&Logger);
+		EXPECT_EQ(GameController()->ReadyMode().OnPlayerReadyChange(1), nullptr);
+	}
+	EXPECT_EQ(Logger.m_vLines, (std::vector<std::string>{"*** 'blue' paused the game until everybody is ready"}));
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	const protocol7::CNetObj_GameData Paused = SnapGameData7(this);
+	EXPECT_EQ(Paused.m_GameStateFlags, protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Paused.m_GameStateEndTick, 0);
+	// everybody has to be ready again, the one who paused as well
+	EXPECT_FALSE(GameController()->ReadyMode().IsReady(0));
+	EXPECT_FALSE(GameController()->ReadyMode().IsReady(1));
+	RunTicks(this, TickSpeed);
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	RunTicks(this, 1);
+	// the game goes on after the countdown
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED);
+	RunTicks(this, 3 * TickSpeed);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// nothing waits for anybody during a countdown or a pause with an end
+	GameServer()->Console()->ExecuteLine("pause 5", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, TickSpeed);
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+}
+
+TEST_F(GameWorld, ReadyModeThePauseCommandWaitsForEverybody)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	RunTicks(this, 10);
+
+	// as in 0.7, a pause without an end lasts until everybody is ready
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	GameController()->ReadyMode().ForceReady(1);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// and the command still ends it
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// force_ready without an id sets everybody ready
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	GameServer()->Console()->ExecuteLine("force_ready", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+}
+
+TEST_F(GameWorld, ReadyModeTheGameGoesOnAfterSvForceReadyAll)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	g_Config.m_SvForceReadyAll = 1;
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	const int TickSpeed = m_pServer->TickSpeed();
+	RunTicks(this, 10);
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+
+	CChatLogger Logger;
+	{
+		CLogScope Scope(&Logger);
+		RunTicks(this, 60 * TickSpeed - 1);
+		EXPECT_TRUE(GameController()->IsGamePaused());
+		RunTicks(this, 1);
+	}
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	EXPECT_EQ(Logger.m_vLines, (std::vector<std::string>{"*** The game goes on in 10 seconds, ready or not", "*** Not everybody was ready in time, the game goes on"}));
+}
+
+TEST_F(GameWorld, ReadyModeBy07MessageAndByChat)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "seven");
+	JoinPlayer(1, TEAM_GAME, "six");
+	RunTicks(this, 10);
+
+	// the ready change of a 0.7 client
+	m_pServer->m_aClients[0].m_Sixup = true;
+	CUnpacker Unpacker;
+	Unpacker.Reset(nullptr, 0);
+	GameServer()->OnMessage(protocol7::NETMSGTYPE_CL_READYCHANGE, &Unpacker, 0);
+	m_pServer->m_aClients[0].m_Sixup = false;
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+
+	// a 0.6 client says it in chat, with /pause as well
+	GameServer()->Console()->ExecuteLineFlag("ready", CFGFLAG_CHAT, 1);
+	EXPECT_TRUE(GameController()->ReadyMode().IsReady(1));
+	RunTicks(this, m_pServer->TickSpeed());
+	GameServer()->Console()->ExecuteLineFlag("pause", CFGFLAG_CHAT, 1);
+	EXPECT_FALSE(GameController()->ReadyMode().IsReady(1));
+}
+
+TEST_F(GameWorld, ReadyModeLMSDoesNotWaitForTheDead)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	CPlayer *pThird = JoinPlayer(2, TEAM_GAME, "third");
+	RunCountdown(this);
+
+	ASSERT_NE(pThird->GetCharacter(), nullptr);
+	pThird->GetCharacter()->Die(2, WEAPON_SELF);
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(2));
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(2), nullptr);
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::RESUME);
+	RunTicks(this, m_pServer->TickSpeed());
+	GameController()->ReadyMode().OnPlayerReadyChange(0);
+	GameController()->ReadyMode().OnPlayerReadyChange(1);
+	RunTicks(this, 1);
+	// the pause ends with the countdown of a survival mode
+	EXPECT_EQ(GameController()->ReadyMode().Wait(), CReadyCheck::EWait::NONE);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+}
+
+TEST_F(GameWorld, ReadyModeIsNotForDDRace)
+{
+	g_Config.m_SvPlayerReadyMode = 1;
+	JoinPlayer(0, TEAM_GAME, "racer");
+	EXPECT_NE(GameController()->ReadyMode().OnPlayerReadyChange(0), nullptr);
+	RunTicks(this, 10);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	// the DDRace modes keep their own pause command in chat
+	EXPECT_NE(GameServer()->Console()->GetCommandInfo("pause", CFGFLAG_CHAT, false), nullptr);
+	EXPECT_EQ(GameServer()->Console()->GetCommandInfo("ready", CFGFLAG_CHAT, false), nullptr);
+	LeavePlayer(0);
 }

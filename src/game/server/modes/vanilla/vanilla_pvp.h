@@ -25,11 +25,12 @@ public:
 	void Tick() override;
 	int SnapPlayerScore(int SnappingClient, CPlayer *pPlayer) override;
 
-	// as in 0.7: a restart after a warmup, and right away without one
+	// as in 0.7: a restart after a warmup, right away for 0, and once everybody is ready for -1
 	void RestartAfterWarmup(int Seconds) override;
 	// as in 0.7: pausing without an end toggles, and a pause ends with a countdown
 	void TogglePause() override;
 	void DoPause(int Seconds) override;
+	bool IsPausedWithoutEnd() const override;
 	bool IsTeamChangeAllowed() const override;
 
 protected:

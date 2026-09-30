@@ -3414,6 +3414,128 @@ TEST_F(GameWorld, PvPZoomOnlyWithSvAllowZoom)
 	EXPECT_NE(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_ALLOW_ZOOM, 0);
 }
 
+// the events of the tick a demo would get
+static int SnappedEvents(GameWorld *pWorld, int Type)
+{
+	pWorld->m_pServer->m_SnapshotBuilder.Init(false);
+	pWorld->GameServer()->m_Events.Snap(SERVER_DEMO_CLIENT);
+	CSnapshotBuffer Buffer;
+	pWorld->m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+	int Count = 0;
+	for(int Index = 0; Index < Buffer.AsSnapshot()->NumItems(); Index++)
+		Count += Buffer.AsSnapshot()->GetItemType(Index) == Type;
+	return Count;
+}
+
+TEST_F(GameWorld, InstagibKillsWithoutDamageIndicators)
+{
+	SelectGameMode("idm");
+	CCharacter *pAttacker = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	CCharacter *pVictim = SpawnPlayer(1, vec2(128.0f, 96.0f));
+	ASSERT_NE(pAttacker, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	GameServer()->m_Events.Clear();
+	pVictim->TakeDamage(vec2(), 0, 0, WEAPON_LASER);
+	EXPECT_FALSE(pVictim->IsAlive());
+	EXPECT_EQ(SnappedEvents(this, NETEVENTTYPE_DAMAGEIND), 0);
+	EXPECT_EQ(SnappedEvents(this, NETEVENTTYPE_DEATH), 1);
+}
+
+TEST_F(GameWorld, InstagibOnlyWallshotsKill)
+{
+	g_Config.m_SvOnlyWallshotKills = 1;
+	SelectGameMode("idm");
+	CPlayer *pAttacker = JoinPlayer(0, TEAM_GAME, "attacker");
+	ASSERT_NE(pAttacker->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	CCharacter *pVictim = SpawnPlayer(1, vec2(128.0f, 96.0f));
+	ASSERT_NE(pVictim, nullptr);
+	CGameDamageContext Hit;
+	Hit.m_From = 0;
+	Hit.m_Weapon = WEAPON_LASER;
+	pVictim->TakeDamage(Hit);
+	EXPECT_TRUE(pVictim->IsAlive());
+	Hit.m_Bounces = 1;
+	pVictim->TakeDamage(Hit);
+	EXPECT_FALSE(pVictim->IsAlive());
+	GameController()->EndRound();
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "wallshots"), 1);
+}
+
+TEST_F(GameWorld, InstagibGrenadeNeedsDamageToKill)
+{
+	g_Config.m_SvDamageNeededForKill = 2;
+	SelectGameMode("gdm");
+	CCharacter *pVictim = SpawnPlayer(1, vec2(128.0f, 96.0f));
+	ASSERT_NE(SpawnPlayer(0, vec2(64.0f, 96.0f)), nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	pVictim->TakeDamage(vec2(1.0f, 0.0f), 1, 0, WEAPON_GRENADE);
+	EXPECT_TRUE(pVictim->IsAlive());
+	EXPECT_GT(pVictim->GetCore().m_Vel.x, 0.0f);
+	pVictim->TakeDamage(vec2(), 2, 0, WEAPON_GRENADE);
+	EXPECT_FALSE(pVictim->IsAlive());
+}
+
+TEST_F(GameWorld, InstagibGrenadesAsOnGctfServers)
+{
+	g_Config.m_SvGrenadeAmmoRegen = 1;
+	g_Config.m_SvGrenadeAmmoRegenNum = 4;
+	g_Config.m_SvGrenadeAmmoRegenTime = 1000;
+	SelectGameMode("gctf");
+	CCharacter *pShooter = SpawnPlayer(0, vec2(64.0f, 96.0f), TEAM_RED);
+	CCharacter *pVictim = SpawnPlayer(1, vec2(128.0f, 96.0f), TEAM_BLUE);
+	ASSERT_NE(pShooter, nullptr);
+	ASSERT_NE(pVictim, nullptr);
+	EXPECT_EQ(pShooter->GetWeaponAmmo(WEAPON_GRENADE), 4);
+
+	// a grenade jump gives the grenade back
+	pShooter->SetWeaponAmmo(WEAPON_GRENADE, 1);
+	pShooter->TakeDamage(vec2(0.0f, -1.0f), 6, 0, WEAPON_GRENADE);
+	EXPECT_EQ(pShooter->GetWeaponAmmo(WEAPON_GRENADE), 2);
+
+	// a grenade comes back after the reload and a second
+	pShooter->m_SpawnTick -= SERVER_TICK_SPEED;
+	CTuningParams Tuning;
+	CWeaponFireContext Fire = {pShooter, WEAPON_GRENADE, vec2(1, 0), vec2(1, 0), pShooter->m_Pos, &Tuning, true};
+	ASSERT_TRUE(GameController()->OnCharacterFireWeapon(Fire).m_Fired);
+	const int ReloadTicks = (int)(Tuning.GetWeaponFireDelay(WEAPON_GRENADE) * (float)SERVER_TICK_SPEED);
+	for(int Tick = 0; Tick < ReloadTicks + 1 + SERVER_TICK_SPEED; Tick++)
+		GameController()->TickCharacterPostCore(pShooter);
+	EXPECT_EQ(pShooter->GetWeaponAmmo(WEAPON_GRENADE), 2);
+	GameController()->TickCharacterPostCore(pShooter);
+	EXPECT_EQ(pShooter->GetWeaponAmmo(WEAPON_GRENADE), 3);
+
+	// a hit fills them up
+	pVictim->m_SpawnTick -= SERVER_TICK_SPEED;
+	pVictim->TakeDamage(vec2(), 6, 0, WEAPON_GRENADE);
+	EXPECT_FALSE(pVictim->IsAlive());
+	EXPECT_EQ(pShooter->GetWeaponAmmo(WEAPON_GRENADE), 4);
+}
+
+TEST_F(GameWorld, InstagibSprayProtection)
+{
+	g_Config.m_SvSprayprotection = 1;
+	SelectGameMode("gdm");
+	ASSERT_NE(SpawnPlayer(0, vec2(64.0f, 96.0f)), nullptr);
+	ASSERT_NE(SpawnPlayer(1, vec2(128.0f, 96.0f)), nullptr);
+	ASSERT_NE(SpawnPlayer(2, vec2(64.0f + 4000.0f, 96.0f)), nullptr);
+	auto *pGrenade = new CProjectile(&GameServer()->m_World, WEAPON_GRENADE, 0, vec2(64.0f, 96.0f), vec2(1, 0), 0, false, true, -1, vec2(1, 0));
+	EXPECT_TRUE(pGrenade->AffectMask().test(0));
+	EXPECT_TRUE(pGrenade->AffectMask().test(1));
+	EXPECT_FALSE(pGrenade->AffectMask().test(2)); // NOLINT(clang-analyzer-unix.Malloc)
+	g_Config.m_SvSprayprotection = 0;
+	auto *pFree = new CProjectile(&GameServer()->m_World, WEAPON_GRENADE, 0, vec2(64.0f, 96.0f), vec2(1, 0), 0, false, true, -1, vec2(1, 0));
+	EXPECT_TRUE(pFree->AffectMask().all()); // NOLINT(clang-analyzer-unix.Malloc)
+}
+
+TEST_F(GameWorld, InstagibHudShowsAmmoButNoHealth)
+{
+	SelectGameMode("gctf");
+	EXPECT_NE(GameController()->GameInfoFlags(-1) & GAMEINFOFLAG_UNLIMITED_AMMO, 0);
+	EXPECT_EQ(GameController()->GameInfoFlags2(-1) & GAMEINFOFLAG2_HUD_HEALTH_ARMOR, 0);
+	EXPECT_NE(GameController()->GameInfoFlags2(-1) & GAMEINFOFLAG2_HUD_AMMO, 0);
+}
+
 TEST_F(GameWorld, ZCatchReleasesOwnershipOnCatcherDeathAndDisconnect)
 {
 	SelectGameMode("zcatch");

@@ -1,4 +1,4 @@
-#include <game/server/modes/insta/rules.h>
+#include <game/server/modes/insta/instagib.h>
 #include <game/server/modes/pvp/pvp.h>
 #include <game/server/modes/vanilla/dm.h>
 

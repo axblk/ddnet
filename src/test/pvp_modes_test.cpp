@@ -1,4 +1,5 @@
 // The rules of the building blocks the PvP modes share, and of the modes, without a game world.
+#include <game/server/modes/insta/grenade_ammo.h>
 #include <game/server/modes/pvp/anticamper.h>
 #include <game/server/modes/pvp/killing_spree.h>
 
@@ -86,4 +87,67 @@ TEST(Anticamper, MovingAwayStartsTheClockAnew)
 	EXPECT_EQ(Anticamper.Tick(vec2(200, 0), 15 * TickSpeed - 1, TickSpeed, 10, 200), CAnticamper::EAction::NONE);
 	EXPECT_EQ(Anticamper.Tick(vec2(200, 0), 15 * TickSpeed, TickSpeed, 10, 200), CAnticamper::EAction::WARN);
 	EXPECT_EQ(Anticamper.Tick(vec2(200, 0), 20 * TickSpeed, TickSpeed, 10, 200), CAnticamper::EAction::PUNISH);
+}
+
+static CGrenadeAmmo::CSettings GctfGrenades()
+{
+	// as on the official gCTF servers
+	CGrenadeAmmo::CSettings Settings;
+	Settings.m_Regen = true;
+	Settings.m_RegenTicks = 50;
+	Settings.m_Max = 4;
+	Settings.m_SelfPushRefund = true;
+	Settings.m_RefillOnHit = 2;
+	return Settings;
+}
+
+TEST(GrenadeAmmo, EndlessWithoutRegeneration)
+{
+	const CGrenadeAmmo::CSettings Settings;
+	EXPECT_EQ(CGrenadeAmmo::Spawn(Settings), -1);
+	EXPECT_EQ(CGrenadeAmmo::AfterHit(-1, Settings), -1);
+	EXPECT_EQ(CGrenadeAmmo::AfterSelfPush(-1, Settings), -1);
+	CGrenadeAmmo::CRegen Regen;
+	EXPECT_EQ(Regen.Tick(-1, Settings), -1);
+}
+
+TEST(GrenadeAmmo, HitsAndGrenadeJumpsBringGrenadesBack)
+{
+	CGrenadeAmmo::CSettings Settings = GctfGrenades();
+	EXPECT_EQ(CGrenadeAmmo::Spawn(Settings), 4);
+	EXPECT_EQ(CGrenadeAmmo::AfterHit(1, Settings), 4);
+	EXPECT_EQ(CGrenadeAmmo::AfterSelfPush(1, Settings), 2);
+	EXPECT_EQ(CGrenadeAmmo::AfterSelfPush(4, Settings), 4);
+	Settings.m_RefillOnHit = 1;
+	EXPECT_EQ(CGrenadeAmmo::AfterHit(1, Settings), 2);
+	EXPECT_EQ(CGrenadeAmmo::AfterHit(4, Settings), 4);
+	Settings.m_RefillOnHit = 0;
+	EXPECT_EQ(CGrenadeAmmo::AfterHit(1, Settings), 1);
+	Settings.m_SelfPushRefund = false;
+	EXPECT_EQ(CGrenadeAmmo::AfterSelfPush(1, Settings), 1);
+}
+
+TEST(GrenadeAmmo, OneComesBackAfterTheReloadAndTheRegenerationTime)
+{
+	const CGrenadeAmmo::CSettings Settings = GctfGrenades();
+	CGrenadeAmmo::CRegen Regen;
+	constexpr int ReloadTicks = 25;
+	// the tick of the shot counts as the first
+	Regen.OnFire(ReloadTicks);
+	int Ammo = 2;
+	for(int Tick = 0; Tick < ReloadTicks + 1 + Settings.m_RegenTicks; Tick++)
+		Ammo = Regen.Tick(Ammo, Settings);
+	EXPECT_EQ(Ammo, 2);
+	Ammo = Regen.Tick(Ammo, Settings);
+	EXPECT_EQ(Ammo, 3);
+	// the next one a tick later than the time, as in ddnet-insta
+	for(int Tick = 0; Tick < Settings.m_RegenTicks; Tick++)
+		Ammo = Regen.Tick(Ammo, Settings);
+	EXPECT_EQ(Ammo, 3);
+	Ammo = Regen.Tick(Ammo, Settings);
+	EXPECT_EQ(Ammo, 4);
+	// never more than the most
+	for(int Tick = 0; Tick < 3 * Settings.m_RegenTicks; Tick++)
+		Ammo = Regen.Tick(Ammo, Settings);
+	EXPECT_EQ(Ammo, 4);
 }

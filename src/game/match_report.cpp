@@ -23,6 +23,7 @@ static const CMatchMetricInfo gs_aMatchMetrics[] = {
 	{"damage_taken", EMatchMetricAggregation::SUM, EMatchMetricCategory::COMBAT, EMatchMetricFormat::NUMBER, Localizable("Damage taken"), MATCH_COMBAT_DAMAGE_TAKEN},
 	{"suicides", EMatchMetricAggregation::SUM, EMatchMetricCategory::COMBAT, EMatchMetricFormat::NUMBER, Localizable("Suicides"), -1},
 	{"best_spree", EMatchMetricAggregation::MAXIMUM, EMatchMetricCategory::COMBAT, EMatchMetricFormat::NUMBER, Localizable("Best spree"), -1},
+	{"wallshots", EMatchMetricAggregation::SUM, EMatchMetricCategory::COMBAT, EMatchMetricFormat::NUMBER, Localizable("Wallshots"), -1},
 	{"score", EMatchMetricAggregation::SUM, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::NUMBER, Localizable("Score"), -1},
 	{"playtime_ticks", EMatchMetricAggregation::SUM, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::TICKS, Localizable("Play time"), -1},
 	{"sudden_death", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::NUMBER, Localizable("Sudden death"), -1},

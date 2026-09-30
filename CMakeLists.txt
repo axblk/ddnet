@@ -4137,8 +4137,11 @@ if(SERVER)
     mode/ready_check.h
     mode/ready_mode.cpp
     mode/ready_mode.h
+    modes/insta/config_variables.h
+    modes/insta/grenade_ammo.cpp
+    modes/insta/grenade_ammo.h
     modes/insta/insta.cpp
-    modes/insta/rules.h
+    modes/insta/instagib.h
     modes/pvp/anticamper.cpp
     modes/pvp/anticamper.h
     modes/pvp/config_variables.h

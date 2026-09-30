@@ -103,14 +103,11 @@ int CGameClient::TranslateSnap(CSessionId SessionId, CSnapshotBuffer *pSnapDstSi
 			GameStateFlagsSix |= GAMESTATEFLAG_GAMEOVER;
 		if(TranslationContext.m_GameStateFlags7 & protocol7::GAMESTATEFLAG_SUDDENDEATH)
 			GameStateFlagsSix |= GAMESTATEFLAG_SUDDENDEATH;
-		if(TranslationContext.m_GameStateFlags7 & protocol7::GAMESTATEFLAG_PAUSED)
+		// The world stands still between two rounds of a survival mode, which
+		// 0.6 can only say as a paused game. A world that is paused but not
+		// said to be would be predicted as if it ran.
+		if(TranslationContext.m_GameStateFlags7 & (protocol7::GAMESTATEFLAG_PAUSED | protocol7::GAMESTATEFLAG_ROUNDOVER))
 			GameStateFlagsSix |= GAMESTATEFLAG_PAUSED;
-
-		/*
-			This is a 0.7 only flag that we just ignore for now
-
-			GAMESTATEFLAG_ROUNDOVER
-		*/
 
 		CNetObj_GameInfo Info6 = {};
 		Info6.m_GameFlags = TranslationContext.m_GameFlags;

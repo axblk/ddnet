@@ -42,6 +42,8 @@ private:
 	std::optional<CMatchReport> m_Header;
 	std::vector<CParticipant> m_vParticipants;
 	std::optional<std::array<int, 2>> m_TeamScores;
+	// metrics of the match itself; the ids are static strings
+	std::vector<std::pair<const char *, int64_t>> m_vMatchMetrics;
 	bool m_Overflow = false;
 
 public:
@@ -55,6 +57,7 @@ public:
 	CParticipant *Join(uint32_t UniqueClientId, int Tick);
 	void SetPlaying(CParticipant &Participant, bool Playing, int Tick);
 	void SetTeamScores(int Red, int Blue) { m_TeamScores = {Red, Blue}; }
+	void SetMatchMetric(const char *pMetricId, int64_t Value);
 
 	static void AddCombat(CParticipant &Participant, EMatchCombatStat Stat, int Weapon, int64_t Value);
 	static void AddExtra(CParticipant &Participant, const char *pMetricId, int64_t Value);

@@ -124,6 +124,8 @@ public:
 	// to 0.6 clients only, 0.7 clients get a game message instead
 	void CreateLegacySoundGlobal(int Sound, int Target = -1) const;
 	void SendLegacyChatGlobal(const char *pText) const;
+	// to 0.6 clients only, 0.7 clients show the state of the game themselves; Target -1 for all
+	void SendLegacyBroadcast(const char *pText, int Target = -1) const;
 	void SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters = {}, int Target = -1) const;
 	void SendWeaponPickup(int ClientId, int Weapon) const;
 

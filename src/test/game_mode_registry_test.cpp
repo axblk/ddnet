@@ -18,6 +18,8 @@ TEST(GameModeRegistry, FindsByName)
 		{"tdm", "TDM", protocol7::GAMEFLAG_TEAMS, false},
 		{"Ctf", "CTF", protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, false},
 		{"ictf", "iCTF", protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_FLAGS, false},
+		{"lms", "LMS", protocol7::GAMEFLAG_SURVIVAL, false},
+		{"LTS", "LTS", protocol7::GAMEFLAG_TEAMS | protocol7::GAMEFLAG_SURVIVAL, false},
 	};
 	for(const auto &Expected : aExpected)
 	{

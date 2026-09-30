@@ -1583,6 +1583,111 @@ def vanilla_tdm_match_lifecycle(test_env):
 	victim.wait_for_exit()
 
 
+@test
+def vanilla_lms_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype lms", "sv_map Tutorial", "sv_scorelimit 3", "sv_test_cmds 1"])
+	wait_for_startup([attacker, victim, server])
+
+	attacker.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	# nothing to survive alone, the second player starts the match
+	victim.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	server.wait_for_log_exact("game: survival round 1 starts", timeout=15)
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+
+	# a kill and the round: 2 of 3 points, the match goes on
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: survival round 1 over: 'attacker' wins round 1")
+	victim.wait_for_log_exact("broadcast: Wait for the next round", timeout=5)
+	victim.wait_for_log_exact("broadcast: 'attacker' wins round 1", timeout=5)
+	victim.wait_for_log_exact("broadcast: Round 2 starts in 3", timeout=15)
+	server.wait_for_log_exact("game: survival round 2 starts", timeout=15)
+
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestLMS'")
+	server.wait_for_log_exact("game: start round type='TestLMS' teamplay='0'", timeout=15)
+	server.wait_for_log_exact("game: survival round 1 starts", timeout=15)
+
+	attacker.exit()
+	victim.exit()
+	server.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test
+def vanilla_lts_match_lifecycle(test_env):
+	attacker = test_env.client(["player_name attacker"])
+	victim = test_env.client(["player_name victim"])
+	server = test_env.server(["sv_gametype lts", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, victim, server])
+	attacker.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	victim.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	# one player in each team is enough
+	server.wait_for_log_exact("game: survival round 1 starts", timeout=15)
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	victim_id = vanilla_dm_authenticate(server, victim)
+
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, "game: end round type='TestLTS'")
+	victim.wait_for_log(lambda l: l.line.startswith("broadcast: The ") and l.line.endswith(" team wins round 1"), "the team that won the round", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestLTS' teamplay='1'", timeout=15)
+
+	attacker.exit()
+	victim.exit()
+	server.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+def vanilla_survival_stock_07_match_lifecycle(test_env, gametype, teamplay):
+	attacker = test_env.client(["player_name attacker"])
+	server = test_env.server([f"sv_gametype {gametype.lower()}", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])
+	wait_for_startup([attacker, server])
+	attacker.command(f"connect localhost:{server.port}")
+	attacker_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=0" not in attacker_join:
+		raise AssertionError(f"sixup=0 not found in {attacker_join!r}")
+
+	victim = test_env.teeworlds(["player_name stock-victim", f"connect 127.0.0.1:{server.port}"])
+	victim.wait_for_log(lambda l: "version 0.7" in l.line, "the version of the 0.7 client", timeout=10)
+	victim_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in victim_join:
+		raise AssertionError(f"sixup=1 not found in {victim_join!r}")
+	victim_id = int(victim_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+	server.wait_for_log_exact("game: survival round 1 starts", timeout=15)
+
+	attacker_id = vanilla_dm_authenticate(server, attacker)
+	vanilla_dm_end_round(server, attacker, attacker_id, victim_id, f"game: end round type='Test{gametype}'")
+	server.wait_for_log_exact(f"game: start round type='Test{gametype}' teamplay='{teamplay}'", timeout=15)
+	server.wait_for_log_exact("game: survival round 1 starts", timeout=15)
+
+	# the 0.7 client played through the round, the end of the match and the next one
+	server.exit()
+	victim.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	attacker.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	attacker.exit()
+	victim.exit()
+	server.wait_for_exit()
+	attacker.wait_for_exit()
+	victim.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_lms_stock_07_match_lifecycle(test_env):
+	vanilla_survival_stock_07_match_lifecycle(test_env, "LMS", 0)
+
+
+@test(requires_teeworlds_client=True)
+def vanilla_lts_stock_07_match_lifecycle(test_env):
+	vanilla_survival_stock_07_match_lifecycle(test_env, "LTS", 1)
+
+
 @test(requires_teeworlds_client=True)
 def vanilla_dm_stock_07_client_can_connect(test_env):
 	server = test_env.server(["sv_gametype dm", "sv_map Tutorial"])

@@ -216,6 +216,15 @@ void CGameServices::SendLegacyChatGlobal(const char *pText) const
 	m_pGameServer->SendChatTarget(-1, pText, CGameContext::FLAG_SIX);
 }
 
+void CGameServices::SendLegacyBroadcast(const char *pText, int Target) const
+{
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		if((Target == -1 || Target == ClientId) && m_pGameServer->m_apPlayers[ClientId] && Server()->ClientIngame(ClientId) && !Server()->IsSixup(ClientId))
+			m_pGameServer->SendBroadcast(pText, ClientId);
+	}
+}
+
 void CGameServices::SendGameMessage7(int GameMessageId, std::initializer_list<int> Parameters, int Target) const
 {
 	m_pGameServer->SendGameMessage7(GameMessageId, Parameters, Target);

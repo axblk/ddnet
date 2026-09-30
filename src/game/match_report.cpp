@@ -30,6 +30,10 @@ static const CMatchMetricInfo gs_aMatchMetrics[] = {
 	{"flag_returns", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Flag returns"), -1},
 	{"flag_captures", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Flag captures"), -1},
 	{"catches", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Catches"), -1},
+	// modes with rounds inside a match: how many there were, and the ones a participant played and scored in
+	{"rounds", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::NUMBER, Localizable("Rounds"), -1},
+	{"rounds_played", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Rounds played"), -1},
+	{"rounds_won", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Rounds won"), -1},
 	{"personal_best_ticks", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::TICKS, Localizable("Personal best"), -1},
 	{"map_best_ticks", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::TICKS, Localizable("Map best"), -1},
 	{"map_rank", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::RANK, Localizable("Map rank"), -1},

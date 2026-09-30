@@ -206,6 +206,9 @@ TEST(MatchReport, FindsKnownMetrics)
 	EXPECT_EQ(FindMatchMetric("playtime_ticks")->m_Format, EMatchMetricFormat::TICKS);
 	EXPECT_EQ(FindMatchMetric("flag_captures")->m_Category, EMatchMetricCategory::OBJECTIVES);
 	EXPECT_EQ(FindMatchMetric("catches")->m_Category, EMatchMetricCategory::OBJECTIVES);
+	EXPECT_EQ(FindMatchMetric("rounds")->m_Aggregation, EMatchMetricAggregation::MATCH_ONLY);
+	EXPECT_EQ(FindMatchMetric("rounds_won")->m_Aggregation, EMatchMetricAggregation::SUM);
+	EXPECT_EQ(FindMatchMetric("rounds_played")->m_Category, EMatchMetricCategory::OBJECTIVES);
 	EXPECT_EQ(FindMatchMetric("map_rank")->m_Format, EMatchMetricFormat::RANK);
 	EXPECT_EQ(FindMatchMetric("wall_runs"), nullptr);
 	EXPECT_EQ(FindMatchMetric("weapon_x_hits"), nullptr);

@@ -21,6 +21,7 @@
 #include <engine/shared/protocolglue.h>
 
 #include <generated/protocol.h>
+#include <generated/protocol7.h>
 #include <generated/server_data.h>
 
 #include <game/mapitems.h>
@@ -147,10 +148,10 @@ void IGameController::FinishMatchReport(EMatchTermination Termination, bool Sudd
 	m_MatchRecorder.Stop();
 }
 
-void IGameController::AbortMatchReport()
+void IGameController::AbortMatchReport(EMatchTermination Termination)
 {
 	UpdateMatchParticipants();
-	FinishMatchReport(EMatchTermination::ADMIN_ENDED);
+	FinishMatchReport(Termination);
 }
 
 bool IGameController::BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId)
@@ -187,6 +188,11 @@ void IGameController::AddMatchMetric(CPlayer *pPlayer, const char *pMetricId, in
 {
 	if(CMatchRecorder::CParticipant *pParticipant = MatchParticipant(pPlayer))
 		CMatchRecorder::AddExtra(*pParticipant, pMetricId, Value);
+}
+
+void IGameController::SetMatchMetric(const char *pMetricId, int64_t Value)
+{
+	m_MatchRecorder.SetMatchMetric(pMetricId, Value);
 }
 
 void IGameController::AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage)
@@ -313,7 +319,7 @@ void IGameController::DoActivityCheck()
 
 void IGameController::OnPlayerSetTeam(int ClientId, int Team)
 {
-	if(IsGamePaused())
+	if(!IsTeamChangeAllowed())
 		return;
 
 	CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
@@ -523,7 +529,7 @@ void IGameController::EvaluateSpawnType(CSpawnEval *pEval, ESpawnType SpawnType,
 				P += aPositions[Result];
 			}
 
-			float S = EvaluateSpawnPos(pEval, P, ClientId);
+			const float S = pEval->m_RandomSpawn ? random_float() : EvaluateSpawnPos(pEval, P, ClientId);
 			if(!pEval->m_Got || (j == 0 && pEval->m_Score > S))
 			{
 				pEval->m_Got = true;
@@ -541,6 +547,7 @@ bool IGameController::CanSpawn(int Team, vec2 *pOutPos, int ClientId)
 		return false;
 
 	CSpawnEval Eval;
+	Eval.m_RandomSpawn = IsSurvival();
 	EvaluateSpawnType(&Eval, SPAWNTYPE_DEFAULT, ClientId);
 	EvaluateSpawnType(&Eval, SPAWNTYPE_RED, ClientId);
 	EvaluateSpawnType(&Eval, SPAWNTYPE_BLUE, ClientId);
@@ -1032,13 +1039,20 @@ void IGameController::Snap(int SnappingClient)
 		}
 		else if(Match().IsWarmup())
 		{
+			// a warmup that waits for players has no end to count down to
 			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_WARMUP;
-			GameData.m_GameStateEndTick = Server()->Tick() + Match().WarmupTicks();
+			GameData.m_GameStateEndTick = Match().IsWaitingForPlayers() ? 0 : Server()->Tick() + Match().WarmupTicks();
 		}
+		UpdateGameDataSixup(GameData, SnappingClient);
 		Server()->SnapNewItem(0, GameData);
 	}
 
 	SnapMode(SnappingClient);
+}
+
+bool IGameController::IsSurvival() const
+{
+	return Info().m_GameFlags & protocol7::GAMEFLAG_SURVIVAL;
 }
 
 int IGameController::GetAutoTeam(int NotThisId)

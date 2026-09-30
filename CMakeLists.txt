@@ -4141,7 +4141,10 @@ if(SERVER)
     modes/vanilla/dm.h
     modes/vanilla/flag.cpp
     modes/vanilla/flag.h
+    modes/vanilla/lms.cpp
+    modes/vanilla/lts.cpp
     modes/vanilla/player.h
+    modes/vanilla/survival.h
     modes/vanilla/tdm.cpp
     modes/vanilla/tdm.h
     modes/vanilla/teamplay.cpp

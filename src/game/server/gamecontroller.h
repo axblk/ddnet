@@ -28,6 +28,11 @@ class CInteractions;
 class CPlayer;
 class CTuningParams;
 
+namespace protocol7
+{
+	struct CNetObj_GameData;
+}
+
 struct CWeaponFireContext
 {
 	CCharacter *m_pCharacter;
@@ -158,6 +163,8 @@ protected:
 	void ResetTuningZones();
 	virtual void InitGameSettings();
 	virtual void UpdateGameInfo(CNetObj_GameInfo &GameInfo, int SnappingClient) {}
+	// what a 0.7 client is told about the state of the game, for states it has and 0.6 has not
+	virtual void UpdateGameDataSixup(protocol7::CNetObj_GameData &GameData, int SnappingClient) {}
 	virtual void SnapMode(int SnappingClient) {}
 	virtual int ScoreLimit() const { return 0; }
 	virtual int TimeLimit() const { return 0; }
@@ -169,6 +176,8 @@ protected:
 	// counts a metric of the mode's own for the match report, pMetricId must be a static string
 	void AddMatchMetric(CPlayer *pPlayer, const char *pMetricId, int64_t Value = 1);
 	void AddMatchDamage(CPlayer *pAttacker, CPlayer *pVictim, int Weapon, int Damage);
+	// a metric of the whole match, like the number of rounds in it; pMetricId must be a static string
+	void SetMatchMetric(const char *pMetricId, int64_t Value);
 	CMatchReport MatchReportHeader(CUuid MatchId, int StartTick) const;
 	// the live statistics the player asked for, the running round by default
 	virtual bool BuildLiveStats(int ClientId, CMatchReport &Report, int &LocalParticipantId);
@@ -178,12 +187,15 @@ protected:
 		CSpawnEval()
 		{
 			m_Got = false;
+			m_RandomSpawn = false;
 			m_FriendlyTeam = -1;
 			m_Pos = vec2(100, 100);
 		}
 
 		vec2 m_Pos;
 		bool m_Got;
+		// any free spawn point instead of the one farthest from the others
+		bool m_RandomSpawn;
 		int m_FriendlyTeam;
 		float m_Score;
 	};
@@ -211,7 +223,7 @@ public:
 	int TuningZoneAt(vec2 Position) const;
 	void SendLiveStats(int ClientId);
 	// ends the report of the running round without a result
-	void AbortMatchReport();
+	void AbortMatchReport(EMatchTermination Termination = EMatchTermination::ADMIN_ENDED);
 	void ResetTuning();
 	virtual CPlayer *CreatePlayer(uint32_t UniqueClientId, int ClientId, int Team);
 	virtual CCharacter *CreateCharacter(CPlayer *pPlayer);
@@ -281,6 +293,8 @@ public:
 	virtual int PlayerTeamGroup(int ClientId) const;
 	virtual bool CanPlayerReceivePreInput(int SenderId, int ReceiverId) const;
 	virtual bool IsPlayerDeadSpectator(int ClientId) const { return false; }
+	// whom a player may watch, SpectatorId is a client id or one of the SPEC_* values
+	virtual bool CanPlayerSpectate(int ClientId, int SpectatorId) const { return true; }
 	// for spectators following a flag
 	virtual bool FlagPosition(int Team, vec2 *pOutPos) const { return false; }
 	virtual void OnPlayerShowOthers(int ClientId, int Show) {}
@@ -296,6 +310,8 @@ public:
 
 	void SetGamePaused(bool Paused);
 	bool IsGamePaused() const;
+	// players can join or leave the game while the world is not paused
+	virtual bool IsTeamChangeAllowed() const { return !IsGamePaused(); }
 	virtual void StartRound();
 	virtual void EndRound();
 	void ChangeMap(const char *pToMap);
@@ -379,6 +395,8 @@ public:
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 
 	bool IsTeamPlay() const { return Info().m_GameFlags & GAMEFLAG_TEAMS; }
+	// rounds inside a match, a player who dies waits for the next one
+	bool IsSurvival() const;
 	virtual int TeamScore(int Team) const { return 0; }
 	// The 0.7 game info message; the context sends it with the start messages.
 	void SendGameInfoSixup(int ClientId);

@@ -77,6 +77,16 @@ void CGameControllerVanillaTeamplay::UpdateTeamBalance(int Tick)
 	if(Tick <= m_UnbalancedSinceTick + g_Config.m_SvTeambalanceTime * Server()->TickSpeed() * 60)
 		return;
 
+	BalanceTeams(Tick);
+	m_UnbalancedSinceTick = -1;
+}
+
+void CGameControllerVanillaTeamplay::BalanceTeams(int Tick)
+{
+	const std::array<int, NUM_TEAMS> aTeamSizes = TeamSizes();
+	if(g_Config.m_SvTeambalanceTime == 0 || absolute(aTeamSizes[TEAM_RED] - aTeamSizes[TEAM_BLUE]) < MIN_UNBALANCED_TEAM_DIFFERENCE)
+		return;
+
 	std::array<float, MAX_CLIENTS> aPlayerScores{};
 	std::array<float, NUM_TEAMS> aTeamScores{};
 	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
@@ -122,7 +132,6 @@ void CGameControllerVanillaTeamplay::UpdateTeamBalance(int Tick)
 		Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_BALANCE_VICTIM, {SmallerTeam}, ClientId);
 	}
 
-	m_UnbalancedSinceTick = -1;
 	Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_BALANCE);
 }
 
@@ -160,6 +169,7 @@ bool CGameControllerVanillaTeamplay::CanSpawn(int Team, vec2 *pOutPos, int Clien
 
 	CSpawnEval Eval;
 	Eval.m_FriendlyTeam = Team;
+	Eval.m_RandomSpawn = IsSurvival();
 	EvaluateSpawnType(&Eval, Team == TEAM_RED ? SPAWNTYPE_RED : SPAWNTYPE_BLUE, ClientId);
 	if(!Eval.m_Got)
 	{

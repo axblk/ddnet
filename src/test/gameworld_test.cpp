@@ -23,6 +23,7 @@
 #include <engine/storage.h>
 
 #include <generated/protocol.h>
+#include <generated/protocol7.h>
 
 #include <game/mapitems.h>
 #include <game/match_report.h>
@@ -945,6 +946,24 @@ TEST(MatchLifecycle, PreservesRoundTransitions)
 	Match.AdvanceRound();
 	EXPECT_EQ(Match.RoundStartTick(), 41);
 	EXPECT_EQ(Match.RoundCount(), 1);
+}
+
+TEST(MatchLifecycle, WaitsForPlayersUntilTheModeStartsTheMatch)
+{
+	CMatchLifecycle Match(10);
+	Match.WaitForPlayers();
+	EXPECT_TRUE(Match.IsWarmup());
+	EXPECT_TRUE(Match.IsWaitingForPlayers());
+	EXPECT_FALSE(Match.IsRunning());
+	EXPECT_EQ(Match.WarmupTicks(), 0);
+	// only the mode ends it
+	for(int i = 0; i < 100; i++)
+		EXPECT_FALSE(Match.TickWarmup());
+	EXPECT_FALSE(Match.EndRound(20));
+	Match.SetWarmupTicks(0);
+	EXPECT_TRUE(Match.IsRunning());
+	Match.SetRoundStartTick(30);
+	EXPECT_EQ(Match.RoundStartTick(), 30);
 }
 
 TEST_F(GameWorld, MatchReportTracksJoinsLeaversAndTeams)
@@ -3274,6 +3293,365 @@ TEST_F(GameWorld, ZCatchLateJoinFollowsLeadingCatcher)
 	pLeaderCharacter->TakeDamage(vec2(), 0, ContenderId, WEAPON_LASER);
 	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(VictimId));
 	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(LateJoinId));
+}
+
+namespace
+{
+	// a client that only watches, to see what the game tells the clients
+	constexpr int WATCHER_ID = MAX_CLIENTS - 1;
+
+	protocol7::CNetObj_GameData SnapGameData7(GameWorld *pWorld)
+	{
+		pWorld->m_pServer->m_aClients[WATCHER_ID].m_Sixup = true;
+		pWorld->m_pServer->m_SnapshotBuilder.Init(true);
+		pWorld->GameController()->Snap(WATCHER_ID);
+		CSnapshotBuffer Buffer;
+		pWorld->m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+		pWorld->m_pServer->m_aClients[WATCHER_ID].m_Sixup = false;
+		const auto *pGameData = static_cast<const protocol7::CNetObj_GameData *>(Buffer.AsSnapshot()->FindItem(protocol7::NETOBJTYPE_GAMEDATA, 0));
+		EXPECT_NE(pGameData, nullptr);
+		return pGameData ? *pGameData : protocol7::CNetObj_GameData{};
+	}
+
+	CNetObj_GameInfo SnapGameInfo6(GameWorld *pWorld)
+	{
+		pWorld->m_pServer->m_SnapshotBuilder.Init(false);
+		pWorld->GameController()->Snap(WATCHER_ID);
+		CSnapshotBuffer Buffer;
+		pWorld->m_pServer->m_SnapshotBuilder.Finish(&Buffer);
+		const auto *pGameInfo = static_cast<const CNetObj_GameInfo *>(Buffer.AsSnapshot()->FindItem(NETOBJTYPE_GAMEINFO, 0));
+		EXPECT_NE(pGameInfo, nullptr);
+		return pGameInfo ? *pGameInfo : CNetObj_GameInfo{};
+	}
+
+	std::optional<int64_t> MatchMetric(const CMatchReport &Report, const char *pMetricId)
+	{
+		for(const CMatchMetric &Metric : Report.m_vMetrics)
+		{
+			if(Metric.m_SubjectKind == EMatchSubjectKind::MATCH && Metric.m_MetricId == pMetricId)
+				return Metric.m_Value;
+		}
+		return std::nullopt;
+	}
+
+	// the test map has no spawn point a vanilla tee fits in, these are free and safe
+	void AddSpawnPoints(GameWorld *pWorld, int Type = ENTITY_SPAWN)
+	{
+		for(int x = 8; x < 12; x++)
+			EXPECT_TRUE(pWorld->GameController()->OnEntity({Type, x, 2, LAYER_GAME, 0, true, 0}));
+	}
+
+	// the whole game ticks, the world as well, so that rounds are reset and players spawn
+	void RunTicks(GameWorld *pWorld, int Ticks)
+	{
+		for(int i = 0; i < Ticks; i++)
+		{
+			pWorld->m_pServer->AdvanceTick(1);
+			pWorld->GameServer()->OnTick();
+		}
+	}
+
+	// from the countdown of a round to everybody playing it
+	void RunCountdown(GameWorld *pWorld)
+	{
+		const int TickSpeed = pWorld->m_pServer->TickSpeed();
+		EXPECT_NE(SnapGameData7(pWorld).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+		RunTicks(pWorld, 3 * TickSpeed + 2);
+		EXPECT_EQ(SnapGameData7(pWorld).m_GameStateFlags, 0);
+	}
+}
+
+TEST_F(GameWorld, LMSWaitsForASecondPlayer)
+{
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	CPlayer *pFirst = JoinPlayer(0, TEAM_GAME, "first");
+	RunTicks(this, 10);
+
+	// alone there is nothing to survive, so the player warms up and respawns
+	const protocol7::CNetObj_GameData Waiting = SnapGameData7(this);
+	EXPECT_EQ(Waiting.m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_EQ(Waiting.m_GameStateEndTick, 0);
+	EXPECT_EQ(SnapGameInfo6(this).m_WarmupTimer, 0);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	ASSERT_NE(pFirst->GetCharacter(), nullptr);
+	pFirst->GetCharacter()->Die(0, WEAPON_SELF);
+	EXPECT_NE(GameController()->PlayerAutoRespawnTick(pFirst), std::numeric_limits<int>::max());
+	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(0));
+
+	// the second one starts the match with a countdown in a paused world
+	JoinPlayer(1, TEAM_GAME, "second");
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	const protocol7::CNetObj_GameData Countdown = SnapGameData7(this);
+	EXPECT_EQ(Countdown.m_GameStateFlags, protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Countdown.m_GameStateEndTick, m_pServer->Tick() + 3 * m_pServer->TickSpeed());
+	EXPECT_NE(SnapGameInfo6(this).m_GameStateFlags & GAMESTATEFLAG_PAUSED, 0);
+	EXPECT_TRUE(GameController()->IsTeamChangeAllowed());
+	RunCountdown(this);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	// the clock stood still during the countdown, the last tick of it starts the round
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, Countdown.m_GameStateEndTick - 1);
+	EXPECT_NE(pFirst->GetCharacter(), nullptr);
+	EXPECT_NE(GameServer()->m_apPlayers[1]->GetCharacter(), nullptr);
+}
+
+TEST_F(GameWorld, LMSStartsEverybodyWithEveryWeaponAndHasNoPickups)
+{
+	SelectGameMode("lms");
+	CCharacter *pCharacter = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pCharacter, nullptr);
+	EXPECT_EQ(pCharacter->GetHealth(), 10);
+	EXPECT_EQ(pCharacter->GetArmor(), 0);
+	EXPECT_TRUE(pCharacter->GetWeaponGot(WEAPON_HAMMER));
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_GUN), 10);
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_SHOTGUN), 10);
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_GRENADE), 10);
+	EXPECT_EQ(pCharacter->GetWeaponAmmo(WEAPON_LASER), 5);
+	EXPECT_TRUE(pCharacter->GetWeaponGot(WEAPON_LASER));
+	EXPECT_FALSE(pCharacter->GetWeaponGot(WEAPON_NINJA));
+	EXPECT_EQ(pCharacter->GetActiveWeapon(), WEAPON_GUN);
+
+	EXPECT_TRUE(GameController()->OnEntity({ENTITY_SPAWN, 1, 1, LAYER_GAME, 0, true, 0}));
+	for(const int Index : {ENTITY_ARMOR_1, ENTITY_HEALTH_1, ENTITY_WEAPON_SHOTGUN, ENTITY_WEAPON_GRENADE, ENTITY_WEAPON_LASER, ENTITY_POWERUP_NINJA})
+		EXPECT_FALSE(GameController()->OnEntity({Index, 1, 1, LAYER_GAME, 0, true, 0})) << Index;
+}
+
+TEST_F(GameWorld, LMSLastPlayerStandingWinsTheRound)
+{
+	g_Config.m_SvScorelimit = 10;
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	CPlayer *pWinner = JoinPlayer(0, TEAM_GAME, "winner");
+	CPlayer *pFirst = JoinPlayer(1, TEAM_GAME, "first");
+	CPlayer *pSecond = JoinPlayer(2, TEAM_GAME, "second");
+	RunCountdown(this);
+	ASSERT_NE(pWinner->GetCharacter(), nullptr);
+	ASSERT_NE(pFirst->GetCharacter(), nullptr);
+	ASSERT_NE(pSecond->GetCharacter(), nullptr);
+
+	// who dies watches somebody still alive and may not look elsewhere
+	pFirst->GetCharacter()->Die(0, WEAPON_GUN);
+	RunTicks(this, 1);
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(1));
+	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pFirst), std::numeric_limits<int>::max());
+	EXPECT_TRUE(pFirst->SpectatorId() == 0 || pFirst->SpectatorId() == 2) << pFirst->SpectatorId();
+	EXPECT_TRUE(GameController()->CanPlayerSpectate(1, 2));
+	EXPECT_FALSE(GameController()->CanPlayerSpectate(1, SPEC_FREEVIEW));
+	EXPECT_FALSE(GameController()->CanPlayerSpectate(1, 1));
+	EXPECT_TRUE(GameController()->CanPlayerSpectate(0, SPEC_FREEVIEW));
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// once the one watched dies too, the dead watch the last one
+	pSecond->GetCharacter()->Die(0, WEAPON_GRENADE);
+	RunTicks(this, 1);
+	EXPECT_EQ(pFirst->SpectatorId(), 0);
+	EXPECT_EQ(pSecond->SpectatorId(), 0);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWinner), 3);
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	EXPECT_FALSE(GameController()->IsTeamChangeAllowed());
+	const protocol7::CNetObj_GameData RoundOver = SnapGameData7(this);
+	EXPECT_EQ(RoundOver.m_GameStateFlags, protocol7::GAMESTATEFLAG_ROUNDOVER);
+	EXPECT_EQ(RoundOver.m_GameStateEndTick, m_pServer->Tick() - RoundOver.m_GameStartTick);
+	// a 0.6 client sees a paused game, the scores keep going into the next round
+	EXPECT_EQ(SnapGameInfo6(this).m_GameStateFlags, GAMESTATEFLAG_PAUSED);
+	EXPECT_TRUE(ReceivedMatchReports(0).empty());
+
+	RunTicks(this, 5 * m_pServer->TickSpeed());
+	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(1));
+	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(2));
+	RunCountdown(this);
+	EXPECT_NE(pFirst->GetCharacter(), nullptr);
+	EXPECT_NE(pSecond->GetCharacter(), nullptr);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWinner), 3);
+}
+
+TEST_F(GameWorld, LMSScoreLimitEndsTheMatchWhenARoundEnds)
+{
+	g_Config.m_SvScorelimit = 2;
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	CPlayer *pWinner = JoinPlayer(0, TEAM_GAME, "winner");
+	CPlayer *pLoser = JoinPlayer(1, TEAM_GAME, "loser");
+	RunCountdown(this);
+
+	// the round is the loser's own fault, the winner scores for being left
+	pLoser->GetCharacter()->Die(1, WEAPON_SELF);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWinner), 1);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pLoser), -1);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_ROUNDOVER);
+
+	RunTicks(this, 5 * m_pServer->TickSpeed());
+	RunCountdown(this);
+	pLoser->GetCharacter()->Die(0, WEAPON_LASER);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWinner), 3);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER, 0);
+	EXPECT_NE(SnapGameInfo6(this).m_GameStateFlags & GAMESTATEFLAG_GAMEOVER, 0);
+	// the final scores show everybody playing
+	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(1));
+
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	const CMatchReport &Report = Received.m_Report;
+	EXPECT_EQ(Report.m_ModeId, "lms");
+	EXPECT_EQ(Report.m_Termination, EMatchTermination::COMPLETED);
+	EXPECT_EQ(MatchMetric(Report, "rounds"), 2);
+	const int WinnerId = Received.Participant("winner")->m_ParticipantId;
+	const int LoserId = Received.Participant("loser")->m_ParticipantId;
+	EXPECT_EQ(Received.Metric(WinnerId, "rounds_won"), 2);
+	EXPECT_EQ(Received.Metric(WinnerId, "rounds_played"), 2);
+	EXPECT_EQ(Received.Metric(WinnerId, "score"), 3);
+	EXPECT_EQ(Received.Metric(LoserId, "rounds_played"), 2);
+	EXPECT_FALSE(Received.Metric(LoserId, "rounds_won").has_value());
+	ASSERT_NE(Report.Standing(EMatchSubjectKind::PARTICIPANT, WinnerId), nullptr);
+	EXPECT_EQ(Report.Standing(EMatchSubjectKind::PARTICIPANT, WinnerId)->m_Outcome, EMatchOutcome::WIN);
+	EXPECT_EQ(Report.Standing(EMatchSubjectKind::PARTICIPANT, LoserId)->m_Outcome, EMatchOutcome::LOSS);
+
+	// the next match starts with a countdown
+	RunTicks(this, 10 * m_pServer->TickSpeed() + 1);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pWinner), 0);
+	RunCountdown(this);
+}
+
+TEST_F(GameWorld, LMSTimeLimitScoresEverybodyStillStanding)
+{
+	g_Config.m_SvScorelimit = 5;
+	g_Config.m_SvTimelimit = 1;
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	CPlayer *pFirst = JoinPlayer(0, TEAM_GAME, "first");
+	CPlayer *pSecond = JoinPlayer(1, TEAM_GAME, "second");
+	CPlayer *pThird = JoinPlayer(2, TEAM_GAME, "third");
+	RunCountdown(this);
+	pThird->GetCharacter()->Die(0, WEAPON_GUN);
+	RunTicks(this, 60 * m_pServer->TickSpeed());
+	// the first one leads alone, which ends the match with the round
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pFirst), 2);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pSecond), 1);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pThird), 0);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER, 0);
+}
+
+TEST_F(GameWorld, LMSLateJoinerWatchesUntilTheNextRound)
+{
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	RunCountdown(this);
+
+	CPlayer *pLate = JoinPlayer(2, TEAM_GAME, "late");
+	RunTicks(this, 2);
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(2));
+	EXPECT_EQ(pLate->GetCharacter(), nullptr);
+	EXPECT_TRUE(pLate->SpectatorId() == 0 || pLate->SpectatorId() == 1) << pLate->SpectatorId();
+
+	CPlayer *pSpectator = JoinPlayer(3, TEAM_SPECTATORS, "spectator");
+	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(3));
+	EXPECT_TRUE(GameController()->CanPlayerSpectate(3, SPEC_FREEVIEW));
+	// joining the game in the middle of a round is the same as joining late
+	GameController()->DoTeamChange(pSpectator, TEAM_GAME, false);
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(3));
+}
+
+TEST_F(GameWorld, LMSMatchWithoutEnoughPlayersEndsWithoutResult)
+{
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_GAME, "stays");
+	JoinPlayer(1, TEAM_GAME, "leaves");
+	RunCountdown(this);
+
+	LeavePlayer(1);
+	RunTicks(this, 1);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_ROUNDOVER);
+	RunTicks(this, 5 * m_pServer->TickSpeed());
+	const protocol7::CNetObj_GameData Waiting = SnapGameData7(this);
+	EXPECT_EQ(Waiting.m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	EXPECT_EQ(Received.m_Report.m_Termination, EMatchTermination::ABORTED);
+	EXPECT_EQ(MatchMetric(Received.m_Report, "rounds"), 1);
+
+	// somebody else comes, and a new match begins
+	JoinPlayer(1, TEAM_GAME, "comes");
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 0);
+}
+
+TEST_F(GameWorld, LTSLastTeamStandingWinsTheRound)
+{
+	g_Config.m_SvScorelimit = 2;
+	g_Config.m_SvTimelimit = 1;
+	SelectGameMode("lts");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_RED, "red");
+	CPlayer *pRedMate = JoinPlayer(1, TEAM_RED, "redmate");
+	CPlayer *pBlue = JoinPlayer(2, TEAM_BLUE, "blue");
+	RunCountdown(this);
+	ASSERT_NE(pRedMate->GetCharacter(), nullptr);
+	ASSERT_NE(pBlue->GetCharacter(), nullptr);
+
+	// the dead watch their own team only
+	pRedMate->GetCharacter()->Die(2, WEAPON_SHOTGUN);
+	RunTicks(this, 1);
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(1));
+	EXPECT_EQ(pRedMate->SpectatorId(), 0);
+	EXPECT_FALSE(GameController()->CanPlayerSpectate(1, 2));
+	EXPECT_TRUE(GameController()->CanPlayerSpectate(1, 0));
+	// a kill scores for the player and not for the team
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pBlue), 1);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_BLUE), 0);
+
+	pBlue->GetCharacter()->Die(0, WEAPON_LASER);
+	RunTicks(this, 1);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 1);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_BLUE), 0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_ROUNDOVER);
+
+	// a round that runs out of time is a draw, and the time limit ends the match with it
+	RunTicks(this, 5 * m_pServer->TickSpeed());
+	RunCountdown(this);
+	RunTicks(this, 60 * m_pServer->TickSpeed());
+	EXPECT_EQ(GameController()->TeamScore(TEAM_RED), 2);
+	EXPECT_EQ(GameController()->TeamScore(TEAM_BLUE), 1);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER, 0);
+
+	const CReceivedMatchReport Received = ReceivedMatchReport(2);
+	const CMatchReport &Report = Received.m_Report;
+	EXPECT_EQ(Report.m_ModeId, "lts");
+	EXPECT_EQ(MatchMetric(Report, "rounds"), 2);
+	EXPECT_EQ(Report.Metric(EMatchSubjectKind::TEAM, TEAM_RED, "score"), 2);
+	EXPECT_EQ(Report.Standing(EMatchSubjectKind::TEAM, TEAM_RED)->m_Outcome, EMatchOutcome::WIN);
+	EXPECT_EQ(Received.Metric(Received.Participant("redmate")->m_ParticipantId, "rounds_won"), 2);
+	EXPECT_EQ(Received.Metric(Received.Participant("blue")->m_ParticipantId, "rounds_won"), 1);
+	EXPECT_EQ(Received.Metric(Received.Participant("blue")->m_ParticipantId, "kills"), 1);
+}
+
+TEST_F(GameWorld, LTSBalancesTheTeamsWhenARoundBegins)
+{
+	g_Config.m_SvTeambalanceTime = 1;
+	SelectGameMode("lts");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_RED, "red");
+	JoinPlayer(1, TEAM_BLUE, "blue");
+	RunCountdown(this);
+	// two more players end up in the red team, which is balanced when the next round begins
+	CPlayer *pThird = JoinPlayer(2, TEAM_RED, "third");
+	CPlayer *pFourth = JoinPlayer(3, TEAM_RED, "fourth");
+	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(2));
+	RunTicks(this, 60 * m_pServer->TickSpeed() + 1);
+	// no balancing in the middle of a round
+	EXPECT_EQ(pThird->GetTeam(), TEAM_RED);
+	EXPECT_EQ(pFourth->GetTeam(), TEAM_RED);
+
+	GameServer()->m_apPlayers[1]->GetCharacter()->Die(0, WEAPON_GUN);
+	RunTicks(this, 1 + 5 * m_pServer->TickSpeed());
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+	int NumBlue = 0;
+	for(const CPlayer *pPlayer : GameServer()->m_apPlayers)
+		NumBlue += pPlayer && pPlayer->GetTeam() == TEAM_BLUE;
+	EXPECT_EQ(NumBlue, 2);
 }
 
 TEST_F(GameWorld, VanillaCTFFlagLifecycle)

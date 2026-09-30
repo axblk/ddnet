@@ -12,7 +12,10 @@ protected:
 	int m_UnbalancedSinceTick = -1;
 
 	std::array<int, NUM_TEAMS> TeamSizes(int ExceptClientId = -1) const;
-	void UpdateTeamBalance(int Tick);
+	// balances the teams once they have been uneven for sv_teambalance_time minutes
+	virtual void UpdateTeamBalance(int Tick);
+	// moves players from the bigger team to the smaller one right away, if the teams are uneven
+	void BalanceTeams(int Tick);
 	virtual bool CanBeMovedOnBalance(const CPlayer *pPlayer) const;
 
 public:

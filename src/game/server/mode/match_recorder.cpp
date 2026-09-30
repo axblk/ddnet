@@ -14,6 +14,7 @@ void CMatchRecorder::Start(CMatchReport Header)
 	m_Header = std::move(Header);
 	m_vParticipants.clear();
 	m_TeamScores.reset();
+	m_vMatchMetrics.clear();
 	m_Overflow = false;
 }
 
@@ -57,6 +58,15 @@ void CMatchRecorder::SetPlaying(CParticipant &Participant, bool Playing, int Tic
 		Participant.m_PlayingSinceTick = -1;
 		Participant.m_Info.m_LeftTick = std::max(0, Tick - m_Header->m_RoundStartTick);
 	}
+}
+
+void CMatchRecorder::SetMatchMetric(const char *pMetricId, int64_t Value)
+{
+	const auto It = std::find_if(m_vMatchMetrics.begin(), m_vMatchMetrics.end(), [pMetricId](const auto &Metric) { return str_comp(Metric.first, pMetricId) == 0; });
+	if(It != m_vMatchMetrics.end())
+		It->second = Value;
+	else
+		m_vMatchMetrics.emplace_back(pMetricId, Value);
 }
 
 void CMatchRecorder::AddCombat(CParticipant &Participant, EMatchCombatStat Stat, int Weapon, int64_t Value)
@@ -121,6 +131,11 @@ CMatchReport CMatchRecorder::Report(int Tick, EMatchTermination Termination, boo
 	}
 	if(SuddenDeath)
 		Report.m_vMetrics.push_back({EMatchSubjectKind::MATCH, std::nullopt, "sudden_death", 1, EMatchMetricAggregation::MATCH_ONLY});
+	for(const auto &[pMetricId, Value] : m_vMatchMetrics)
+	{
+		const CMatchMetricInfo *pInfo = FindMatchMetric(pMetricId);
+		Report.m_vMetrics.push_back({EMatchSubjectKind::MATCH, std::nullopt, pMetricId, std::clamp(Value, -MatchReportLimits::MAX_METRIC_VALUE, MatchReportLimits::MAX_METRIC_VALUE), pInfo ? pInfo->m_Aggregation : EMatchMetricAggregation::MATCH_ONLY});
+	}
 
 	const auto Outcome = [&](bool Won, bool Draw) {
 		if(Termination != EMatchTermination::COMPLETED)

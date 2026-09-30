@@ -26,7 +26,7 @@ void CGameControllerVanillaDM::OnCharacterDeath(const CGameCharacterDeathContext
 
 void CGameControllerVanillaDM::Tick()
 {
-	IGameController::Tick();
+	CGameControllerVanillaPvP::Tick();
 	TickMatch();
 }
 

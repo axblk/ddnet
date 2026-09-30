@@ -670,6 +670,8 @@ int CServer::Init()
 		Client.m_AuthKey = -1;
 		Client.m_Latency = 0;
 		Client.m_Sixup = false;
+		// Read for every slot when a mode sends chat before anyone has connected.
+		Client.m_DDNetVersion = VERSION_NONE;
 		Client.m_RedirectDropTime = 0;
 		Client.m_IngameBeforeRejoin = false;
 	}
@@ -2809,7 +2811,7 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	}
 
 	ADD_INT(p, PlayerCount); // num players
-	ADD_INT(p, std::min(MaxClientsProtocol, std::max(MaxClients - std::max(Config()->m_SvSpectatorSlots, Config()->m_SvReservedSlots), PlayerCount))); // max players
+	ADD_INT(p, std::min(MaxClientsProtocol, std::max(std::min(MaxClients - std::max(Config()->m_SvSpectatorSlots, Config()->m_SvReservedSlots), Config()->m_SvPlayerSlots), PlayerCount))); // max players
 	ADD_INT(p, ClientCount); // num clients
 	ADD_INT(p, std::min(MaxClientsProtocol, std::max(MaxClients - Config()->m_SvReservedSlots, ClientCount))); // max clients
 
@@ -3019,7 +3021,7 @@ void CServer::CacheServerInfoSixup(CCache *pCache, bool SendClients, int MaxCons
 	int MaxClients = m_NetServer.MaxClients();
 	Packer.AddInt(Config()->m_SvSkillLevel); // server skill level
 	Packer.AddInt(PlayerCount); // num players
-	Packer.AddInt(std::min<int>(LEGACY_MAX_CLIENTS, std::max(MaxClients - std::max(Config()->m_SvSpectatorSlots, Config()->m_SvReservedSlots), PlayerCount))); // max players
+	Packer.AddInt(std::min<int>(LEGACY_MAX_CLIENTS, std::max(std::min(MaxClients - std::max(Config()->m_SvSpectatorSlots, Config()->m_SvReservedSlots), Config()->m_SvPlayerSlots), PlayerCount))); // max players
 	Packer.AddInt(ClientCount); // num clients
 	Packer.AddInt(std::min<int>(LEGACY_MAX_CLIENTS, std::max(MaxClients - Config()->m_SvReservedSlots, ClientCount))); // max clients
 
@@ -3207,7 +3209,7 @@ void CServer::UpdateRegisterServerInfo()
 		}
 	}
 
-	int MaxPlayers = std::max(m_NetServer.MaxClients() - std::max(g_Config.m_SvSpectatorSlots, g_Config.m_SvReservedSlots), PlayerCount);
+	int MaxPlayers = std::max(std::min(m_NetServer.MaxClients() - std::max(g_Config.m_SvSpectatorSlots, g_Config.m_SvReservedSlots), g_Config.m_SvPlayerSlots), PlayerCount);
 	int MaxClients = std::max(m_NetServer.MaxClients() - g_Config.m_SvReservedSlots, ClientCount);
 	char aMapSha256[SHA256_MAXSTRSIZE];
 
@@ -5829,6 +5831,7 @@ void CServer::RegisterCommands()
 	Console()->Chain("password", ConchainSpecialInfoupdate, this);
 	Console()->Chain("sv_reserved_slots", ConchainSpecialInfoupdate, this);
 	Console()->Chain("sv_spectator_slots", ConchainSpecialInfoupdate, this);
+	Console()->Chain("sv_player_slots", ConchainSpecialInfoupdate, this);
 
 	Console()->Chain("sv_max_clients_per_ip", ConchainMaxclientsperipUpdate, this);
 	Console()->Chain("access_level", ConchainCommandAccessUpdate, this);

@@ -1,10 +1,15 @@
 #include "vanilla_pvp.h"
 
+#include <base/log.h>
+#include <base/str.h>
+
 #include <engine/server.h>
 #include <engine/shared/config.h>
 
+#include <generated/protocol7.h>
 #include <generated/server_data.h>
 
+#include <game/mapitems.h>
 #include <game/server/entities/character.h>
 #include <game/server/entities/projectile.h>
 #include <game/server/player.h>
@@ -66,6 +71,14 @@ static vec2 ShotgunDirection(vec2 Direction, int Pellet, float SpeedDifference)
 	const float CenterWeight = 1.0f - absolute(Pellet) / 2.0f;
 	const float Speed = mix(SpeedDifference, 1.0f, CenterWeight);
 	return vec2(std::cos(DirectionAngle), std::sin(DirectionAngle)) * Speed;
+}
+
+bool CGameControllerVanillaPvP::OnEntity(const CMapEntityContext &Context)
+{
+	// as in 0.7, the map has its ninja only with sv_powerups, which applies whenever the pickups are made again
+	if(Context.m_Index == ENTITY_POWERUP_NINJA && !g_Config.m_SvPowerups)
+		return false;
+	return IGameController::OnEntity(Context);
 }
 
 bool CGameControllerVanillaPvP::OnCharacterTakeDamage(CCharacter *pVictim, vec2 Force, int Damage, int From, int Weapon, bool CanDamage, int AttackerTeam)
@@ -268,6 +281,19 @@ void CGameControllerVanillaPvP::OnPlayerConnect(CPlayer *pPlayer)
 {
 	static_cast<CPlayerVanilla *>(pPlayer)->ResetRoundState(Server()->Tick() - Server()->TickSpeed());
 	IGameController::OnPlayerConnect(pPlayer);
+	const int ClientId = pPlayer->GetCid();
+	if(!Server()->ClientPrevIngame(ClientId) && !IsSilentPlayer(pPlayer))
+	{
+		// what a 0.7 server has the clients say, in chat so that 0.6 clients see it too
+		char aBuf[512];
+		str_format(aBuf, sizeof(aBuf), "'%s' entered and joined the %s", Server()->ClientName(ClientId), GetTeamName(pPlayer->GetTeam()));
+		Services().SendChat(-1, TEAM_ALL, aBuf, -1);
+	}
+}
+
+bool CGameControllerVanillaPvP::IsSilentPlayer(const CPlayer *pPlayer) const
+{
+	return g_Config.m_SvSilentSpectatorMode && pPlayer->GetTeam() == TEAM_SPECTATORS;
 }
 
 void CGameControllerVanillaPvP::OnPlayerDisconnect(CPlayer *pPlayer, const char *pReason)
@@ -301,7 +327,143 @@ void CGameControllerVanillaPvP::StartRound()
 		if(pPlayer)
 			static_cast<CPlayerVanilla *>(pPlayer)->ResetRoundState(Server()->Tick() - Server()->TickSpeed());
 	}
+	m_PauseState = EPauseState::NONE;
 	IGameController::StartRound();
+	if(!Match().IsWarmup())
+		BeginMatch();
+}
+
+void CGameControllerVanillaPvP::Tick()
+{
+	IGameController::Tick();
+	if(m_PauseState == EPauseState::NONE)
+		return;
+	if(Match().IsGameOver())
+	{
+		m_PauseState = EPauseState::NONE;
+		return;
+	}
+
+	if(m_PauseTicks > 0)
+		m_PauseTicks--;
+	if(m_PauseTicks == 0)
+	{
+		if(m_PauseState == EPauseState::PAUSED)
+			StartCountdown(false);
+		else
+			EndCountdown();
+		return;
+	}
+
+	// the clock stands still as well
+	Match().SetRoundStartTick(Match().RoundStartTick() + 1);
+	if(m_PauseState == EPauseState::COUNTDOWN && m_PauseTicks % Server()->TickSpeed() == 0)
+	{
+		char aBuf[64];
+		FormatCountdown(aBuf, sizeof(aBuf), m_PauseTicks / Server()->TickSpeed(), m_StartCountdown);
+		Services().SendLegacyBroadcast(aBuf);
+	}
+}
+
+void CGameControllerVanillaPvP::RestartAfterWarmup(int Seconds)
+{
+	if(Seconds <= 0)
+	{
+		// 0.7 waits for the players to be ready for -1, without that mode there is nothing to wait for
+		Match().SetWarmupTicks(0);
+		StartRound();
+		return;
+	}
+	if(Match().IsGameOver())
+		StartRound();
+	EndPause();
+	DoWarmup(Seconds);
+}
+
+void CGameControllerVanillaPvP::TogglePause()
+{
+	DoPause(m_PauseState == EPauseState::NONE ? -1 : 0);
+}
+
+void CGameControllerVanillaPvP::DoPause(int Seconds)
+{
+	// as in 0.7, only a running game can be paused, and a countdown runs out
+	if(!Match().IsRunning() || m_PauseState == EPauseState::COUNTDOWN || (m_PauseState == EPauseState::NONE && IsGamePaused()))
+		return;
+	if(Seconds == 0)
+	{
+		if(m_PauseState == EPauseState::PAUSED)
+			StartCountdown(false);
+		return;
+	}
+	m_PauseState = EPauseState::PAUSED;
+	m_PauseTicks = Seconds < 0 ? -1 : Seconds * Server()->TickSpeed();
+	SetGamePaused(true);
+	log_info("game", "game paused%s", Seconds < 0 ? "" : " for a while");
+}
+
+bool CGameControllerVanillaPvP::IsTeamChangeAllowed() const
+{
+	// joining for the match or round that is about to start is fine
+	return IGameController::IsTeamChangeAllowed() || IsStartCountdown();
+}
+
+void CGameControllerVanillaPvP::StartCountdown(bool Start)
+{
+	int Seconds = g_Config.m_SvCountdown;
+	if(Seconds == 0)
+		Seconds = IsSurvival() ? 3 : -1;
+	m_StartCountdown = Start;
+	if(Seconds < 0)
+	{
+		m_PauseState = EPauseState::NONE;
+		SetGamePaused(false);
+		OnCountdownEnd(Start);
+		return;
+	}
+	m_PauseState = EPauseState::COUNTDOWN;
+	m_PauseTicks = Seconds * Server()->TickSpeed();
+	SetGamePaused(true);
+	char aBuf[64];
+	FormatCountdown(aBuf, sizeof(aBuf), Seconds, Start);
+	Services().SendLegacyBroadcast(aBuf);
+}
+
+void CGameControllerVanillaPvP::FormatCountdown(char *pBuf, int BufSize, int Seconds, bool Start) const
+{
+	str_format(pBuf, BufSize, Start ? "Game starts in %d" : "Game resumes in %d", Seconds);
+}
+
+void CGameControllerVanillaPvP::EndCountdown()
+{
+	m_PauseState = EPauseState::NONE;
+	SetGamePaused(false);
+	Services().SendLegacyBroadcast("");
+	OnCountdownEnd(m_StartCountdown);
+}
+
+void CGameControllerVanillaPvP::EndPause()
+{
+	if(m_PauseState == EPauseState::NONE)
+		return;
+	if(m_PauseState == EPauseState::COUNTDOWN)
+		Services().SendLegacyBroadcast("");
+	m_PauseState = EPauseState::NONE;
+	SetGamePaused(false);
+}
+
+void CGameControllerVanillaPvP::UpdateGameDataSixup(protocol7::CNetObj_GameData &GameData, int SnappingClient)
+{
+	if(m_PauseState == EPauseState::COUNTDOWN)
+	{
+		GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED;
+		GameData.m_GameStateEndTick = Server()->Tick() + m_PauseTicks;
+	}
+	else if(m_PauseState == EPauseState::PAUSED)
+	{
+		GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_PAUSED;
+		GameData.m_GameStateEndTick = m_PauseTicks > 0 ? Server()->Tick() + m_PauseTicks : 0;
+	}
 }
 
 int CGameControllerVanillaPvP::SnapPlayerScore(int SnappingClient, CPlayer *pPlayer)

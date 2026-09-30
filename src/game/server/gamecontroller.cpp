@@ -641,11 +641,14 @@ void IGameController::OnPlayerDisconnect(class CPlayer *pPlayer, const char *pRe
 	if(Server()->ClientIngame(ClientId))
 	{
 		char aBuf[512];
-		if(pReason && *pReason)
-			str_format(aBuf, sizeof(aBuf), "'%s' has left the game (%s)", Server()->ClientName(ClientId), pReason);
-		else
-			str_format(aBuf, sizeof(aBuf), "'%s' has left the game", Server()->ClientName(ClientId));
-		GameServer()->SendChat(-1, TEAM_ALL, aBuf, -1);
+		if(!IsSilentPlayer(pPlayer))
+		{
+			if(pReason && *pReason)
+				str_format(aBuf, sizeof(aBuf), "'%s' has left the game (%s)", Server()->ClientName(ClientId), pReason);
+			else
+				str_format(aBuf, sizeof(aBuf), "'%s' has left the game", Server()->ClientName(ClientId));
+			GameServer()->SendChat(-1, TEAM_ALL, aBuf, -1);
+		}
 
 		str_format(aBuf, sizeof(aBuf), "leave player='%d:%s'", ClientId, Server()->ClientName(ClientId));
 		GameServer()->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "game", aBuf);
@@ -733,6 +736,41 @@ void IGameController::StartRound()
 	SetGamePaused(false);
 	Server()->DemoRecorder_HandleAutoStart();
 	log_info("game", "start round type='%s' teamplay='%d'", m_pGameType, Info().m_GameFlags & GAMEFLAG_TEAMS);
+}
+
+void IGameController::OnPauseCommand(IConsole::IResult *pResult)
+{
+	if(pResult->NumArguments())
+		DoPause(std::clamp(str_toint(pResult->GetString(0)), -1, 1000));
+	else
+		TogglePause();
+}
+
+void IGameController::SetTeamAll(int Team)
+{
+	// as 0.7 does, a mode without teams puts everybody into the game for the blue team too
+	Team = std::clamp(Team, (int)TEAM_SPECTATORS, (int)TEAM_BLUE);
+	if(Team != TEAM_SPECTATORS && !IsTeamPlay())
+		Team = TEAM_GAME;
+	if(!IsValidTeam(Team))
+		return;
+
+	Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_ALL, {Team});
+	char aBuf[128];
+	str_format(aBuf, sizeof(aBuf), "All players were moved to the %s", GetTeamName(Team));
+	Services().SendLegacyBroadcast(aBuf);
+
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CPlayer *pPlayer = GameServer()->m_apPlayers[ClientId];
+		// only the free slots count, the balance of the teams does not
+		if(!pPlayer || !IGameController::CanJoinTeam(Team, ClientId, nullptr, 0))
+			continue;
+		// being moved is not activity, so it must not postpone the idle kick
+		const int LastActionTick = pPlayer->m_LastActionTick;
+		DoTeamChange(pPlayer, Team, false);
+		pPlayer->m_LastActionTick = LastActionTick;
+	}
 }
 
 void IGameController::ChangeMap(const char *pToMap)
@@ -1086,12 +1124,17 @@ bool IGameController::CanJoinTeam(int Team, int NotThisId, char *pErrorReason, i
 		}
 	}
 
-	if((aNumplayers[0] + aNumplayers[1]) < Server()->MaxClients() - g_Config.m_SvSpectatorSlots)
+	if((aNumplayers[0] + aNumplayers[1]) < PlayerSlots())
 		return true;
 
 	if(pErrorReason)
-		str_format(pErrorReason, ErrorReasonSize, "Only %d active players are allowed", Server()->MaxClients() - g_Config.m_SvSpectatorSlots);
+		str_format(pErrorReason, ErrorReasonSize, "Only %d active players are allowed", PlayerSlots());
 	return false;
+}
+
+int IGameController::PlayerSlots() const
+{
+	return std::max(0, std::min(g_Config.m_SvPlayerSlots, Server()->MaxClients() - g_Config.m_SvSpectatorSlots));
 }
 
 CClientMask IGameController::GetMaskForPlayerWorldEvent(int, int ExceptId)

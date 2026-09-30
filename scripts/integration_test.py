@@ -1645,6 +1645,114 @@ def vanilla_lts_match_lifecycle(test_env):
 	victim.wait_for_exit()
 
 
+# The votes of a Teeworlds 0.7 server config, without ready mode and lock_teams
+VANILLA_07_SERVER_VOTES = [
+	("Restart with 15s warmup", "restart 15"),
+	("Pause/unpause the game", "pause"),
+	("Swap teams", "swap_teams"),
+	("Shuffle teams", "shuffle_teams"),
+	("Move all players to spectators", "set_team_all -1"),
+	("Reload server", "reload"),
+	("dm1 1on1", "sv_gametype dm; sv_map dm1; sv_player_slots 2; sv_scorelimit 10"),
+	("ctf1 2on2", "sv_gametype ctf; sv_map ctf1; sv_player_slots 4; sv_scorelimit 600"),
+	("ctf2 6on6", "sv_gametype ctf; sv_map ctf2; sv_player_slots 12; sv_scorelimit 1000"),
+	("2 players", "sv_player_slots 2"),
+	("12 players", "sv_player_slots 12"),
+	("Scorelimit: 600", "sv_scorelimit 600"),
+	("Gametype: CTF", "sv_gametype ctf"),
+	("Gametype: DM", "sv_gametype dm"),
+	("Change map to ctf1", "sv_map ctf1"),
+]
+
+
+@test
+def vanilla_07_server_votes(test_env):
+	first = test_env.client(["player_name first"])
+	second = test_env.client(["player_name second"])
+	server = test_env.server(
+		[
+			"sv_gametype ctf",
+			"sv_map ctf1",
+			"sv_player_slots 1",
+			"sv_countdown 2",
+			"sv_teambalance_time 0",
+			"sv_join_vote_delay 0",
+			"sv_vote_delay 0",
+			"sv_test_cmds 1",
+		]
+		+ [f'add_vote "{description}" "{command}"' for description, command in VANILLA_07_SERVER_VOTES]
+	)
+	wait_for_startup([first, second, server])
+	# autoexec_server.cfg adds votes for a chat command of the DDRace modes
+	commands = {command for _, command in VANILLA_07_SERVER_VOTES}
+	invalid = [line for line in server.full_stdout if "skipped invalid command" in line and line.split("'")[1] in commands]
+	if invalid:
+		raise AssertionError(f"votes refused: {invalid!r}")
+
+	first.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	first.wait_for_log_suffix("*** 'first' entered and joined the red team", timeout=5)
+	# one slot for players, the second one watches and is not announced
+	second.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	server.command('force_vote option "2 players"')
+	second.wait_for_log_suffix("*** authorized player forced server option '2 players' (No reason given)", timeout=5)
+	second.command("team 1")
+	first.wait_for_log_suffix("*** 'second' joined the blue team", timeout=5)
+	if any("'second' entered" in line for line in first.full_stdout):
+		raise AssertionError("the spectator was announced")
+
+	# called by one player and passed by the other
+	first.command('callvote option "Swap teams"')
+	second.wait_for_log_suffix("called vote to change server option 'Swap teams' (No reason given)", timeout=5)
+	second.command("vote yes")
+	second.wait_for_log_suffix("*** Teams were swapped", timeout=5)
+	server.command('force_vote option "Shuffle teams"')
+	second.wait_for_log_suffix("*** Teams were shuffled", timeout=5)
+
+	server.command('force_vote option "Pause/unpause the game"')
+	server.wait_for_log_exact("game: game paused", timeout=5)
+	server.command('force_vote option "Pause/unpause the game"')
+	second.wait_for_log_exact("broadcast: Game resumes in 2", timeout=5)
+
+	server.command("restart 1")
+	server.wait_for_log_exact("game: start round type='TestCTF' teamplay='1'", timeout=5)
+	second.wait_for_log_exact("broadcast: Game starts in 2", timeout=5)
+	server.command('force_vote option "Restart with 15s warmup"')
+	second.wait_for_log_suffix("*** authorized player forced server option 'Restart with 15s warmup' (No reason given)", timeout=5)
+
+	server.command('force_vote option "Move all players to spectators"')
+	second.wait_for_log_exact("broadcast: All players were moved to the spectators", timeout=5)
+
+	# on to DM, where the commands for teams change nothing
+	server.command('force_vote option "dm1 1on1"')
+	server.wait_for_log_exact("game: selected game type 'DM'", timeout=10)
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	first.command("team 0")
+	first.wait_for_log_suffix("*** 'first' joined the game", timeout=10)
+	server.command('force_vote option "Swap teams"')
+	server.command('force_vote option "Shuffle teams"')
+	server.command('force_vote option "Pause/unpause the game"')
+	server.wait_for_log_exact("game: game paused", timeout=5)
+	server.command('force_vote option "Pause/unpause the game"')
+	first.wait_for_log_exact("broadcast: Game resumes in 2", timeout=5)
+	server.command('force_vote option "Move all players to spectators"')
+	first.wait_for_log_exact("broadcast: All players were moved to the spectators", timeout=5)
+	server.command('force_vote option "Reload server"')
+	server.wait_for_log_exact("game: selected game type 'DM'", timeout=10)
+	for _ in range(2):
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	first.exit()
+	second.exit()
+	server.exit()
+	server.wait_for_exit()
+	first.wait_for_exit()
+	second.wait_for_exit()
+
+
 def vanilla_survival_stock_07_match_lifecycle(test_env, gametype, teamplay):
 	attacker = test_env.client(["player_name attacker"])
 	server = test_env.server([f"sv_gametype {gametype.lower()}", "sv_map Tutorial", "sv_scorelimit 1", "sv_test_cmds 1"])

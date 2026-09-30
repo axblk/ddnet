@@ -6,6 +6,7 @@
 #include <base/dbg.h>
 #include <base/vmath.h>
 
+#include <engine/console.h>
 #include <engine/map.h>
 #include <engine/shared/protocol.h>
 
@@ -280,6 +281,8 @@ public:
 	virtual void OnPlayerConnect(class CPlayer *pPlayer);
 	virtual void OnPlayerEnter(CPlayer *) {}
 	virtual void OnPlayerDisconnect(class CPlayer *pPlayer, const char *pReason);
+	// whether the others are not told that the player enters or leaves the server
+	virtual bool IsSilentPlayer(const CPlayer *pPlayer) const { return false; }
 	virtual bool OnPlayerChatMessage(int, const char *, int) { return false; }
 	virtual void OnPlayerNameChanged(int ClientId) {}
 	virtual void OnPlayerDDNetVersionKnown(int ClientId) {}
@@ -307,6 +310,14 @@ public:
 
 	// game
 	virtual void DoWarmup(int Seconds);
+	// the restart command with seconds: 0 ends a warmup
+	virtual void RestartAfterWarmup(int Seconds) { DoWarmup(Seconds); }
+	// the pause_game command, and the pause command without an argument
+	virtual void TogglePause() { SetGamePaused(!IsGamePaused()); }
+	// the pause command: for Seconds, without an end if negative, and 0 ends the pause
+	virtual void DoPause(int Seconds) { SetGamePaused(Seconds != 0); }
+	// the pause command, which a mode can also give another meaning
+	virtual void OnPauseCommand(IConsole::IResult *pResult);
 
 	void SetGamePaused(bool Paused);
 	bool IsGamePaused() const;
@@ -315,6 +326,13 @@ public:
 	virtual void StartRound();
 	virtual void EndRound();
 	void ChangeMap(const char *pToMap);
+
+	// the team commands of Teeworlds 0.7, a mode without teams ignores those about red and blue
+	virtual void SwapTeams() {}
+	virtual void ShuffleTeams() {}
+	virtual void ForceTeamBalance() {}
+	// moves everybody who may join Team there, -1 for the spectators
+	void SetTeamAll(int Team);
 
 	/*
 
@@ -391,6 +409,8 @@ public:
 	virtual const char *GetTeamName(int Team);
 	virtual int GetAutoTeam(int NotThisId);
 	virtual bool CanJoinTeam(int Team, int NotThisId, char *pErrorReason, int ErrorReasonSize);
+	// how many may be in the game at once, the others can only watch
+	int PlayerSlots() const;
 
 	virtual CClientMask GetMaskForPlayerWorldEvent(int Asker, int ExceptID = -1);
 

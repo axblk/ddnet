@@ -59,6 +59,9 @@ namespace
 			CBase::OnCharacterDeath(Context);
 		}
 
+		// as in 0.7, not even on command, only when a round begins
+		void ForceTeamBalance() override {}
+
 	protected:
 		// teams are balanced when a round begins, not in the middle of one
 		void UpdateTeamBalance(int Tick) override {}

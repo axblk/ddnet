@@ -144,6 +144,7 @@ class CGameContext : public IGameServer
 	static void ConTunes(IConsole::IResult *pResult, void *pUserData);
 	static void ConMapbug(IConsole::IResult *pResult, void *pUserData);
 	static void ConPause(IConsole::IResult *pResult, void *pUserData);
+	static void ConPauseSeconds(IConsole::IResult *pResult, void *pUserData);
 	static void ConChangeMap(IConsole::IResult *pResult, void *pUserData);
 	static void ConRestart(IConsole::IResult *pResult, void *pUserData);
 	static void ConServerAlert(IConsole::IResult *pResult, void *pUserData);
@@ -151,6 +152,10 @@ class CGameContext : public IGameServer
 	static void ConBroadcast(IConsole::IResult *pResult, void *pUserData);
 	static void ConSay(IConsole::IResult *pResult, void *pUserData);
 	static void ConSetTeam(IConsole::IResult *pResult, void *pUserData);
+	static void ConSetTeamAll(IConsole::IResult *pResult, void *pUserData);
+	static void ConSwapTeams(IConsole::IResult *pResult, void *pUserData);
+	static void ConShuffleTeams(IConsole::IResult *pResult, void *pUserData);
+	static void ConForceTeamBalance(IConsole::IResult *pResult, void *pUserData);
 	static void ConHotReload(IConsole::IResult *pResult, void *pUserData);
 	static void ConAddVote(IConsole::IResult *pResult, void *pUserData);
 	static void ConRemoveVote(IConsole::IResult *pResult, void *pUserData);

@@ -772,7 +772,7 @@ void CGameContext::SendSettings(int ClientId) const
 	Msg.m_SpecVote = g_Config.m_SvVoteSpectate;
 	Msg.m_TeamLock = 0;
 	Msg.m_TeamBalance = m_GameHost.Controller()->IsTeamPlay() && g_Config.m_SvTeambalanceTime != 0;
-	Msg.m_PlayerSlots = Server()->MaxClients() - g_Config.m_SvSpectatorSlots;
+	Msg.m_PlayerSlots = m_GameHost.Controller()->PlayerSlots();
 	// A 0.7 client knows 64 players at most and drops the whole message if a
 	// number is larger, and then allows no player to join the game
 	Msg.m_KickMin = std::min<int>(Msg.m_KickMin, LEGACY_MAX_CLIENTS);
@@ -2844,7 +2844,14 @@ void CGameContext::ConPause(IConsole::IResult *pResult, void *pUserData)
 	if(!pSelf->GameHost().Controller())
 		return;
 
-	pSelf->GameHost().Controller()->SetGamePaused(!pSelf->GameHost().Controller()->IsGamePaused());
+	pSelf->GameHost().Controller()->TogglePause();
+}
+
+void CGameContext::ConPauseSeconds(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->OnPauseCommand(pResult);
 }
 
 void CGameContext::ConChangeMap(IConsole::IResult *pResult, void *pUserData)
@@ -2857,7 +2864,7 @@ void CGameContext::ConRestart(IConsole::IResult *pResult, void *pUserData)
 {
 	CGameContext *pSelf = (CGameContext *)pUserData;
 	if(pResult->NumArguments())
-		pSelf->GameHost().Controller()->DoWarmup(pResult->GetInteger(0));
+		pSelf->GameHost().Controller()->RestartAfterWarmup(std::clamp(pResult->GetInteger(0), -1, 1000));
 	else
 		pSelf->GameHost().Controller()->StartRound();
 }
@@ -2950,6 +2957,34 @@ void CGameContext::ConSetTeam(IConsole::IResult *pResult, void *pUserData)
 	pSelf->GameHost().Controller()->DoTeamChange(pSelf->m_apPlayers[ClientId], Team, true);
 	if(Team == TEAM_SPECTATORS)
 		pSelf->m_apPlayers[ClientId]->Pause(CPlayer::PAUSE_NONE, true);
+}
+
+void CGameContext::ConSetTeamAll(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->SetTeamAll(pResult->GetInteger(0));
+}
+
+void CGameContext::ConSwapTeams(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->SwapTeams();
+}
+
+void CGameContext::ConShuffleTeams(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->ShuffleTeams();
+}
+
+void CGameContext::ConForceTeamBalance(IConsole::IResult *pResult, void *pUserData)
+{
+	CGameContext *pSelf = (CGameContext *)pUserData;
+	if(pSelf->GameHost().Controller())
+		pSelf->GameHost().Controller()->ForceTeamBalance();
 }
 
 void CGameContext::ConHotReload(IConsole::IResult *pResult, void *pUserData)
@@ -3382,12 +3417,20 @@ void CGameContext::OnConsoleInit()
 	Console()->Register("mapbug", "s[mapbug]", CFGFLAG_SERVER | CFGFLAG_GAME, ConMapbug, this, "Enable map compatibility mode using the specified bug (example: grenade-doubleexplosion@ddnet.tw)");
 	Console()->Register("pause_game", "", CFGFLAG_SERVER, ConPause, this, "Pause/unpause game");
 	Console()->Register("change_map", "r[map]", CFGFLAG_SERVER | CFGFLAG_STORE, ConChangeMap, this, "Change map");
-	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort)");
+	Console()->Register("restart", "?i[seconds]", CFGFLAG_SERVER | CFGFLAG_STORE, ConRestart, this, "Restart in x seconds (0 = abort, in the vanilla modes: now)");
+	// the chat command of the DDRace modes has the same name, and the rcon command pauses the player there
+	Console()->Register("pause", "?r[seconds|player name]", CFGFLAG_SERVER, ConPauseSeconds, this, "Pause the game for x seconds (no end if -1, 0 or nothing ends a pause after sv_countdown); in the DDRace modes pause yourself");
 	Console()->Register("server_alert", "r[message]", CFGFLAG_SERVER, ConServerAlert, this, "Send a server alert message to all players");
 	Console()->Register("mod_alert", "v[id] r[message]", CFGFLAG_SERVER, ConModAlert, this, "Send a moderator alert message to player");
 	Console()->Register("broadcast", "r[message]", CFGFLAG_SERVER, ConBroadcast, this, "Broadcast message");
 	Console()->Register("say", "r[message]", CFGFLAG_SERVER, ConSay, this, "Say in chat");
 	Console()->Register("set_team", "v[id] i[team-id] ?i[delay in minutes]", CFGFLAG_SERVER, ConSetTeam, this, "Set team for a player (spectators = -1, game = 0)");
+	// Teeworlds 0.7 commands for the modes with teams. Not registered by those modes because a vote
+	// is only added for a command that exists, and the startup config adds votes before any mode exists.
+	Console()->Register("set_team_all", "i[team-id]", CFGFLAG_SERVER, ConSetTeamAll, this, "Set team for all players (spectators = -1, game or red = 0, blue = 1)");
+	Console()->Register("swap_teams", "", CFGFLAG_SERVER, ConSwapTeams, this, "Swap the players and scores of the red and the blue team");
+	Console()->Register("shuffle_teams", "", CFGFLAG_SERVER, ConShuffleTeams, this, "Put the players into random teams");
+	Console()->Register("force_teambalance", "", CFGFLAG_SERVER, ConForceTeamBalance, this, "Balance the teams now if they are uneven");
 	Console()->Register("hot_reload", "", CFGFLAG_SERVER | CMDFLAG_TEST, ConHotReload, this, "Reload the map while preserving the state of tees and teams");
 	Console()->Register("damage_player", "i[victim-id] i[attacker-id] i[damage] i[weapon]", CFGFLAG_SERVER | CMDFLAG_TEST, ConDamagePlayer, this, "Damage a player for testing");
 	Console()->Register("move_player", "i[id] f[x] f[y]", CFGFLAG_SERVER | CMDFLAG_TEST, ConMovePlayer, this, "Move a player to a position in tiles for testing, in any game mode");
@@ -3409,6 +3452,7 @@ void CGameContext::OnConsoleInit()
 	Console()->Chain("sv_vote_kick_min", ConchainSettingUpdate, this);
 	Console()->Chain("sv_vote_spectate", ConchainSettingUpdate, this);
 	Console()->Chain("sv_spectator_slots", ConchainSettingUpdate, this);
+	Console()->Chain("sv_player_slots", ConchainSettingUpdate, this);
 	Console()->Chain("sv_teambalance_time", ConchainSettingUpdate, this);
 
 	RegisterModerationCommands();

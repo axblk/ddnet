@@ -33,17 +33,15 @@ template<typename TBase>
 class CGameControllerSurvival : public TBase
 {
 	static constexpr int ROUND_OVER_SECONDS = 5;
-	static constexpr int COUNTDOWN_SECONDS = 3;
 	static constexpr int WAITING_BROADCAST_SECONDS = 8;
 
 	enum class ERoundState
 	{
 		RUNNING,
-		COUNTDOWN,
 		ROUND_OVER,
 	};
 	ERoundState m_RoundState = ERoundState::RUNNING;
-	// when the countdown or the pause after a round ends
+	// when the pause after a round ends
 	int m_RoundStateEndTick = 0;
 	int m_RoundOverTick = 0;
 	// of the match, from 0
@@ -126,12 +124,6 @@ public:
 	bool CanPlayerSpectate(int ClientId, int SpectatorId) const override
 	{
 		return !IsPlayerDeadSpectator(ClientId) || CanFollow(ClientId, SpectatorId);
-	}
-
-	bool IsTeamChangeAllowed() const override
-	{
-		// joining for the round that is about to start is fine
-		return TBase::IsTeamChangeAllowed() || (Match().IsRunning() && m_RoundState == ERoundState::COUNTDOWN);
 	}
 
 	bool OnEntity(const CMapEntityContext &Context) override
@@ -219,14 +211,13 @@ public:
 	void StartRound() override
 	{
 		m_Round = 0;
+		m_RoundState = ERoundState::RUNNING;
 		m_aRespawnDisabled.fill(false);
-		const bool EnoughPlayers = HasEnoughPlayers();
-		if(!EnoughPlayers)
+		if(!HasEnoughPlayers())
 			Match().WaitForPlayers();
+		// its first round begins with the match
 		TBase::StartRound();
-		if(EnoughPlayers)
-			BeginRound();
-		else
+		if(Match().IsWaitingForPlayers())
 			EnterWarmup();
 	}
 
@@ -263,9 +254,6 @@ public:
 
 		switch(m_RoundState)
 		{
-		case ERoundState::COUNTDOWN:
-			TickCountdown();
-			break;
 		case ERoundState::ROUND_OVER:
 			UpdateDeadSpectators();
 			if(Server()->Tick() >= m_RoundStateEndTick)
@@ -279,24 +267,44 @@ public:
 				if(IsPlayerDeadSpectator(ClientId))
 					Services().Player(ClientId)->m_LastActionTick++;
 			}
-			if(!Services().World().ResetRequested())
+			// as in 0.7, nothing is decided while the game stands still
+			if(!Services().World().ResetRequested() && !this->IsGamePaused())
 				DoWincheckRound();
 			break;
 		}
 	}
 
 protected:
+	void BeginMatch() override { BeginRound(); }
+
+	void FormatCountdown(char *pBuf, int BufSize, int Seconds, bool Start) const override
+	{
+		if(Start)
+			str_format(pBuf, BufSize, "Round %d starts in %d", m_Round + 1, Seconds);
+		else
+			TBase::FormatCountdown(pBuf, BufSize, Seconds, Start);
+	}
+
+	void OnCountdownEnd(bool Start) override
+	{
+		TBase::OnCountdownEnd(Start);
+		if(!Start)
+			return;
+		log_info("game", "survival round %d starts", m_Round + 1);
+		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+		{
+			CPlayer *pPlayer = Services().Player(ClientId);
+			if(pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS)
+				this->AddMatchMetric(pPlayer, "rounds_played");
+		}
+	}
+
 	void UpdateGameDataSixup(protocol7::CNetObj_GameData &GameData, int SnappingClient) override
 	{
 		TBase::UpdateGameDataSixup(GameData, SnappingClient);
 		if(!Match().IsRunning())
 			return;
-		if(m_RoundState == ERoundState::COUNTDOWN)
-		{
-			GameData.m_GameStateFlags |= protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED;
-			GameData.m_GameStateEndTick = m_RoundStateEndTick;
-		}
-		else if(m_RoundState == ERoundState::ROUND_OVER)
+		if(m_RoundState == ERoundState::ROUND_OVER)
 		{
 			// the world stands still, but a 0.7 client would say that the game is paused
 			GameData.m_GameStateFlags &= ~protocol7::GAMESTATEFLAG_PAUSED;
@@ -310,7 +318,7 @@ private:
 	// what 0.7 calls the start respawn state: a player who joins now or spawns now does not come back after dying
 	bool RespawnDisabledFromNow() const
 	{
-		return Match().IsRunning() && m_RoundState != ERoundState::COUNTDOWN;
+		return Match().IsRunning() && !this->IsStartCountdown();
 	}
 
 	bool CanFollow(int ClientId, int SpectatorId) const
@@ -353,12 +361,10 @@ private:
 
 	void BeginRound()
 	{
-		m_RoundState = ERoundState::COUNTDOWN;
-		m_RoundStateEndTick = Server()->Tick() + COUNTDOWN_SECONDS * Server()->TickSpeed();
+		m_RoundState = ERoundState::RUNNING;
 		Match().SetRoundStartTick(Server()->Tick());
-		this->SetGamePaused(true);
 		OnRoundBegin();
-		BroadcastCountdown();
+		this->StartCountdown(true);
 	}
 
 	void StartNextRound()
@@ -376,37 +382,6 @@ private:
 		}
 		m_Round++;
 		BeginRound();
-	}
-
-	void BroadcastCountdown()
-	{
-		const int TicksLeft = m_RoundStateEndTick - Server()->Tick();
-		if(TicksLeft % Server()->TickSpeed() != 0)
-			return;
-		char aBuf[64];
-		str_format(aBuf, sizeof(aBuf), "Round %d starts in %d", m_Round + 1, TicksLeft / Server()->TickSpeed());
-		Services().SendLegacyBroadcast(aBuf);
-	}
-
-	void TickCountdown()
-	{
-		if(Server()->Tick() < m_RoundStateEndTick)
-		{
-			// the clock of the round starts when the round does
-			Match().SetRoundStartTick(Server()->Tick());
-			BroadcastCountdown();
-			return;
-		}
-		m_RoundState = ERoundState::RUNNING;
-		this->SetGamePaused(false);
-		Services().SendLegacyBroadcast("");
-		log_info("game", "survival round %d starts", m_Round + 1);
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-		{
-			CPlayer *pPlayer = Services().Player(ClientId);
-			if(pPlayer && pPlayer->GetTeam() != TEAM_SPECTATORS)
-				this->AddMatchMetric(pPlayer, "rounds_played");
-		}
 	}
 };
 

@@ -1630,6 +1630,11 @@ CGameProjectileRules CGameControllerDDRace::ProjectileRules(const CGameProjectil
 	};
 }
 
+void CGameControllerDDRace::OnPauseCommand(IConsole::IResult *pResult)
+{
+	ConTogglePause(pResult, this);
+}
+
 void CGameControllerDDRace::RegisterCommands()
 {
 	RegisterAdminCommands();
@@ -1650,7 +1655,8 @@ void CGameControllerDDRace::RegisterCommands()
 		{"mapinfo", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConMapInfo, "Show info about the map with name r gives (current map by default)"},
 		{"map", "?r[map]", CFGFLAG_CHAT | CFGFLAG_SERVER | CFGFLAG_NONTEEHISTORIC, ConMap, "Vote a map by name"},
 		{"settings", "?s[configname]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConSettings, "Shows gameplay information for this server"},
-		{"pause", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePause, "Toggles pause"},
+		// the rcon command belongs to the context, see OnPauseCommand
+		{"pause", "?r[player name]", CFGFLAG_CHAT, ConTogglePause, "Toggles pause"},
 		{"spec", "?r[player name]", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpec, "Toggles spec (if not available behaves as /pause)"},
 		{"pausevoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConTogglePauseVoted, "Toggles pause on the currently voted player"},
 		{"specvoted", "", CFGFLAG_CHAT | CFGFLAG_SERVER, ConToggleSpecVoted, "Toggles spec on the currently voted player"},

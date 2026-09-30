@@ -431,6 +431,12 @@ namespace
 	public:
 		using CGameControllerVanillaTDM::CGameControllerVanillaTDM;
 		using CGameControllerVanillaTeamplay::UpdateTeamBalance;
+
+		void SetTeamScores(int Red, int Blue)
+		{
+			m_aTeamScores[TEAM_RED] = Red;
+			m_aTeamScores[TEAM_BLUE] = Blue;
+		}
 	};
 
 	class CTestVanillaCTF final : public CGameControllerVanillaCTF
@@ -3654,6 +3660,202 @@ TEST_F(GameWorld, LTSBalancesTheTeamsWhenARoundBegins)
 	EXPECT_EQ(NumBlue, 2);
 }
 
+TEST_F(GameWorld, VanillaPauseCommandTogglesAndEndsWithACountdown)
+{
+	g_Config.m_SvCountdown = 3;
+	SelectGameMode("dm");
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_SPECTATORS, "second");
+	const int TickSpeed = m_pServer->TickSpeed();
+
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	const protocol7::CNetObj_GameData Paused = SnapGameData7(this);
+	EXPECT_EQ(Paused.m_GameStateFlags, protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Paused.m_GameStateEndTick, 0);
+	EXPECT_NE(SnapGameInfo6(this).m_GameStateFlags & GAMESTATEFLAG_PAUSED, 0);
+	EXPECT_FALSE(GameController()->IsTeamChangeAllowed());
+	// the clock stands still
+	RunTicks(this, 10 * TickSpeed);
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, Paused.m_GameStartTick + 10 * TickSpeed);
+
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	const protocol7::CNetObj_GameData Countdown = SnapGameData7(this);
+	EXPECT_EQ(Countdown.m_GameStateFlags, protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Countdown.m_GameStateEndTick, m_pServer->Tick() + 3 * TickSpeed);
+	// nobody joins a game that goes on
+	EXPECT_FALSE(GameController()->IsTeamChangeAllowed());
+	// and the countdown runs out
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, Countdown.m_GameStateFlags);
+	RunTicks(this, 3 * TickSpeed);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+
+	// pause_game does the same
+	GameServer()->Console()->ExecuteLine("pause_game", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_PAUSED);
+	GameServer()->Console()->ExecuteLine("pause_game", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+}
+
+TEST_F(GameWorld, VanillaPauseCommandWithSeconds)
+{
+	g_Config.m_SvCountdown = -1;
+	SelectGameMode("ctf");
+	const int TickSpeed = m_pServer->TickSpeed();
+
+	GameServer()->Console()->ExecuteLine("pause 2", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateEndTick, m_pServer->Tick() + 2 * TickSpeed);
+	RunTicks(this, 2 * TickSpeed - 1);
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	// without a countdown the game goes on right away
+	RunTicks(this, 1);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	GameServer()->Console()->ExecuteLine("pause -1", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 60 * TickSpeed);
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	GameServer()->Console()->ExecuteLine("pause 0", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	// a match that is over is not paused
+	GameController()->EndRound();
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 1);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER, 0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_PAUSED, 0);
+}
+
+TEST_F(GameWorld, VanillaCountdownBeforeAMatch)
+{
+	SelectGameMode("tdm");
+	CPlayer *pSpectator = JoinPlayer(0, TEAM_SPECTATORS, "spectator");
+	const int TickSpeed = m_pServer->TickSpeed();
+
+	// by default only the survival modes count down
+	GameController()->StartRound();
+	EXPECT_FALSE(GameController()->IsGamePaused());
+
+	g_Config.m_SvCountdown = 2;
+	GameController()->StartRound();
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	const protocol7::CNetObj_GameData Countdown = SnapGameData7(this);
+	EXPECT_EQ(Countdown.m_GameStateFlags, protocol7::GAMESTATEFLAG_STARTCOUNTDOWN | protocol7::GAMESTATEFLAG_PAUSED);
+	EXPECT_EQ(Countdown.m_GameStateEndTick, m_pServer->Tick() + 2 * TickSpeed);
+	// joining the match that is about to start is fine
+	EXPECT_TRUE(GameController()->IsTeamChangeAllowed());
+	GameController()->OnPlayerSetTeam(0, TEAM_RED);
+	EXPECT_EQ(pSpectator->GetTeam(), TEAM_RED);
+	// a countdown is not paused
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	RunTicks(this, 2 * TickSpeed);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, Countdown.m_GameStateEndTick - 1);
+
+	// the next match after one that ended counts down as well
+	GameController()->EndRound();
+	RunTicks(this, 10 * TickSpeed + 1);
+	EXPECT_FALSE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_GAMEOVER);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_STARTCOUNTDOWN, 0);
+}
+
+TEST_F(GameWorld, VanillaRestartWithSecondsWarmsUpFirst)
+{
+	// what the restart command does, which the test console only stores
+	SelectGameMode("dm");
+	const int TickSpeed = m_pServer->TickSpeed();
+	RunTicks(this, TickSpeed);
+
+	GameController()->RestartAfterWarmup(5);
+	const protocol7::CNetObj_GameData Warmup = SnapGameData7(this);
+	EXPECT_EQ(Warmup.m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_EQ(Warmup.m_GameStateEndTick, m_pServer->Tick() + 5 * TickSpeed);
+	EXPECT_EQ(SnapGameInfo6(this).m_WarmupTimer, 5 * TickSpeed);
+	RunTicks(this, 5 * TickSpeed);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, m_pServer->Tick());
+
+	// as in 0.7, 0 restarts right away and does not only end the warmup
+	RunTicks(this, TickSpeed);
+	GameController()->RestartAfterWarmup(10);
+	RunTicks(this, TickSpeed);
+	GameController()->RestartAfterWarmup(0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	EXPECT_EQ(SnapGameData7(this).m_GameStartTick, m_pServer->Tick());
+
+	// also after a match
+	GameController()->EndRound();
+	GameController()->RestartAfterWarmup(3);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+}
+
+TEST_F(GameWorld, LMSPauseEndsWithTheSurvivalCountdown)
+{
+	SelectGameMode("lms");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	RunCountdown(this);
+	const int TickSpeed = m_pServer->TickSpeed();
+
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	// the one who leaves now does not decide the round while the game stands still
+	LeavePlayer(1);
+	RunTicks(this, TickSpeed);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_PAUSED);
+	GameServer()->Console()->ExecuteLine("pause", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_FALSE(GameController()->IsTeamChangeAllowed());
+	EXPECT_EQ(SnapGameData7(this).m_GameStateEndTick, m_pServer->Tick() + 3 * TickSpeed);
+	RunTicks(this, 3 * TickSpeed + 1);
+	EXPECT_NE(SnapGameData7(this).m_GameStateFlags & protocol7::GAMESTATEFLAG_ROUNDOVER, 0);
+}
+
+TEST_F(GameWorld, PauseCommandPausesThePlayerInDDRace)
+{
+	const int ClientId = 0;
+	CPlayer *pPlayer = GameServer()->CreatePlayer(ClientId, TEAM_GAME, false, -1);
+	m_pServer->m_aClients[ClientId].m_State = CServer::CClient::STATE_INGAME;
+	ASSERT_NE(pPlayer, nullptr);
+	ASSERT_NE(pPlayer->ForceSpawn(vec2(64.0f, 96.0f)), nullptr);
+	// an admin in rcon
+	const int AuthKey = m_pServer->m_AuthManager.AddKey("pause-admin", "test", RoleName::ADMIN);
+	ASSERT_GE(AuthKey, 0);
+	m_pServer->m_aClients[ClientId].m_AuthKey = AuthKey;
+	GameServer()->Console()->ExecuteLine("pause", ClientId);
+	EXPECT_EQ(pPlayer->IsPaused(), -CPlayer::PAUSE_PAUSED);
+	EXPECT_FALSE(GameController()->IsGamePaused());
+	delete GameServer()->m_apPlayers[ClientId];
+	GameServer()->m_apPlayers[ClientId] = nullptr;
+}
+
+TEST_F(GameWorld, VotesOfA07ServerConfigAreValidBeforeThereIsAMode)
+{
+	// the startup config adds its votes before a map and a mode are loaded
+	GameServer()->GameHost().Shutdown();
+	const char *const apVoteCommands[] = {
+		"restart 15",
+		"pause",
+		"swap_teams",
+		"shuffle_teams",
+		"set_team_all -1",
+		"force_teambalance",
+		"reload",
+		"echo 0",
+		"sv_gametype ctf; sv_map ctf1; sv_player_slots 4; sv_scorelimit 600",
+		"sv_player_slots 12",
+		"sv_countdown 3",
+		"sv_powerups 0",
+		"sv_silent_spectator_mode 1",
+		"sv_tournament_mode 1",
+	};
+	for(const char *pCommand : apVoteCommands)
+		EXPECT_TRUE(GameServer()->Console()->LineIsValid(pCommand)) << pCommand;
+	SelectGameMode("ddnet");
+}
+
 TEST_F(GameWorld, VanillaCTFFlagLifecycle)
 {
 	SelectGameMode("ctf");
@@ -3921,6 +4123,202 @@ TEST_F(GameWorld, VanillaTeamsSwapAfterAMatch)
 	GameController()->StartRound();
 	EXPECT_EQ(pRed->GetTeam(), TEAM_BLUE);
 	EXPECT_EQ(pBlue->GetTeam(), TEAM_RED);
+}
+
+static int CountTeam(const CGameContext *pGameServer, int Team)
+{
+	int Count = 0;
+	for(const CPlayer *pPlayer : pGameServer->m_apPlayers)
+		Count += pPlayer && pPlayer->GetTeam() == Team;
+	return Count;
+}
+
+TEST_F(GameWorld, VanillaSwapTeamsCommandSwapsPlayersAndScores)
+{
+	auto &Controller = SelectController<CTestVanillaTDM>("tdm");
+	CPlayer *pRed = JoinPlayer(0, TEAM_RED, "red");
+	CPlayer *pBlue = JoinPlayer(1, TEAM_BLUE, "blue");
+	CPlayer *pSpectator = JoinPlayer(2, TEAM_SPECTATORS, "spectator");
+	Controller.SetTeamScores(3, 5);
+	pRed->m_LastActionTick = 123;
+
+	GameServer()->Console()->ExecuteLine("swap_teams", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(pRed->GetTeam(), TEAM_BLUE);
+	EXPECT_EQ(pBlue->GetTeam(), TEAM_RED);
+	EXPECT_EQ(pSpectator->GetTeam(), TEAM_SPECTATORS);
+	EXPECT_EQ(Controller.TeamScore(TEAM_RED), 5);
+	EXPECT_EQ(Controller.TeamScore(TEAM_BLUE), 3);
+	// the server moved them, they did nothing
+	EXPECT_EQ(pRed->m_LastActionTick, 123);
+}
+
+TEST_F(GameWorld, VanillaShuffleTeamsCommandSplitsThePlayers)
+{
+	SelectGameMode("tdm");
+	for(int ClientId = 0; ClientId < 5; ClientId++)
+		JoinPlayer(ClientId, TEAM_RED, "red");
+	CPlayer *pSpectator = JoinPlayer(5, TEAM_SPECTATORS, "spectator");
+
+	GameServer()->Console()->ExecuteLine("shuffle_teams", IConsole::CLIENT_ID_UNSPECIFIED);
+	const int NumRed = CountTeam(GameServer(), TEAM_RED);
+	EXPECT_TRUE(NumRed == 2 || NumRed == 3) << NumRed;
+	EXPECT_EQ(NumRed + CountTeam(GameServer(), TEAM_BLUE), 5);
+	EXPECT_EQ(pSpectator->GetTeam(), TEAM_SPECTATORS);
+}
+
+TEST_F(GameWorld, VanillaTeamCommandsWithoutTeamsChangeNothing)
+{
+	SelectGameMode("dm");
+	CPlayer *pFirst = JoinPlayer(0, TEAM_GAME, "first");
+	CPlayer *pSecond = JoinPlayer(1, TEAM_GAME, "second");
+	GameServer()->Console()->ExecuteLine("swap_teams; shuffle_teams; force_teambalance", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(pFirst->GetTeam(), TEAM_GAME);
+	EXPECT_EQ(pSecond->GetTeam(), TEAM_GAME);
+}
+
+TEST_F(GameWorld, VanillaSetTeamAllCommandMovesEverybody)
+{
+	SelectGameMode("dm");
+	CPlayer *pPlayer = JoinPlayer(0, TEAM_GAME, "player");
+	CPlayer *pSpectator = JoinPlayer(1, TEAM_SPECTATORS, "spectator");
+	pPlayer->m_LastActionTick = 123;
+
+	GameServer()->Console()->ExecuteLine("set_team_all -1", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(pPlayer->GetTeam(), TEAM_SPECTATORS);
+	EXPECT_EQ(pSpectator->GetTeam(), TEAM_SPECTATORS);
+	EXPECT_EQ(pPlayer->m_LastActionTick, 123);
+
+	// as in 0.7, the blue team is the game in a mode without teams
+	GameServer()->Console()->ExecuteLine("set_team_all 1", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(pPlayer->GetTeam(), TEAM_GAME);
+	EXPECT_EQ(pSpectator->GetTeam(), TEAM_GAME);
+}
+
+TEST_F(GameWorld, VanillaSetTeamAllCommandIgnoresTheTeamBalance)
+{
+	g_Config.m_SvTeambalanceTime = 1;
+	SelectGameMode("tdm");
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		JoinPlayer(ClientId, TEAM_SPECTATORS, "spectator");
+	GameServer()->Console()->ExecuteLine("set_team_all 1", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_BLUE), 3);
+}
+
+TEST_F(GameWorld, VanillaForceTeambalanceCommandBalancesRightAway)
+{
+	g_Config.m_SvTeambalanceTime = 1;
+	SelectGameMode("tdm");
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		JoinPlayer(ClientId, TEAM_RED, "red");
+	GameServer()->Console()->ExecuteLine("force_teambalance", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_RED), 2);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_BLUE), 1);
+
+	// without automatic balancing there is nothing to force either, as in 0.7
+	JoinPlayer(3, TEAM_RED, "red");
+	JoinPlayer(4, TEAM_RED, "red");
+	g_Config.m_SvTeambalanceTime = 0;
+	GameServer()->Console()->ExecuteLine("force_teambalance", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_RED), 4);
+}
+
+TEST_F(GameWorld, LTSBalancesOnlyWhenARoundBegins)
+{
+	g_Config.m_SvTeambalanceTime = 1;
+	SelectGameMode("lts");
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		JoinPlayer(ClientId, TEAM_RED, "red");
+	GameServer()->Console()->ExecuteLine("force_teambalance", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_RED), 3);
+}
+
+TEST_F(GameWorld, VanillaPlayerSlotsLimitWhoCanJoinTheGame)
+{
+	SelectGameMode("ctf");
+	GameServer()->Console()->ExecuteLine("sv_player_slots 2", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(GameController()->PlayerSlots(), 2);
+	JoinPlayer(0, TEAM_RED, "red");
+	JoinPlayer(1, TEAM_BLUE, "blue");
+	CPlayer *pThird = JoinPlayer(2, TEAM_SPECTATORS, "third");
+
+	char aError[64];
+	EXPECT_FALSE(GameController()->CanJoinTeam(TEAM_RED, 2, aError, sizeof(aError)));
+	EXPECT_STREQ(aError, "Only 2 active players are allowed");
+	EXPECT_EQ(GameController()->GetAutoTeam(2), TEAM_SPECTATORS);
+	// the players in the game can still change their team
+	GameServer()->Console()->ExecuteLine("set_team_all 0", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_RED), 2);
+	EXPECT_EQ(pThird->GetTeam(), TEAM_SPECTATORS);
+
+	// as in 0.7, fewer slots move nobody out of the game
+	GameServer()->Console()->ExecuteLine("sv_player_slots 1", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(CountTeam(GameServer(), TEAM_RED), 2);
+
+	GameServer()->Console()->ExecuteLine("sv_player_slots 4", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_TRUE(GameController()->CanJoinTeam(TEAM_BLUE, 2, nullptr, 0));
+	// the spectator slots stay free for spectators
+	g_Config.m_SvSpectatorSlots = m_pServer->MaxClients() - 2;
+	EXPECT_EQ(GameController()->PlayerSlots(), 2);
+	EXPECT_FALSE(GameController()->CanJoinTeam(TEAM_BLUE, 2, nullptr, 0));
+}
+
+TEST_F(GameWorld, VanillaTournamentModePutsNewPlayersIntoTheSpectators)
+{
+	SelectGameMode("dm");
+	g_Config.m_SvTournamentMode = 1;
+	GameServer()->OnClientConnected(0, nullptr);
+	ASSERT_NE(GameServer()->m_apPlayers[0], nullptr);
+	EXPECT_EQ(GameServer()->m_apPlayers[0]->GetTeam(), TEAM_SPECTATORS);
+
+	g_Config.m_SvTournamentMode = 0;
+	GameServer()->OnClientConnected(1, nullptr);
+	ASSERT_NE(GameServer()->m_apPlayers[1], nullptr);
+	EXPECT_EQ(GameServer()->m_apPlayers[1]->GetTeam(), TEAM_GAME);
+}
+
+TEST_F(GameWorld, VanillaPowerupsOnlyWithSvPowerups)
+{
+	SelectGameMode("ctf");
+	g_Config.m_SvPowerups = 0;
+	EXPECT_FALSE(GameController()->OnEntity({ENTITY_POWERUP_NINJA, 1, 1, LAYER_GAME, 0, true, 0}));
+	EXPECT_TRUE(GameController()->OnEntity({ENTITY_WEAPON_SHOTGUN, 1, 1, LAYER_GAME, 0, true, 0}));
+	g_Config.m_SvPowerups = 1;
+	EXPECT_TRUE(GameController()->OnEntity({ENTITY_POWERUP_NINJA, 1, 1, LAYER_GAME, 0, true, 0}));
+}
+
+class CChatLogger : public ILogger
+{
+public:
+	std::vector<std::string> m_vLines;
+
+	void Log(const CLogMessage *pMessage) override
+	{
+		if(str_comp(pMessage->m_aSystem, "chat") == 0)
+			m_vLines.emplace_back(pMessage->Message());
+	}
+};
+
+TEST_F(GameWorld, VanillaSilentSpectatorModeKeepsSpectatorsQuiet)
+{
+	SelectGameMode("dm");
+	CChatLogger Logger;
+	{
+		CLogScope Scope(&Logger);
+		JoinPlayer(0, TEAM_GAME, "player");
+		JoinPlayer(1, TEAM_SPECTATORS, "spectator");
+		LeavePlayer(1);
+		LeavePlayer(0);
+	}
+	EXPECT_EQ(Logger.m_vLines, (std::vector<std::string>{"*** 'player' entered and joined the game", "*** 'player' has left the game (test)"}));
+
+	g_Config.m_SvSilentSpectatorMode = 0;
+	Logger.m_vLines.clear();
+	{
+		CLogScope Scope(&Logger);
+		JoinPlayer(1, TEAM_SPECTATORS, "spectator");
+		LeavePlayer(1);
+	}
+	EXPECT_EQ(Logger.m_vLines, (std::vector<std::string>{"*** 'spectator' entered and joined the spectators", "*** 'spectator' has left the game (test)"}));
 }
 
 TEST_F(GameWorld, VanillaCTFSpectatorsFollowAFlag)

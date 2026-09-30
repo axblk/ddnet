@@ -70,6 +70,9 @@ public:
 	bool UseDDNetEntityNetObjs() const override { return true; }
 	bool IsTeamPractice(int Team) const override;
 
+	// the rcon command pauses the player who sends it, as the chat command does
+	void OnPauseCommand(IConsole::IResult *pResult) override;
+
 protected:
 	void ApplyMapSettings();
 	void InitGameSettings() override;

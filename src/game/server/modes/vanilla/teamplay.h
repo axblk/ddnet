@@ -17,6 +17,8 @@ protected:
 	// moves players from the bigger team to the smaller one right away, if the teams are uneven
 	void BalanceTeams(int Tick);
 	virtual bool CanBeMovedOnBalance(const CPlayer *pPlayer) const;
+	// by the server, not the player: no chat message and no activity
+	void MoveSilently(CPlayer *pPlayer, int Team);
 
 public:
 	CGameControllerVanillaTeamplay(CGameServices &Services, const CGameModeInfo &GameModeInfo);
@@ -30,6 +32,10 @@ public:
 	int GetAutoTeam(int NotThisId) override;
 	bool CanJoinTeam(int Team, int NotThisId, char *pErrorReason, int ErrorReasonSize) override;
 	int TeamScore(int Team) const override;
+	// also after a match with sv_match_swap
+	void SwapTeams() override;
+	void ShuffleTeams() override;
+	void ForceTeamBalance() override;
 
 protected:
 	void SnapTeamData(int SnappingClient, int FlagCarrierRed, int FlagCarrierBlue, int FlagDropTickRed = 0, int FlagDropTickBlue = 0, bool SnapFlags = false);

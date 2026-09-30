@@ -9,6 +9,8 @@
 #include <game/server/player.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <vector>
 
 namespace
 {
@@ -144,21 +146,57 @@ void CGameControllerVanillaTeamplay::StartRound()
 {
 	// sides swap after a match that ended, not after a restart in the middle of one
 	if(g_Config.m_SvMatchSwap && Match().IsGameOver())
-	{
-		for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
-		{
-			CPlayer *pPlayer = Services().Player(ClientId);
-			if(!pPlayer || (pPlayer->GetTeam() != TEAM_RED && pPlayer->GetTeam() != TEAM_BLUE))
-				continue;
-			// being swapped is not activity, so it must not postpone the idle kick
-			const int LastActionTick = pPlayer->m_LastActionTick;
-			DoTeamChange(pPlayer, pPlayer->GetTeam() ^ 1, false);
-			pPlayer->m_LastActionTick = LastActionTick;
-		}
-		Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_SWAP);
-	}
+		SwapTeams();
 	m_aTeamScores.fill(0);
 	CGameControllerVanillaPvP::StartRound();
+}
+
+void CGameControllerVanillaTeamplay::MoveSilently(CPlayer *pPlayer, int Team)
+{
+	// being moved is not activity, so it must not postpone the idle kick
+	const int LastActionTick = pPlayer->m_LastActionTick;
+	DoTeamChange(pPlayer, Team, false);
+	pPlayer->m_LastActionTick = LastActionTick;
+}
+
+void CGameControllerVanillaTeamplay::SwapTeams()
+{
+	Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_SWAP);
+	Services().SendLegacyChatGlobal("Teams were swapped");
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CPlayer *pPlayer = Services().Player(ClientId);
+		if(pPlayer && (pPlayer->GetTeam() == TEAM_RED || pPlayer->GetTeam() == TEAM_BLUE))
+			MoveSilently(pPlayer, pPlayer->GetTeam() ^ 1);
+	}
+	// the score goes with the players
+	std::swap(m_aTeamScores[TEAM_RED], m_aTeamScores[TEAM_BLUE]);
+}
+
+void CGameControllerVanillaTeamplay::ShuffleTeams()
+{
+	std::vector<CPlayer *> vpPlayers;
+	for(int ClientId = 0; ClientId < MAX_CLIENTS; ClientId++)
+	{
+		CPlayer *pPlayer = Services().Player(ClientId);
+		if(pPlayer && (pPlayer->GetTeam() == TEAM_RED || pPlayer->GetTeam() == TEAM_BLUE))
+			vpPlayers.push_back(pPlayer);
+	}
+	Services().SendGameMessage7(protocol7::GAMEMSG_TEAM_SHUFFLE);
+	Services().SendLegacyChatGlobal("Teams were shuffled");
+
+	// as 0.7 does: a random order, the first half goes to red, and with an odd number of players it is random which team gets one more
+	const int NumPlayers = vpPlayers.size();
+	for(int i = NumPlayers; i > 1; i--)
+		std::swap(vpPlayers[rand() % i], vpPlayers[i - 1]);
+	const int Extra = NumPlayers % 2 ? rand() % 2 : 0;
+	for(int i = 0; i < NumPlayers; i++)
+		MoveSilently(vpPlayers[i], i < (NumPlayers + Extra) / 2 ? TEAM_RED : TEAM_BLUE);
+}
+
+void CGameControllerVanillaTeamplay::ForceTeamBalance()
+{
+	BalanceTeams(Server()->Tick());
 }
 
 bool CGameControllerVanillaTeamplay::CanSpawn(int Team, vec2 *pOutPos, int ClientId)

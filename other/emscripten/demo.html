@@ -22,7 +22,8 @@
 	</head>
 	<body>
 		<noscript><p><b>You need to allow JavaScript in your browser to use this website.</b></p></noscript>
-		<!-- `link` keeps the address in step with the demo: demo.html#demo=<url>&t=<seconds> -->
+		<!-- `link` keeps the address in step with the demo: demo.html#demo=<url>&t=<seconds>,
+		     or a live stream: demo.html#live=<url of its index.json> -->
 		<ddnet-demo id="viewer" controls="html" link>
 			<div id="open" class="viewer-open" slot="controls" hidden>
 				<div class="viewer-panel viewer-open-panel">
@@ -40,7 +41,7 @@
 			const element = document.getElementById('viewer');
 			const opener = document.getElementById('open');
 			const openButton = document.getElementById('open-button');
-			opener.hidden = element.hasAttribute('src');
+			opener.hidden = element.hasAttribute('src') || element.hasAttribute('live');
 			element.ready.then(() => {
 				openButton.disabled = false;
 				element.focus();

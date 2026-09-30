@@ -3998,6 +3998,19 @@ if(CLIENT)
         ${WEB_TOOL_TARGETS}
       COMMENT "Assembling the site in ${PROJECT_BINARY_DIR}/site"
       VERBATIM)
+    # The demo player alone, for a program that hands it out itself: see
+    # "The demo player bundle" in other/emscripten/README.md.
+    add_custom_target(demo-player-bundle
+      COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/assemble_demo_player_bundle.py
+        --source ${PROJECT_SOURCE_DIR}
+        --build ${PROJECT_BINARY_DIR}
+        --data-files ${WEB_DATA_FILE_LIST}
+        --release ${PROJECT_VERSION}
+        "--revision=${GIT_REVISION}"
+        --output ${PROJECT_BINARY_DIR}/demo-player-bundle
+      DEPENDS demo-player
+      COMMENT "Assembling the demo player in ${PROJECT_BINARY_DIR}/demo-player-bundle"
+      VERBATIM)
   endif()
 
   if(STEAMAPI_KIND STREQUAL SHARED OR DISCORD_DYNAMIC OR WEBGPU_NATIVE_BACKEND)

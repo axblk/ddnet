@@ -72,3 +72,34 @@ The link is what the server browser copies, for example
 address, so it comes last. `?connect=` works as well, with the link escaped
 (`%23` for its `#`). An address without the scheme of a link, such as
 `wss://example.org:8304`, is joined as it is.
+
+## The demo player bundle
+
+A program that hands out the demo player itself, a server host that shows
+its live streams for example, takes it from the `demo-player-bundle` target
+of a browser build:
+
+```sh
+cmake --build <browser build directory> --target demo-player-bundle
+```
+
+It writes `demo-player-bundle/` in the build directory, replaced as a whole
+each time, and nothing else of the site, about 15 MB (13 MB of it `data/`):
+
+| Path | What it is |
+|---|---|
+| `VERSION` | `key=value` lines: `version` (what `git describe --tags` says), `revision` (16 hex digits), `release` (the DDNet version) and `live_stream` (the version of a live stream's `index.json` the player reads) |
+| `ddnet-demo-player.js`, `ddnet-demo-player.wasm` | the program |
+| `demo-player.js`, `ddnet-base.js` | `@ddnet/demo-player` and `@ddnet/base` |
+| `ddnet-viewer.css`, `ddnet-page.css`, `DDNet.ico` | the look of the bar and of `demo.html` |
+| `demo.html` | a page with just the player (`#demo=<url>` or `#live=<index.json>`) |
+| `coi-serviceworker.js` | for a page that cannot send the isolation headers |
+| `data/` | what the player reads of the data directory, `packages/demo-player/bundle-data.txt`, with an `index.txt` of just that; no maps, a demo carries its map |
+
+A page that is not `demo.html` maps `@ddnet/base` and `@ddnet/demo-player` to
+the two modules in its import map and links `ddnet-viewer.css`; the player
+finds its program and `data/` beside `demo-player.js`. The revision is the
+CMake variable `GIT_REVISION` if it is set, else what `git archive` filled into
+`scripts/git_archive_revision.txt`, else what git says of the checkout
+(`scripts/git_revision.py`). The target fails when the server writes another
+version of `index.json` than the player reads.

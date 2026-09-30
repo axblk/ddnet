@@ -85,6 +85,10 @@ namespace
 		float m_Progress = 0.0f;
 		float m_Speed = 1.0f;
 		float m_Length = 0.0f;
+		int m_FirstTick = -1;
+		int m_CurrentTick = -1;
+		int m_LastTick = -1;
+		bool m_Live = false;
 		std::string m_Info = "{}";
 	};
 	CWebPageBridge<SPageState> gs_PageBridge;
@@ -224,6 +228,11 @@ void CDemoPlayerClient::PublishPageState()
 	State.m_Progress = Progress();
 	State.m_Speed = Speed();
 	State.m_Length = Length();
+	const IDemoPlayer::CInfo *pInfo = DemoPlayer().BaseInfo();
+	State.m_FirstTick = pInfo->m_FirstTick;
+	State.m_CurrentTick = pInfo->m_CurrentTick;
+	State.m_LastTick = pInfo->m_LastTick;
+	State.m_Live = pInfo->m_LiveDemo;
 	// What the demo is changes with the next demo, and its players come and
 	// go: asked again now and then rather than on every frame.
 	const std::chrono::nanoseconds Now = time_get_nanoseconds();
@@ -248,9 +257,20 @@ void CDemoPlayerClient::SetPaused(bool Paused)
 
 void CDemoPlayerClient::Play()
 {
+	// The end of a live demo is where it goes on.
 	if(AtEnd())
-		SeekStart();
+	{
+		if(DemoPlayer().BaseInfo()->m_LiveDemo)
+			SeekPercent(1.0f);
+		else
+			SeekStart();
+	}
 	SetPaused(false);
+}
+
+void CDemoPlayerClient::SetLive(bool Live)
+{
+	DemoPlayer().SetLive(Live);
 }
 
 void CDemoPlayerClient::TogglePause()
@@ -1623,6 +1643,23 @@ EMSCRIPTEN_KEEPALIVE float DemoPlayerSpeed()
 EMSCRIPTEN_KEEPALIVE float DemoPlayerLength()
 {
 	return PageState().m_Length;
+}
+
+// Whether the page keeps appending to the demo, see `CDemoPlayer::SetLive`.
+EMSCRIPTEN_KEEPALIVE void DemoPlayerSetLive(int Live)
+{
+	FromPage([Live] { gs_pDemoPlayer->SetLive(Live != 0); });
+}
+
+// Where the demo stands in ticks, as a JSON object: `first`, `current`,
+// `last` and `live`. Valid until the next call.
+EMSCRIPTEN_KEEPALIVE const char *DemoPlayerTicks()
+{
+	static std::string s_Ticks;
+	const SPageState State = PageState();
+	char aTicks[128];
+	str_format(aTicks, sizeof(aTicks), "{\"first\":%d,\"current\":%d,\"last\":%d,\"live\":%s}", State.m_FirstTick, State.m_CurrentTick, State.m_LastTick, State.m_Live ? "true" : "false");
+	return PageString(s_Ticks, aTicks);
 }
 
 // What the demo is, as a JSON object, see `CDemoClientBase::DemoInfo`. Valid

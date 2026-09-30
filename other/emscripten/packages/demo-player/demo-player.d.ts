@@ -20,11 +20,56 @@ export interface ExportOptions extends VideoSettings {
 	follow?: number;
 }
 
+/** A marker of a live stream, in the ticks of its demo. */
+export interface LiveMarker {
+	epoch: number;
+	tick: number;
+	/** `match_end` where a match ended, `manual` from `live_marker`. */
+	kind: "match_end" | "manual";
+	label?: string;
+}
+
+/**
+ * Follows a live stream a server writes with `live_start`: it reads its
+ * `index.json` every second and appends what the segments grew by to the
+ * demo that plays, with range requests. Any static web server does.
+ * `livechange` says that something of it changed. Joining at the live end
+ * reads the last two minutes of the map, seeking back to where they begin
+ * reads older ones, and at the live end more than half an hour is dropped.
+ */
+export declare class LiveFeed extends EventTarget {
+	/** Seconds of the map read when joining at the live end, 120. */
+	static backlogSeconds: number;
+	/** Seconds of the map kept while playing at the live end, 1800. */
+	static maxBacklogSeconds: number;
+	/** The URL of the `index.json`. */
+	readonly url: URL;
+	/** The index as last read. */
+	readonly index: object | null;
+	/** The map of the stream that plays, counted from 0. */
+	readonly epoch: number | null;
+	/** `loading`, `waiting` (for the first segment), `live` or `ended`. */
+	readonly state: string;
+	/** What went wrong the last time, `""` if nothing. */
+	readonly error: string;
+	/** The markers of the map that plays. */
+	readonly markers: LiveMarker[];
+	/** Whether a newer map began than the one that plays. */
+	readonly newerMap: boolean;
+	/** Whether the stream has older parts of the map that plays than were read. */
+	readonly earlier: boolean;
+	/** Goes to the end of the newest map. */
+	goLive(): Promise<void>;
+	/** Whether it plays at the end of the newest map. */
+	atLiveEdge(): boolean;
+	stop(): void;
+}
+
 /**
  * A demo player. It answers what a `<video>` answers and fires the same
  * events: `loadedmetadata`, `durationchange`, `play`, `pause`, `timeupdate`,
  * `ratechange`, `volumechange`, `ended`. `viewchange` says that the marked
- * piece or whom it watches changed.
+ * piece or whom it watches changed, `livechange` that a live stream did.
  */
 export declare class DemoPlayer extends Program {
 	constructor(options?: DemoPlayerOptions);
@@ -41,9 +86,19 @@ export declare class DemoPlayer extends Program {
 	muted: boolean;
 	/** The URL of the demo, `""` for a file. */
 	readonly src: string;
-	/** Starts over at the end, as a video does. */
+	/** Starts over at the end, as a video does; a live stream goes on at its end. */
 	play(): Promise<void>;
 	pause(): void;
+
+	/** The live stream that plays, see `watchLive`. */
+	readonly live: LiveFeed | null;
+	/** Plays the live stream whose `index.json` is at `url`. */
+	watchLive(url: string | URL): LiveFeed;
+	stopLive(): void;
+	/** To the end of the live stream. */
+	goLive(): Promise<void> | undefined;
+	/** Where the demo stands in ticks, and whether its file still grows. */
+	ticks(): { first: number; current: number; last: number; live: boolean };
 
 	/** The canvas's size in CSS pixels, which the page cannot set on the canvas itself. */
 	setSize(width: number, height: number): void;
@@ -121,10 +176,11 @@ export declare class DemoControls {
 }
 
 /**
- * `<ddnet-demo>`. Attributes beyond those of `ViewerElement`: `nozoom`,
- * `nooverlays` (Tab shows no scoreboard and moves the focus on instead),
- * `nosettings` (the menu offers no display settings), `t`, `end` (a marked
- * piece), `speed`, `paused`, `spec` (a player id or name). It answers what a
+ * `<ddnet-demo>`. Attributes beyond those of `ViewerElement`: `live` (the
+ * `index.json` of a live stream, in place of `src`), `nozoom`, `nooverlays`
+ * (Tab shows no scoreboard and moves the focus on instead), `nosettings`
+ * (the menu offers no display settings), `t`, `end` (a marked piece),
+ * `speed`, `paused`, `spec` (a player id or name). It answers what a
  * `<video>` answers and fires the player's events.
  */
 export declare class DemoElement extends ViewerElement {

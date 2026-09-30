@@ -36,6 +36,12 @@ class CLiveRecorder : public IDemoSink
 {
 public:
 	/**
+	 * The version of `index.json`, which the web demo player checks
+	 * (`LIVE_INDEX_VERSION` in `demo-player.js`).
+	 */
+	static constexpr int INDEX_VERSION = 1;
+
+	/**
 	 * How a stream is written, taken when it starts.
 	 */
 	class CSettings

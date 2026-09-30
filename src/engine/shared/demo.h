@@ -198,6 +198,8 @@ private:
 	CSnapshotDelta *m_pSnapshotDeltaSixup;
 
 	bool m_UseVideo;
+	// Somebody else keeps appending to the file, see `SetLive`.
+	bool m_LiveHeld = false;
 #if defined(CONF_VIDEORECORDER)
 	IVideo *m_pVideo = nullptr;
 	bool m_WasRecording = false;
@@ -258,6 +260,15 @@ public:
 	const char *ErrorMessage() const override { return m_aErrorMessage; }
 
 	void Update(bool RealTime = true);
+	/**
+	 * Says whether the file still grows, rather than guessing it from whether
+	 * it grew lately. A live demo plays up to its last whole tick and waits
+	 * there for the next one; seeking stays two seconds before its end. A
+	 * demo that stops being live plays to its end like any other.
+	 *
+	 * @param Live Whether more is appended to the file.
+	 */
+	void SetLive(bool Live);
 	bool IsSixup() const { return m_Sixup; }
 
 	const CPlaybackInfo *Info() const { return &m_Info; }

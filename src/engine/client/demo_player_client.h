@@ -244,6 +244,12 @@ public:
 	 */
 	void TogglePause();
 	/**
+	 * Says whether the demo file still grows, see `CDemoPlayer::SetLive`.
+	 *
+	 * @param Live Whether more is appended to it.
+	 */
+	void SetLive(bool Live);
+	/**
 	 * Whether it stands at the end of the marked piece, or of the demo.
 	 */
 	bool AtEnd() const;

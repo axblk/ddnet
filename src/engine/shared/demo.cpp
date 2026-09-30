@@ -847,6 +847,7 @@ int CDemoPlayer::Load(IStorage *pStorage, const char *pFilename, int StorageType
 	m_Info.m_Info.m_Speed = 1;
 	m_SpeedIndex = DEMO_SPEED_INDEX_DEFAULT;
 	m_LastSnapshotDataSize = -1;
+	m_LiveHeld = false;
 
 	if(!GetDemoInfo(pStorage, pFilename, StorageType, &m_Info.m_Header, &m_Info.m_TimelineMarkers, &m_MapInfo, &m_File, m_aErrorMessage, sizeof(m_aErrorMessage)))
 	{
@@ -1191,7 +1192,8 @@ void CDemoPlayer::Update(bool RealTime)
 				return;
 			}
 			else if(ScanResult == EScanFileResult::SUCCESS &&
-				m_Info.m_Info.m_LastTick == PreviousLastTick)
+				m_Info.m_Info.m_LastTick == PreviousLastTick &&
+				!m_LiveHeld)
 			{
 				m_Info.m_LiveStateUnchangedCount++;
 				if(m_Info.m_LiveStateUnchangedCount >= 2 * SERVER_TICK_SPEED)
@@ -1237,6 +1239,13 @@ void CDemoPlayer::Update(bool RealTime)
 			{
 				break;
 			}
+			// The last tick of a live demo may not be whole yet, so it waits
+			// for the tick after it.
+			if(m_LiveHeld && m_Info.m_NextTick >= m_Info.m_Info.m_LastTick)
+			{
+				m_Info.m_CurrentTime = std::min(m_Info.m_CurrentTime, CurrentTickStart);
+				break;
+			}
 			DoTick();
 			if(!IsPlaying())
 			{
@@ -1251,6 +1260,21 @@ void CDemoPlayer::Update(bool RealTime)
 	}
 
 	UpdateTimes();
+}
+
+void CDemoPlayer::SetLive(bool Live)
+{
+	if(!m_File)
+		return;
+	m_LiveHeld = Live;
+	m_Info.m_LiveStateUpdating = false;
+	m_Info.m_LiveStateUnchangedCount = 0;
+	if(ScanFile() == EScanFileResult::ERROR_UNRECOVERABLE)
+	{
+		Stop("Unrecoverable error on scanning live demo file");
+		return;
+	}
+	m_Info.m_Info.m_LiveDemo = Live;
 }
 
 void CDemoPlayer::UpdateTimes()

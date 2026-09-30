@@ -1,0 +1,47 @@
+# What the demo player reads of data/, the part of it the `demo-player-bundle`
+# target puts beside the player. Paths relative to data/, `*` and `?` as in
+# fnmatch (`*` also matches `/`). Every line has to match a file.
+#
+# Measured: what the player fetched from a full site while it played a live
+# stream (scripts/live_demo_browser_test.py), plus what depends on
+# a demo's contents: every skin, flag, map image and map sound a demo can name.
+# Maps are not here: a demo carries its map.
+
+# The pictures the program loads when it starts (datasrc/content.py), and the
+# dead tee.
+arrow.png
+background_noise.png
+deadtee.png
+editor/audio_source.png
+editor/speed_arrow.png
+emoticons.png
+extras.png
+game.png
+gui_buttons.png
+gui_cursor.png
+gui_icons.png
+gui_logo.png
+hud.png
+particles.png
+race_flag.png
+strong_weak.png
+
+# Text: the browser draws glyphs with these, the rest comes from the system's
+# fonts (see glyph_rasterizer_web.cpp). The icon font on its first icon.
+fonts/DejaVuSans.ttf
+fonts/Font_Awesome_6_Free-Solid-900.otf
+fonts/index.json
+
+# Sounds.
+audio/*
+
+# What a demo names: the players' skins (0.6 and 0.7) and flags, and the
+# images and sounds of a map that are not in the map itself.
+countryflags/*
+mapres/*
+skins/*
+skins7/*
+
+# Read when the program starts.
+languages/index.txt
+touch_controls.json

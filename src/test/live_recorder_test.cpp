@@ -4,6 +4,7 @@
 #include <base/fs.h>
 #include <base/io.h>
 #include <base/str.h>
+#include <base/time.h>
 
 #include <engine/server/live_recorder.h>
 #include <engine/shared/demo.h>
@@ -18,6 +19,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -472,4 +474,68 @@ TEST_F(LiveRecorder, ANameIsReusedAndChecked)
 	EXPECT_FALSE(m_Live.Start(m_pStorage.get(), "live", "", Settings, m_Now, aError, sizeof(aError)));
 	EXPECT_FALSE(m_Live.Start(m_pStorage.get(), "../live", "name", Settings, m_Now, aError, sizeof(aError)));
 	EXPECT_FALSE(m_Live.IsActive());
+}
+
+TEST_F(LiveRecorder, APlayerFollowsTheGrowingDemo)
+{
+	CLiveRecorder::CSettings Settings;
+	Settings.m_SegmentSeconds = 1;
+	Start(Settings);
+	Ticks(SERVER_TICK_SPEED + 10);
+	// What a page puts together from the stream: the init and the segments,
+	// the last one still growing.
+	Concatenate("follow.demo", 0, {0, 1});
+	const size_t HadBytes = Read(Path("seg-1")).size();
+
+	const std::unique_ptr<CSnapshotDelta> pDelta = std::make_unique<CSnapshotDelta>();
+	const std::unique_ptr<CDemoPlayer> pPlayer = NewPlayer(pDelta.get());
+	CDemoPlayer &Player = *pPlayer;
+	CCountingListener Listener;
+	Player.SetListener(&Listener);
+	ASSERT_EQ(Player.Load(m_pStorage.get(), "follow.demo", IStorage::TYPE_SAVE), 0) << Player.ErrorMessage();
+	Player.Play();
+	Player.SetLive(true);
+	EXPECT_TRUE(Player.BaseInfo()->m_LiveDemo);
+	const int LastTick = 100 + SERVER_TICK_SPEED + 9;
+	EXPECT_EQ(Player.BaseInfo()->m_LastTick, LastTick);
+
+	// It plays up to the last tick that is whole and waits there, rather
+	// than running into the end of the file.
+	Player.Update(false);
+	EXPECT_TRUE(Player.IsPlaying()) << Player.ErrorMessage();
+	EXPECT_FALSE(Player.BaseInfo()->m_Paused);
+	EXPECT_EQ(Player.BaseInfo()->m_CurrentTick, LastTick - 1);
+
+	// What was appended since is played on.
+	Ticks(SERVER_TICK_SPEED);
+	IOHANDLE File = m_pStorage->OpenFile("follow.demo", IOFLAG_APPEND, IStorage::TYPE_SAVE);
+	ASSERT_TRUE(File);
+	std::vector<unsigned char> vData = Read(Path("seg-1"));
+	io_write(File, vData.data() + HadBytes, vData.size() - HadBytes);
+	vData = Read(Path("seg-2"));
+	io_write(File, vData.data(), vData.size());
+	io_close(File);
+	// The player looks for more at the tick rate, by the time of the frame.
+	std::this_thread::sleep_for(50ms);
+	set_new_tick();
+	Player.Update(false);
+	EXPECT_TRUE(Player.IsPlaying()) << Player.ErrorMessage();
+	EXPECT_EQ(Player.BaseInfo()->m_LastTick, 100 + 2 * SERVER_TICK_SPEED + 9);
+	EXPECT_EQ(Player.BaseInfo()->m_CurrentTick, 100 + 2 * SERVER_TICK_SPEED + 8);
+	EXPECT_TRUE(Player.BaseInfo()->m_LiveDemo);
+
+	// Seeking stays two seconds before the end of a live demo.
+	EXPECT_TRUE(Player.SeekPercent(1.0f));
+	EXPECT_LE(Player.BaseInfo()->m_CurrentTick, Player.BaseInfo()->m_LastTick - 2 * SERVER_TICK_SPEED + 1);
+
+	// Once it stops growing, it plays to its end like any demo.
+	Player.SetLive(false);
+	EXPECT_FALSE(Player.BaseInfo()->m_LiveDemo);
+	Player.Update(false);
+	EXPECT_TRUE(Player.IsPlaying()) << Player.ErrorMessage();
+	EXPECT_TRUE(Player.BaseInfo()->m_Paused);
+	EXPECT_EQ(Player.BaseInfo()->m_CurrentTick, 100 + 2 * SERVER_TICK_SPEED + 9);
+	EXPECT_GT(Listener.m_Snapshots, 2 * SERVER_TICK_SPEED);
+	Player.Stop();
+	m_pStorage->RemoveFile("follow.demo", IStorage::TYPE_SAVE);
 }

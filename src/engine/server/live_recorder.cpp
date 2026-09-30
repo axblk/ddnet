@@ -450,7 +450,7 @@ bool CLiveRecorder::WriteIndex(std::chrono::nanoseconds Now)
 	CJsonStringWriter Writer;
 	Writer.BeginObject();
 	Writer.WriteAttribute("version");
-	Writer.WriteIntValue(1);
+	Writer.WriteIntValue(INDEX_VERSION);
 	Writer.WriteAttribute("name");
 	Writer.WriteStrValue(m_aName);
 	Writer.WriteAttribute("stream");

@@ -1,0 +1,4 @@
+# Filled in by `git archive` (export-subst in .gitattributes) and read by
+# git_revision.py: the revision, and what `git describe --tags` says of it.
+$Format:%H$
+$Format:%(describe:tags)$

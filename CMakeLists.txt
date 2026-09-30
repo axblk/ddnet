@@ -2395,13 +2395,17 @@ if(NOT PROJECT_GIT_DIR_ERROR)
     ${PROJECT_GIT_DIR}/logs/HEAD
   )
 endif()
+# A build from an export that is no archive of git says its revision here.
+set(GIT_REVISION "" CACHE STRING "Revision the build is of, when neither git nor `git archive` tells it (see scripts/git_revision.py)")
 add_custom_command(OUTPUT ${PROJECT_BINARY_DIR}/src/generated/git_revision.cpp
   COMMAND ${Python3_EXECUTABLE}
     scripts/git_revision.py
+    "--revision=${GIT_REVISION}"
     > ${PROJECT_BINARY_DIR}/src/generated/git_revision.cpp
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
   DEPENDS
     ${GIT_REVISION_EXTRA_DEPS}
+    scripts/git_archive_revision.txt
     scripts/git_revision.py
 )
 # tidy-alphabetical-start

@@ -47,6 +47,7 @@
 #include <game/server/modes/vanilla/dm.h>
 #include <game/server/modes/vanilla/flag.h>
 #include <game/server/modes/vanilla/tdm.h>
+#include <game/server/modes/zcatch/rules.h>
 #include <game/server/player.h>
 #include <game/server/save.h>
 #include <game/server/score.h>
@@ -3536,196 +3537,6 @@ TEST_F(GameWorld, InstagibHudShowsAmmoButNoHealth)
 	EXPECT_NE(GameController()->GameInfoFlags2(-1) & GAMEINFOFLAG2_HUD_AMMO, 0);
 }
 
-TEST_F(GameWorld, ZCatchReleasesOwnershipOnCatcherDeathAndDisconnect)
-{
-	SelectGameMode("zcatch");
-
-	constexpr int FirstCatcherId = 0;
-	constexpr int VictimId = 1;
-	constexpr int SecondCatcherId = 2;
-	constexpr int StaleProjectileVictimId = 3;
-	CPlayer *pFirstCatcher = GameServer()->CreatePlayer(FirstCatcherId, TEAM_GAME, false, -1);
-	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
-	CPlayer *pSecondCatcher = GameServer()->CreatePlayer(SecondCatcherId, TEAM_GAME, false, -1);
-	CPlayer *pStaleProjectileVictim = GameServer()->CreatePlayer(StaleProjectileVictimId, TEAM_GAME, false, -1);
-	ASSERT_NE(pFirstCatcher, nullptr);
-	ASSERT_NE(pVictim, nullptr);
-	ASSERT_NE(pSecondCatcher, nullptr);
-	ASSERT_NE(pStaleProjectileVictim, nullptr);
-	CCharacter *pFirstCatcherCharacter = pFirstCatcher->ForceSpawn(vec2(64.0f, 96.0f));
-	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
-	CCharacter *pSecondCatcherCharacter = pSecondCatcher->ForceSpawn(vec2(128.0f, 96.0f));
-	CCharacter *pStaleProjectileVictimCharacter = pStaleProjectileVictim->ForceSpawn(vec2(160.0f, 96.0f));
-	ASSERT_NE(pFirstCatcherCharacter, nullptr);
-	ASSERT_NE(pVictimCharacter, nullptr);
-	ASSERT_NE(pSecondCatcherCharacter, nullptr);
-	ASSERT_NE(pStaleProjectileVictimCharacter, nullptr);
-
-	pVictimCharacter->TakeDamage(vec2(), 0, FirstCatcherId, WEAPON_LASER);
-	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pVictim), std::numeric_limits<int>::max());
-	pFirstCatcherCharacter->TakeDamage(vec2(), 0, SecondCatcherId, WEAPON_LASER);
-	EXPECT_NE(GameController()->PlayerAutoRespawnTick(pVictim), std::numeric_limits<int>::max());
-	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pFirstCatcher), std::numeric_limits<int>::max());
-	pStaleProjectileVictimCharacter->TakeDamage(vec2(), 0, FirstCatcherId, WEAPON_LASER);
-	EXPECT_NE(GameController()->PlayerAutoRespawnTick(pStaleProjectileVictim), std::numeric_limits<int>::max());
-
-	GameController()->OnPlayerDisconnect(pSecondCatcher, "test");
-	EXPECT_NE(GameController()->PlayerAutoRespawnTick(pFirstCatcher), std::numeric_limits<int>::max());
-}
-
-TEST_F(GameWorld, ZCatchEndsRoundForLastPlayerStanding)
-{
-	g_Config.m_SvScorelimit = 1;
-	SelectGameMode("zcatch");
-
-	constexpr int CatcherId = 0;
-	constexpr int FirstVictimId = 1;
-	constexpr int SecondVictimId = 2;
-	m_pServer->m_aClients[CatcherId].m_State = CServer::CClient::STATE_INGAME;
-	str_copy(m_pServer->m_aClients[CatcherId].m_aName, "catcher");
-	str_copy(m_pServer->m_aClients[FirstVictimId].m_aName, "first");
-	str_copy(m_pServer->m_aClients[SecondVictimId].m_aName, "second");
-	CPlayer *pCatcher = GameServer()->CreatePlayer(CatcherId, TEAM_GAME, false, -1);
-	CPlayer *pFirstVictim = GameServer()->CreatePlayer(FirstVictimId, TEAM_GAME, false, -1);
-	CPlayer *pSecondVictim = GameServer()->CreatePlayer(SecondVictimId, TEAM_GAME, false, -1);
-	ASSERT_NE(pCatcher, nullptr);
-	ASSERT_NE(pFirstVictim, nullptr);
-	ASSERT_NE(pSecondVictim, nullptr);
-	CCharacter *pCatcherCharacter = pCatcher->ForceSpawn(vec2(64.0f, 96.0f));
-	CCharacter *pFirstVictimCharacter = pFirstVictim->ForceSpawn(vec2(96.0f, 96.0f));
-	CCharacter *pSecondVictimCharacter = pSecondVictim->ForceSpawn(vec2(128.0f, 96.0f));
-	ASSERT_NE(pCatcherCharacter, nullptr);
-	ASSERT_NE(pFirstVictimCharacter, nullptr);
-	ASSERT_NE(pSecondVictimCharacter, nullptr);
-
-	pFirstVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
-	GameController()->Tick();
-	EXPECT_FALSE(GameController()->IsGamePaused());
-	pSecondVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
-	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pFirstVictim), std::numeric_limits<int>::max());
-	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pSecondVictim), std::numeric_limits<int>::max());
-	EXPECT_FALSE(GameController()->IsGamePaused());
-
-	GameController()->Tick();
-	EXPECT_TRUE(GameController()->IsGamePaused());
-	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, pCatcher), 2);
-	const CReceivedMatchReport Received = ReceivedMatchReport(CatcherId);
-	EXPECT_EQ(Received.m_Report.m_ModeId, "zcatch");
-	EXPECT_EQ(Received.m_Report.m_vParticipants.size(), 3u);
-	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "catches"), 2);
-	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "score"), 2);
-}
-
-TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
-{
-	SelectGameMode("zcatch");
-
-	constexpr int VictimId = 0;
-	constexpr int CatcherId = 1;
-	CCharacter *pCatcherCharacter = SpawnPlayer(CatcherId, vec2(64.0f, 96.0f));
-	CCharacter *pVictimCharacter = SpawnPlayer(VictimId, vec2(96.0f, 96.0f));
-	ASSERT_NE(pCatcherCharacter, nullptr);
-	ASSERT_NE(pVictimCharacter, nullptr);
-	CPlayer *pVictim = pVictimCharacter->GetPlayer();
-	m_pServer->m_aClients[CatcherId].m_State = CServer::CClient::STATE_INGAME;
-	m_pServer->m_aClients[VictimId].m_State = CServer::CClient::STATE_INGAME;
-
-	// A 0.6 client that can address every slot sees the real ids, a 0.7 one
-	// always goes through the player map, so build the map per protocol.
-	const auto ExpectedIds = [&](bool Sixup) {
-		m_pServer->m_aClients[VictimId].m_Sixup = Sixup;
-		GameServer()->m_PlayerMapping.InitPlayerMap(CatcherId);
-		GameServer()->m_PlayerMapping.InitPlayerMap(VictimId);
-		int Victim = VictimId;
-		EXPECT_TRUE(m_pServer->Translate(Victim, VictimId));
-		int Catcher = CatcherId;
-		if(!m_pServer->Translate(Catcher, VictimId))
-		{
-			Catcher = Victim == 0 ? 1 : 0;
-			m_pServer->GetIdMap(VictimId)[Catcher] = CatcherId;
-			m_pServer->GetReverseIdMap(VictimId)[CatcherId] = Catcher;
-		}
-		return std::make_pair(Victim, Catcher);
-	};
-
-	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
-	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
-	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
-
-	const auto [TranslatedVictimId, TranslatedCatcherId] = ExpectedIds(false);
-	m_pServer->m_SnapshotBuilder.Init(false);
-	pVictim->Snap(VictimId);
-	CSnapshotBuffer SixBuffer;
-	m_pServer->m_SnapshotBuilder.Finish(&SixBuffer);
-	const CSnapshot *pSixSnapshot = SixBuffer.AsSnapshot();
-	const auto *pSixPlayerInfo = static_cast<const CNetObj_PlayerInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, TranslatedVictimId));
-	const auto *pSixSpectatorInfo = static_cast<const CNetObj_SpectatorInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_SPECTATORINFO, VictimId));
-	ASSERT_NE(pSixPlayerInfo, nullptr);
-	ASSERT_NE(pSixSpectatorInfo, nullptr);
-	EXPECT_EQ(pSixPlayerInfo->m_Team, TEAM_SPECTATORS);
-	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
-
-	const auto [SevenVictimId, SevenCatcherId] = ExpectedIds(true);
-	m_pServer->m_SnapshotBuilder.Init(true);
-	pVictim->Snap(VictimId);
-	CSnapshotBuffer SevenBuffer;
-	m_pServer->m_SnapshotBuilder.Finish(&SevenBuffer);
-	const CSnapshot *pSevenSnapshot = SevenBuffer.AsSnapshot();
-	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, SevenVictimId));
-	const auto *pSevenSpectatorInfo = static_cast<const protocol7::CNetObj_SpectatorInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_SPECTATORINFO, VictimId));
-	ASSERT_NE(pSevenPlayerInfo, nullptr);
-	ASSERT_NE(pSevenSpectatorInfo, nullptr);
-	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
-	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
-	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, SevenCatcherId);
-}
-
-TEST_F(GameWorld, ZCatchLateJoinFollowsLeadingCatcher)
-{
-	SelectGameMode("zcatch");
-
-	constexpr int LeaderId = 0;
-	constexpr int VictimId = 1;
-	constexpr int ContenderId = 2;
-	constexpr int EarlyJoinId = 3;
-	constexpr int LateJoinId = 4;
-	constexpr int SpectatorId = 5;
-	CPlayer *pLeader = GameServer()->CreatePlayer(LeaderId, TEAM_GAME, false, -1);
-	CPlayer *pVictim = GameServer()->CreatePlayer(VictimId, TEAM_GAME, false, -1);
-	CPlayer *pContender = GameServer()->CreatePlayer(ContenderId, TEAM_GAME, false, -1);
-	ASSERT_NE(pLeader, nullptr);
-	ASSERT_NE(pVictim, nullptr);
-	ASSERT_NE(pContender, nullptr);
-	CCharacter *pLeaderCharacter = pLeader->ForceSpawn(vec2(64.0f, 96.0f));
-	CCharacter *pVictimCharacter = pVictim->ForceSpawn(vec2(96.0f, 96.0f));
-	CCharacter *pContenderCharacter = pContender->ForceSpawn(vec2(128.0f, 96.0f));
-	ASSERT_NE(pLeaderCharacter, nullptr);
-	ASSERT_NE(pVictimCharacter, nullptr);
-	ASSERT_NE(pContenderCharacter, nullptr);
-	CPlayer *pEarlyJoin = GameServer()->CreatePlayer(EarlyJoinId, TEAM_GAME, false, -1);
-	ASSERT_NE(pEarlyJoin, nullptr);
-	GameController()->OnPlayerConnect(pEarlyJoin);
-	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(EarlyJoinId));
-	pVictimCharacter->TakeDamage(vec2(), 0, LeaderId, WEAPON_LASER);
-
-	CPlayer *pLateJoin = GameServer()->CreatePlayer(LateJoinId, TEAM_GAME, false, -1);
-	ASSERT_NE(pLateJoin, nullptr);
-	GameController()->OnPlayerConnect(pLateJoin);
-	EXPECT_EQ(pLateJoin->GetTeam(), TEAM_GAME);
-	EXPECT_TRUE(GameController()->IsPlayerDeadSpectator(LateJoinId));
-	EXPECT_EQ(pLateJoin->SpectatorId(), LeaderId);
-	EXPECT_EQ(GameController()->PlayerAutoRespawnTick(pLateJoin), std::numeric_limits<int>::max());
-
-	CPlayer *pSpectator = GameServer()->CreatePlayer(SpectatorId, TEAM_SPECTATORS, false, -1);
-	ASSERT_NE(pSpectator, nullptr);
-	GameController()->OnPlayerConnect(pSpectator);
-	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(SpectatorId));
-
-	pLeaderCharacter->TakeDamage(vec2(), 0, ContenderId, WEAPON_LASER);
-	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(VictimId));
-	EXPECT_FALSE(GameController()->IsPlayerDeadSpectator(LateJoinId));
-}
-
 namespace
 {
 	// a client that only watches, to see what the game tells the clients
@@ -5204,4 +5015,299 @@ TEST_F(GameWorld, ReadyModeTellsDDNetClientsWhoIsReady)
 	Unpacker.Reset(Packer.Data(), Packer.Size());
 	GameServer()->OnMessage(NETMSGTYPE_CL_ENABLEREADYSTATE, &Unpacker, 2);
 	EXPECT_TRUE(GameServer()->m_apPlayers[2]->m_EnableReadyState);
+}
+
+namespace
+{
+	// a running round of zCatch with the laser, of the players 0 to Num - 1; it needs Num of them to start
+	void StartZCatch(GameWorld *pWorld, int Num)
+	{
+		str_copy(g_Config.m_SvSpawnWeapons, "laser");
+		g_Config.m_SvZcatchMinPlayers = Num;
+		pWorld->SelectGameMode("zcatch");
+		AddSpawnPoints(pWorld);
+		for(int ClientId = 0; ClientId < Num; ClientId++)
+		{
+			char aName[16];
+			str_format(aName, sizeof(aName), "player%d", ClientId);
+			pWorld->JoinPlayer(ClientId, TEAM_GAME, aName);
+		}
+		// a DM starts right away
+		RunTicks(pWorld, 2);
+		EXPECT_EQ(SnapGameData7(pWorld).m_GameStateFlags, 0);
+	}
+
+	// the character of a player in a running round, put where nothing else hurts it
+	CCharacter *ZCatchCharacter(GameWorld *pWorld, int ClientId)
+	{
+		CPlayer *pPlayer = pWorld->GameServer()->m_apPlayers[ClientId];
+		EXPECT_NE(pPlayer, nullptr);
+		if(!pPlayer)
+			return nullptr;
+		CCharacter *pCharacter = pWorld->Respawn(pPlayer, vec2(64.0f + 32.0f * ClientId, 96.0f));
+		EXPECT_NE(pCharacter, nullptr);
+		return pCharacter;
+	}
+
+	bool IsCaught(GameWorld *pWorld, int ClientId)
+	{
+		return pWorld->GameController()->PlayerAutoRespawnTick(pWorld->GameServer()->m_apPlayers[ClientId]) == std::numeric_limits<int>::max();
+	}
+
+	void Hit(GameWorld *pWorld, int VictimId, int AttackerId)
+	{
+		CCharacter *pVictim = pWorld->GameServer()->m_apPlayers[VictimId]->GetCharacter();
+		ASSERT_NE(pVictim, nullptr);
+		pVictim->TakeDamage(vec2(), 0, AttackerId, WEAPON_LASER);
+		ASSERT_FALSE(pVictim->IsAlive());
+	}
+}
+
+TEST_F(GameWorld, ZCatchPlaysGrenadeOrLaser)
+{
+	SelectGameMode("zcatch");
+	CCharacter *pGrenade = SpawnPlayer(0, vec2(64.0f, 96.0f));
+	ASSERT_NE(pGrenade, nullptr);
+	EXPECT_EQ(pGrenade->GetActiveWeapon(), WEAPON_GRENADE);
+	EXPECT_FALSE(pGrenade->GetWeaponGot(WEAPON_LASER));
+	str_copy(g_Config.m_SvSpawnWeapons, "laser");
+	CCharacter *pLaser = SpawnPlayer(1, vec2(96.0f, 96.0f));
+	ASSERT_NE(pLaser, nullptr);
+	EXPECT_EQ(pLaser->GetActiveWeapon(), WEAPON_LASER);
+	EXPECT_FALSE(pLaser->GetWeaponGot(WEAPON_GRENADE));
+}
+
+TEST_F(GameWorld, ZCatchIsAReleaseGameWithTooFewPlayers)
+{
+	str_copy(g_Config.m_SvSpawnWeapons, "laser");
+	SelectGameMode("zcatch");
+	AddSpawnPoints(this);
+	JoinPlayer(0, TEAM_GAME, "first");
+	JoinPlayer(1, TEAM_GAME, "second");
+	RunTicks(this, 10);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	ZCatchCharacter(this, 0);
+	ZCatchCharacter(this, 1);
+	Hit(this, 1, 0);
+	EXPECT_FALSE(IsCaught(this, 1));
+
+	// the fifth one starts the round
+	for(int ClientId = 2; ClientId < 5; ClientId++)
+		JoinPlayer(ClientId, TEAM_GAME, "more");
+	RunTicks(this, 2);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	for(int ClientId = 0; ClientId < 5; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	Hit(this, 2, 0);
+	EXPECT_TRUE(IsCaught(this, 1));
+	EXPECT_EQ(GameServer()->m_apPlayers[1]->SpectatorId(), 0);
+
+	// with fewer players the round goes on only while the leader can still catch 4
+	LeavePlayer(4);
+	GameController()->Tick();
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, 0);
+	EXPECT_TRUE(IsCaught(this, 1));
+	LeavePlayer(3);
+	GameController()->Tick();
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+	EXPECT_FALSE(IsCaught(this, 1));
+	EXPECT_FALSE(IsCaught(this, 2));
+	EXPECT_EQ(ReceivedMatchReport(0).m_Report.m_Termination, EMatchTermination::ABORTED);
+
+	// and never with sv_release_game
+	g_Config.m_SvReleaseGame = 1;
+	for(int ClientId = 3; ClientId < 5; ClientId++)
+		JoinPlayer(ClientId, TEAM_GAME, "more");
+	RunTicks(this, 10);
+	EXPECT_EQ(SnapGameData7(this).m_GameStateFlags, protocol7::GAMESTATEFLAG_WARMUP);
+}
+
+TEST_F(GameWorld, ZCatchADeathFreesOnlyWhomTheCatcherHeld)
+{
+	StartZCatch(this, 4);
+	for(int ClientId = 0; ClientId < 4; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	Hit(this, 2, 3);
+	EXPECT_TRUE(IsCaught(this, 1));
+	EXPECT_TRUE(IsCaught(this, 2));
+	Hit(this, 0, 3);
+	EXPECT_FALSE(IsCaught(this, 1));
+	EXPECT_TRUE(IsCaught(this, 2));
+	EXPECT_TRUE(IsCaught(this, 0));
+	// as do the ones of the other catcher when they die
+	Hit(this, 3, 1);
+	EXPECT_FALSE(IsCaught(this, 0));
+	EXPECT_FALSE(IsCaught(this, 2));
+}
+
+TEST_F(GameWorld, ZCatchKillKeyLetsTheLastCaughtGo)
+{
+	g_Config.m_SvKillDelay = 0;
+	StartZCatch(this, 4);
+	for(int ClientId = 0; ClientId < 4; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	Hit(this, 2, 0);
+	GameController()->OnPlayerKill(0);
+	EXPECT_TRUE(IsCaught(this, 1));
+	EXPECT_FALSE(IsCaught(this, 2));
+	ASSERT_NE(GameServer()->m_apPlayers[0]->GetCharacter(), nullptr);
+
+	// who joins is caught by the leader without counting, and the last kill that counts lets everybody go
+	JoinPlayer(4, TEAM_GAME, "late");
+	EXPECT_TRUE(IsCaught(this, 4));
+	EXPECT_EQ(GameServer()->m_apPlayers[4]->SpectatorId(), 0);
+	GameController()->OnPlayerKill(0);
+	EXPECT_FALSE(IsCaught(this, 4));
+	EXPECT_FALSE(IsCaught(this, 1));
+
+	// without anybody caught it kills, for three points
+	const int Score = GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]);
+	GameController()->OnPlayerKill(0);
+	EXPECT_EQ(GameServer()->m_apPlayers[0]->GetCharacter(), nullptr);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), Score - 3);
+	GameController()->EndRound();
+	const CReceivedMatchReport Received = ReceivedMatchReport(0);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "releases"), 3);
+}
+
+TEST_F(GameWorld, ZCatchCatchingACatcherGivesAPointMore)
+{
+	StartZCatch(this, 4);
+	for(int ClientId = 0; ClientId < 4; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 2, 1);
+	Hit(this, 1, 0);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 2);
+	Hit(this, 3, 0);
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 3);
+}
+
+TEST_F(GameWorld, ZCatchTheLastOneStandingWins)
+{
+	StartZCatch(this, 5);
+	for(int ClientId = 0; ClientId < 5; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	for(int ClientId = 1; ClientId < 5; ClientId++)
+		Hit(this, ClientId, 0);
+	m_pServer->AdvanceTick(5);
+	GameController()->Tick();
+	EXPECT_TRUE(GameController()->IsGamePaused());
+	// 4 kills, 1 win point on top
+	EXPECT_EQ(GameController()->SnapPlayerScore(SERVER_DEMO_CLIENT, GameServer()->m_apPlayers[0]), 5);
+	const CReceivedMatchReport Received = ReceivedMatchReport(1);
+	EXPECT_EQ(Received.m_Report.m_Termination, EMatchTermination::COMPLETED);
+	const CMatchParticipant *pWinner = Received.Participant("player0");
+	ASSERT_NE(pWinner, nullptr);
+	EXPECT_EQ(Received.Metric(pWinner->m_ParticipantId, "win_points"), 1);
+	EXPECT_EQ(Received.Metric(pWinner->m_ParticipantId, "catches"), 4);
+	EXPECT_EQ(Received.Metric(Received.m_LocalParticipantId, "caught_ticks"), 5);
+	const CMatchStanding *pStanding = Received.m_Report.Standing(EMatchSubjectKind::PARTICIPANT, pWinner->m_ParticipantId);
+	ASSERT_NE(pStanding, nullptr);
+	EXPECT_EQ(pStanding->m_Rank, 1);
+	EXPECT_EQ(pStanding->m_Outcome, EMatchOutcome::WIN);
+}
+
+TEST_F(GameWorld, ZCatchNobodyWinsWithoutEnoughKills)
+{
+	StartZCatch(this, 3);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	LeavePlayer(2);
+	// the leader could still win
+	GameController()->Tick();
+	EXPECT_EQ(ReceivedMatchReport(0).m_Report.m_Termination, EMatchTermination::ABORTED);
+	EXPECT_FALSE(IsCaught(this, 1));
+}
+
+TEST_F(GameWorld, ZCatchSpectatingDoesNotFreeACaughtPlayer)
+{
+	StartZCatch(this, 3);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	Hit(this, 1, 0);
+	GameController()->OnPlayerSetTeam(1, TEAM_SPECTATORS);
+	EXPECT_EQ(GameServer()->m_apPlayers[1]->GetTeam(), TEAM_GAME);
+	EXPECT_TRUE(IsCaught(this, 1));
+	Hit(this, 0, 2);
+	EXPECT_EQ(GameServer()->m_apPlayers[1]->GetTeam(), TEAM_SPECTATORS);
+}
+
+TEST_F(GameWorld, ZCatchColorsShowTheKillsThatCount)
+{
+	StartZCatch(this, 3);
+	for(int ClientId = 0; ClientId < 3; ClientId++)
+		ZCatchCharacter(this, ClientId);
+	CPlayer *pCatcher = GameServer()->m_apPlayers[0];
+	pCatcher->SetTeeInfos("default", true, 0x123456, 0x654321);
+	GameController()->Tick();
+	EXPECT_EQ(pCatcher->TeeInfos().m_ColorBody, ZCatch::BodyColor(ZCatch::EColors::TEETIME, 0));
+	Hit(this, 1, 0);
+	EXPECT_EQ(pCatcher->TeeInfos().m_ColorBody, ZCatch::BodyColor(ZCatch::EColors::TEETIME, 1));
+	EXPECT_EQ(pCatcher->TeeInfos().m_ColorFeet, 0x654321);
+	EXPECT_EQ(pCatcher->OwnTeeInfos().m_ColorBody, 0x123456);
+	str_copy(g_Config.m_SvZcatchColors, "savander");
+	GameController()->Tick();
+	EXPECT_EQ(pCatcher->TeeInfos().m_ColorBody, ZCatch::BodyColor(ZCatch::EColors::SAVANDER, 1));
+}
+
+TEST_F(GameWorld, ZCatchDeadSpectatorPresentationIsProtocolAware)
+{
+	constexpr int VictimId = 0;
+	constexpr int CatcherId = 1;
+	StartZCatch(this, 2);
+	CCharacter *pVictimCharacter = ZCatchCharacter(this, VictimId);
+	CPlayer *pVictim = pVictimCharacter->GetPlayer();
+
+	// A 0.6 client that can address every slot sees the real ids, a 0.7 one
+	// always goes through the player map, so build the map per protocol.
+	const auto ExpectedIds = [&](bool Sixup) {
+		m_pServer->m_aClients[VictimId].m_Sixup = Sixup;
+		GameServer()->m_PlayerMapping.InitPlayerMap(CatcherId);
+		GameServer()->m_PlayerMapping.InitPlayerMap(VictimId);
+		int Victim = VictimId;
+		EXPECT_TRUE(m_pServer->Translate(Victim, VictimId));
+		int Catcher = CatcherId;
+		if(!m_pServer->Translate(Catcher, VictimId))
+		{
+			Catcher = Victim == 0 ? 1 : 0;
+			m_pServer->GetIdMap(VictimId)[Catcher] = CatcherId;
+			m_pServer->GetReverseIdMap(VictimId)[CatcherId] = Catcher;
+		}
+		return std::make_pair(Victim, Catcher);
+	};
+
+	pVictimCharacter->TakeDamage(vec2(), 0, CatcherId, WEAPON_LASER);
+	EXPECT_EQ(pVictim->GetTeam(), TEAM_GAME);
+	EXPECT_EQ(pVictim->SpectatorId(), CatcherId);
+
+	const auto [TranslatedVictimId, TranslatedCatcherId] = ExpectedIds(false);
+	m_pServer->m_SnapshotBuilder.Init(false);
+	pVictim->Snap(VictimId);
+	CSnapshotBuffer SixBuffer;
+	m_pServer->m_SnapshotBuilder.Finish(&SixBuffer);
+	const CSnapshot *pSixSnapshot = SixBuffer.AsSnapshot();
+	const auto *pSixPlayerInfo = static_cast<const CNetObj_PlayerInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_PLAYERINFO, TranslatedVictimId));
+	const auto *pSixSpectatorInfo = static_cast<const CNetObj_SpectatorInfo *>(pSixSnapshot->FindItem(NETOBJTYPE_SPECTATORINFO, VictimId));
+	ASSERT_NE(pSixPlayerInfo, nullptr);
+	ASSERT_NE(pSixSpectatorInfo, nullptr);
+	EXPECT_EQ(pSixPlayerInfo->m_Team, TEAM_SPECTATORS);
+	EXPECT_EQ(pSixSpectatorInfo->m_SpectatorId, TranslatedCatcherId);
+
+	const auto [SevenVictimId, SevenCatcherId] = ExpectedIds(true);
+	m_pServer->m_SnapshotBuilder.Init(true);
+	pVictim->Snap(VictimId);
+	CSnapshotBuffer SevenBuffer;
+	m_pServer->m_SnapshotBuilder.Finish(&SevenBuffer);
+	const CSnapshot *pSevenSnapshot = SevenBuffer.AsSnapshot();
+	const auto *pSevenPlayerInfo = static_cast<const protocol7::CNetObj_PlayerInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_PLAYERINFO, SevenVictimId));
+	const auto *pSevenSpectatorInfo = static_cast<const protocol7::CNetObj_SpectatorInfo *>(pSevenSnapshot->FindItem(protocol7::NETOBJTYPE_SPECTATORINFO, VictimId));
+	ASSERT_NE(pSevenPlayerInfo, nullptr);
+	ASSERT_NE(pSevenSpectatorInfo, nullptr);
+	EXPECT_NE(pSevenPlayerInfo->m_PlayerFlags & protocol7::PLAYERFLAG_DEAD, 0);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpecMode, protocol7::SPEC_PLAYER);
+	EXPECT_EQ(pSevenSpectatorInfo->m_SpectatorId, SevenCatcherId);
 }

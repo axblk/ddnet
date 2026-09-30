@@ -5,6 +5,8 @@
 
 #include "grenade_ammo.h"
 
+#include <base/str.h>
+
 #include <engine/server.h>
 #include <engine/shared/config.h>
 
@@ -187,6 +189,23 @@ class CGameControllerFixedInstagib : public CGameControllerInstagib<TBase>
 {
 protected:
 	int InstagibWeapon() const override { return Weapon; }
+
+public:
+	using CGameControllerInstagib<TBase>::CGameControllerInstagib;
+};
+
+// the weapon sv_spawn_weapons names: laser (or rifle, as ddnet-insta also calls it) or else grenade
+inline int InstagibSpawnWeapon(const char *pSetting)
+{
+	return str_comp_nocase(pSetting, "laser") == 0 || str_comp_nocase(pSetting, "rifle") == 0 ? WEAPON_LASER : WEAPON_GRENADE;
+}
+
+// instagib with the weapon the server chooses in sv_spawn_weapons, from the next spawn on
+template<typename TBase>
+class CGameControllerSpawnWeaponInstagib : public CGameControllerInstagib<TBase>
+{
+protected:
+	int InstagibWeapon() const override { return InstagibSpawnWeapon(g_Config.m_SvSpawnWeapons); }
 
 public:
 	using CGameControllerInstagib<TBase>::CGameControllerInstagib;

@@ -10,3 +10,4 @@ MACRO_CONFIG_INT(SvGrenadeAmmoRegenTime, sv_grenade_ammo_regen_time, 128, 1, 900
 MACRO_CONFIG_INT(SvGrenadeAmmoRegenNum, sv_grenade_ammo_regen_num, 6, 1, 10, CFGFLAG_SAVE | CFGFLAG_SERVER, "Grenades a player can have")
 MACRO_CONFIG_INT(SvGrenadeAmmoRegenSpeed, sv_grenade_ammo_regen_speed, 1, 0, 1, CFGFLAG_SAVE | CFGFLAG_SERVER, "A grenade that pushes its shooter comes back")
 MACRO_CONFIG_INT(SvGrenadeAmmoRegenOnKill, sv_grenade_ammo_regen_on_kill, 2, 0, 2, CFGFLAG_SAVE | CFGFLAG_SERVER, "Grenades a hit brings back (0 none, 1 one, 2 all)")
+MACRO_CONFIG_STR(SvSpawnWeapons, sv_spawn_weapons, 16, "grenade", CFGFLAG_SAVE | CFGFLAG_SERVER, "Weapon of the instagib modes that let the server choose it (zCatch, catch16): grenade or laser, from the next spawn on")

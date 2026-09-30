@@ -855,3 +855,4 @@ MACRO_CONFIG_INT(ClVideoRecorderFPS, cl_video_recorder_fps, 60, 1, 1000, CFGFLAG
 // The settings of the game modes live next to them, each with its own file
 #include <game/server/modes/insta/config_variables.h>
 #include <game/server/modes/pvp/config_variables.h>
+#include <game/server/modes/zcatch/config_variables.h>

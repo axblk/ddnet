@@ -1,7 +1,10 @@
 // The rules of the building blocks the PvP modes share, and of the modes, without a game world.
 #include <game/server/modes/insta/grenade_ammo.h>
+#include <game/server/modes/insta/instagib.h>
 #include <game/server/modes/pvp/anticamper.h>
 #include <game/server/modes/pvp/killing_spree.h>
+#include <game/server/modes/zcatch/catches.h>
+#include <game/server/modes/zcatch/rules.h>
 
 #include <gtest/gtest.h>
 
@@ -150,4 +153,97 @@ TEST(GrenadeAmmo, OneComesBackAfterTheReloadAndTheRegenerationTime)
 	for(int Tick = 0; Tick < 3 * Settings.m_RegenTicks; Tick++)
 		Ammo = Regen.Tick(Ammo, Settings);
 	EXPECT_EQ(Ammo, 4);
+}
+
+TEST(Instagib, SpawnWeapon)
+{
+	EXPECT_EQ(InstagibSpawnWeapon("grenade"), WEAPON_GRENADE);
+	EXPECT_EQ(InstagibSpawnWeapon("laser"), WEAPON_LASER);
+	EXPECT_EQ(InstagibSpawnWeapon("Rifle"), WEAPON_LASER);
+	EXPECT_EQ(InstagibSpawnWeapon("hammer"), WEAPON_GRENADE);
+}
+
+TEST(ZCatch, WinPoints)
+{
+	const int aExpected[] = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 5, 7, 9, 11, 12, 14, 16, 16, 16};
+	for(int Kills = 0; Kills < (int)std::size(aExpected); Kills++)
+		EXPECT_EQ(ZCatch::WinPoints(Kills), aExpected[Kills]) << Kills;
+}
+
+TEST(ZCatch, KillsToWin)
+{
+	EXPECT_EQ(ZCatch::KillsToWin(5), 4);
+	EXPECT_EQ(ZCatch::KillsToWin(16), 4);
+	EXPECT_EQ(ZCatch::KillsToWin(3), 2);
+	EXPECT_EQ(ZCatch::KillsToWin(2), 1);
+}
+
+TEST(ZCatch, Colors)
+{
+	EXPECT_EQ(ZCatch::ParseColors("teetime"), ZCatch::EColors::TEETIME);
+	EXPECT_EQ(ZCatch::ParseColors("Savander"), ZCatch::EColors::SAVANDER);
+	EXPECT_EQ(ZCatch::ParseColors("rainbow"), ZCatch::EColors::TEETIME);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::TEETIME, 0), 0xA0FF00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::TEETIME, 3), 0x82FF00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::TEETIME, 20), 0x00FF00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::SAVANDER, 0), 0xFFBB00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::SAVANDER, 1), 0x00FF00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::SAVANDER, 15), 0xEEFF00);
+	EXPECT_EQ(ZCatch::BodyColor(ZCatch::EColors::SAVANDER, 16), 0xFFBB00);
+}
+
+TEST(Catches, ADeathFreesOnlyWhomTheCatcherHeld)
+{
+	CCatches Catches;
+	Catches.Catch(2, 1, true);
+	Catches.Catch(1, 0, true);
+	EXPECT_EQ(Catches.CatcherId(2), 1);
+	EXPECT_EQ(Catches.KillsThatCount(0), 1);
+	EXPECT_EQ(Catches.ReleaseAll(1), std::vector<int>{2});
+	EXPECT_EQ(Catches.KillsThatCount(1), 0);
+	EXPECT_FALSE(Catches.IsCaught(2));
+	EXPECT_TRUE(Catches.IsCaught(1));
+}
+
+TEST(Catches, TheKillKeyLetsTheLastCaughtGoFirst)
+{
+	CCatches Catches;
+	Catches.Catch(1, 0, true);
+	Catches.Catch(2, 0, true);
+	// joined and caught by the leader, which is no kill
+	Catches.Catch(3, 0, false);
+	EXPECT_EQ(Catches.KillsThatCount(0), 2);
+	EXPECT_EQ(Catches.ReleaseLast(0), std::vector<int>{3});
+	EXPECT_EQ(Catches.KillsThatCount(0), 1);
+	// the last kill that counts lets everybody go
+	EXPECT_EQ(Catches.ReleaseLast(0), (std::vector<int>{2, 1}));
+	EXPECT_EQ(Catches.KillsThatCount(0), 0);
+	EXPECT_TRUE(Catches.VictimIds(0).empty());
+	EXPECT_TRUE(Catches.ReleaseLast(0).empty());
+}
+
+TEST(Catches, TheLeaderHasTheMostKillsThatCount)
+{
+	CCatches Catches;
+	EXPECT_EQ(Catches.LeaderId(), CCatches::NONE);
+	Catches.Catch(5, 3, true);
+	Catches.Catch(6, 2, true);
+	EXPECT_EQ(Catches.LeaderId(), 2);
+	Catches.Catch(7, 3, true);
+	EXPECT_EQ(Catches.LeaderId(), 3);
+	// the same one twice counts once
+	Catches.Catch(6, 2, true);
+	EXPECT_EQ(Catches.KillsThatCount(2), 1);
+}
+
+TEST(Catches, WhoLeavesIsLetGoAndLetsGo)
+{
+	CCatches Catches;
+	Catches.Catch(1, 0, true);
+	Catches.Catch(2, 1, true);
+	EXPECT_EQ(Catches.Leave(1), std::vector<int>{2});
+	EXPECT_TRUE(Catches.VictimIds(0).empty());
+	EXPECT_FALSE(Catches.IsCaught(2));
+	Catches.Clear();
+	EXPECT_EQ(Catches.LeaderId(), CCatches::NONE);
 }

@@ -4165,6 +4165,11 @@ if(SERVER)
     modes/vanilla/teamplay.h
     modes/vanilla/vanilla_pvp.cpp
     modes/vanilla/vanilla_pvp.h
+    modes/zcatch/catches.cpp
+    modes/zcatch/catches.h
+    modes/zcatch/config_variables.h
+    modes/zcatch/rules.cpp
+    modes/zcatch/rules.h
     modes/zcatch/zcatch.cpp
     mutes.cpp
     player.cpp

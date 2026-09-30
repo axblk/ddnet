@@ -31,6 +31,9 @@ static const CMatchMetricInfo gs_aMatchMetrics[] = {
 	{"flag_returns", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Flag returns"), -1},
 	{"flag_captures", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Flag captures"), -1},
 	{"catches", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Catches"), -1},
+	{"releases", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Releases"), -1},
+	{"caught_ticks", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::TICKS, Localizable("Time caught"), -1},
+	{"win_points", EMatchMetricAggregation::SUM, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::NUMBER, Localizable("Win points"), -1},
 	// modes with rounds inside a match: how many there were, and the ones a participant played and scored in
 	{"rounds", EMatchMetricAggregation::MATCH_ONLY, EMatchMetricCategory::OVERVIEW, EMatchMetricFormat::NUMBER, Localizable("Rounds"), -1},
 	{"rounds_played", EMatchMetricAggregation::SUM, EMatchMetricCategory::OBJECTIVES, EMatchMetricFormat::NUMBER, Localizable("Rounds played"), -1},

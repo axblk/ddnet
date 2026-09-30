@@ -1645,9 +1645,11 @@ def vanilla_lts_match_lifecycle(test_env):
 	victim.wait_for_exit()
 
 
-# The votes of a Teeworlds 0.7 server config, without ready mode and lock_teams
+# The votes of a Teeworlds 0.7 server config, without lock_teams
 VANILLA_07_SERVER_VOTES = [
 	("Restart with 15s warmup", "restart 15"),
+	("Enable ready mode", "sv_player_ready_mode 1"),
+	("Disable ready mode", "sv_player_ready_mode 0"),
 	("Pause/unpause the game", "pause"),
 	("Swap teams", "swap_teams"),
 	("Shuffle teams", "shuffle_teams"),
@@ -1751,6 +1753,162 @@ def vanilla_07_server_votes(test_env):
 	server.wait_for_exit()
 	first.wait_for_exit()
 	second.wait_for_exit()
+
+
+def wait_for_online(client):
+	# The server lets a client in before the client has the two snapshots it
+	# needs to be online, "ready" says nothing to the server until then
+	wait_for_sessions(client, lambda s: s[0]["state"] == "3" and s[0]["input"] == "1", "the client did not get online")
+
+
+def ready_pause_the_running_game(client, player_name):
+	# the countdown before a match goes on by itself, the running game can be paused
+	refused = "chat/server: *** Nothing is waiting for you to be ready"
+	paused = f"chat/server: *** '{player_name}' paused the game until everybody is ready"
+	for _ in range(10):
+		# a player can change their mind once a second
+		sleep(1)
+		client.command("ready")
+		if client.wait_for_log(lambda l: l.line in (refused, paused), description="the game paused or not", timeout=5).line == paused:
+			return
+	raise AssertionError("the running game was not paused")
+
+
+@test
+def ready_mode_with_ddnet_and_06_clients(test_env):
+	# One client shows the ready state itself, the other one does not and is
+	# told in broadcasts, as a 0.6 client, which says /ready in chat
+	first = test_env.client(["player_name first"])
+	legacy = test_env.client(["player_name legacy", "cl_showhud_ready 0"])
+	watcher = test_env.client(["player_name watcher"])
+	server = test_env.server(["sv_gametype dm", "sv_map Tutorial", "sv_player_ready_mode 1", "sv_warmup -1", "sv_countdown 2"])
+	wait_for_startup([first, legacy, watcher, server])
+	server.wait_for_log_exact("game: ready wait=start", timeout=10)
+	for client in (first, legacy, watcher):
+		client.command(f"connect localhost:{server.port}")
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	# who watches is not waited for and cannot be ready
+	watcher.command("team -1")
+	server.wait_for_log_exact("chat: *** 'watcher' joined the spectators", timeout=5)
+	watcher.command("say /ready")
+	watcher.wait_for_log_exact("chat/server: *** Only players in the game can be ready", timeout=5)
+
+	# the match starts once everybody in the game is ready, after the countdown
+	legacy.wait_for_log_exact("broadcast: Waiting for: first, legacy", timeout=10)
+	legacy.wait_for_log_exact("broadcast: Say /ready when you are ready", timeout=5)
+	wait_for_online(first)
+	first.command("ready")
+	server.wait_for_log_exact("game: ready player='0:first' ready=1 not_ready=1", timeout=5)
+	legacy.wait_for_log_exact("broadcast: Waiting for: legacy", timeout=5)
+	legacy.command("say /ready")
+	server.wait_for_log_exact("game: ready player='1:legacy' ready=1 not_ready=0", timeout=5)
+	server.wait_for_log_exact("game: ready everybody", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=5)
+	legacy.wait_for_log_exact("broadcast: Game starts in 2", timeout=5)
+
+	# a player who is not ready any more pauses the game for everybody
+	ready_pause_the_running_game(first, "first")
+	server.wait_for_log_exact("game: ready player='0:first' paused the game", timeout=5)
+	legacy.wait_for_log_exact("chat/server: *** 'first' paused the game until everybody is ready", timeout=5)
+	legacy.wait_for_log_exact("broadcast: Waiting for: first, legacy", timeout=5)
+	# /pause says the same, as in ddnet-insta
+	legacy.command("say /pause")
+	server.wait_for_log_exact("game: ready player='1:legacy' ready=1 not_ready=1", timeout=5)
+	# a player changes their mind once a second
+	sleep(1)
+	first.command("ready")
+	server.wait_for_log_exact("game: ready everybody", timeout=5)
+	legacy.wait_for_log_exact("broadcast: Game resumes in 2", timeout=5)
+
+	# the client says it shows the ready state once it is in the game, so it
+	# may have got a broadcast before that, but none after it got ready
+	lines = [Log.parse(line).line for line in first.full_stdout]
+	paused_at = lines.index("chat/server: *** 'first' paused the game until everybody is ready")
+	shown = [line for line in lines if line == "broadcast: Waiting for: legacy"] + [line for line in lines[paused_at:] if line.startswith("broadcast: Waiting for")]
+	if shown:
+		raise AssertionError(f"the client that shows the ready state was told in broadcasts: {shown!r}")
+
+	for client in (first, legacy, watcher):
+		client.exit()
+	server.exit()
+	server.wait_for_exit()
+	for client in (first, legacy, watcher):
+		client.wait_for_exit()
+
+
+@test
+def ready_mode_with_a_07_client(test_env):
+	# a DDNet client that plays by the 0.7 protocol sends the ready change of 0.7
+	seven = test_env.client(["player_name seven"])
+	six = test_env.client(["player_name six"])
+	server = test_env.server(["sv_gametype ctf", "sv_map Tutorial", "sv_player_ready_mode 1"])
+	wait_for_startup([seven, six, server])
+	seven.command(f"connect tw-0.7+udp://127.0.0.1:{server.port}")
+	seven_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in seven_join:
+		raise AssertionError(f"sixup=1 not found in {seven_join!r}")
+	six.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	wait_for_online(seven)
+	seven.command("ready")
+	server.wait_for_log_exact("game: ready player='0:seven' paused the game", timeout=5)
+	six.wait_for_log_exact("chat/server: *** 'seven' paused the game until everybody is ready", timeout=5)
+	sleep(1)
+	seven.command("ready")
+	server.wait_for_log_exact("game: ready player='0:seven' ready=1 not_ready=1", timeout=5)
+	server.command("force_ready 1")
+	six.wait_for_log_exact("chat/server: *** 'six' was set ready by an admin", timeout=5)
+	server.wait_for_log_exact("game: ready everybody", timeout=5)
+
+	seven.exit()
+	six.exit()
+	server.exit()
+	server.wait_for_exit()
+	seven.wait_for_exit()
+	six.wait_for_exit()
+
+
+@test(requires_teeworlds_client=True)
+def ready_mode_with_a_stock_07_client(test_env):
+	first = test_env.client(["player_name first"])
+	server = test_env.server(["sv_gametype dm", "sv_map Tutorial", "sv_player_ready_mode 1", "sv_warmup -1"])
+	wait_for_startup([first, server])
+	server.wait_for_log_exact("game: ready wait=start", timeout=10)
+	first.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	stock = test_env.teeworlds(["player_name stock", f"connect 127.0.0.1:{server.port}"])
+	stock_join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "sixup=1" not in stock_join:
+		raise AssertionError(f"sixup=1 not found in {stock_join!r}")
+	stock_id = int(stock_join.split("ClientId=", 1)[1].split(" ", 1)[0])
+
+	# the match waits for the 0.7 client as well
+	wait_for_online(first)
+	first.command("ready")
+	server.wait_for_log_exact("game: ready player='0:first' ready=1 not_ready=1", timeout=5)
+	server.command(f"force_ready {stock_id}")
+	server.wait_for_log_exact("game: ready everybody", timeout=5)
+	server.wait_for_log_exact("game: start round type='TestDM' teamplay='0'", timeout=5)
+	# and again in a pause
+	ready_pause_the_running_game(first, "first")
+	server.wait_for_log_exact("game: ready player='0:first' paused the game", timeout=5)
+	server.command("force_ready")
+	server.wait_for_log_exact("game: ready everybody", timeout=5)
+
+	server.exit()
+	stock.wait_for_log_exact("offline error='Server shutdown'", timeout=10)
+	first.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+	lines = [Log.parse(line).line for line in stock.full_stdout]
+	dropped = [line for line in lines if "dropped weird" in line]
+	if dropped:
+		raise AssertionError(f"the 0.7 client dropped: {dropped!r}")
+	first.exit()
+	stock.exit()
+	server.wait_for_exit()
+	first.wait_for_exit()
+	stock.wait_for_exit()
 
 
 def vanilla_survival_stock_07_match_lifecycle(test_env, gametype, teamplay):

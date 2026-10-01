@@ -216,8 +216,11 @@ class TestRunner:
 			try:
 				test(env)
 			except Exception as e:  # noqa: BLE001 blind-except
+				# Before the processes are killed: a timeout means something else when the process is gone.
+				process_states = env.format_process_states()
 				env.kill_all()
 				error = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+				error = error + process_states
 				error = error + env.format_valgrind_memcheck_errors()
 				error = error + env.format_stdout_stderr()
 				tmp_dir_cleanup = False
@@ -311,6 +314,8 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 		self.num_servers = 0
 		self.num_mastersrvs = 0
 		self.processes = []
+		# kept after `kill_all`, unlike `processes`
+		self.named_processes = []
 		self.run_id = uuid4()
 		self.full_stdouts_stderrs = []
 		self.test_timeout_queue = Queue()
@@ -321,6 +326,7 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 
 	def register_process(self, process, name, full_stdout, full_stderr):
 		self.processes.append(process)
+		self.named_processes.append((name, process))
 		self.full_stdouts_stderrs.append((name, full_stdout, full_stderr))
 
 	def register_events_queue(self, queue):
@@ -342,6 +348,19 @@ add_path {relpath(self.runner.data_dir, tmp_dir)}
 				process.kill()
 		while self.processes:
 			self.processes.pop().wait()
+
+	def format_process_states(self) -> str:
+		states = []
+		for name, process in self.named_processes:
+			exit_code = process.poll()
+			if exit_code is None:
+				state = "still running"
+			elif os.name == "nt":
+				state = f"exited with code {exit_code} ({exit_code & 0xFFFFFFFF:#010x})"
+			else:
+				state = f"exited with code {exit_code}"
+			states.append(f"{name} (pid {process.pid}): {state}\n")
+		return "--- processes ---\n" + "".join(states) if states else ""
 
 	def format_valgrind_memcheck_errors(self) -> str:
 		for name, _, stderr in self.full_stdouts_stderrs:

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -47,17 +48,20 @@ private:
 	static size_t WriteCallback(char *pData, size_t Size, size_t Number, void *pUser);
 };
 
-class CHttpCurl : public IEngineHttp
+// The HTTP thread and its requests. The thread holds the worker as well, so
+// that it can be left behind when it is stuck inside curl.
+class CHttpCurl
 {
 public:
-	// Lifecycle
-	bool Init(std::chrono::milliseconds ShutdownDelay) override;
-	void Shutdown() override;
-	~CHttpCurl() override;
+	bool Init(std::chrono::milliseconds ShutdownDelay, const std::shared_ptr<CHttpCurl> &pSelf);
+	void Shutdown();
+	// Waits for the thread at most for the shutdown delay and a second more,
+	// returns whether it ended.
+	bool WaitForThread();
+	void *Thread() const { return m_pThread; }
 
-	// User
-	void Run(std::shared_ptr<IHttpRequest> pRequest) override;
-	bool HasIpresolveBug() const override;
+	void Run(const std::shared_ptr<IHttpRequest> &pRequest);
+	bool HasIpresolveBug() const;
 
 private:
 	enum EState
@@ -82,8 +86,28 @@ private:
 	CURLM *m_pMultiH = nullptr;
 	int m_NextTimeout;
 
+	std::mutex m_FinishedLock;
+	std::condition_variable m_FinishedCondition;
+	bool m_Finished = false;
+
 	static void ThreadMain(void *pUser);
 	void RunLoop();
+};
+
+class CEngineHttpCurl : public IEngineHttp
+{
+public:
+	// Lifecycle
+	bool Init(std::chrono::milliseconds ShutdownDelay) override;
+	void Shutdown() override;
+	~CEngineHttpCurl() override;
+
+	// User
+	void Run(std::shared_ptr<IHttpRequest> pRequest) override;
+	bool HasIpresolveBug() const override;
+
+private:
+	std::shared_ptr<CHttpCurl> m_pWorker = std::make_shared<CHttpCurl>();
 };
 
 #endif // !CONF_PLATFORM_EMSCRIPTEN

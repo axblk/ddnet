@@ -108,12 +108,21 @@ const char *IHttpRequest::Dest() const
 	}
 }
 
+void IHttpRequest::Abort()
+{
+	{
+		std::unique_lock Lock(m_WaitMutex);
+		m_Abort = true;
+	}
+	m_WaitCondition.notify_all();
+}
+
 void IHttpRequest::Wait()
 {
 	std::unique_lock Lock(m_WaitMutex);
 	m_WaitCondition.wait(Lock, [this]() {
 		EHttpState State = m_State.load(std::memory_order_seq_cst);
-		return State != EHttpState::QUEUED && State != EHttpState::RUNNING;
+		return m_Abort || (State != EHttpState::QUEUED && State != EHttpState::RUNNING);
 	});
 }
 

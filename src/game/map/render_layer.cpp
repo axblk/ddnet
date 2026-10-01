@@ -597,6 +597,14 @@ void CRenderLayerTile::RenderKillTileBorder(const ColorRGBA &Color)
 	}
 }
 
+void CRenderLayerTile::RenderNumbers(IGraphics::CTextureHandle Numbers, const ColorRGBA &Color, const CRenderLayerParams &Params, CTileLayerVisuals &Visuals)
+{
+	if(!Numbers.IsValid())
+		return;
+	Graphics()->TextureSet(Numbers);
+	RenderTileLayer(Color, Params, &Visuals);
+}
+
 ColorRGBA CRenderLayerTile::GetRenderColor(const CRenderLayerParams &Params) const
 {
 	ColorRGBA Color = m_Color;
@@ -1064,8 +1072,7 @@ void CRenderLayerEntityTele::RenderTiles(const ColorRGBA &Color, const CRenderLa
 	RenderTileLayer(Color, Params);
 	if(Params.m_RenderText)
 	{
-		Graphics()->TextureSet(m_pMapImages->GetOverlayCenter());
-		RenderTileLayer(Color, Params, &m_VisualTeleNumbers.value());
+		RenderNumbers(m_pMapImages->GetOverlayCenter(), Color, Params, m_VisualTeleNumbers.value());
 	}
 }
 
@@ -1149,10 +1156,8 @@ void CRenderLayerEntitySpeedup::RenderTiles(const ColorRGBA &Color, const CRende
 
 	if(Params.m_RenderText)
 	{
-		Graphics()->TextureSet(m_pMapImages->GetOverlayBottom());
-		RenderTileLayer(Color, Params, &m_VisualForce.value());
-		Graphics()->TextureSet(m_pMapImages->GetOverlayTop());
-		RenderTileLayer(Color, Params, &m_VisualMaxSpeed.value());
+		RenderNumbers(m_pMapImages->GetOverlayBottom(), Color, Params, m_VisualForce.value());
+		RenderNumbers(m_pMapImages->GetOverlayTop(), Color, Params, m_VisualMaxSpeed.value());
 	}
 }
 
@@ -1219,10 +1224,8 @@ void CRenderLayerEntitySwitch::RenderTiles(const ColorRGBA &Color, const CRender
 	RenderTileLayer(Color, Params);
 	if(Params.m_RenderText)
 	{
-		Graphics()->TextureSet(m_pMapImages->GetOverlayTop());
-		RenderTileLayer(Color, Params, &m_VisualSwitchNumberTop.value());
-		Graphics()->TextureSet(m_pMapImages->GetOverlayBottom());
-		RenderTileLayer(Color, Params, &m_VisualSwitchNumberBottom.value());
+		RenderNumbers(m_pMapImages->GetOverlayTop(), Color, Params, m_VisualSwitchNumberTop.value());
+		RenderNumbers(m_pMapImages->GetOverlayBottom(), Color, Params, m_VisualSwitchNumberBottom.value());
 	}
 }
 

@@ -45,6 +45,7 @@ constexpr int MapImageEntityVariant(EMapImageModType ModType, bool Masked)
 static_assert(MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_DDNET, false) != MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_DDNET, true));
 static_assert(MapImageEntityVariant(MAP_IMAGE_MOD_TYPE_FDDRACE, true) == MAP_IMAGE_MOD_TYPE_COUNT * 2 - 1);
 
+class CEntityNumbersJob;
 class CGameInfo;
 
 class CMapImages : public CComponent
@@ -58,6 +59,8 @@ public:
 	void OnInit() override;
 	void OnUpdate() override;
 	void OnShutdown() override;
+	void OnMapLoad() override;
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	// DDRace
 	IGraphics::CTextureHandle GetEntities(EMapImageEntityLayerType EntityLayerType);
@@ -66,6 +69,16 @@ public:
 	IGraphics::CTextureHandle GetTuneColors();
 	IGraphics::CTextureHandle GetTuneColors(EMapImageModType EntitiesModType, bool EntitiesAreMasked);
 
+	/**
+	 * The textures of numbers, see `IMapImages::GetOverlayCenter`.
+	 */
+	enum
+	{
+		OVERLAY_BOTTOM,
+		OVERLAY_TOP,
+		OVERLAY_CENTER,
+		NUM_OVERLAYS,
+	};
 	IGraphics::CTextureHandle GetOverlayBottom();
 	IGraphics::CTextureHandle GetOverlayTop();
 	IGraphics::CTextureHandle GetOverlayCenter();
@@ -82,9 +95,14 @@ private:
 	IGraphics::CTextureHandle m_aaEntitiesTextures[MAP_IMAGE_MOD_TYPE_COUNT * 2][MAP_IMAGE_ENTITY_LAYER_TYPE_COUNT];
 	IGraphics::CTextureHandle m_SpeedupArrowTexture;
 	IGraphics::CTextureHandle m_aTuneColorMapTextures[MAP_IMAGE_MOD_TYPE_COUNT * 2];
-	IGraphics::CTextureHandle m_OverlayBottomTexture;
-	IGraphics::CTextureHandle m_OverlayTopTexture;
-	IGraphics::CTextureHandle m_OverlayCenterTexture;
+	// The numbers over the tele, speedup and switch tiles. Made when they are
+	// first drawn, or when the game draws them from its first frame on, see
+	// `OnMapLoad`.
+	IGraphics::CTextureHandle m_aOverlayTextures[NUM_OVERLAYS];
+	// The size of the numbers (`cl_text_entities_size`) the textures are
+	// made for or being made for, 0 before they are asked for.
+	int m_OverlayScale = 0;
+	CTypedAssetResource<CEntityNumbersJob> m_OverlayResource;
 	int m_TextureScale;
 	class CEntitiesLoad
 	{
@@ -100,9 +118,10 @@ private:
 	static void ConchainClTextEntitiesSize(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	void FinishEntitiesLoads();
 	bool FinishEntitiesLoad(const CEntitiesLoad &Load, CImageInfo &ImgInfo, const char *pPath);
-	void InitOverlayTextures();
-	IGraphics::CTextureHandle UploadEntityLayerText(int TextureSize, int MaxWidth, int YOffset);
-	void UpdateEntityLayerText(CImageInfo &TextImage, int TextureSize, int MaxWidth, int YOffset, int NumbersPower, int MaxNumber = -1);
+	// Starts to make the textures of numbers for the current size, unless
+	// they are there or being made. The old ones are kept until then.
+	void RequestOverlayTextures();
+	void FinishOverlayTextures();
 };
 
 class CMapRenderImages : public CComponentInterfaces, public IMapImages

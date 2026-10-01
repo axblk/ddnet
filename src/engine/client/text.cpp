@@ -27,6 +27,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -889,67 +890,48 @@ public:
 		return vec2(0.0f, 0.0f);
 	}
 
-	void UploadEntityLayerText(const CImageInfo &TextImage, int TexSubWidth, int TexSubHeight, const char *pText, int Length, float x, float y, int FontSize)
+	void RasterizeCharacters(const char *pText, int FontSize, std::vector<std::optional<CCharacterBitmap>> &vBitmaps)
 	{
-		if(FontSize < 1)
-			return;
-
-		const size_t PixelSize = TextImage.PixelSize();
+		vBitmaps.clear();
+		std::vector<CGlyphRaster> vRasters;
+		std::vector<size_t> vRasterBitmaps;
 		const char *pCurrent = pText;
-		const char *pEnd = pCurrent + Length;
-		int WidthLastChars = 0;
-		std::vector<uint8_t> vPixels;
-
-		while(pCurrent < pEnd)
+		while(*pCurrent)
 		{
-			const char *pTmp = pCurrent;
-			const int NextCharacter = str_utf8_decode(&pTmp);
-
-			if(NextCharacter)
-			{
-				const CFontFace *pFace;
-				const unsigned GlyphIndex = GetCharGlyph(NextCharacter, &pFace, true);
-				if(GlyphIndex == 0)
-				{
-					pCurrent = pTmp;
-					continue;
-				}
-
-				// The character itself, whose glyph the face may lack
-				CGlyphRaster Raster = {pFace, pFace->GlyphIndex(NextCharacter), NextCharacter, FontSize, {}, nullptr};
-				if(!m_pRasterizer->Measure(pFace, Raster.m_GlyphIndex, NextCharacter, FontSize, Raster.m_Metrics))
-				{
-					pCurrent = pTmp;
-					continue;
-				}
-				const int Width = Raster.m_Metrics.m_Width;
-				const int Height = Raster.m_Metrics.m_Height;
-				vPixels.assign((size_t)Width * Height, 0);
-				Raster.m_pPixels = vPixels.data();
-				if(!m_pRasterizer->Rasterize({&Raster, 1}))
-				{
-					pCurrent = pTmp;
-					continue;
-				}
-
-				for(int OffY = 0; OffY < Height; ++OffY)
-				{
-					for(int OffX = 0; OffX < Width; ++OffX)
-					{
-						const int ImgOffX = std::clamp(x + OffX + WidthLastChars, x, (x + TexSubWidth) - 1);
-						const int ImgOffY = std::clamp(y + OffY, y, (y + TexSubHeight) - 1);
-						const size_t ImageOffset = ImgOffY * (TextImage.m_Width * PixelSize) + ImgOffX * PixelSize;
-						for(size_t i = 0; i < PixelSize - 1; ++i)
-						{
-							TextImage.m_pData[ImageOffset + i] = 255;
-						}
-						TextImage.m_pData[ImageOffset + PixelSize - 1] = vPixels[OffY * Width + OffX];
-					}
-				}
-
-				WidthLastChars += (Width + 1);
-			}
-			pCurrent = pTmp;
+			const int Character = str_utf8_decode(&pCurrent);
+			if(!Character)
+				continue;
+			vBitmaps.emplace_back();
+			if(FontSize < 1)
+				continue;
+			const CFontFace *pFace;
+			if(GetCharGlyph(Character, &pFace, true) == 0)
+				continue;
+			// The character itself, whose glyph the face may lack
+			CGlyphRaster Raster = {pFace, pFace->GlyphIndex(Character), Character, FontSize, {}, nullptr};
+			if(!m_pRasterizer->Measure(pFace, Raster.m_GlyphIndex, Character, FontSize, Raster.m_Metrics))
+				continue;
+			CCharacterBitmap &Bitmap = vBitmaps.back().emplace();
+			Bitmap.m_Width = Raster.m_Metrics.m_Width;
+			Bitmap.m_Height = Raster.m_Metrics.m_Height;
+			vRasters.push_back(Raster);
+			vRasterBitmaps.push_back(vBitmaps.size() - 1);
+		}
+		for(size_t i = 0; i < vRasters.size(); ++i)
+		{
+			CCharacterBitmap &Bitmap = *vBitmaps[vRasterBitmaps[i]];
+			Bitmap.m_vCoverage.assign((size_t)Bitmap.m_Width * Bitmap.m_Height, 0);
+			vRasters[i].m_pPixels = Bitmap.m_vCoverage.data();
+		}
+		if(vRasters.empty() || m_pRasterizer->Rasterize(vRasters))
+			return;
+		// Again one by one, to leave out only those that fail
+		for(size_t i = 0; i < vRasters.size(); ++i)
+		{
+			std::optional<CCharacterBitmap> &Bitmap = vBitmaps[vRasterBitmaps[i]];
+			std::fill(Bitmap->m_vCoverage.begin(), Bitmap->m_vCoverage.end(), 0);
+			if(!m_pRasterizer->Rasterize({&vRasters[i], 1}))
+				Bitmap.reset();
 		}
 	}
 
@@ -2398,10 +2380,10 @@ public:
 		return TextContainer.m_BoundingBox;
 	}
 
-	void UploadEntityLayerText(const CImageInfo &TextImage, int TexSubWidth, int TexSubHeight, const char *pText, int Length, float x, float y, int FontSize) override
+	void RasterizeCharacters(const char *pText, int FontSize, std::vector<std::optional<CCharacterBitmap>> &vBitmaps) override
 	{
 		EnsureFontsLoaded();
-		m_pGlyphMap->UploadEntityLayerText(TextImage, TexSubWidth, TexSubHeight, pText, Length, x, y, FontSize);
+		m_pGlyphMap->RasterizeCharacters(pText, FontSize, vBitmaps);
 	}
 
 	int AdjustFontSize(const char *pText, int TextLength, int MaxSize, int MaxWidth) const override

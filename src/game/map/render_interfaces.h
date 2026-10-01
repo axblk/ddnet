@@ -37,6 +37,12 @@ public:
 	virtual IGraphics::CTextureHandle GetSpeedupArrow() = 0;
 	virtual IGraphics::CTextureHandle GetTuneColors() = 0;
 
+	/**
+	 * The numbers 1 to 255 for the tiles of the tele, speedup and switch
+	 * layers, each in its tile of a 16 by 16 grid: in the bottom half of the
+	 * tile, in its top half, or in its middle. They may be made when they are
+	 * first asked for, and are not valid until they are there.
+	 */
 	virtual IGraphics::CTextureHandle GetOverlayBottom() = 0;
 	virtual IGraphics::CTextureHandle GetOverlayTop() = 0;
 	virtual IGraphics::CTextureHandle GetOverlayCenter() = 0;

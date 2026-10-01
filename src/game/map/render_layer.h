@@ -285,6 +285,12 @@ protected:
 	virtual bool ForceTransparentTiles() const { return false; }
 
 	void RenderTileLayer(const ColorRGBA &Color, const CRenderLayerParams &Params, CTileLayerVisuals *pTileLayerVisuals = nullptr);
+	/**
+	 * Draws the numbers of the tiles, a tile set of their own, from one of
+	 * the textures of numbers (see `IMapImages::GetOverlayCenter`). They are
+	 * left out while that is still being made.
+	 */
+	void RenderNumbers(IGraphics::CTextureHandle Numbers, const ColorRGBA &Color, const CRenderLayerParams &Params, CTileLayerVisuals &Visuals);
 	void RenderTileBorder(const ColorRGBA &Color, int BorderX0, int BorderY0, int BorderX1, int BorderY1, CTileLayerVisuals *pTileLayerVisuals);
 	void RenderKillTileBorder(const ColorRGBA &Color);
 

@@ -22,9 +22,161 @@
 #include <game/mapitems.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
+#include <optional>
 #include <vector>
+
+namespace
+{
+	// The numbers are drawn into an image of 16 by 16 tiles
+	constexpr int NUMBERS_TILE_SIZE = 64;
+	constexpr int NUMBERS_IMAGE_SIZE = 16 * NUMBERS_TILE_SIZE;
+	constexpr const char *DIGITS = "0123456789";
+} // namespace
+
+/**
+ * Draws the numbers 1 to 255 into the images that the numbers over the tele,
+ * speedup and switch tiles are drawn from (see `IMapImages::GetOverlayCenter`).
+ * The text renderer rasterizes the ten digits beforehand on the main thread,
+ * once per font size, and the numbers are put together from them here: a
+ * digit goes to the top of the number without its bearing, one pixel after
+ * the one before it, and is cut off at the edge of the number's tile.
+ */
+class CEntityNumbersJob final : public CAssetJob
+{
+public:
+	class CDigits
+	{
+	public:
+		// Of `DIGITS`
+		std::vector<std::optional<CCharacterBitmap>> m_vBitmaps;
+		// What `ITextRender::CalculateTextWidth` says for each
+		int m_aWidths[10] = {};
+	};
+
+	// The numbers with the same count of digits in one of the images
+	class CNumbers
+	{
+	public:
+		// Below 1 for none
+		int m_FontSize = 0;
+		int m_OffsetY = 0;
+		const CDigits *m_pDigits = nullptr;
+	};
+
+	class CImage
+	{
+	public:
+		// With one, two and three digits
+		CNumbers m_aNumbers[3];
+		CImageInfo m_Image;
+	};
+
+	CEntityNumbersJob() :
+		CAssetJob("entity numbers")
+	{
+	}
+
+	/**
+	 * Prepares an image on the main thread.
+	 *
+	 * @param TextRender Rasterizes the digits.
+	 * @param Image The image.
+	 * @param MaxFontSize The size of the numbers.
+	 * @param OffsetY Where in a tile the numbers are, from its top.
+	 */
+	void Prepare(ITextRender &TextRender, CImage &Image, int MaxFontSize, int OffsetY)
+	{
+		for(int Power = 0; Power < 3; ++Power)
+		{
+			char aFirst[4];
+			str_format(aFirst, sizeof(aFirst), "%d", (int)std::pow(10, Power));
+			const int FittingFontSize = TextRender.AdjustFontSize(aFirst, Power + 1, MaxFontSize, NUMBERS_TILE_SIZE);
+			CNumbers &Numbers = Image.m_aNumbers[Power];
+			Numbers.m_FontSize = FittingFontSize * 0.92f; // should be smoothed enough to fit any digits combination
+			Numbers.m_OffsetY = OffsetY + (MaxFontSize - Numbers.m_FontSize) / 2;
+			if(Numbers.m_FontSize < 1)
+				continue;
+			const auto [It, Inserted] = m_Digits.try_emplace(Numbers.m_FontSize);
+			Numbers.m_pDigits = &It->second;
+			if(!Inserted)
+				continue;
+			TextRender.RasterizeCharacters(DIGITS, Numbers.m_FontSize, It->second.m_vBitmaps);
+			for(int Digit = 0; Digit < 10; ++Digit)
+				It->second.m_aWidths[Digit] = TextRender.CalculateTextWidth(&DIGITS[Digit], 1, 0, Numbers.m_FontSize);
+		}
+	}
+
+	CImage m_aImages[CMapImages::NUM_OVERLAYS];
+
+protected:
+	bool Process() override
+	{
+		for(CImage &Image : m_aImages)
+		{
+			Image.m_Image.m_Width = NUMBERS_IMAGE_SIZE;
+			Image.m_Image.m_Height = NUMBERS_IMAGE_SIZE;
+			Image.m_Image.m_Format = CImageInfo::FORMAT_RGBA;
+			Image.m_Image.AllocateFillZero();
+			for(int Power = 0; Power < 3; ++Power)
+			{
+				const CNumbers &Numbers = Image.m_aNumbers[Power];
+				if(Numbers.m_FontSize < 1)
+					continue;
+				const int First = std::pow(10, Power);
+				const int Last = std::min(First * 10 - 1, 255);
+				for(int Number = First; Number <= Last; ++Number)
+					DrawNumber(Image.m_Image, Numbers, Number, Power + 1);
+			}
+		}
+		return true;
+	}
+
+private:
+	std::map<int, CDigits> m_Digits;
+
+	static void DrawNumber(CImageInfo &Image, const CNumbers &Numbers, int Number, int NumDigits)
+	{
+		char aNumber[4];
+		str_format(aNumber, sizeof(aNumber), "%d", Number);
+
+		int TextWidth = 0;
+		for(int i = 0; i < NumDigits; ++i)
+			TextWidth += Numbers.m_pDigits->m_aWidths[aNumber[i] - '0'];
+		const int OffsetX = (NUMBERS_TILE_SIZE - std::clamp(TextWidth, 0, NUMBERS_TILE_SIZE)) / 2;
+
+		const float X = (Number % 16) * NUMBERS_TILE_SIZE + OffsetX;
+		const float Y = (Number / 16) * NUMBERS_TILE_SIZE + Numbers.m_OffsetY;
+		const int TileRestWidth = NUMBERS_TILE_SIZE - OffsetX;
+		const int TileRestHeight = NUMBERS_TILE_SIZE - Numbers.m_OffsetY;
+		const size_t PixelSize = Image.PixelSize();
+		int DigitX = 0;
+		for(int i = 0; i < NumDigits; ++i)
+		{
+			const std::optional<CCharacterBitmap> &Digit = Numbers.m_pDigits->m_vBitmaps[aNumber[i] - '0'];
+			if(!Digit)
+				continue;
+			for(int OffY = 0; OffY < Digit->m_Height; ++OffY)
+			{
+				for(int OffX = 0; OffX < Digit->m_Width; ++OffX)
+				{
+					const int ImageX = std::clamp(X + OffX + DigitX, X, (X + TileRestWidth) - 1);
+					const int ImageY = std::clamp(Y + OffY, Y, (Y + TileRestHeight) - 1);
+					uint8_t *pPixel = &Image.m_pData[ImageY * (Image.m_Width * PixelSize) + ImageX * PixelSize];
+					for(size_t Channel = 0; Channel < PixelSize - 1; ++Channel)
+						pPixel[Channel] = 255;
+					pPixel[PixelSize - 1] = Digit->m_vCoverage[OffY * Digit->m_Width + OffX];
+				}
+			}
+			DigitX += Digit->m_Width + 1;
+		}
+	}
+};
 
 CMapImages::CMapImages()
 {
@@ -45,7 +197,6 @@ CMapRenderImages::CMapRenderImages(CMapImages &Assets) :
 void CMapImages::OnInit()
 {
 	m_TextureScale = g_Config.m_ClTextEntitiesSize;
-	InitOverlayTextures();
 
 	if(str_comp(g_Config.m_ClAssetsEntities, "default") == 0)
 		str_copy(m_aEntitiesPath, "editor/entities_clear");
@@ -60,6 +211,23 @@ void CMapImages::OnInit()
 void CMapImages::OnUpdate()
 {
 	FinishEntitiesLoads();
+	FinishOverlayTextures();
+}
+
+void CMapImages::OnMapLoad()
+{
+	// Made ahead of the first frame of a game that draws them
+	const CLayers *pLayers = Layers();
+	if(g_Config.m_ClOverlayEntities && g_Config.m_ClTextEntities && pLayers != nullptr &&
+		(pLayers->TeleLayer() != nullptr || pLayers->SpeedupLayer() != nullptr || pLayers->SwitchLayer() != nullptr))
+		RequestOverlayTextures();
+}
+
+void CMapImages::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// Made because the game draws them, see OnMapLoad
+	if(Scene == CFirstFrameGate::EScene::GAME && m_OverlayResource)
+		Pending.Add(Localize("entity numbers"));
 }
 
 void CMapImages::OnShutdown()
@@ -73,6 +241,10 @@ void CMapImages::OnShutdown()
 		Graphics()->UnloadTexture(&m_aTuneColorMapTextures[EntityVariant]);
 	}
 	Graphics()->UnloadTexture(&m_SpeedupArrowTexture);
+	m_OverlayResource.Reset();
+	for(auto &Texture : m_aOverlayTextures)
+		Graphics()->UnloadTexture(&Texture);
+	m_OverlayScale = 0;
 }
 
 void CMapImages::FinishEntitiesLoads()
@@ -483,17 +655,20 @@ IGraphics::CTextureHandle CMapImages::GetTuneColors(EMapImageModType EntitiesMod
 
 IGraphics::CTextureHandle CMapImages::GetOverlayBottom()
 {
-	return m_OverlayBottomTexture;
+	RequestOverlayTextures();
+	return m_aOverlayTextures[OVERLAY_BOTTOM];
 }
 
 IGraphics::CTextureHandle CMapImages::GetOverlayTop()
 {
-	return m_OverlayTopTexture;
+	RequestOverlayTextures();
+	return m_aOverlayTextures[OVERLAY_TOP];
 }
 
 IGraphics::CTextureHandle CMapImages::GetOverlayCenter()
 {
-	return m_OverlayCenterTexture;
+	RequestOverlayTextures();
+	return m_aOverlayTextures[OVERLAY_CENTER];
 }
 
 void CMapImages::ChangeEntitiesPath(const char *pPath)
@@ -528,20 +703,8 @@ void CMapImages::ConchainClTextEntitiesSize(IConsole::IResult *pResult, void *pU
 
 void CMapImages::SetTextureScale(int Scale)
 {
-	if(m_TextureScale == Scale)
-		return;
-
+	// The textures are made again when they are next drawn
 	m_TextureScale = Scale;
-
-	if(Graphics() && m_OverlayCenterTexture.IsValid()) // check if component was initialized
-	{
-		// reinitialize component
-		Graphics()->UnloadTexture(&m_OverlayBottomTexture);
-		Graphics()->UnloadTexture(&m_OverlayTopTexture);
-		Graphics()->UnloadTexture(&m_OverlayCenterTexture);
-
-		InitOverlayTextures();
-	}
 }
 
 int CMapImages::GetTextureScale() const
@@ -549,71 +712,37 @@ int CMapImages::GetTextureScale() const
 	return m_TextureScale;
 }
 
-IGraphics::CTextureHandle CMapImages::UploadEntityLayerText(int TextureSize, int MaxWidth, int YOffset)
+void CMapImages::RequestOverlayTextures()
 {
-	CImageInfo TextImage;
-	TextImage.m_Width = 1024;
-	TextImage.m_Height = 1024;
-	TextImage.m_Format = CImageInfo::FORMAT_RGBA;
-	TextImage.AllocateFillZero();
+	if(m_OverlayScale == m_TextureScale)
+		return;
+	m_OverlayScale = m_TextureScale;
 
-	UpdateEntityLayerText(TextImage, TextureSize, MaxWidth, YOffset, 0);
-	UpdateEntityLayerText(TextImage, TextureSize, MaxWidth, YOffset, 1);
-	UpdateEntityLayerText(TextImage, TextureSize, MaxWidth, YOffset, 2, 255);
-
-	const int TextureLoadFlag = IGraphics::TEXLOAD_LAYERED | IGraphics::TEXLOAD_NO_2D_TEXTURE;
-	return Graphics()->LoadTextureRawMove(TextImage, TextureLoadFlag);
+	const int TextureSize = std::clamp(NUMBERS_TILE_SIZE * m_TextureScale / 100, 2, NUMBERS_TILE_SIZE);
+	const int CenterOffset = (NUMBERS_TILE_SIZE - TextureSize) / 2 + TextureSize * 0.1f; // moves the numbers to the middle of the tile
+	auto pJob = std::make_shared<CEntityNumbersJob>();
+	pJob->Prepare(*TextRender(), pJob->m_aImages[OVERLAY_BOTTOM], TextureSize / 2, NUMBERS_TILE_SIZE / 2 + CenterOffset / 2);
+	pJob->Prepare(*TextRender(), pJob->m_aImages[OVERLAY_TOP], TextureSize / 2, CenterOffset / 2);
+	pJob->Prepare(*TextRender(), pJob->m_aImages[OVERLAY_CENTER], TextureSize, CenterOffset);
+	// What is drawn next waits for it
+	m_OverlayResource = GameClient()->AssetLoader().Load(std::move(pJob), EAssetPriority::URGENT);
 }
 
-void CMapImages::UpdateEntityLayerText(CImageInfo &TextImage, int TextureSize, int MaxWidth, int YOffset, int NumbersPower, int MaxNumber)
+void CMapImages::FinishOverlayTextures()
 {
-	char aBuf[4];
-	int DigitsCount = NumbersPower + 1;
-
-	int CurrentNumber = std::pow(10, NumbersPower);
-
-	if(MaxNumber == -1)
-		MaxNumber = CurrentNumber * 10 - 1;
-
-	str_format(aBuf, sizeof(aBuf), "%d", CurrentNumber);
-
-	int CurrentNumberSuitableFontSize = TextRender()->AdjustFontSize(aBuf, DigitsCount, TextureSize, MaxWidth);
-	int UniversalSuitableFontSize = CurrentNumberSuitableFontSize * 0.92f; // should be smoothed enough to fit any digits combination
-
-	YOffset += ((TextureSize - UniversalSuitableFontSize) / 2);
-
-	for(; CurrentNumber <= MaxNumber; ++CurrentNumber)
+	if(!m_OverlayResource.IsFinished())
+		return;
+	if(m_OverlayResource.IsReady())
 	{
-		str_format(aBuf, sizeof(aBuf), "%d", CurrentNumber);
-
-		float x = (CurrentNumber % 16) * 64;
-		float y = (CurrentNumber / 16) * 64;
-
-		int ApproximateTextWidth = TextRender()->CalculateTextWidth(aBuf, DigitsCount, 0, UniversalSuitableFontSize);
-		int XOffSet = (MaxWidth - std::clamp(ApproximateTextWidth, 0, MaxWidth)) / 2;
-
-		TextRender()->UploadEntityLayerText(TextImage, (TextImage.m_Width / 16) - XOffSet, (TextImage.m_Height / 16) - YOffset, aBuf, DigitsCount, x + XOffSet, y + YOffset, UniversalSuitableFontSize);
+		for(int Overlay = 0; Overlay < NUM_OVERLAYS; ++Overlay)
+		{
+			Graphics()->UnloadTexture(&m_aOverlayTextures[Overlay]);
+			m_aOverlayTextures[Overlay] = Graphics()->LoadTextureRawMove(m_OverlayResource.Result().m_aImages[Overlay].m_Image, IGraphics::TEXLOAD_LAYERED | IGraphics::TEXLOAD_NO_2D_TEXTURE, m_OverlayResource.Path());
+		}
 	}
-}
-
-void CMapImages::InitOverlayTextures()
-{
-	int TextureSize = 64 * m_TextureScale / 100;
-	TextureSize = std::clamp(TextureSize, 2, 64);
-	int TextureToVerticalCenterOffset = (64 - TextureSize) / 2 + TextureSize * 0.1f; // should be used to move texture to the center of 64 pixels area
-
-	if(!m_OverlayBottomTexture.IsValid())
+	else
 	{
-		m_OverlayBottomTexture = UploadEntityLayerText(TextureSize / 2, 64, 32 + TextureToVerticalCenterOffset / 2);
+		log_error("mapimages", "Failed to make the entity numbers.");
 	}
-
-	if(!m_OverlayTopTexture.IsValid())
-	{
-		m_OverlayTopTexture = UploadEntityLayerText(TextureSize / 2, 64, TextureToVerticalCenterOffset / 2);
-	}
-
-	if(!m_OverlayCenterTexture.IsValid())
-	{
-		m_OverlayCenterTexture = UploadEntityLayerText(TextureSize, 64, TextureToVerticalCenterOffset);
-	}
+	m_OverlayResource.Reset();
 }

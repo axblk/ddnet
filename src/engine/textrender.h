@@ -10,6 +10,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
+#include <vector>
 
 enum
 {
@@ -183,6 +185,22 @@ struct STextSizeProperties
 	int *m_pLineCount = nullptr;
 };
 
+/**
+ * The pixels of one character as a glyph of the text renderer's fonts.
+ */
+class CCharacterBitmap
+{
+public:
+	int m_Width = 0;
+	int m_Height = 0;
+	/**
+	 * The coverage, one byte per pixel, `m_Width` of them per row,
+	 * `m_Height` rows. The glyph's bearing is not in it: the top left pixel
+	 * is the top left of the glyph's ink.
+	 */
+	std::vector<uint8_t> m_vCoverage;
+};
+
 class ITextRender : public IInterface
 {
 	MACRO_INTERFACE("textrender")
@@ -242,7 +260,17 @@ public:
 
 	virtual STextBoundingBox GetBoundingBoxTextContainer(STextContainerIndex TextContainerIndex) = 0;
 
-	virtual void UploadEntityLayerText(const CImageInfo &TextImage, int TexSubWidth, int TexSubHeight, const char *pText, int Length, float x, float y, int FontSize) = 0;
+	/**
+	 * Rasterizes characters each on its own, for drawing them into an image
+	 * such as the numbers over the entities. All of them at once, which is
+	 * much faster than one by one where the browser draws the glyphs.
+	 *
+	 * @param pText The characters, UTF-8.
+	 * @param FontSize The font size in pixels.
+	 * @param vBitmaps Receives one entry per character, empty for one that
+	 * has no glyph or could not be drawn.
+	 */
+	virtual void RasterizeCharacters(const char *pText, int FontSize, std::vector<std::optional<CCharacterBitmap>> &vBitmaps) = 0;
 	virtual int AdjustFontSize(const char *pText, int TextLength, int MaxSize, int MaxWidth) const = 0;
 	virtual float GetGlyphOffsetX(int FontSize, char TextCharacter) const = 0;
 	virtual int CalculateTextWidth(const char *pText, int TextLength, int FontWidth, int FontSize) const = 0;

@@ -2689,21 +2689,10 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 
 	if(Type == SERVERINFO_EXTENDED)
 	{
-		char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE] = {};
 		// There is no master server on a LAN, so this answer is the only place a
 		// client learns about the modern transports there.
-		if(m_QuicStarted || m_WebTransportStarted)
-		{
-			CQuicServerInfoExtra Extra = {};
-			Extra.m_RawQuic = m_QuicStarted;
-			if(m_QuicStarted)
-				Extra.m_IdentityFingerprint = *m_QuicTransport.IdentityFingerprint();
-			Extra.m_WebTransport = m_WebTransportStarted;
-			if(m_WebTransportStarted)
-				Extra.m_WebTransportPin = WebTransportPin();
-			Extra.m_pHostname = Config()->m_SvRegisterHostname;
-			FormatQuicServerInfoExtra(aExtraInfo, sizeof(aExtraInfo), Extra);
-		}
+		char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+		FormatTransportExtraInfo(aExtraInfo, sizeof(aExtraInfo));
 		p.AddString(aExtraInfo, sizeof(aExtraInfo), false);
 	}
 
@@ -3178,6 +3167,20 @@ void CServer::UpdateRegisterServerInfo()
 		}
 	}
 
+	// The master servers do not list QUIC and WebTransport addresses yet, so the
+	// clients read them from here until they do: the text of the LAN extra info,
+	// for the host and port of the UDP addresses.
+	char aTransports[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	FormatTransportExtraInfo(aTransports, sizeof(aTransports));
+	if(aTransports[0] != '\0')
+	{
+		JsonWriter.WriteAttribute("experimental");
+		JsonWriter.BeginObject();
+		JsonWriter.WriteAttribute("transports");
+		JsonWriter.WriteStrValue(aTransports);
+		JsonWriter.EndObject();
+	}
+
 	JsonWriter.WriteAttribute("clients");
 	JsonWriter.BeginArray();
 
@@ -3366,6 +3369,22 @@ void CServer::FormatModernTransportFragments(char *pQuicFragment, int QuicFragme
 	}
 	if(m_WebTransportStarted)
 		FormatModernTransportFragment(pWebTransportFragment, WebTransportFragmentSize, true, WebTransportPin());
+}
+
+void CServer::FormatTransportExtraInfo(char *pBuffer, int BufferSize) const
+{
+	pBuffer[0] = '\0';
+	if(!m_QuicStarted && !m_WebTransportStarted)
+		return;
+	CQuicServerInfoExtra Extra = {};
+	Extra.m_RawQuic = m_QuicStarted;
+	if(m_QuicStarted)
+		Extra.m_QuicSpkiSha256 = m_QuicTransport.RawQuicSpkiSha256().value_or(SHA256_DIGEST{});
+	Extra.m_WebTransport = m_WebTransportStarted;
+	if(m_WebTransportStarted)
+		Extra.m_WebTransportPin = WebTransportPin();
+	Extra.m_pHostname = Config()->m_SvRegisterHostname;
+	FormatQuicServerInfoExtra(pBuffer, BufferSize, Extra);
 }
 
 void CServer::SetQuicAddress(int ClientId, const NETADDR &Addr)

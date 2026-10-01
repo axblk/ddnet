@@ -538,6 +538,31 @@ static void AddModernAddress(CModernTransportInfo *pTransport, const char *pUrl,
 	}
 }
 
+// The master servers do not list QUIC and WebTransport addresses yet, so a
+// server describes them in its info until they do, as the text of its LAN extra
+// info. They share the host and port of its UDP addresses, so the client writes
+// the addresses a master would list for them and takes those in the same way.
+static void AddInfoTransports(CServerInfo *pInfo, const json_value &Info)
+{
+	const json_value &Transports = Info["experimental"]["transports"];
+	if(Transports.type != json_string || pInfo->m_NumAddresses == 0)
+		return;
+	CServerInfo Described = {};
+	if(ParseQuicServerInfoExtra(&Described, Transports, pInfo->m_aAddresses[0]))
+		return;
+	for(int i = 0; i < pInfo->m_NumAddresses; i++)
+	{
+		const NETADDR &Address = pInfo->m_aAddresses[i];
+		if((Address.type & (NETTYPE_IPV4 | NETTYPE_IPV6)) == 0)
+			continue;
+		char aUrl[512];
+		if(Described.m_Quic.m_NumAddresses > 0 && FormatModernTransportUrl(aUrl, sizeof(aUrl), false, Address, "", Described.m_Quic.m_Pin))
+			AddModernAddress(&pInfo->m_Quic, aUrl, false);
+		if(Described.m_WebTransport.m_NumAddresses > 0 && FormatModernTransportUrl(aUrl, sizeof(aUrl), true, Address, Described.m_WebTransport.m_aHostname, Described.m_WebTransport.m_Pin))
+			AddModernAddress(&pInfo->m_WebTransport, aUrl, true);
+	}
+}
+
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
@@ -614,6 +639,8 @@ bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServe
 				SetInfo.m_NumAddresses += 1;
 			}
 		}
+		if(SetInfo.m_Quic.m_NumAddresses == 0 && SetInfo.m_WebTransport.m_NumAddresses == 0)
+			AddInfoTransports(&SetInfo, Info);
 		if(SetInfo.m_NumAddresses > 0 || SetInfo.m_Quic.m_NumAddresses > 0 || SetInfo.m_WebTransport.m_NumAddresses > 0)
 		{
 			vServers.push_back(SetInfo);

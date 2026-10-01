@@ -422,6 +422,9 @@ public:
 	// How a client checks the WebTransport certificate, only while it is served.
 	CModernTransportPin WebTransportPin() const;
 	void FormatModernTransportFragments(char *pQuicFragment, int QuicFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize) const;
+	// The modern transports as the extra info of an extended server info answer
+	// tells them, empty without any.
+	void FormatTransportExtraInfo(char *pBuffer, int BufferSize) const;
 	void SetQuicAddress(int ClientId, const NETADDR &Addr);
 	int NumOtherClientsWithAddr(const NETADDR &Addr, int ClientId);
 	void PumpQuicNetwork();

@@ -1408,19 +1408,24 @@ def server_runs_without_legacy_udp(test_env):
 		runnable.wait_for_exit()
 
 
-def client_with_server_list(test_env, serverlist_url):
+def client_with_server_list(test_env, serverlist_url, extra_args=(), num_listed=1):
 	# The list has to be served for as long as the client runs, it is fetched
 	# again after the first load.
 	with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as urls_file:
 		urls_file.write(f"{serverlist_url}\n")
-	client = test_env.client(["http_allow_insecure 1", f"br_cached_best_serverinfo_url {serverlist_url}", "cl_show_welcome 0"])
+	client = test_env.client(["http_allow_insecure 1", f"br_cached_best_serverinfo_url {serverlist_url}", "cl_show_welcome 0", *extra_args])
 	client.wait_for_startup()
-	client.wait_for_log_exact("serverbrowser: loaded 1 servers from HTTP", timeout=10)
+	client.wait_for_log_exact(f"serverbrowser: loaded {num_listed} servers from HTTP", timeout=10)
 	return client
 
 
 def with_addresses(servers_json, addresses):
 	servers_json["servers"][0]["addresses"] = sorted(addresses)
+	return servers_json
+
+
+def without_info_transports(servers_json):
+	servers_json["servers"][0]["info"].pop("experimental", None)
 	return servers_json
 
 
@@ -1444,17 +1449,63 @@ def client_auto_connects_quic_from_master(test_env):
 		if "transport=quic sixup=1" not in join:
 			raise AssertionError(f"automatic QUIC used unexpected protocol: {join!r}")
 
+	# A master that does not list QUIC addresses leaves them to the server's
+	# info, which describes them for the host and port of its UDP addresses.
+	with StaticServerList(with_addresses(json.loads(json.dumps(servers_json)), legacy_addresses(server))) as serverlist_url:
+		info_client = client_with_server_list(test_env, serverlist_url)
+		info_client.command(f"connect [::1]:{server.port}")
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if "transport=quic sixup=0" not in join:
+			raise AssertionError(f"QUIC described in the server info was not used: {join!r}")
+
 	# A server listed without QUIC is not tried with it.
-	with StaticServerList(with_addresses(servers_json, legacy_addresses(server))) as serverlist_url:
+	with StaticServerList(with_addresses(without_info_transports(servers_json), legacy_addresses(server))) as serverlist_url:
 		legacy_client = client_with_server_list(test_env, serverlist_url)
 		legacy_client.command(f"connect [::1]:{server.port}")
 		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
 		if "transport=udp" not in join:
 			raise AssertionError(f"server listed without QUIC was connected with it: {join!r}")
 
-	for runnable in (server, client, sixup_client, legacy_client, mastersrv):
+	for runnable in (server, client, sixup_client, info_client, legacy_client, mastersrv):
 		runnable.exit()
-	for runnable in (server, client, sixup_client, legacy_client, mastersrv):
+	for runnable in (server, client, sixup_client, info_client, legacy_client, mastersrv):
+		runnable.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
+def client_connects_info_quic_from_any_tab(test_env):
+	mastersrv = test_env.mastersrv()
+	mastersrv.wait_for_startup()
+	server = start_registered_server(test_env, mastersrv)
+	servers_json = wait_for_server_addresses(mastersrv, legacy_addresses(server) | modern_addresses(server))
+	# The master lists UDP only, the server describes QUIC in its info.
+	listed = with_addresses(servers_json, legacy_addresses(server))
+
+	def joined_with(transport):
+		join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+		if transport not in join:
+			raise AssertionError(f"expected {transport!r}: {join!r}")
+
+	with StaticServerList(listed) as serverlist_url:
+		# The info describes QUIC for both game protocols, like a master that
+		# lists it would.
+		sixup_client = client_with_server_list(test_env, serverlist_url)
+		sixup_client.command(f"connect tw-0.7+udp://[::1]:{server.port}")
+		joined_with("transport=quic sixup=1")
+
+		# On a tab the server is not in, a UDP address is only UDP. The address
+		# the server browser writes for the server, a QUIC link with its pin, is
+		# connected with QUIC on every tab.
+		favorites_client = client_with_server_list(test_env, serverlist_url, ["ui_page 8"], num_listed=0)
+		favorites_client.command(f"connect [::1]:{server.port}")
+		joined_with("transport=udp")
+		link_client = client_with_server_list(test_env, serverlist_url, ["ui_page 8"], num_listed=0)
+		link_client.command(f'connect "ddnet+quic://[::1]:{server.port}#{server.quic_fragment}"')
+		joined_with("transport=quic sixup=0")
+
+	for runnable in (server, sixup_client, favorites_client, link_client, mastersrv):
+		runnable.exit()
+	for runnable in (server, sixup_client, favorites_client, link_client, mastersrv):
 		runnable.wait_for_exit()
 
 

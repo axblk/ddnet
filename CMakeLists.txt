@@ -3529,6 +3529,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     gameworld_test.cpp
     git_revision_test.cpp
     hash_test.cpp
+    http_test.cpp
     huffman_test.cpp
     io_test.cpp
     jobs_test.cpp

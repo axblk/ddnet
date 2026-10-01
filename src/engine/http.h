@@ -93,8 +93,11 @@ public:
 		EHttpState CurrentState = State();
 		return CurrentState != EHttpState::QUEUED && CurrentState != EHttpState::RUNNING;
 	}
-	virtual void Abort() { m_Abort = true; }
+	// Also wakes up `Wait()`, which a request stuck in the HTTP library would
+	// otherwise keep waiting.
+	virtual void Abort();
 	bool IsAbortRequested() const { return m_Abort; }
+	// Returns once the request is done or its abort was requested.
 	void Wait();
 
 	/**

@@ -288,7 +288,7 @@ void EscapeUrl(char *pBuf, size_t Size, const char *pStr)
 	curl_free(pEsc);
 }
 
-bool CHttpCurl::Init(std::chrono::milliseconds ShutdownDelay)
+bool CHttpCurl::Init(std::chrono::milliseconds ShutdownDelay, const std::shared_ptr<CHttpCurl> &pSelf)
 {
 	m_ShutdownDelay = ShutdownDelay;
 
@@ -297,7 +297,7 @@ bool CHttpCurl::Init(std::chrono::milliseconds ShutdownDelay)
 	// handlers and instead ignore SIGPIPE from OpenSSL ourselves.
 	signal(SIGPIPE, SIG_IGN);
 #endif
-	m_pThread = thread_init(CHttpCurl::ThreadMain, this, "http");
+	m_pThread = thread_init(CHttpCurl::ThreadMain, new std::shared_ptr<CHttpCurl>(pSelf), "http");
 
 	std::unique_lock Lock(m_Lock);
 	m_ConditionVariableInit.wait(Lock, [this]() { return m_State != CHttpCurl::UNINITIALIZED; });
@@ -319,16 +319,13 @@ void CHttpCurl::Shutdown()
 	curl_multi_wakeup(m_pMultiH);
 }
 
-CHttpCurl::~CHttpCurl()
+bool CHttpCurl::WaitForThread()
 {
-	if(!m_pThread)
-		return;
-
-	Shutdown();
-	thread_wait(m_pThread);
+	std::unique_lock Lock(m_FinishedLock);
+	return m_FinishedCondition.wait_for(Lock, m_ShutdownDelay + std::chrono::seconds(1), [this]() { return m_Finished; });
 }
 
-void CHttpCurl::Run(std::shared_ptr<IHttpRequest> pRequest)
+void CHttpCurl::Run(const std::shared_ptr<IHttpRequest> &pRequest)
 {
 	std::shared_ptr<CHttpRequestCurl> pRequestImpl = std::static_pointer_cast<CHttpRequestCurl>(pRequest);
 	std::unique_lock Lock(m_Lock);
@@ -352,7 +349,15 @@ bool CHttpCurl::HasIpresolveBug() const
 
 void CHttpCurl::ThreadMain(void *pUser)
 {
-	static_cast<CHttpCurl *>(pUser)->RunLoop();
+	std::shared_ptr<CHttpCurl> *pSelf = static_cast<std::shared_ptr<CHttpCurl> *>(pUser);
+	const std::shared_ptr<CHttpCurl> pWorker = *pSelf;
+	delete pSelf;
+	pWorker->RunLoop();
+	{
+		std::unique_lock Lock(pWorker->m_FinishedLock);
+		pWorker->m_Finished = true;
+	}
+	pWorker->m_FinishedCondition.notify_all();
 }
 
 void CHttpCurl::RunLoop()
@@ -547,9 +552,56 @@ void CHttpCurl::RunLoop()
 	}
 }
 
+bool CEngineHttpCurl::Init(std::chrono::milliseconds ShutdownDelay)
+{
+	return m_pWorker->Init(ShutdownDelay, m_pWorker);
+}
+
+void CEngineHttpCurl::Shutdown()
+{
+	m_pWorker->Shutdown();
+}
+
+CEngineHttpCurl::~CEngineHttpCurl()
+{
+	if(!m_pWorker->Thread())
+		return;
+
+	m_pWorker->Shutdown();
+#if defined(CONF_FAMILY_WINDOWS)
+	// A request stuck inside curl (Schannel's synchronous revocation check) is
+	// beyond the reach of timeouts and aborts. Exiting must not wait for it;
+	// the thread keeps its worker alive.
+	if(m_pWorker->WaitForThread())
+	{
+		thread_wait(m_pWorker->Thread());
+	}
+	else
+	{
+		log_warn("http", "not waiting for requests stuck in curl");
+		thread_detach(m_pWorker->Thread());
+	}
+#else
+	// Elsewhere the timeouts and the abort reach every request, so the thread
+	// ends. Left behind, it would still be inside OpenSSL when the exit
+	// handlers free OpenSSL's locks.
+	thread_wait(m_pWorker->Thread());
+#endif
+}
+
+void CEngineHttpCurl::Run(std::shared_ptr<IHttpRequest> pRequest)
+{
+	m_pWorker->Run(pRequest);
+}
+
+bool CEngineHttpCurl::HasIpresolveBug() const
+{
+	return m_pWorker->HasIpresolveBug();
+}
+
 IEngineHttp *CreateEngineHttp()
 {
-	return new CHttpCurl;
+	return new CEngineHttpCurl;
 }
 
 #endif // !CONF_PLATFORM_EMSCRIPTEN

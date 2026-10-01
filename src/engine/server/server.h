@@ -230,6 +230,9 @@ public:
 		std::shared_ptr<CHostLookup> m_pDnsblLookup;
 
 		bool m_Sixup;
+		// Sent NETMSG_SERVER_INFO_REQUEST, so it gets the server info in the
+		// connection instead of outside of it.
+		bool m_ServerInfoInConnection;
 
 		bool IncludedInServerInfo() const
 		{
@@ -466,7 +469,10 @@ public:
 	void ExpireServerInfoAndQueueResend();
 	void CacheServerInfo(CCache *pCache, int Type, bool SendClients);
 	void CacheServerInfoSixup(CCache *pCache, bool SendClients, int MaxConsideredClients);
+	template<typename F>
+	void ForEachServerInfoPacket(int Token, int Type, bool SendClients, F &&Fn);
 	void SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool SendClients);
+	void SendServerInfoToClient(int ClientId, int Type);
 	void GetServerInfoSixup(CPacker *pPacker, bool SendClients);
 	// Whether a connection-less server info response may be sent, and if so whether it
 	// includes the client list.

@@ -255,6 +255,7 @@ void CServer::CClient::Reset()
 	m_QuicResumeArmed = false;
 	m_QuicDetached = false;
 	m_QuicDropPending = false;
+	m_ServerInfoInConnection = false;
 }
 
 CServer::CServer()
@@ -2246,6 +2247,13 @@ void CServer::ProcessClientPacket(CNetChunk *pPacket)
 			Msgp.AddRaw(pId, sizeof(*pId));
 			SendMsg(&Msgp, ((pPacket->m_Flags & NET_CHUNKFLAG_VITAL) ? MSGFLAG_VITAL : 0) | MSGFLAG_FLUSH, ClientId);
 		}
+		else if(Msg == NETMSG_SERVER_INFO_REQUEST && !IsSixup(ClientId))
+		{
+			// Answered at once, and kept up to date from now on.
+			m_aClients[ClientId].m_ServerInfoInConnection = true;
+			SendServerInfoToClient(ClientId, SERVERINFO_EXTENDED);
+		}
+
 		else
 		{
 			if(Config()->m_Debug)
@@ -2382,16 +2390,7 @@ void CServer::OnNetMsgEnterGame(int ClientId)
 		ClientTransportName(ClientId),
 		IsSixup(ClientId));
 	m_aClients[ClientId].m_State = CClient::STATE_INGAME;
-	if(!IsSixup(ClientId))
-	{
-		SendServerInfo(ClientAddr(ClientId), -1, SERVERINFO_EXTENDED, false);
-	}
-	else
-	{
-		CMsgPacker ServerInfoMessage(protocol7::NETMSG_SERVERINFO, true, true);
-		GetServerInfoSixup(&ServerInfoMessage, false);
-		SendMsg(&ServerInfoMessage, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientId);
-	}
+	SendServerInfoToClient(ClientId, SERVERINFO_EXTENDED);
 
 	if(m_aClients[ClientId].m_IngameBeforeRejoin)
 	{
@@ -2946,7 +2945,10 @@ void CServer::CacheServerInfoSixup(CCache *pCache, bool SendClients, int MaxCons
 	pCache->AddChunk(Packer.Data(), Packer.Size());
 }
 
-void CServer::SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool SendClients)
+// Hands every packet of a server info answer to `Fn`, which sends it outside
+// of a connection or in one: both carry the same bytes.
+template<typename F>
+void CServer::ForEachServerInfoPacket(int Token, int Type, bool SendClients, F &&Fn)
 {
 	CPacker p;
 	char aBuf[128];
@@ -2961,11 +2963,6 @@ void CServer::SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool Sen
 		str_format(aBuf, sizeof(aBuf), "%d", x); \
 		(p).AddString(aBuf, 0); \
 	} while(0)
-
-	CNetChunk Packet;
-	Packet.m_ClientId = -1;
-	Packet.m_Address = *pAddr;
-	Packet.m_Flags = NETSENDFLAG_CONNLESS;
 
 	for(const auto &Chunk : pCache->m_vCache)
 	{
@@ -2994,9 +2991,47 @@ void CServer::SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool Sen
 		}
 
 		p.AddRaw(Chunk.m_vData.data(), Chunk.m_vData.size());
-		Packet.m_pData = p.Data();
-		Packet.m_DataSize = p.Size();
+		Fn(p);
+	}
+
+#undef ADD_RAW
+#undef ADD_INT
+}
+
+void CServer::SendServerInfo(const NETADDR *pAddr, int Token, int Type, bool SendClients)
+{
+	CNetChunk Packet;
+	Packet.m_ClientId = -1;
+	Packet.m_Address = *pAddr;
+	Packet.m_Flags = NETSENDFLAG_CONNLESS;
+	ForEachServerInfoPacket(Token, Type, SendClients, [&](const CPacker &Packer) {
+		Packet.m_pData = Packer.Data();
+		Packet.m_DataSize = Packer.Size();
 		m_NetServer.Send(&Packet);
+	});
+}
+
+void CServer::SendServerInfoToClient(int ClientId, int Type)
+{
+	if(IsSixup(ClientId))
+	{
+		CMsgPacker ServerInfoMessage(protocol7::NETMSG_SERVERINFO, true, true);
+		GetServerInfoSixup(&ServerInfoMessage, false);
+		SendMsg(&ServerInfoMessage, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientId);
+	}
+	else if(m_aClients[ClientId].m_ServerInfoInConnection)
+	{
+		// The extended info, which every client that asks this way reads.
+		ForEachServerInfoPacket(-1, SERVERINFO_EXTENDED, false, [&](const CPacker &Packer) {
+			CMsgPacker Msg(NETMSG_SERVER_INFO, true);
+			Msg.AddInt(Packer.Size());
+			Msg.AddRaw(Packer.Data(), Packer.Size());
+			SendMsg(&Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH, ClientId);
+		});
+	}
+	else
+	{
+		SendServerInfo(ClientAddr(ClientId), -1, Type, false);
 	}
 }
 
@@ -3199,16 +3234,7 @@ void CServer::UpdateServerInfo(bool Resend)
 		{
 			if(m_aClients[i].m_State != CClient::STATE_EMPTY)
 			{
-				if(!IsSixup(i))
-				{
-					SendServerInfo(ClientAddr(i), -1, SERVERINFO_INGAME, false);
-				}
-				else
-				{
-					CMsgPacker ServerInfoMessage(protocol7::NETMSG_SERVERINFO, true, true);
-					GetServerInfoSixup(&ServerInfoMessage, false);
-					SendMsg(&ServerInfoMessage, MSGFLAG_VITAL | MSGFLAG_FLUSH, i);
-				}
+				SendServerInfoToClient(i, SERVERINFO_INGAME);
 			}
 		}
 		m_ServerInfoNeedsResend = false;

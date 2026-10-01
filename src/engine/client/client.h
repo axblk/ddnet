@@ -236,6 +236,8 @@ class CClient : public IClient, public CDemoPlayer::IListener
 
 	CServerInfo m_CurrentServerInfo;
 	int64_t m_CurrentServerInfoRequestTime = -1; // >= 0 should request, == -1 got info
+	// The server sends its info in the connection (NETMSG_SERVER_INFO), so it is not asked outside of it.
+	bool m_ServerInfoInConnection = false;
 
 	int m_CurrentServerPingInfoType = -1;
 	int m_CurrentServerPingBasicToken = -1;

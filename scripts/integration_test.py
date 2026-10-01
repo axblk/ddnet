@@ -779,6 +779,27 @@ def client_connects_quic_and_receives_shutdown(test_env):
 
 
 @test(requires_quic=True)
+def client_gets_server_info_over_quic(test_env):
+	certificate, _ = test_env.runner.quic_certificates
+	server = test_env.server(["sv_ipv4only 1", *certificate.server_args()])
+	client = test_env.client(["cl_connect_protocol 1", "stdout_output_level 1"])
+	wait_for_startup([client, server])
+	client.command(f"connect 127.0.0.1:{server.port}")
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=10).line
+	if "transport=quic sixup=0" not in join:
+		raise AssertionError(f"transport=quic sixup=0 not found in {join!r}")
+	# Asked for in the connection, so it does not depend on the UDP port.
+	client.wait_for_log_exact("client: got server info over the connection", timeout=10)
+	# And sent there again when it changes.
+	server.command("sv_name changed")
+	client.wait_for_log_exact("client: got server info over the connection", timeout=10)
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+
+
+@test(requires_quic=True)
 def client_rejects_wrong_quic_certificate(test_env):
 	certificate, other_certificate = test_env.runner.quic_certificates
 	server = test_env.server(["sv_ipv4only 1", *certificate.server_args()])

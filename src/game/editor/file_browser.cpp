@@ -14,6 +14,9 @@
 
 #include <game/editor/editor.h>
 
+#include <memory>
+#include <vector>
+
 static constexpr const char *FILETYPE_EXTENSIONS[] = {
 	".map",
 	".png",
@@ -507,21 +510,38 @@ void CFileBrowser::UpdateFilePreview()
 	{
 		char aSoundPath[IO_MAX_PATH_LENGTH];
 		str_format(aSoundPath, sizeof(aSoundPath), "%s/%s", m_pCurrentPath, m_vpFilteredFileList[m_SelectedFileIndex]->m_aFilename);
-		Sound()->UnloadSample(m_PreviewSound);
-		m_PreviewSound = Sound()->LoadOpus(aSoundPath, m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType);
-		m_PreviewState = m_PreviewSound == -1 ? EPreviewState::ERROR : EPreviewState::LOADED;
+		m_PreviewSoundResource = Editor()->AssetLoader().Load(std::make_shared<CFileAssetJob>(Storage(), aSoundPath, m_vpFilteredFileList[m_SelectedFileIndex]->m_StorageType));
+		m_PreviewState = EPreviewState::LOADING;
 	}
 }
 
 void CFileBrowser::ResetFilePreview()
 {
 	m_PreviewResource.Reset();
+	m_PreviewSoundResource.Reset();
 	m_PreviewState = EPreviewState::UNLOADED;
 }
 
 void CFileBrowser::FinishFilePreview()
 {
-	if(m_PreviewState != EPreviewState::LOADING || !m_PreviewResource.IsFinished())
+	if(m_PreviewState != EPreviewState::LOADING)
+		return;
+	if(m_PreviewSoundResource)
+	{
+		if(!m_PreviewSoundResource.IsFinished())
+			return;
+		Sound()->UnloadSample(m_PreviewSound);
+		m_PreviewSound = -1;
+		if(m_PreviewSoundResource.IsReady())
+		{
+			const std::vector<uint8_t> vData = m_PreviewSoundResource.Result().TakeBytes();
+			m_PreviewSound = Sound()->LoadOpusFromMem(vData.data(), vData.size(), false, m_PreviewSoundResource.Path());
+		}
+		m_PreviewState = m_PreviewSound == -1 ? EPreviewState::ERROR : EPreviewState::LOADED;
+		m_PreviewSoundResource.Reset();
+		return;
+	}
+	if(!m_PreviewResource.IsFinished())
 		return;
 	if(m_PreviewResource.IsReady())
 	{

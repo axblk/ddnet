@@ -188,8 +188,13 @@ bool CAssetLoader::StartFetching(const std::shared_ptr<CAssetJob> &pJob)
 void CAssetLoader::Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUrl)
 {
 	std::shared_ptr<IHttpRequest> pRequest = m_pHttp->CreateRequest(pUrl);
-	pRequest->LogProgress(HTTPLOG::FAILURE);
+	// A file that is not there answers 404, which is how a program that
+	// cannot list the data directory learns it, see `IStorage::FetchUrl`: not
+	// an error of the request, so the loader says what went wrong itself.
+	pRequest->LogProgress(HTTPLOG::NONE);
+	pRequest->FailOnErrorStatus(false);
 	pJob->m_pRequest = pRequest;
+	pJob->m_FetchedByLoader = true;
 	if(pJob->m_Background)
 		++m_BackgroundFetchCount;
 	m_vpFetchingJobs.push_back(pJob);
@@ -255,6 +260,13 @@ void CAssetLoader::UpdateFetchingJobs()
 		if(Request.State() == EHttpState::DONE)
 			pJob->m_HttpStatus = Request.StatusCode();
 		const bool Success = pJob->m_HttpStatus != 0 && pJob->m_HttpStatus < 400;
+		if(!Success && pJob->m_FetchedByLoader)
+		{
+			if(pJob->m_HttpStatus == 404)
+				log_debug("asset_loader", "'%s' is not there", pJob->Path());
+			else
+				log_error("asset_loader", "Could not fetch '%s' (status %d)", pJob->Path(), pJob->m_HttpStatus);
+		}
 		if(Success && pJob->m_HttpStatus != 304 && Request.WritesToMemory())
 		{
 			pJob->m_UseResponse = true;
@@ -533,6 +545,13 @@ std::string_view CFileAssetJob::Text() const
 	return std::string_view(reinterpret_cast<const char *>(Bytes.data()), Bytes.size());
 }
 
+SHA256_DIGEST CAssetResource::SourceSha256() const
+{
+	dbg_assert(IsReady(), "Asset resource is not ready");
+	const std::span<const uint8_t> Bytes = m_pJob->Data();
+	return sha256(Bytes.data(), Bytes.size());
+}
+
 CAssetResource::CAssetResource(std::shared_ptr<CAssetJob> pJob) :
 	m_pJob(std::move(pJob))
 {
@@ -622,4 +641,58 @@ bool CImageResource::FinishTexture(IGraphics *pGraphics, IGraphics::CTextureHand
 	}
 	Reset();
 	return true;
+}
+
+void COnDemandTextures::Init(IGraphics *pGraphics, IStorage *pStorage, CAssetLoader *pLoader)
+{
+	m_pGraphics = pGraphics;
+	m_pStorage = pStorage;
+	m_pLoader = pLoader;
+}
+
+IGraphics::CTextureHandle COnDemandTextures::Get(IGraphics::CTextureHandle &Texture, const char *pPath, int Flags)
+{
+	if(Texture.IsValid())
+		return Texture;
+	const auto Load = m_Loads.find(&Texture);
+	if(Load == m_Loads.end())
+		Replace(Texture, pPath, Flags);
+	else if(Load->second.m_Resource)
+		Load->second.m_Resource.FinishTexture(m_pGraphics, Texture, Load->second.m_Flags);
+	return Texture;
+}
+
+void COnDemandTextures::Replace(IGraphics::CTextureHandle &Texture, const char *pPath, int Flags)
+{
+	dbg_assert(m_pGraphics != nullptr, "COnDemandTextures::Init was not called");
+	char aUrl[IO_MAX_PATH_LENGTH * 2];
+	if(m_pStorage->FetchUrl(pPath, IStorage::TYPE_ALL, aUrl, sizeof(aUrl)))
+	{
+		CLoad &Load = m_Loads[&Texture];
+		Load.m_Flags = Flags;
+		Load.m_Resource = m_pLoader->LoadImageFile(m_pStorage, pPath, IStorage::TYPE_ALL, {}, EAssetPriority::URGENT);
+		return;
+	}
+	m_Loads.erase(&Texture);
+	m_pGraphics->UnloadTexture(&Texture);
+	Texture = m_pGraphics->LoadTexture(pPath, IStorage::TYPE_ALL, Flags);
+}
+
+void COnDemandTextures::Forget(IGraphics::CTextureHandle &Texture)
+{
+	m_Loads.erase(&Texture);
+}
+
+void COnDemandTextures::Update()
+{
+	for(auto &[pTexture, Load] : m_Loads)
+	{
+		if(Load.m_Resource)
+			Load.m_Resource.FinishTexture(m_pGraphics, *pTexture, Load.m_Flags);
+	}
+}
+
+bool COnDemandTextures::IsWaiting() const
+{
+	return std::any_of(m_Loads.begin(), m_Loads.end(), [](const auto &Entry) { return Entry.second.m_Resource && !Entry.first->IsValid(); });
 }

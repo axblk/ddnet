@@ -11,7 +11,6 @@
 
 #include <functional>
 #include <memory>
-#include <string>
 
 int CCommunityIcons::FileScan(const char *pName, int IsDir, int DirType, void *pUser)
 {
@@ -35,14 +34,10 @@ const CCommunityIcon *CCommunityIcons::Find(const char *pCommunityId)
 	return Icon == m_vCommunityIcons.end() ? nullptr : &(*Icon);
 }
 
-std::function<bool(CImageInfo &)> CCommunityIcons::IconPostprocess(const char *pPath, int StorageType, const std::shared_ptr<CCommunityIconLoadResult> &pResult)
+std::function<bool(CImageInfo &)> CCommunityIcons::IconPostprocess(const std::shared_ptr<CCommunityIconLoadResult> &pResult)
 {
-	IStorage *pStorage = Storage();
-	const std::string Path(pPath);
-	return [pResult, pStorage, Path, StorageType](CImageInfo &Info) {
+	return [pResult](CImageInfo &Info) {
 		if(Info.m_Format != CImageInfo::FORMAT_RGBA)
-			return false;
-		if(!pStorage->CalculateHashes(Path.c_str(), StorageType, &pResult->m_Sha256))
 			return false;
 		pResult->m_ImageInfoGrayscale = Info.DeepCopy();
 		ConvertToGrayscale(pResult->m_ImageInfoGrayscale);
@@ -55,7 +50,7 @@ void CCommunityIcons::StartLoad(const char *pCommunityId, int StorageType)
 	char aPath[IO_MAX_PATH_LENGTH];
 	str_format(aPath, sizeof(aPath), "communityicons/%s.png", pCommunityId);
 	auto pResult = std::make_shared<CCommunityIconLoadResult>();
-	CImageResource Resource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, StorageType, IconPostprocess(aPath, StorageType, pResult));
+	CImageResource Resource = GameClient()->AssetLoader().LoadImageFile(Storage(), aPath, StorageType, IconPostprocess(pResult));
 
 	CCommunityIconLoad Load;
 	str_copy(Load.m_aCommunityId, pCommunityId);
@@ -75,7 +70,7 @@ void CCommunityIcons::StartDownload(const char *pCommunityId, const char *pUrl, 
 	pRequest->LogProgress(HTTPLOG::FAILURE);
 
 	auto pResult = std::make_shared<CCommunityIconLoadResult>();
-	CImageResource Resource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), Storage(), aPath, IStorage::TYPE_SAVE, false, IconPostprocess(aPath, IStorage::TYPE_SAVE, pResult));
+	CImageResource Resource = GameClient()->AssetLoader().LoadImageHttp(Http(), std::move(pRequest), Storage(), aPath, IStorage::TYPE_SAVE, false, IconPostprocess(pResult));
 
 	CCommunityIconLoad Load;
 	str_copy(Load.m_aCommunityId, pCommunityId);
@@ -153,8 +148,11 @@ void CCommunityIcons::Update()
 		{
 			if(Resource.IsReady())
 			{
+				// Hashed from the bytes that were loaded, which a browser
+				// would otherwise fetch once more.
+				const SHA256_DIGEST Sha256 = Resource.SourceSha256();
 				CImageInfo Info = Resource.TakeImage();
-				LoadFinish(Load.m_aCommunityId, Info, Load.m_pResult->m_ImageInfoGrayscale, Load.m_pResult->m_Sha256);
+				LoadFinish(Load.m_aCommunityId, Info, Load.m_pResult->m_ImageInfoGrayscale, Sha256);
 			}
 			else if(Resource.IsFailed() && (!Load.m_Download || Resource.HttpStatus() != 0))
 			{

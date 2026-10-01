@@ -46,6 +46,8 @@ public:
 		// Set once a tee is drawn with this part, so that it is loaded before
 		// the parts nobody wears yet.
 		mutable bool m_Wanted = false;
+		// Asked for by name and not there, see `RequestSkinPart`.
+		bool m_Missing = false;
 		CImageResource m_LoadResource;
 		class CLoadData;
 		std::shared_ptr<CLoadData> m_pLoadData;
@@ -106,6 +108,22 @@ public:
 	const CSkinPart *FindSkinPartOrNullptr(int Part, const char *pName, bool AllowSpecialPart) const;
 	const CSkinPart *FindDefaultSkinPart(int Part) const;
 	const CSkinPart *FindSkinPart(int Part, const char *pName, bool AllowSpecialPart) const;
+	/**
+	 * Finds a part a tee in the game wears, like `FindSkinPart`. Where the
+	 * storage cannot list the parts (see `IStorage::ListsAllFiles`), a part
+	 * it does not know yet is taken on by name, together with the default
+	 * one, and loaded; one that turns out not to be there is not found from
+	 * then on. Taking a part on moves the others, so only a tee in the game
+	 * asks this way: the lists of the menus hold parts by address, and a
+	 * program with menus lists the parts.
+	 *
+	 * @param Part The kind of part.
+	 * @param pName The name of the part.
+	 * @param AllowSpecialPart Whether a special part may be found.
+	 *
+	 * @return The part, the default one or a placeholder.
+	 */
+	const CSkinPart *RequestSkinPart(int Part, const char *pName, bool AllowSpecialPart);
 	void RandomizeSkin(int Dummy) const;
 
 	ColorRGBA GetColor(int Value, bool UseAlpha) const;
@@ -125,6 +143,8 @@ public:
 
 private:
 	std::chrono::nanoseconds m_LastRefreshTime;
+
+	static const char *DefaultPartName(int Part);
 
 	std::vector<CSkinPart> m_avSkinParts[protocol7::NUM_SKINPARTS];
 	CSkinPart m_aPlaceholderSkinParts[protocol7::NUM_SKINPARTS];

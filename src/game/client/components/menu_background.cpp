@@ -111,7 +111,7 @@ void CMenuBackground::FinishThemeIconLoads()
 
 void CMenuBackground::OnUpdate()
 {
-	FinishMapLoad();
+	FinishMenuMapLoad();
 	FinishThemeIconLoads();
 }
 
@@ -273,30 +273,22 @@ void CMenuBackground::StartLoadingMapCandidate()
 	}
 	const std::string Path = m_vMapCandidates.front();
 	m_vMapCandidates.erase(m_vMapCandidates.begin());
-	m_MapResource = GameClient()->AssetLoader().LoadFile(Storage(), Path.c_str(), IStorage::TYPE_ALL);
+	StartMapLoad(m_MenuMapName.c_str(), Path.c_str());
 }
 
-void CMenuBackground::FinishMapLoad()
+void CMenuBackground::FinishMenuMapLoad()
 {
-	if(!m_MapResource || !m_MapResource.IsFinished())
-		return;
-
-	bool Loaded = false;
-	if(m_MapResource.IsReady())
-		Loaded = m_pMap->LoadFromMemory(m_MenuMapName.c_str(), m_MapResource.Result().TakeBytes(), m_MapResource.Path());
-	m_MapResource.Reset();
-	if(!Loaded)
+	switch(FinishMapLoad())
 	{
+	case EMapLoad::PENDING:
+		return;
+	case EMapLoad::FAILED:
 		StartLoadingMapCandidate();
 		return;
+	case EMapLoad::LOADED:
+		break;
 	}
-
-	m_Loaded = true;
 	m_vMapCandidates.clear();
-	m_pLayers->Init(m_pMap, true, true);
-
-	m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
-	CMapLayers::Load(m_pLayers, m_pBackgroundImages);
 
 	// look for custom positions
 	CMapItemLayerTilemap *pGameLayer = m_pLayers->GameLayer();

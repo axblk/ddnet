@@ -19,6 +19,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <memory>
+#include <utility>
 
 void FormatMapDownloadFilename(const char *pName, const std::optional<SHA256_DIGEST> &Sha256, int Crc, bool Temp, char *pBuffer, int BufferSize)
 {
@@ -86,24 +89,14 @@ bool CClientCore::IsDemoPlayback() const
 
 const char *CClientCore::LoadDemo(CSessionId SessionId, const char *pFilename, int StorageType)
 {
+	CancelMapSearch(SessionId);
 	CDemoSessionSource &Source = DemoSource(SessionId);
 	CDemoPlayer &Player = Source.m_DemoPlayer;
 	if(Player.Load(Storage(), pFilename, StorageType))
 		return Player.ErrorMessage();
 
 	Source.m_Sixup = Player.IsSixup();
-
-	// load map
 	const CMapInfo *pMapInfo = Player.GetMapInfo();
-	const char *pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
-	if(pError)
-	{
-		if(!Player.ExtractMap(Storage()))
-			return pError;
-		pError = LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc);
-		if(pError)
-			return pError;
-	}
 
 	// setup current server info
 	CServerInfo &DemoServerInfo = Source.m_ServerInfo;
@@ -111,6 +104,22 @@ const char *CClientCore::LoadDemo(CSessionId SessionId, const char *pFilename, i
 	str_copy(DemoServerInfo.m_aMap, pMapInfo->m_aName);
 	DemoServerInfo.m_MapCrc = pMapInfo->m_Crc;
 	DemoServerInfo.m_MapSize = pMapInfo->m_Size;
+
+	// The map a demo carries is the one it was recorded on, so nothing is
+	// looked for, read or fetched besides it.
+	if(BeginMapLoad(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc))
+		return nullptr;
+	if(unsigned char *pMapData = Player.GetMapData(Storage()))
+	{
+		std::vector<uint8_t> vData(pMapData, pMapData + pMapInfo->m_Size);
+		free(pMapData);
+		char aPath[IO_MAX_PATH_LENGTH];
+		FormatMapDownloadFilename(pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc, false, aPath, sizeof(aPath));
+		if(LoadMapData(SessionId, pMapInfo->m_aName, aPath, std::move(vData), pMapInfo->m_Sha256, pMapInfo->m_Crc) == nullptr)
+			return nullptr;
+	}
+	if(LoadMapSearch(SessionId, pMapInfo->m_aName, pMapInfo->m_Sha256, pMapInfo->m_Crc) == EMapSearch::NOT_FOUND)
+		return MapNotFoundError(pMapInfo->m_aName);
 	return nullptr;
 }
 
@@ -186,10 +195,8 @@ void CClientCore::FocusSession(CSessionId SessionId)
 	GameClient()->OnSessionFocused(SessionId);
 }
 
-const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+bool CClientCore::BeginMapLoad(CSessionId SessionId, const char *pName, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
 {
-	static char s_aErrorMsg[128];
-
 	if(SessionSource(SessionId).State() != ESessionState::LOADING_MAP || GameClient()->Map(SessionId)->IsLoaded())
 		GameClient()->OnSessionClosed(SessionId);
 	if(FocusedSessionId() == SessionId)
@@ -213,16 +220,44 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 		char aBuf[256];
 		str_format(aBuf, sizeof(aBuf), "shared loaded map '%s'", pName);
 		m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
-		return nullptr;
+		return true;
 	}
-	IMap *pMap = GameClient()->Map(SessionId);
+	return false;
+}
 
-	if(!pMap->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
+const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	if(BeginMapLoad(SessionId, pName, WantedSha256, WantedCrc))
+		return nullptr;
+	return LoadMapFile(SessionId, pName, pFilename, WantedSha256, WantedCrc);
+}
+
+const char *CClientCore::LoadMapFile(CSessionId SessionId, const char *pName, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	static char s_aErrorMsg[128];
+	if(!GameClient()->Map(SessionId)->Load(pName, Storage(), pFilename, IStorage::TYPE_ALL))
 	{
 		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map '%s' not found", pFilename);
 		return s_aErrorMsg;
 	}
+	return CheckLoadedMap(SessionId, pFilename, WantedSha256, WantedCrc);
+}
 
+const char *CClientCore::LoadMapData(CSessionId SessionId, const char *pName, const char *pFilename, std::vector<uint8_t> &&vData, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	static char s_aErrorMsg[128];
+	if(!GameClient()->Map(SessionId)->LoadFromMemory(pName, std::move(vData), pFilename))
+	{
+		str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "map '%s' could not be read", pFilename);
+		return s_aErrorMsg;
+	}
+	return CheckLoadedMap(SessionId, pFilename, WantedSha256, WantedCrc);
+}
+
+const char *CClientCore::CheckLoadedMap(CSessionId SessionId, const char *pFilename, const std::optional<SHA256_DIGEST> &WantedSha256, unsigned WantedCrc)
+{
+	static char s_aErrorMsg[128];
+	IMap *pMap = GameClient()->Map(SessionId);
 	if(WantedSha256.has_value() && pMap->Sha256() != WantedSha256.value())
 	{
 		char aWanted[SHA256_MAXSTRSIZE];
@@ -247,12 +282,19 @@ const char *CClientCore::LoadMap(CSessionId SessionId, const char *pName, const 
 	char aBuf[256];
 	str_format(aBuf, sizeof(aBuf), "loaded map '%s'", pFilename);
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
-
 	return nullptr;
 }
 
-const char *CClientCore::LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc)
+const char *CClientCore::MapNotFoundError(const char *pMapName)
 {
+	static char s_aErrorMsg[256];
+	str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "Could not find map '%s'", pMapName);
+	return s_aErrorMsg;
+}
+
+CClientCore::EMapSearch CClientCore::LoadMapSearch(CSessionId SessionId, const char *pMapName, const std::optional<SHA256_DIGEST> &WantedSha256, int WantedCrc)
+{
+	CancelMapSearch(SessionId);
 	char aBuf[512];
 	char aWanted[SHA256_MAXSTRSIZE + 16];
 	aWanted[0] = 0;
@@ -265,40 +307,124 @@ const char *CClientCore::LoadMapSearch(CSessionId SessionId, const char *pMapNam
 	str_format(aBuf, sizeof(aBuf), "loading map, map=%s wanted %scrc=%08x", pMapName, aWanted, WantedCrc);
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client", aBuf);
 
-	// try the normal maps folder
-	str_format(aBuf, sizeof(aBuf), "maps/%s.map", pMapName);
-	const char *pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
-	if(!pError)
-		return nullptr;
+	if(BeginMapLoad(SessionId, pMapName, WantedSha256, WantedCrc))
+		return EMapSearch::LOADED;
+	CMapSearch Search;
+	Search.m_SessionId = SessionId;
+	Search.m_Name = pMapName;
+	Search.m_WantedSha256 = WantedSha256;
+	Search.m_WantedCrc = WantedCrc;
+	const EMapSearch Result = ContinueMapSearch(Search);
+	if(Result == EMapSearch::FETCHING)
+		m_vMapSearches.push_back(std::move(Search));
+	return Result;
+}
 
-	// try the downloaded maps
-	FormatMapDownloadFilename(pMapName, WantedSha256, WantedCrc, false, aBuf, sizeof(aBuf));
-	pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
-	if(!pError)
-		return nullptr;
-
-	// backward compatibility with old names
-	if(WantedSha256.has_value())
+CClientCore::EMapSearch CClientCore::ContinueMapSearch(CMapSearch &Search)
+{
+	const char *pName = Search.m_Name.c_str();
+	while(true)
 	{
-		FormatMapDownloadFilename(pMapName, std::nullopt, WantedCrc, false, aBuf, sizeof(aBuf));
-		pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
-		if(!pError)
-			return nullptr;
-	}
+		char aPath[IO_MAX_PATH_LENGTH];
+		switch(Search.m_NextStep++)
+		{
+		case 0:
+			// the normal maps folder
+			str_format(aPath, sizeof(aPath), "maps/%s.map", pName);
+			break;
+		case 1:
+			// the downloaded maps
+			FormatMapDownloadFilename(pName, Search.m_WantedSha256, Search.m_WantedCrc, false, aPath, sizeof(aPath));
+			break;
+		case 2:
+			// backward compatibility with old names
+			if(!Search.m_WantedSha256.has_value())
+				continue;
+			FormatMapDownloadFilename(pName, std::nullopt, Search.m_WantedCrc, false, aPath, sizeof(aPath));
+			break;
+		case 3:
+		{
+			// the folders below the maps folder
+			char aFilename[IO_MAX_PATH_LENGTH];
+			str_format(aFilename, sizeof(aFilename), "%s.map", pName);
+			if(!Storage()->FindFile(aFilename, "maps", IStorage::TYPE_ALL, aPath, sizeof(aPath)))
+				continue;
+			break;
+		}
+		default:
+			return EMapSearch::NOT_FOUND;
+		}
 
-	// search for the map within subfolders
-	char aFilename[IO_MAX_PATH_LENGTH];
-	str_format(aFilename, sizeof(aFilename), "%s.map", pMapName);
-	if(Storage()->FindFile(aFilename, "maps", IStorage::TYPE_ALL, aBuf, sizeof(aBuf)))
+		// A map that is fetched rather than read is not waited for. When the
+		// storage knows what it is, it is only fetched if it is the one.
+		char aUrl[IO_MAX_PATH_LENGTH];
+		if(Storage()->FetchUrl(aPath, IStorage::TYPE_ALL, aUrl, sizeof(aUrl)))
+		{
+			SHA256_DIGEST Sha256;
+			unsigned Crc;
+			if(Storage()->FetchedFileDigests(aPath, IStorage::TYPE_ALL, &Sha256, &Crc) &&
+				(Search.m_WantedSha256.has_value() ? Sha256 != Search.m_WantedSha256.value() : Crc != Search.m_WantedCrc))
+			{
+				log_debug("client", "'%s' is not the map wanted", aPath);
+				continue;
+			}
+			log_info("client", "fetching map '%s'", aPath);
+			Search.m_Path = aPath;
+			Search.m_Resource = GameClient()->AssetLoader().Load(std::make_shared<CFileAssetJob>(Storage(), aPath, IStorage::TYPE_ALL), EAssetPriority::URGENT);
+			return EMapSearch::FETCHING;
+		}
+		if(LoadMapFile(Search.m_SessionId, pName, aPath, Search.m_WantedSha256, Search.m_WantedCrc) == nullptr)
+			return EMapSearch::LOADED;
+	}
+}
+
+void CClientCore::UpdateMapSearches()
+{
+	if(m_vMapSearches.empty())
+		return;
+	std::vector<std::pair<CSessionId, bool>> vDone;
+	for(auto It = m_vMapSearches.begin(); It != m_vMapSearches.end();)
 	{
-		pError = LoadMap(SessionId, pMapName, aBuf, WantedSha256, WantedCrc);
-		if(!pError)
-			return nullptr;
+		CMapSearch &Search = *It;
+		if(!Search.m_Resource.IsFinished())
+		{
+			++It;
+			continue;
+		}
+		EMapSearch Result;
+		if(Search.m_Resource.IsReady())
+		{
+			std::vector<uint8_t> vData = Search.m_Resource.Result().TakeBytes();
+			Search.m_Resource.Reset();
+			Result = LoadMapData(Search.m_SessionId, Search.m_Name.c_str(), Search.m_Path.c_str(), std::move(vData), Search.m_WantedSha256, Search.m_WantedCrc) == nullptr ? EMapSearch::LOADED : ContinueMapSearch(Search);
+		}
+		else
+		{
+			log_error("client", "map '%s' could not be fetched", Search.m_Path.c_str());
+			Search.m_Resource.Reset();
+			Result = ContinueMapSearch(Search);
+		}
+		if(Result == EMapSearch::FETCHING)
+		{
+			++It;
+			continue;
+		}
+		vDone.emplace_back(Search.m_SessionId, Result == EMapSearch::LOADED);
+		It = m_vMapSearches.erase(It);
 	}
+	// Told only now, because what they do may start another search.
+	for(const auto &[SessionId, Loaded] : vDone)
+		OnMapSearchDone(SessionId, Loaded);
+}
 
-	static char s_aErrorMsg[256];
-	str_format(s_aErrorMsg, sizeof(s_aErrorMsg), "Could not find map '%s'", pMapName);
-	return s_aErrorMsg;
+void CClientCore::CancelMapSearch(CSessionId SessionId)
+{
+	m_vMapSearches.erase(std::remove_if(m_vMapSearches.begin(), m_vMapSearches.end(), [SessionId](const CMapSearch &Search) { return Search.m_SessionId == SessionId; }), m_vMapSearches.end());
+}
+
+bool CClientCore::IsMapSearchPending(CSessionId SessionId) const
+{
+	return std::any_of(m_vMapSearches.begin(), m_vMapSearches.end(), [SessionId](const CMapSearch &Search) { return Search.m_SessionId == SessionId; });
 }
 
 void CClientCore::AddWarning(const SWarning &Warning)

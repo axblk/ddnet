@@ -4,6 +4,7 @@
 #define ENGINE_CLIENT_ASSET_LOADER_H
 
 #include <base/dbg.h>
+#include <base/hash.h>
 #include <base/lock.h>
 #include <base/sphore.h>
 
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
@@ -64,6 +66,7 @@ enum class EAssetPriority
 class CAssetJob : public IJob
 {
 	friend class CAssetLoader;
+	friend class CAssetResource;
 
 	std::string m_Path;
 
@@ -72,6 +75,8 @@ class CAssetJob : public IJob
 	std::shared_ptr<IHttpRequest> m_pRequest;
 	// Read the file if the request failed
 	bool m_UseFileOnError = false;
+	// The request is the loader's, for a file the storage has an address for
+	bool m_FetchedByLoader = false;
 	int m_HttpStatus = 0;
 	// The bytes are the response, owned by the request
 	bool m_UseResponse = false;
@@ -237,6 +242,12 @@ public:
 	 * @return Status code of the request, `0` if there was none or it failed.
 	 */
 	int HttpStatus() const;
+	/**
+	 * The SHA-256 of the bytes a ready asset was made from, so that nobody
+	 * reads the file again to hash it, which in a browser fetches it once
+	 * more. Only for an asset that was read or fetched.
+	 */
+	SHA256_DIGEST SourceSha256() const;
 };
 
 template<typename TJob>
@@ -295,6 +306,61 @@ public:
 
 	std::vector<uint8_t> TakeBytes();
 	std::string_view Text() const;
+};
+
+/**
+ * Textures of files that are loaded when they are first used rather than
+ * ahead, such as the pictures of a tool that only some of its views draw.
+ * Where the storage reads a file, it is loaded at once, as
+ * `IGraphics::LoadTexture` does; where it fetches the file (see
+ * `IStorage::FetchUrl`), it is fetched through the asset loader, and the
+ * texture stays as it was until the image arrives - invalid for a new one.
+ */
+class COnDemandTextures
+{
+	class CLoad
+	{
+	public:
+		int m_Flags = 0;
+		CImageResource m_Resource;
+	};
+	IGraphics *m_pGraphics = nullptr;
+	IStorage *m_pStorage = nullptr;
+	CAssetLoader *m_pLoader = nullptr;
+	// Only for the textures that are fetched. One that failed keeps its
+	// entry, so that it is not fetched again every time it is used.
+	std::map<IGraphics::CTextureHandle *, CLoad> m_Loads;
+
+public:
+	void Init(IGraphics *pGraphics, IStorage *pStorage, CAssetLoader *pLoader);
+	/**
+	 * Loads a file into a texture, unless that is done or under way.
+	 *
+	 * @param Texture The texture, which has to outlive its load.
+	 * @param pPath The file, of any storage type.
+	 * @param Flags How to load it, see `IGraphics::TEXLOAD_*`.
+	 *
+	 * @return The texture, not valid while it is fetched.
+	 */
+	IGraphics::CTextureHandle Get(IGraphics::CTextureHandle &Texture, const char *pPath, int Flags = 0);
+	/**
+	 * Loads another file into a texture. One that is fetched replaces the
+	 * texture when it arrives.
+	 */
+	void Replace(IGraphics::CTextureHandle &Texture, const char *pPath, int Flags = 0);
+	/**
+	 * Stops loading into a texture, which is set another way.
+	 */
+	void Forget(IGraphics::CTextureHandle &Texture);
+	/**
+	 * Uploads the images that arrived. `Get` does so for its own texture as
+	 * well.
+	 */
+	void Update();
+	/**
+	 * Whether a texture is fetched and has nothing to show meanwhile.
+	 */
+	bool IsWaiting() const;
 };
 
 template<typename TJob>

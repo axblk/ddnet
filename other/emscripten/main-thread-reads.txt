@@ -1,3 +1,5 @@
 # Files read on the main thread in the browser, which stalls the page; the
 # headless job in `build.yml` fails on any not listed. Keep it empty: startup
-# files go through the asset loader. Sorted, one path per line.
+# files go through the asset loader. Only text files may be read as they are
+# opened at all (see `SYNCHRONOUS_EXTENSIONS` in src/engine/client/webfs.cpp),
+# and the job fails on any other. Sorted, one path per line.

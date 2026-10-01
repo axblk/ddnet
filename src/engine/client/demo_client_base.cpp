@@ -174,6 +174,24 @@ const char *CDemoClientBase::PlayDemo(CSessionId SessionId)
 	const int64_t StartTime = time_get();
 	if(const char *pError = LoadDemo(SessionId, m_aDemoPath, IStorage::TYPE_ALL_OR_ABSOLUTE))
 		return pError;
+	// A demo without its map has it fetched. Nothing is drawn without it,
+	// so this waits here, where the page keeps its turns.
+	m_MapSearchLoaded = false;
+	while(IsMapSearchPending(SessionId))
+	{
+		if(State() == IClient::STATE_QUITTING)
+		{
+			CancelMapSearch(SessionId);
+			return "The program is quitting.";
+		}
+		// Nothing else updates the loader before the demo plays.
+		GameClient()->AssetLoader().Update();
+		UpdateMapSearches();
+		if(IsMapSearchPending(SessionId))
+			thread_sleep_idle(std::chrono::milliseconds(1));
+		else if(!m_MapSearchLoaded)
+			return MapNotFoundError(Source.m_DemoPlayer.GetMapInfo()->m_aName);
+	}
 	if(Watched)
 		SetState(IClient::STATE_DEMOPLAYBACK);
 	else
@@ -191,8 +209,14 @@ const char *CDemoClientBase::PlayDemo(CSessionId SessionId)
 	return nullptr;
 }
 
+void CDemoClientBase::OnMapSearchDone(CSessionId SessionId, bool Loaded)
+{
+	m_MapSearchLoaded = Loaded;
+}
+
 void CDemoClientBase::StopDemoSession(CSessionId SessionId, const char *pReason)
 {
+	CancelMapSearch(SessionId);
 	if(SessionId == m_DemoSessionId && pReason != nullptr && pReason[0] != '\0' && m_aError[0] == '\0')
 		str_copy(m_aError, pReason);
 	CDemoSessionSource &Source = DemoSource(SessionId);

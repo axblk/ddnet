@@ -8,6 +8,7 @@
 #include <engine/storage.h>
 
 #include <game/editor/editor_actions.h>
+#include <game/editor/editor_files.h>
 #include <game/editor/mapitems/layer_tiles.h>
 #include <game/editor/mapitems/map.h>
 #include <game/mapitems.h>
@@ -15,6 +16,8 @@
 #include <cinttypes>
 #include <cstdio> // sscanf
 #include <memory>
+#include <string_view>
+#include <vector>
 
 // Based on triple32inc from https://github.com/skeeto/hash-prospector/tree/79a6074062a84907df6e45b756134b74e2956760
 static uint32_t HashUInt32(uint32_t Num)
@@ -50,21 +53,28 @@ CAutomapper::CAutomapper(CEditorMap *pMap) :
 {
 }
 
-void CAutomapper::Load(const char *pTileName)
+void CAutomapper::RulesPath(const char *pTileName, char *pBuffer, size_t BufferSize)
+{
+	str_format(pBuffer, BufferSize, "editor/automap/%s.rules", pTileName);
+}
+
+void CAutomapper::Load(const char *pTileName, const CEditorFiles &Files)
 {
 	char aPath[IO_MAX_PATH_LENGTH];
-	str_format(aPath, sizeof(aPath), "editor/automap/%s.rules", pTileName);
-	if(!Storage()->FileExists(aPath, IStorage::TYPE_ALL))
+	RulesPath(pTileName, aPath, sizeof(aPath));
+	if(Files.IsMissing(aPath, IStorage::TYPE_ALL) || !Storage()->FileExists(aPath, IStorage::TYPE_ALL))
 	{
 		return; // Avoid error message if no rules exist
 	}
 
 	CLineReader LineReader;
-	if(!LineReader.OpenFile(Storage()->OpenFile(aPath, IOFLAG_READ, IStorage::TYPE_ALL)))
+	std::vector<uint8_t> vRules;
+	if(!Files.ReadFile(Storage(), aPath, IStorage::TYPE_ALL, vRules))
 	{
 		log_error("editor/automap", "Failed to load rules from '%s'", aPath);
 		return;
 	}
+	LineReader.OpenCopy(std::string_view(reinterpret_cast<const char *>(vRules.data()), vRules.size()));
 
 	CConfiguration *pCurrentConf = nullptr;
 	CRun *pCurrentRun = nullptr;

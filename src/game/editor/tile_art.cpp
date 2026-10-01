@@ -7,6 +7,7 @@
 #include <game/editor/mapitems/image.h>
 
 #include <array>
+#include <string>
 
 static bool operator<(const ColorRGBA &Left, const ColorRGBA &Right) // NOLINT(unused-function)
 {
@@ -193,23 +194,21 @@ void CEditor::TileArtCheckColors()
 bool CEditor::CallbackAddTileArt(const char *pFilepath, int StorageType, void *pUser)
 {
 	CEditor *pEditor = (CEditor *)pUser;
+	const std::string Filepath = pFilepath;
+	pEditor->WhenFileArrives(pFilepath, StorageType, [pEditor, Filepath, StorageType](CEditorFiles &Files) {
+		if(!pEditor->ReadImage(Files, Filepath.c_str(), StorageType, pEditor->m_TileArtImageInfo))
+			return;
 
-	if(!pEditor->Graphics()->LoadPng(pEditor->m_TileArtImageInfo, pFilepath, StorageType))
-	{
-		pEditor->ShowFileDialogError("Failed to load image from file '%s'.", pFilepath);
-		return false;
-	}
-
-	str_copy(pEditor->m_aTileArtFilename, pFilepath);
-	if(pEditor->m_TileArtImageInfo.m_Width * pEditor->m_TileArtImageInfo.m_Height > 10'000)
-	{
-		pEditor->m_PopupEventType = CEditor::POPEVENT_TILE_ART_BIG_IMAGE;
-		pEditor->m_PopupEventActivated = true;
-		return false;
-	}
-	else
-	{
-		pEditor->TileArtCheckColors();
-		return false;
-	}
+		str_copy(pEditor->m_aTileArtFilename, Filepath.c_str());
+		if(pEditor->m_TileArtImageInfo.m_Width * pEditor->m_TileArtImageInfo.m_Height > 10'000)
+		{
+			pEditor->m_PopupEventType = CEditor::POPEVENT_TILE_ART_BIG_IMAGE;
+			pEditor->m_PopupEventActivated = true;
+		}
+		else
+		{
+			pEditor->TileArtCheckColors();
+		}
+	});
+	return false;
 }

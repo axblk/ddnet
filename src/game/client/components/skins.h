@@ -52,6 +52,12 @@ public:
 			 * Skin should be downloaded (or loaded from downloadedskins).
 			 */
 			DOWNLOAD,
+			/**
+			 * Skin is looked for in the skins folder and downloaded if it is
+			 * not there. For a storage that cannot list that folder, see
+			 * `IStorage::ListsAllFiles`, which is every skin it did not list.
+			 */
+			LOCAL_OR_DOWNLOAD,
 		};
 
 		enum class EState

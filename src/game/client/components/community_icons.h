@@ -41,7 +41,6 @@ private:
 	class CCommunityIconLoadResult
 	{
 	public:
-		SHA256_DIGEST m_Sha256;
 		CImageInfo m_ImageInfoGrayscale;
 	};
 
@@ -59,7 +58,7 @@ private:
 	std::deque<CCommunityIconLoad> m_CommunityIconLoads;
 	std::optional<SHA256_DIGEST> m_CommunityIconsInfoSha256;
 	static int FileScan(const char *pName, int IsDir, int DirType, void *pUser);
-	std::function<bool(CImageInfo &)> IconPostprocess(const char *pPath, int StorageType, const std::shared_ptr<CCommunityIconLoadResult> &pResult);
+	static std::function<bool(CImageInfo &)> IconPostprocess(const std::shared_ptr<CCommunityIconLoadResult> &pResult);
 	void StartLoad(const char *pCommunityId, int StorageType);
 	void StartDownload(const char *pCommunityId, const char *pUrl, const SHA256_DIGEST &Sha256);
 	void LoadFinish(const char *pCommunityId, CImageInfo &Info, CImageInfo &InfoGrayscale, const SHA256_DIGEST &Sha256);

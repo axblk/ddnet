@@ -7,7 +7,7 @@
 #include "detect.h"
 #include "fs.h"
 #include "mem.h"
-#include "webfs.h"
+#include "web_data.h"
 #include "windows.h"
 
 #include <cstdio>
@@ -24,11 +24,17 @@ IOHANDLE io_open(const char *filename, int flags)
 {
 	dbg_assert(flags == IOFLAG_READ || flags == IOFLAG_WRITE || flags == IOFLAG_APPEND, "flags must be read, write or append");
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	// The data directory of a page is not on any disk; it is fetched and read
-	// out of memory, and a handle over memory reads, seeks and tells like any
-	// other. Writing into it was never possible and still is not.
-	if(flags == IOFLAG_READ && webfs_owns(filename))
-		return webfs_open(filename);
+	// The data directory of a page is not on any disk; a mount of it fetches
+	// the file and reads it out of memory, and a handle over memory reads,
+	// seeks and tells like any other. Writing into it was never possible and
+	// still is not.
+	if(const char *pRelativePath = web_data_relative_path(filename); flags == IOFLAG_READ && pRelativePath != nullptr)
+	{
+		if(IWebDataMount *pMount = web_data_mounted())
+			return pMount->Open(pRelativePath);
+		web_data_refuse("io_open", filename);
+		return nullptr;
+	}
 #endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_filename = windows_utf8_to_wide(filename);

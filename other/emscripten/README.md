@@ -51,5 +51,17 @@ on another origin needs them served with CORS (`Access-Control-Allow-Origin`).
 `coi-serviceworker.js` isolates a page only once its service worker is active,
 which takes a reload the first time.
 
+The files of the data directory are served beside the page, below `data/`
+(or where `Module.ddnetDataBase` says), and fetched as they are needed, never
+all at once. The full client first fetches `data/index.txt`, which lists every
+file with its size and hash, and the digests of every map, so that it can list
+the directory, join a server whose map is there without downloading it, and
+name each file by its hash in its address, which lets the files be cached for
+good. The demo player, the map viewer and the renderer fetch no index: they ask
+for `data/<path>` by name, and a 404 says a file is not there. Only text files
+(`.cfg`, `.json`, `.rules`, `.txt`) are read as they are opened, which waits
+for their request; everything else is fetched without waiting (see
+`src/base/web_data.h`).
+
 `demo.html`, `map.html`, `render.html` and `index.html` are the pages of the
 web site built by the `web-site` target; `server.py` serves them locally.

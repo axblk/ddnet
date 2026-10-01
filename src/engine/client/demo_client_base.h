@@ -56,6 +56,8 @@ protected:
 	int m_VideoFirstTick = -1;
 	int m_VideoLastTick = -1;
 	char m_aError[256] = "";
+	// What the last map search of a session found, see `PlayDemo`.
+	bool m_MapSearchLoaded = false;
 	int64_t m_LastRenderTime = 0;
 	// Who to follow once the demo names them, see `SetSpectateName`.
 	char m_aPendingSpectateName[MAX_NAME_LENGTH] = "";
@@ -106,6 +108,7 @@ protected:
 	 */
 	void StopDemoSession(CSessionId SessionId, const char *pReason);
 	void StopDemoSession(const char *pReason) { StopDemoSession(m_DemoSessionId, pReason); }
+	void OnMapSearchDone(CSessionId SessionId, bool Loaded) override;
 	/**
 	 * Follows a player of the demo being watched: a client id,
 	 * `SPEC_FREEVIEW`, or `SPEC_FOLLOW` for whoever recorded it. Replaces a

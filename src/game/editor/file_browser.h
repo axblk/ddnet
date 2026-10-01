@@ -141,6 +141,7 @@ private:
 	};
 	EPreviewState m_PreviewState = EPreviewState::UNLOADED;
 	CImageResource m_PreviewResource;
+	CTypedAssetResource<CFileAssetJob> m_PreviewSoundResource;
 	IGraphics::CTextureHandle m_PreviewImage;
 	int m_PreviewImageWidth = 0;
 	int m_PreviewImageHeight = 0;

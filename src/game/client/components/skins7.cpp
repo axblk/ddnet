@@ -596,6 +596,13 @@ void CSkins7::FinishLoads()
 					log_trace("skins7", "Loaded skin part '%s/%s'", ms_apSkinPartNames[SkinPart.m_Type], SkinPart.m_aName);
 				}
 			}
+			else if(SkinPart.m_LoadResource.IsFailed() && SkinPart.m_LoadResource.HttpStatus() == 404)
+			{
+				// Asked for by name, see `RequestSkinPart`: the tee wears the
+				// default part instead.
+				SkinPart.m_Missing = true;
+				Landed = true;
+			}
 			else if(SkinPart.m_LoadResource.IsFailed())
 			{
 				log_error("skins7", "Failed to load skin part '%s'", SkinPart.m_LoadResource.Path());
@@ -667,7 +674,7 @@ const std::vector<CSkins7::CSkinPart> &CSkins7::GetSkinParts(int Part) const
 const CSkins7::CSkinPart *CSkins7::FindSkinPartOrNullptr(int Part, const char *pName, bool AllowSpecialPart) const
 {
 	auto FoundPart = std::find_if(m_avSkinParts[Part].begin(), m_avSkinParts[Part].end(), [pName](const CSkinPart &SkinPart) {
-		return str_comp(SkinPart.m_aName, pName) == 0;
+		return !SkinPart.m_Missing && str_comp(SkinPart.m_aName, pName) == 0;
 	});
 	if(FoundPart == m_avSkinParts[Part].end())
 	{
@@ -680,10 +687,14 @@ const CSkins7::CSkinPart *CSkins7::FindSkinPartOrNullptr(int Part, const char *p
 	return &*FoundPart;
 }
 
+const char *CSkins7::DefaultPartName(int Part)
+{
+	return Part == protocol7::SKINPART_MARKING || Part == protocol7::SKINPART_DECORATION ? "" : "standard";
+}
+
 const CSkins7::CSkinPart *CSkins7::FindDefaultSkinPart(int Part) const
 {
-	const char *pDefaultPartName = Part == protocol7::SKINPART_MARKING || Part == protocol7::SKINPART_DECORATION ? "" : "standard";
-	const CSkinPart *pDefault = FindSkinPartOrNullptr(Part, pDefaultPartName, false);
+	const CSkinPart *pDefault = FindSkinPartOrNullptr(Part, DefaultPartName(Part), false);
 	if(pDefault != nullptr)
 	{
 		return pDefault;
@@ -699,6 +710,24 @@ const CSkins7::CSkinPart *CSkins7::FindSkinPart(int Part, const char *pName, boo
 		return pSkinPart;
 	}
 	return FindDefaultSkinPart(Part);
+}
+
+const CSkins7::CSkinPart *CSkins7::RequestSkinPart(int Part, const char *pName, bool AllowSpecialPart)
+{
+	if(!Storage()->ListsAllFiles(IStorage::TYPE_ALL))
+	{
+		for(const char *pWanted : {pName, DefaultPartName(Part)})
+		{
+			// Every name once: a part that is not there stays taken on as missing.
+			if(pWanted[0] == '\0' || !str_valid_filename(pWanted) ||
+				std::any_of(m_avSkinParts[Part].begin(), m_avSkinParts[Part].end(), [pWanted](const CSkinPart &SkinPart) { return str_comp(SkinPart.m_aName, pWanted) == 0; }))
+				continue;
+			char aFilename[IO_MAX_PATH_LENGTH];
+			str_format(aFilename, sizeof(aFilename), "%s.png", pWanted);
+			RegisterSkinPart(Part, aFilename, IStorage::TYPE_ALL);
+		}
+	}
+	return FindSkinPart(Part, pName, AllowSpecialPart);
 }
 
 void CSkins7::RandomizeSkin(int Dummy) const

@@ -117,6 +117,7 @@ class CClient : public CClientCore, public IClientNetwork, public IClientFronten
 	NETADDR m_GlobalTcpAddr = NETADDR_ZEROED;
 
 	IGraphics::CTextureHandle m_DebugFont;
+	COnDemandTextures m_OnDemandTextures;
 
 	int64_t m_LastRenderTime;
 
@@ -406,6 +407,30 @@ public:
 
 	void ResetMapDownload(bool ResetActive);
 	void FinishMapDownload();
+	// The map the server asked for, while it is looked for.
+	class CWantedMap
+	{
+	public:
+		std::string m_Name;
+		std::optional<SHA256_DIGEST> m_Sha256;
+		int m_Crc = 0;
+		int m_Size = 0;
+		std::string m_Url;
+	};
+	CWantedMap m_WantedMap;
+	/**
+	 * Tells the server that the map it asked for is loaded.
+	 */
+	void OnNetworkMapLoaded();
+	/**
+	 * Downloads the map the server asked for, which the client does not have.
+	 */
+	void StartMapDownload();
+	void OnMapSearchDone(CSessionId SessionId, bool Loaded) override;
+	/**
+	 * Plays the demo of a session once it and its map are loaded.
+	 */
+	void StartDemoPlayback(CSessionId SessionId, bool Focus);
 
 	EInfoState InfoState() const override { return m_InfoState; }
 	void RequestDDNetInfo() override;

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <vector>
 
 CQuadArt::CQuadArt(CQuadArtParameters Parameters, CImageInfo &&Img) :
@@ -207,20 +208,20 @@ bool CEditor::CallbackAddQuadArt(const char *pFilepath, int StorageType, void *p
 	pEditor->m_QuadArtParameters.m_Optimize = true;
 	pEditor->m_QuadArtParameters.m_Centralize = false;
 
-	if(!pEditor->Graphics()->LoadPng(pEditor->m_QuadArtImageInfo, pFilepath, StorageType))
-	{
-		pEditor->ShowFileDialogError("Failed to load image from file '%s'.", pFilepath);
-		return false;
-	}
+	const std::string Filepath = pFilepath;
+	pEditor->WhenFileArrives(pFilepath, StorageType, [pEditor, Filepath, StorageType](CEditorFiles &Files) {
+		if(!pEditor->ReadImage(Files, Filepath.c_str(), StorageType, pEditor->m_QuadArtImageInfo))
+			return;
 
-	str_copy(pEditor->m_QuadArtParameters.m_aFilename, pFilepath);
+		str_copy(pEditor->m_QuadArtParameters.m_aFilename, Filepath.c_str());
 
-	CUIRect View = *(pEditor->Ui()->Screen());
+		CUIRect View = *(pEditor->Ui()->Screen());
 
-	static SPopupMenuId s_PopupQuadArtId;
-	constexpr float PopupWidth = 400.0f;
-	constexpr float PopupHeight = 120.0f;
-	pEditor->Ui()->DoPopupMenu(&s_PopupQuadArtId, View.w / 2.0f - PopupWidth / 2.0f, View.h / 2.0f - PopupHeight / 2.0f, PopupWidth, PopupHeight, pEditor, PopupQuadArt);
+		static SPopupMenuId s_PopupQuadArtId;
+		constexpr float PopupWidth = 400.0f;
+		constexpr float PopupHeight = 120.0f;
+		pEditor->Ui()->DoPopupMenu(&s_PopupQuadArtId, View.w / 2.0f - PopupWidth / 2.0f, View.h / 2.0f - PopupHeight / 2.0f, PopupWidth, PopupHeight, pEditor, PopupQuadArt);
+	});
 	return false;
 }
 

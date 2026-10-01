@@ -27,7 +27,9 @@
 #include <memory>
 #include <vector>
 
+class CAssetLoader;
 class CEditor;
+class CEditorFiles;
 class CEditorImage;
 class CEditorSound;
 class CLayerFront;
@@ -41,6 +43,8 @@ class CLayerTele;
 class CLayerTune;
 class CQuad;
 class IEditorEnvelopeReference;
+class IMap;
+class IStorage;
 
 class CDataFileWriterFinishJob : public IJob
 {
@@ -196,7 +200,31 @@ public:
 	bool Save(const char *pFilename, const FErrorHandler &ErrorHandler);
 	bool PerformPreSaveSanityChecks(const FErrorHandler &ErrorHandler);
 	bool Load(const char *pFilename, int StorageType, const FErrorHandler &ErrorHandler);
+	/**
+	 * Loads a map that was read already, with what it names besides: its
+	 * external images and sounds and the automapper rules of its images.
+	 *
+	 * @param pMap The map.
+	 * @param pFilename Where the map is saved to.
+	 * @param Files Files fetched ahead, see `AddNamedFiles`. What is not
+	 * among them is read from the storage.
+	 * @param ErrorHandler Hears what went wrong.
+	 */
+	bool Load(std::unique_ptr<IMap> pMap, const char *pFilename, const CEditorFiles &Files, const FErrorHandler &ErrorHandler);
+	/**
+	 * Adds the files `Load` reads besides a map to a set, so that they are
+	 * fetched ahead where they are fetched.
+	 */
+	static void AddNamedFiles(IMap &Map, CEditorFiles &Files, CAssetLoader &Loader, IStorage *pStorage);
 	bool Append(const char *pFilename, int StorageType, bool IgnoreHistory, const FErrorHandler &ErrorHandler);
+	/**
+	 * Adds what another map holds to this one.
+	 *
+	 * @param NewMap The map, which gives up what is added.
+	 * @param pFilename Where it was read from, for the history.
+	 * @param IgnoreHistory Whether to leave it out of the history.
+	 */
+	void Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory);
 	void PerformSanityChecks(const FErrorHandler &ErrorHandler);
 	bool PerformAutosave(const FErrorHandler &ErrorHandler);
 

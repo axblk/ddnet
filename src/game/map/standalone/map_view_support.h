@@ -159,8 +159,22 @@ namespace MapViewSupport
 			// that kind of server does not have; a viewer has no server to ask
 			// and nobody to mislead about what a tile does, so it draws what
 			// the map put there.
+			//
+			// Through the asset loader like the map's images, because in a
+			// browser the picture is fetched, which a viewer has to ask for by
+			// its address, see `IStorage::FetchUrl`.
 			const char *pPath = "editor/entities_clear/ddnet.png";
-			m_EntitiesTexture = m_pGraphics->LoadTexture(pPath, IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
+			CImageResource Resource = m_pAssetLoader->LoadImageFile(m_pStorage, pPath, IStorage::TYPE_ALL);
+			while(!Resource.IsFinished())
+			{
+				m_pAssetLoader->Update();
+				std::this_thread::yield();
+			}
+			if(Resource.IsReady())
+			{
+				CImageInfo Image = Resource.TakeImage();
+				m_EntitiesTexture = m_pGraphics->LoadTextureRawMove(Image, IGraphics::TEXLOAD_LAYERED, pPath);
+			}
 			if(!m_EntitiesTexture.IsValid())
 				log_warn(m_pLogContext, "Failed to load '%s', the entity overlay stays empty.", pPath);
 		}

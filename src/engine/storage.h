@@ -51,6 +51,18 @@ public:
 
 	virtual int NumPaths() const = 0;
 
+	/**
+	 * Whether `ListDirectory`, `ListDirectoryInfo`, `FindFile` and `FindFiles`
+	 * see every file of a storage type. A program in a browser that does not
+	 * know what the page's data directory holds cannot list it: that directory
+	 * lists as empty, and its files are asked for by name with `FetchUrl`.
+	 * `FileExists` and `FolderExists` do not see its files either there, and
+	 * reading one with `OpenFile` is refused and logged.
+	 *
+	 * @param Type Storage type, including `TYPE_ALL`.
+	 */
+	virtual bool ListsAllFiles(int Type) const = 0;
+
 	virtual void ListDirectory(int Type, const char *pPath, FS_LISTDIR_CALLBACK pfnCallback, void *pUser) = 0;
 	virtual void ListDirectoryInfo(int Type, const char *pPath, FS_LISTDIR_CALLBACK_FILEINFO pfnCallback, void *pUser) = 0;
 	virtual IOHANDLE OpenFile(const char *pFilename, int Flags, int Type, char *pBuffer = nullptr, int BufferSize = 0) = 0;
@@ -70,6 +82,9 @@ public:
 	/**
 	 * The address a file can be fetched from, in the browser, where everything
 	 * below the data directory comes over HTTP. Always `false` elsewhere.
+	 * Where the storage cannot list the data directory (see `ListsAllFiles`),
+	 * a file that is not found before it gets an address there, and the answer
+	 * to the request says whether it exists.
 	 *
 	 * @param pFilename File, looked up in the same order as `OpenFile`.
 	 * @param Type Storage type to look in.
@@ -79,6 +94,20 @@ public:
 	 * @return `false` when the file cannot be fetched, and then `pBuffer` is empty.
 	 */
 	virtual bool FetchUrl(const char *pFilename, int Type, char *pBuffer, int BufferSize) = 0;
+	/**
+	 * What the storage knows of a file it fetches (see `FetchUrl`) without
+	 * fetching it: the SHA-256 and the CRC a map is named by, which the index
+	 * of the page's data directory holds for its maps.
+	 *
+	 * @param pFilename File, looked up in the same order as `OpenFile`.
+	 * @param Type Storage type to look in.
+	 * @param pSha256 Receives the SHA-256.
+	 * @param pCrc Receives the CRC.
+	 *
+	 * @return `false` when the file is not fetched or its digests are not
+	 * known.
+	 */
+	virtual bool FetchedFileDigests(const char *pFilename, int Type, SHA256_DIGEST *pSha256, unsigned *pCrc) = 0;
 	/**
 	 * Schedules synchronization of persistent storage where required by the platform.
 	 */

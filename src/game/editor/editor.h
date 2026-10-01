@@ -3,6 +3,7 @@
 #ifndef GAME_EDITOR_EDITOR_H
 #define GAME_EDITOR_EDITOR_H
 
+#include "editor_files.h"
 #include "editor_history.h"
 #include "editor_server_settings.h"
 #include "editor_trackers.h"
@@ -47,6 +48,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -331,11 +333,63 @@ public:
 	bool Load(const char *pFilename, int StorageType) override;
 	bool HandleMapDrop(const char *pFilename, int StorageType) override;
 	void LoadIngameMap();
+	/**
+	 * Opens a map in a new tab once it and the files it names are here, see
+	 * `WhenFilesArrive`.
+	 *
+	 * @param pFilename The map.
+	 * @param StorageType Where it is.
+	 * @param OnOpened Hears whether the map was opened.
+	 */
+	void OpenMap(const char *pFilename, int StorageType, std::function<void(bool Opened)> OnOpened);
+	/**
+	 * Reads a map and fetches the files it names, see `WhenFilesArrive`.
+	 *
+	 * @param pFilename The map.
+	 * @param StorageType Where it is.
+	 * @param Next Gets the map and what it names, or `nullptr` for a map
+	 * that could not be read, which was shown already.
+	 */
+	void WhenMapArrives(const char *pFilename, int StorageType, std::function<void(std::unique_ptr<IMap> pMap, const CEditorFiles &Files)> Next);
+	/**
+	 * Opens a map that was read in a new tab.
+	 *
+	 * @param pMap The map.
+	 * @param pFilename Where it is saved to.
+	 * @param Files What it names, see `CEditorMap::AddNamedFiles`.
+	 */
+	bool OpenLoadedMap(std::unique_ptr<IMap> pMap, const char *pFilename, const CEditorFiles &Files);
+	/**
+	 * Runs `Next` once every file of `Files` arrived (see `CEditorFiles`): at
+	 * once where none is fetched, in `OnUpdate` otherwise, while the editor
+	 * shows that it loads. `Next` may add files and return `false` to wait
+	 * for those as well. What waits is dropped when the dialog closes, and
+	 * replaced by what is asked for next.
+	 *
+	 * @param pWhat What is loaded, to show.
+	 * @param Files The files.
+	 * @param Next What reads them.
+	 */
+	void WhenFilesArrive(const char *pWhat, CEditorFiles Files, std::function<bool(CEditorFiles &Files)> Next);
+	/**
+	 * Runs `Next` once a file is here, see `WhenFilesArrive`.
+	 */
+	void WhenFileArrives(const char *pFilename, int StorageType, std::function<void(CEditorFiles &Files)> Next);
+	void UpdatePendingFiles();
 	void Render();
 
 	void UpdateBrushPicker();
 	void RenderPressedKeys(CUIRect View);
 	void RenderSavingIndicator(CUIRect View);
+	// Files that are fetched before the editor goes on, see `WhenFilesArrive`.
+	class CPendingFiles
+	{
+	public:
+		std::string m_What;
+		CEditorFiles m_Files;
+		std::function<bool(CEditorFiles &Files)> m_Next;
+	};
+	std::optional<CPendingFiles> m_PendingFiles;
 	void FreeDynamicPopupMenus();
 	void UpdateColorPipette();
 	void RenderMousePointer();
@@ -452,6 +506,12 @@ public:
 	bool m_ColorPipetteActive = false;
 
 	IGraphics::CTextureHandle m_CheckerTexture;
+	// The editor's own textures, loaded when they are first drawn.
+	COnDemandTextures m_EditorTextures;
+	/**
+	 * Asks for every texture of the editor's own.
+	 */
+	void LoadTextures();
 
 	enum ECursorType
 	{
@@ -665,7 +725,33 @@ public:
 	void ApplyAlignments(const std::vector<SAlignmentInfo> &vAlignments, ivec2 &Offset);
 	void ApplyAxisAlignment(ivec2 &Offset) const;
 
-	bool ReplaceImage(const char *pFilename, int StorageType, bool CheckDuplicate);
+	/**
+	 * Replaces the selected image with one from a file, once the file
+	 * arrived (see `WhenImageArrives`).
+	 *
+	 * @param pFilename The image file.
+	 * @param StorageType Where it is.
+	 * @param CheckDuplicate Whether to refuse a file whose name an image of
+	 * the map has already.
+	 * @param External Whether the image is external, which vanilla images
+	 * are when it is not given.
+	 *
+	 * @return `false` if it was refused as a duplicate, `true` otherwise.
+	 */
+	bool ReplaceImage(const char *pFilename, int StorageType, bool CheckDuplicate, std::optional<bool> External = std::nullopt);
+	/**
+	 * Runs `Next` once an image and its automapper rules are here, see
+	 * `WhenFilesArrive`.
+	 */
+	void WhenImageArrives(const char *pFilename, int StorageType, std::function<void(CEditorFiles &Files)> Next);
+	/**
+	 * Reads an image, and shows why it could not.
+	 */
+	bool ReadImage(const CEditorFiles &Files, const char *pFilename, int StorageType, CImageInfo &Image);
+	/**
+	 * Reads a sound and loads it, and shows why it could not.
+	 */
+	bool ReadSound(const CEditorFiles &Files, const char *pFilename, int StorageType, void **ppData, unsigned *pDataSize, int *pSoundId);
 	static bool ReplaceImageCallback(const char *pFilename, int StorageType, void *pUser);
 	bool ReplaceSound(const char *pFilename, int StorageType, bool CheckDuplicate);
 	static bool ReplaceSoundCallback(const char *pFilename, int StorageType, void *pUser);

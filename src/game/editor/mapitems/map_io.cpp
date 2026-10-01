@@ -21,6 +21,7 @@
 
 #include <game/editor/editor.h>
 #include <game/editor/editor_actions.h>
+#include <game/editor/editor_files.h>
 #include <game/gamecore.h>
 #include <game/mapitems_ex.h>
 
@@ -473,7 +474,42 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 		ErrorHandler("Error: Failed to open map file. See local console for details.");
 		return false;
 	}
+	return Load(std::move(pMap), pFilename, CEditorFiles(), ErrorHandler);
+}
 
+void CEditorMap::AddNamedFiles(IMap &Map, CEditorFiles &Files, CAssetLoader &Loader, IStorage *pStorage)
+{
+	char aPath[IO_MAX_PATH_LENGTH];
+	int Start, Num;
+	Map.GetType(MAPITEMTYPE_IMAGE, &Start, &Num);
+	for(int i = 0; i < Num; i++)
+	{
+		const CMapItemImage_v2 *pItem = (CMapItemImage_v2 *)Map.GetItem(Start + i);
+		const char *pName = Map.GetDataString(pItem->m_ImageName);
+		if(pName == nullptr || pName[0] == '\0')
+			continue;
+		if(pItem->m_External || (pItem->m_Version > 1 && pItem->m_MustBe1 != 1))
+		{
+			str_format(aPath, sizeof(aPath), "mapres/%s.png", pName);
+			Files.Add(Loader, pStorage, aPath, IStorage::TYPE_ALL);
+		}
+		CAutomapper::RulesPath(pName, aPath, sizeof(aPath));
+		Files.Add(Loader, pStorage, aPath, IStorage::TYPE_ALL);
+	}
+	Map.GetType(MAPITEMTYPE_SOUND, &Start, &Num);
+	for(int i = 0; i < Num; i++)
+	{
+		const CMapItemSound *pItem = (CMapItemSound *)Map.GetItem(Start + i);
+		const char *pName = Map.GetDataString(pItem->m_SoundName);
+		if(!pItem->m_External || pName == nullptr || pName[0] == '\0')
+			continue;
+		str_format(aPath, sizeof(aPath), "mapres/%s.opus", pName);
+		Files.Add(Loader, pStorage, aPath, IStorage::TYPE_ALL);
+	}
+}
+
+bool CEditorMap::Load(std::unique_ptr<IMap> pMap, const char *pFilename, const CEditorFiles &Files, const FErrorHandler &ErrorHandler)
+{
 	// load map info
 	{
 		int Start, Num;
@@ -593,7 +629,8 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 				str_format(aBuf, sizeof(aBuf), "mapres/%s.png", pImg->m_aName);
 
 				// load external
-				if(m_pEditor->Graphics()->LoadPng(*pImg, aBuf, IStorage::TYPE_ALL))
+				std::vector<uint8_t> vPng;
+				if(Files.ReadFile(m_pEditor->Storage(), aBuf, IStorage::TYPE_ALL, vPng) && m_pEditor->Graphics()->LoadPng(*pImg, vPng.data(), vPng.size(), aBuf))
 				{
 					ConvertToRgba(*pImg);
 
@@ -602,9 +639,14 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 					// The map file does not store an external image, so its
 					// pixels are needed for the texture and for the opaque tile
 					// flags and for nothing else. Both happen here and the data
-					// is handed over rather than copied.
+					// is handed over rather than copied. The file is read again
+					// for another kind of texture or to embed the image, except
+					// where it is fetched, which would wait for the network: a
+					// fetched image keeps its pixels.
+					char aUrl[IO_MAX_PATH_LENGTH * 2];
+					const bool Fetched = m_pEditor->Storage()->FetchUrl(aBuf, IStorage::TYPE_ALL, aUrl, sizeof(aUrl));
 					pImg->AnalyseTileFlags();
-					pImg->Upload(vImageLoadFlags[i], true);
+					pImg->Upload(vImageLoadFlags[i], !Fetched);
 				}
 				else
 				{
@@ -638,7 +680,7 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 			}
 
 			// load auto mapper file
-			pImg->m_Automapper.Load(pImg->m_aName);
+			pImg->m_Automapper.Load(pImg->m_aName, Files);
 
 			m_vpImages.push_back(pImg);
 
@@ -675,8 +717,12 @@ bool CEditorMap::Load(const char *pFilename, int StorageType, const FErrorHandle
 				str_format(aBuf, sizeof(aBuf), "mapres/%s.opus", pSound->m_aName);
 
 				// load external
-				if(m_pEditor->Storage()->ReadFile(aBuf, IStorage::TYPE_ALL, &pSound->m_pData, &pSound->m_DataSize))
+				std::vector<uint8_t> vOpus;
+				if(Files.ReadFile(m_pEditor->Storage(), aBuf, IStorage::TYPE_ALL, vOpus))
 				{
+					pSound->m_DataSize = vOpus.size();
+					pSound->m_pData = malloc(pSound->m_DataSize);
+					mem_copy(pSound->m_pData, vOpus.data(), pSound->m_DataSize);
 					pSound->m_SoundId = m_pEditor->Sound()->LoadOpusFromMem(pSound->m_pData, pSound->m_DataSize, true, pSound->m_aName);
 				}
 				else
@@ -1125,7 +1171,12 @@ bool CEditorMap::Append(const char *pFilename, int StorageType, bool IgnoreHisto
 	CEditorMap NewMap(Editor());
 	if(!NewMap.Load(pFilename, StorageType, ErrorHandler))
 		return false;
+	Append(NewMap, pFilename, IgnoreHistory);
+	return true;
+}
 
+void CEditorMap::Append(CEditorMap &NewMap, const char *pFilename, bool IgnoreHistory)
+{
 	CEditorActionAppendMap::SPrevInfo Info{
 		(int)m_vpGroups.size(),
 		(int)m_vpImages.size(),
@@ -1257,7 +1308,6 @@ bool CEditorMap::Append(const char *pFilename, int StorageType, bool IgnoreHisto
 	OnModify();
 
 	// all done \o/
-	return true;
 }
 
 void CEditorMap::PerformSanityChecks(const FErrorHandler &ErrorHandler)

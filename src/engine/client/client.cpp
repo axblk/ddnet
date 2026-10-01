@@ -6,6 +6,7 @@
 #include "demoedit.h"
 #include "friends.h"
 #include "serverbrowser.h"
+#include "webfs.h"
 #include "window_sdl.h"
 
 #include <base/bytes.h>
@@ -961,6 +962,7 @@ void CClient::StopNetworkSession(const char *pReason)
 
 void CClient::StopDemoSession(CSessionId SessionId, const char *pReason)
 {
+	CancelMapSearch(SessionId);
 #if defined(CONF_VIDEORECORDER)
 	if(SessionId == m_VideoSessionId && m_ActiveVideoExport.has_value() && pReason && pReason[0] != '\0' && m_aVideoExportQueueError[0] == '\0')
 		str_copy(m_aVideoExportQueueError, pReason);
@@ -1152,9 +1154,7 @@ void CClient::SetCurrentServerInfo(const CServerInfo &ServerInfo)
 IGraphics::CTextureHandle CClient::GetDebugFont()
 {
 	// Rarely used, so loaded on demand
-	if(!m_DebugFont.IsValid())
-		m_DebugFont = Graphics()->LoadTexture("debug_font.png", IStorage::TYPE_ALL);
-	return m_DebugFont;
+	return m_OnDemandTextures.Get(m_DebugFont, "debug_font.png");
 }
 
 // ---
@@ -1892,46 +1892,23 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			}
 
 			StopDemoRecorders();
-			if(LoadMapSearch(m_NetworkSessionId, pMap, MapSha256, MapCrc) == nullptr)
+			m_WantedMap.m_Name = pMap;
+			m_WantedMap.m_Sha256 = MapSha256;
+			m_WantedMap.m_Crc = MapCrc;
+			m_WantedMap.m_Size = MapSize;
+			m_WantedMap.m_Url = pMapUrl == nullptr ? "" : pMapUrl;
+			// A map the client has to fetch keeps the loading screen up until
+			// it is here, see `OnMapSearchDone`.
+			switch(LoadMapSearch(m_NetworkSessionId, pMap, MapSha256, MapCrc))
 			{
-				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
-				if(FocusedSessionId() == m_NetworkSessionId)
-					SetLoadingStateDetail(IClient::ELoadingStateDetail::SENDING_READY);
-				SendReady(CONN_MAIN);
-			}
-			else
-			{
-				// start map download
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, Source.m_aMapdownloadFilename, sizeof(Source.m_aMapdownloadFilename));
-				FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, Source.m_aMapdownloadFilenameTemp, sizeof(Source.m_aMapdownloadFilenameTemp));
-
-				char aBuf[256];
-				str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", Source.m_aMapdownloadFilenameTemp);
-				m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", aBuf);
-
-				str_copy(Source.m_aMapdownloadName, pMap);
-				Source.m_MapdownloadSha256 = MapSha256;
-				Source.m_MapdownloadCrc = MapCrc;
-				Source.m_MapdownloadTotalsize = MapSize;
-
-				if(MapSha256.has_value())
-				{
-					char aUrl[256];
-					char aEscaped[256];
-					str_url_encode(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
-					bool UseConfigUrl = str_comp(g_Config.m_ClMapDownloadUrl, "https://maps.ddnet.org") != 0 || m_aMapDownloadUrl[0] == '\0';
-					str_format(aUrl, sizeof(aUrl), "%s/%s", UseConfigUrl ? g_Config.m_ClMapDownloadUrl : m_aMapDownloadUrl, aEscaped);
-
-					Source.m_pMapdownloadTask = Http()->CreateGetFile(pMapUrl ? pMapUrl : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
-					Source.m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
-					Source.m_pMapdownloadTask->MaxResponseSize(MapSize);
-					Source.m_pMapdownloadTask->ExpectSha256(MapSha256.value());
-					Http()->Run(Source.m_pMapdownloadTask);
-				}
-				else
-				{
-					SendMapRequest();
-				}
+			case EMapSearch::LOADED:
+				OnNetworkMapLoaded();
+				break;
+			case EMapSearch::FETCHING:
+				break;
+			case EMapSearch::NOT_FOUND:
+				StartMapDownload();
+				break;
 			}
 		}
 		else if(Conn == CONN_MAIN && Msg == NETMSG_MAP_DATA)
@@ -2583,6 +2560,7 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 
 void CClient::ResetMapDownload(bool ResetActive)
 {
+	CancelMapSearch(m_NetworkSessionId);
 	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
 	if(Source.m_pMapdownloadTask)
 	{
@@ -2611,6 +2589,70 @@ void CClient::ResetMapDownload(bool ResetActive)
 		Source.m_aMapdownloadFilename[0] = '\0';
 		Source.m_aMapdownloadFilenameTemp[0] = '\0';
 		Source.m_aMapdownloadName[0] = '\0';
+	}
+}
+
+void CClient::OnNetworkMapLoaded()
+{
+	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", "loading done");
+	if(FocusedSessionId() == m_NetworkSessionId)
+		SetLoadingStateDetail(IClient::ELoadingStateDetail::SENDING_READY);
+	SendReady(CONN_MAIN);
+}
+
+void CClient::StartMapDownload()
+{
+	CNetworkSessionSource &Source = *m_pNetworkSessionSource;
+	const char *pMap = m_WantedMap.m_Name.c_str();
+	const std::optional<SHA256_DIGEST> &MapSha256 = m_WantedMap.m_Sha256;
+	const int MapCrc = m_WantedMap.m_Crc;
+	FormatMapDownloadFilename(pMap, MapSha256, MapCrc, false, Source.m_aMapdownloadFilename, sizeof(Source.m_aMapdownloadFilename));
+	FormatMapDownloadFilename(pMap, MapSha256, MapCrc, true, Source.m_aMapdownloadFilenameTemp, sizeof(Source.m_aMapdownloadFilenameTemp));
+
+	char aBuf[256];
+	str_format(aBuf, sizeof(aBuf), "starting to download map to '%s'", Source.m_aMapdownloadFilenameTemp);
+	m_pConsole->Print(IConsole::OUTPUT_LEVEL_ADDINFO, "client/network", aBuf);
+
+	str_copy(Source.m_aMapdownloadName, pMap);
+	Source.m_MapdownloadSha256 = MapSha256;
+	Source.m_MapdownloadCrc = MapCrc;
+	Source.m_MapdownloadTotalsize = m_WantedMap.m_Size;
+
+	if(MapSha256.has_value())
+	{
+		char aUrl[256];
+		char aEscaped[256];
+		str_url_encode(aEscaped, str_startswith(Source.m_aMapdownloadFilename, "downloadedmaps/"));
+		bool UseConfigUrl = str_comp(g_Config.m_ClMapDownloadUrl, "https://maps.ddnet.org") != 0 || m_aMapDownloadUrl[0] == '\0';
+		str_format(aUrl, sizeof(aUrl), "%s/%s", UseConfigUrl ? g_Config.m_ClMapDownloadUrl : m_aMapDownloadUrl, aEscaped);
+
+		Source.m_pMapdownloadTask = Http()->CreateGetFile(!m_WantedMap.m_Url.empty() ? m_WantedMap.m_Url.c_str() : aUrl, Storage(), Source.m_aMapdownloadFilenameTemp, IStorage::TYPE_SAVE);
+		Source.m_pMapdownloadTask->Timeout(CTimeout{g_Config.m_ClMapDownloadConnectTimeoutMs, 0, g_Config.m_ClMapDownloadLowSpeedLimit, g_Config.m_ClMapDownloadLowSpeedTime});
+		Source.m_pMapdownloadTask->MaxResponseSize(m_WantedMap.m_Size);
+		Source.m_pMapdownloadTask->ExpectSha256(MapSha256.value());
+		Http()->Run(Source.m_pMapdownloadTask);
+	}
+	else
+	{
+		SendMapRequest();
+	}
+}
+
+void CClient::OnMapSearchDone(CSessionId SessionId, bool Loaded)
+{
+	if(SessionId == m_NetworkSessionId)
+	{
+		if(Loaded)
+			OnNetworkMapLoaded();
+		else
+			StartMapDownload();
+	}
+	else if(SessionType(SessionId) == ESessionSourceType::DEMO)
+	{
+		if(Loaded)
+			StartDemoPlayback(SessionId, FocusedSessionId() == SessionId);
+		else
+			StopSession(SessionId, MapNotFoundError(DemoSource(SessionId).m_DemoPlayer.GetMapInfo()->m_aName));
 	}
 }
 
@@ -3169,10 +3211,18 @@ void CClient::Update()
 
 	// update editor/gameclient, before the sessions snap and send input
 	if(m_EditorActive)
+	{
 		m_pEditor->OnUpdate();
+		// What the client fetches besides the game goes on meanwhile, such as
+		// a map it joins with or the debug font the editor draws with.
+		GameClient()->AssetLoader().Update();
+	}
 	else
+	{
 		GameClient()->OnUpdate();
+	}
 
+	UpdateMapSearches();
 	UpdateSessions();
 #if defined(CONF_VIDEORECORDER)
 	UpdateVideoExportQueue();
@@ -3479,6 +3529,7 @@ void CClient::Run()
 	Graphics()->AddWindowResizeListener([this] { OnWindowResize(); });
 
 	GameClient()->OnInit();
+	m_OnDemandTextures.Init(Graphics(), Storage(), &GameClient()->AssetLoader());
 
 	m_Fifo.Init(m_pConsole, g_Config.m_ClInputFifo, CFGFLAG_CLIENT);
 
@@ -4696,7 +4747,6 @@ const char *CClient::DemoPlayer_Play(CSessionId SessionId, const char *pFilename
 		return Localize("No demo with this filename exists");
 
 	CDemoSessionSource &Source = DemoSource(SessionId);
-	CDemoPlayer &Player = Source.m_DemoPlayer;
 	StopSession(SessionId, nullptr);
 
 	if(Focus)
@@ -4717,6 +4767,15 @@ const char *CClient::DemoPlayer_Play(CSessionId SessionId, const char *pFilename
 		StopSession(SessionId, pError);
 		return pError;
 	}
+	// A map that is fetched starts the demo once it is here.
+	if(!IsMapSearchPending(SessionId))
+		StartDemoPlayback(SessionId, Focus);
+	return nullptr;
+}
+
+void CClient::StartDemoPlayback(CSessionId SessionId, bool Focus)
+{
+	CDemoSessionSource &Source = DemoSource(SessionId);
 
 	// enter demo playback state
 	if(Focus)
@@ -4729,10 +4788,8 @@ const char *CClient::DemoPlayer_Play(CSessionId SessionId, const char *pFilename
 	// setup buffers
 	Source.PrepareSnapshots();
 
-	Player.Play();
+	Source.m_DemoPlayer.Play();
 	GameClient()->OnEnterGame(SessionId);
-
-	return nullptr;
 }
 
 #if defined(CONF_VIDEORECORDER)
@@ -5870,13 +5927,23 @@ int main(int argc, const char **argv)
 		delete pEngine;
 	});
 
-	IStorage *pStorage;
+	IStorage *pStorage = nullptr;
 	{
 		CMemoryLogger MemoryLogger;
 		MemoryLogger.SetParent(log_get_scope_logger());
 		{
 			CLogScope LogScope(&MemoryLogger);
-			pStorage = CreateStorage(IStorage::EInitializationType::CLIENT, argc, argv);
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+			// The client lists the page's data directory, so it reads what the
+			// directory holds before anything looks in there, see `webfs_init`.
+			const bool DataDirectoryKnown = webfs_init();
+			if(!DataDirectoryKnown)
+				log_error("storage", "The data directory of this page could not be read.");
+#else
+			const bool DataDirectoryKnown = true;
+#endif
+			if(DataDirectoryKnown)
+				pStorage = CreateStorage(IStorage::EInitializationType::CLIENT, argc, argv);
 		}
 		if(!pStorage)
 		{

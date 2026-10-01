@@ -3,7 +3,10 @@
 
 #include <game/editor/map_object.h>
 
+#include <cstddef>
 #include <vector>
+
+class CEditorFiles;
 
 class CAutomapper : public CMapObject
 {
@@ -74,7 +77,17 @@ class CAutomapper : public CMapObject
 public:
 	explicit CAutomapper(CEditorMap *pMap);
 
-	void Load(const char *pTileName);
+	/**
+	 * Loads the rules of an image, when there are any.
+	 *
+	 * @param pTileName Name of the image.
+	 * @param Files Where the rules were fetched ahead, see `RulesPath`.
+	 */
+	void Load(const char *pTileName, const CEditorFiles &Files);
+	/**
+	 * The file the rules of an image are in.
+	 */
+	static void RulesPath(const char *pTileName, char *pBuffer, size_t BufferSize);
 	void Unload();
 	int CheckIndexFlag(int Flag, const char *pFlag, bool CheckNone) const;
 	void ProceedLocalized(class CLayerTiles *pLayer, class CLayerTiles *pGameLayer, int ReferenceId, int ConfigId, int Seed = 0, int X = 0, int Y = 0, int Width = -1, int Height = -1);

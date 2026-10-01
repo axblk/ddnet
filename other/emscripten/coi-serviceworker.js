@@ -7,7 +7,7 @@
 // `server.py`, this does nothing.
 //
 // Since there has to be a worker in front of every request anyway, it is also
-// where the data directory is kept: see `src/base/webfs.h` for what fetches it
+// where the data directory is kept: see `src/base/web_data.h` for what fetches it
 // and why a file there can be kept for good.
 "use strict";
 

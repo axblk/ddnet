@@ -24,8 +24,10 @@
 #include <engine/gfx/image_loader.h>
 #include <engine/gfx/image_manipulation.h>
 #include <engine/graphics.h>
+#include <engine/http.h>
 #include <engine/input.h>
 #include <engine/keys.h>
+#include <engine/map.h>
 #include <engine/sessions.h>
 #include <engine/shared/config.h>
 #include <engine/storage.h>
@@ -91,39 +93,47 @@ bool CEditor::IsVanillaImage(const char *pImage)
 bool CEditor::CallbackOpenMap(const char *pFilename, int StorageType, void *pUser)
 {
 	CEditor *pEditor = (CEditor *)pUser;
-	if(pEditor->Load(pFilename, StorageType))
-	{
-		pEditor->Map()->m_ValidSaveFilename = StorageType == IStorage::TYPE_SAVE && pEditor->m_FileBrowser.IsValidSaveFilename();
-		if(pEditor->m_Dialog == DIALOG_FILE)
+	const bool ValidSaveFilename = StorageType == IStorage::TYPE_SAVE && pEditor->m_FileBrowser.IsValidSaveFilename();
+	const std::string Filename = pFilename;
+	pEditor->OpenMap(pFilename, StorageType, [pEditor, ValidSaveFilename, Filename](bool Opened) {
+		if(Opened)
 		{
-			pEditor->OnDialogClose();
+			pEditor->Map()->m_ValidSaveFilename = ValidSaveFilename;
+			if(pEditor->m_Dialog == DIALOG_FILE)
+			{
+				pEditor->OnDialogClose();
+			}
 		}
-		return true;
-	}
-	else
-	{
-		pEditor->ShowFileDialogError("Failed to load map from file '%s'.", pFilename);
-		return false;
-	}
+		else
+		{
+			pEditor->ShowFileDialogError("Failed to load map from file '%s'.", Filename.c_str());
+		}
+	});
+	return true;
 }
 
 bool CEditor::CallbackAppendMap(const char *pFilename, int StorageType, void *pUser)
 {
 	CEditor *pEditor = (CEditor *)pUser;
-	const auto &&ErrorHandler = [pEditor](const char *pErrorMessage) {
-		pEditor->ShowFileDialogError("%s", pErrorMessage);
-		log_error("editor/append", "%s", pErrorMessage);
-	};
-	if(pEditor->Map()->Append(pFilename, StorageType, false, ErrorHandler))
-	{
-		pEditor->OnDialogClose();
-		return true;
-	}
-	else
-	{
-		pEditor->ShowFileDialogError("Failed to load map from file '%s'.", pFilename);
-		return false;
-	}
+	CEditorMap *pMap = pEditor->Map();
+	const std::string Filename = pFilename;
+	pEditor->WhenMapArrives(pFilename, StorageType, [pEditor, pMap, Filename](std::unique_ptr<IMap> pAppended, const CEditorFiles &Files) {
+		const auto &&ErrorHandler = [pEditor](const char *pErrorMessage) {
+			pEditor->ShowFileDialogError("%s", pErrorMessage);
+			log_error("editor/append", "%s", pErrorMessage);
+		};
+		CEditorMap NewMap(pEditor);
+		if(pAppended != nullptr && NewMap.Load(std::move(pAppended), Filename.c_str(), Files, ErrorHandler))
+		{
+			pMap->Append(NewMap, Filename.c_str(), false);
+			pEditor->OnDialogClose();
+		}
+		else
+		{
+			pEditor->ShowFileDialogError("Failed to load map from file '%s'.", Filename.c_str());
+		}
+	});
+	return true;
 }
 
 bool CEditor::CallbackSaveMap(const char *pFilename, int StorageType, void *pUser)
@@ -244,21 +254,23 @@ bool CEditor::CallbackCustomEntities(const char *pFilename, int StorageType, voi
 		return false;
 	}
 
-	CImageInfo ImgInfo;
-	if(!pEditor->Graphics()->LoadPng(ImgInfo, pFilename, StorageType))
-	{
-		pEditor->ShowFileDialogError("Failed to load image from file '%s'.", pFilename);
-		return false;
-	}
+	const std::string Filename = pFilename;
+	const std::string Name = aBuf;
+	pEditor->WhenFileArrives(pFilename, StorageType, [pEditor, Filename, Name, StorageType](CEditorFiles &Files) {
+		CImageInfo ImgInfo;
+		if(!pEditor->ReadImage(Files, Filename.c_str(), StorageType, ImgInfo))
+			return;
 
-	pEditor->m_SelectEntitiesImage = aBuf;
-	pEditor->m_AllowPlaceUnusedTiles = EUnusedEntities::ALLOWED_IMPLICIT;
-	pEditor->m_PreventUnusedTilesWasWarned = false;
+		pEditor->m_SelectEntitiesImage = Name;
+		pEditor->m_AllowPlaceUnusedTiles = EUnusedEntities::ALLOWED_IMPLICIT;
+		pEditor->m_PreventUnusedTilesWasWarned = false;
 
-	pEditor->Graphics()->UnloadTexture(&pEditor->m_EntitiesTexture);
-	pEditor->m_EntitiesTexture = pEditor->Graphics()->LoadTextureRawMove(ImgInfo, IGraphics::TEXLOAD_LAYERED);
+		pEditor->m_EditorTextures.Forget(pEditor->m_EntitiesTexture);
+		pEditor->Graphics()->UnloadTexture(&pEditor->m_EntitiesTexture);
+		pEditor->m_EntitiesTexture = pEditor->Graphics()->LoadTextureRawMove(ImgInfo, IGraphics::TEXLOAD_LAYERED);
 
-	pEditor->OnDialogClose();
+		pEditor->OnDialogClose();
+	});
 	return true;
 }
 
@@ -3043,7 +3055,56 @@ void CEditor::RenderLayers(CUIRect LayersBox)
 	}
 }
 
-bool CEditor::ReplaceImage(const char *pFilename, int StorageType, bool CheckDuplicate)
+bool CEditor::ReadImage(const CEditorFiles &Files, const char *pFilename, int StorageType, CImageInfo &Image)
+{
+	std::vector<uint8_t> vPng;
+	if(!Files.ReadFile(Storage(), pFilename, StorageType, vPng) || !Graphics()->LoadPng(Image, vPng.data(), vPng.size(), pFilename))
+	{
+		ShowFileDialogError("Failed to load image from file '%s'.", pFilename);
+		return false;
+	}
+	return true;
+}
+
+bool CEditor::ReadSound(const CEditorFiles &Files, const char *pFilename, int StorageType, void **ppData, unsigned *pDataSize, int *pSoundId)
+{
+	std::vector<uint8_t> vOpus;
+	if(!Files.ReadFile(Storage(), pFilename, StorageType, vOpus))
+	{
+		ShowFileDialogError("Failed to open sound file '%s'.", pFilename);
+		return false;
+	}
+	void *pData = malloc(vOpus.size());
+	mem_copy(pData, vOpus.data(), vOpus.size());
+	const int SoundId = Sound()->LoadOpusFromMem(pData, vOpus.size(), true, pFilename);
+	if(SoundId == -1)
+	{
+		free(pData);
+		ShowFileDialogError("Failed to load sound from file '%s'.", pFilename);
+		return false;
+	}
+	*ppData = pData;
+	*pDataSize = vOpus.size();
+	*pSoundId = SoundId;
+	return true;
+}
+
+void CEditor::WhenImageArrives(const char *pFilename, int StorageType, std::function<void(CEditorFiles &Files)> Next)
+{
+	char aName[IO_MAX_PATH_LENGTH];
+	fs_split_file_extension(fs_filename(pFilename), aName, sizeof(aName));
+	char aRules[IO_MAX_PATH_LENGTH];
+	CAutomapper::RulesPath(aName, aRules, sizeof(aRules));
+	CEditorFiles Files;
+	Files.Add(m_AssetLoader, Storage(), pFilename, StorageType);
+	Files.Add(m_AssetLoader, Storage(), aRules, IStorage::TYPE_ALL);
+	WhenFilesArrive(pFilename, std::move(Files), [Next](CEditorFiles &ArrivedFiles) {
+		Next(ArrivedFiles);
+		return true;
+	});
+}
+
+bool CEditor::ReplaceImage(const char *pFilename, int StorageType, bool CheckDuplicate, std::optional<bool> External)
 {
 	// check if we have that image already
 	char aBuf[IO_MAX_PATH_LENGTH];
@@ -3060,28 +3121,30 @@ bool CEditor::ReplaceImage(const char *pFilename, int StorageType, bool CheckDup
 		}
 	}
 
-	CImageInfo ImgInfo;
-	if(!Graphics()->LoadPng(ImgInfo, pFilename, StorageType))
-	{
-		ShowFileDialogError("Failed to load image from file '%s'.", pFilename);
-		return false;
-	}
+	CEditorMap *pMap = Map();
+	std::shared_ptr<CEditorImage> pImg = pMap->SelectedImage();
+	const std::string Filename = pFilename;
+	const std::string Name = aBuf;
+	WhenImageArrives(pFilename, StorageType, [this, pMap, pImg, Filename, Name, StorageType, External](CEditorFiles &Files) {
+		CImageInfo ImgInfo;
+		if(!ReadImage(Files, Filename.c_str(), StorageType, ImgInfo))
+			return;
 
-	std::shared_ptr<CEditorImage> pImg = Map()->SelectedImage();
-	pImg->CEditorImage::Free();
-	*pImg = std::move(ImgInfo);
-	str_copy(pImg->m_aName, aBuf);
-	pImg->m_External = IsVanillaImage(pImg->m_aName);
+		pImg->CEditorImage::Free();
+		*pImg = std::move(ImgInfo);
+		str_copy(pImg->m_aName, Name.c_str());
+		pImg->m_External = External.value_or(IsVanillaImage(pImg->m_aName));
 
-	ConvertToRgba(*pImg);
-	DilateImage(*pImg);
+		ConvertToRgba(*pImg);
+		DilateImage(*pImg);
 
-	pImg->m_Automapper.Load(pImg->m_aName);
-	pImg->Upload(0, false);
+		pImg->m_Automapper.Load(pImg->m_aName, Files);
+		pImg->Upload(0, false);
 
-	Map()->SortImages();
-	Map()->SelectImage(pImg);
-	OnDialogClose();
+		pMap->SortImages();
+		pMap->SelectImage(pImg);
+		OnDialogClose();
+	});
 	return true;
 }
 
@@ -3113,28 +3176,30 @@ bool CEditor::AddImage(const char *pFilename, int StorageType, void *pUser)
 		return false;
 	}
 
-	CImageInfo ImgInfo;
-	if(!pEditor->Graphics()->LoadPng(ImgInfo, pFilename, StorageType))
-	{
-		pEditor->ShowFileDialogError("Failed to load image from file '%s'.", pFilename);
-		return false;
-	}
+	CEditorMap *pMap = pEditor->Map();
+	const std::string Filename = pFilename;
+	const std::string Name = aBuf;
+	pEditor->WhenImageArrives(pFilename, StorageType, [pEditor, pMap, Filename, Name, StorageType](CEditorFiles &Files) {
+		CImageInfo ImgInfo;
+		if(!pEditor->ReadImage(Files, Filename.c_str(), StorageType, ImgInfo))
+			return;
 
-	std::shared_ptr<CEditorImage> pImg = std::make_shared<CEditorImage>(pEditor->Map());
-	*pImg = std::move(ImgInfo);
+		std::shared_ptr<CEditorImage> pImg = std::make_shared<CEditorImage>(pMap);
+		*pImg = std::move(ImgInfo);
 
-	pImg->m_External = IsVanillaImage(aBuf);
+		pImg->m_External = IsVanillaImage(Name.c_str());
 
-	ConvertToRgba(*pImg);
-	DilateImage(*pImg);
+		ConvertToRgba(*pImg);
+		DilateImage(*pImg);
 
-	str_copy(pImg->m_aName, aBuf);
-	pImg->Upload(0, false);
-	pImg->m_Automapper.Load(pImg->m_aName);
-	pEditor->Map()->m_vpImages.push_back(pImg);
-	pEditor->Map()->SortImages();
-	pEditor->Map()->SelectImage(pImg);
-	pEditor->OnDialogClose();
+		str_copy(pImg->m_aName, Name.c_str());
+		pImg->Upload(0, false);
+		pImg->m_Automapper.Load(pImg->m_aName, Files);
+		pMap->m_vpImages.push_back(pImg);
+		pMap->SortImages();
+		pMap->SelectImage(pImg);
+		pEditor->OnDialogClose();
+	});
 	return true;
 }
 
@@ -3161,34 +3226,27 @@ bool CEditor::AddSound(const char *pFilename, int StorageType, void *pUser)
 		return false;
 	}
 
-	// load external
-	void *pData;
-	unsigned DataSize;
-	if(!pEditor->Storage()->ReadFile(pFilename, StorageType, &pData, &DataSize))
-	{
-		pEditor->ShowFileDialogError("Failed to open sound file '%s'.", pFilename);
-		return false;
-	}
+	CEditorMap *pMap = pEditor->Map();
+	const std::string Filename = pFilename;
+	const std::string Name = aBuf;
+	pEditor->WhenFileArrives(pFilename, StorageType, [pEditor, pMap, Filename, Name, StorageType](CEditorFiles &Files) {
+		void *pData;
+		unsigned DataSize;
+		int SoundId;
+		if(!pEditor->ReadSound(Files, Filename.c_str(), StorageType, &pData, &DataSize, &SoundId))
+			return;
 
-	// load sound
-	const int SoundId = pEditor->Sound()->LoadOpusFromMem(pData, DataSize, true, pFilename);
-	if(SoundId == -1)
-	{
-		free(pData);
-		pEditor->ShowFileDialogError("Failed to load sound from file '%s'.", pFilename);
-		return false;
-	}
+		// add sound
+		std::shared_ptr<CEditorSound> pSound = std::make_shared<CEditorSound>(pMap);
+		pSound->m_SoundId = SoundId;
+		pSound->m_DataSize = DataSize;
+		pSound->m_pData = pData;
+		str_copy(pSound->m_aName, Name.c_str());
+		pMap->m_vpSounds.push_back(pSound);
 
-	// add sound
-	std::shared_ptr<CEditorSound> pSound = std::make_shared<CEditorSound>(pEditor->Map());
-	pSound->m_SoundId = SoundId;
-	pSound->m_DataSize = DataSize;
-	pSound->m_pData = pData;
-	str_copy(pSound->m_aName, aBuf);
-	pEditor->Map()->m_vpSounds.push_back(pSound);
-
-	pEditor->Map()->SelectSound(pSound);
-	pEditor->OnDialogClose();
+		pMap->SelectSound(pSound);
+		pEditor->OnDialogClose();
+	});
 	return true;
 }
 
@@ -3209,43 +3267,35 @@ bool CEditor::ReplaceSound(const char *pFilename, int StorageType, bool CheckDup
 		}
 	}
 
-	// load external
-	void *pData;
-	unsigned DataSize;
-	if(!Storage()->ReadFile(pFilename, StorageType, &pData, &DataSize))
-	{
-		ShowFileDialogError("Failed to open sound file '%s'.", pFilename);
-		return false;
-	}
+	CEditorMap *pMap = Map();
+	std::shared_ptr<CEditorSound> pSound = pMap->SelectedSound();
+	const std::string Filename = pFilename;
+	const std::string Name = aBuf;
+	WhenFileArrives(pFilename, StorageType, [this, pMap, pSound, Filename, Name, StorageType](CEditorFiles &Files) {
+		void *pData;
+		unsigned DataSize;
+		int SoundId;
+		if(!ReadSound(Files, Filename.c_str(), StorageType, &pData, &DataSize, &SoundId))
+			return;
 
-	// load sound
-	const int SoundId = Sound()->LoadOpusFromMem(pData, DataSize, true, pFilename);
-	if(SoundId == -1)
-	{
-		free(pData);
-		ShowFileDialogError("Failed to load sound from file '%s'.", pFilename);
-		return false;
-	}
+		if(m_ToolbarPreviewSound == pSound->m_SoundId)
+		{
+			m_ToolbarPreviewSound = SoundId;
+		}
 
-	std::shared_ptr<CEditorSound> pSound = Map()->SelectedSound();
+		// unload sample
+		Sound()->UnloadSample(pSound->m_SoundId);
+		free(pSound->m_pData);
 
-	if(m_ToolbarPreviewSound == pSound->m_SoundId)
-	{
-		m_ToolbarPreviewSound = SoundId;
-	}
+		// replace sound
+		str_copy(pSound->m_aName, Name.c_str());
+		pSound->m_SoundId = SoundId;
+		pSound->m_pData = pData;
+		pSound->m_DataSize = DataSize;
 
-	// unload sample
-	Sound()->UnloadSample(pSound->m_SoundId);
-	free(pSound->m_pData);
-
-	// replace sound
-	str_copy(pSound->m_aName, aBuf);
-	pSound->m_SoundId = SoundId;
-	pSound->m_pData = pData;
-	pSound->m_DataSize = DataSize;
-
-	Map()->SelectSound(pSound);
-	OnDialogClose();
+		pMap->SelectSound(pSound);
+		OnDialogClose();
+	});
 	return true;
 }
 
@@ -4004,7 +4054,6 @@ void CEditor::Render()
 	}
 
 	RenderPressedKeys(View);
-	RenderSavingIndicator(View);
 
 	if(m_Dialog == DIALOG_MAPSETTINGS_ERROR)
 	{
@@ -4089,6 +4138,8 @@ void CEditor::Render()
 		m_FileBrowser.Render();
 		m_Prompt.Render();
 		m_FontTyper.Render();
+		// Over the dialog that opens what loads.
+		RenderSavingIndicator(View);
 		Graphics()->GpuRenderZoneEnd(m_GpuZoneDialogs);
 	}
 
@@ -4176,10 +4227,14 @@ void CEditor::RenderPressedKeys(CUIRect View)
 
 void CEditor::RenderSavingIndicator(CUIRect View)
 {
-	if(m_WriterFinishJobs.empty())
+	char aText[IO_MAX_PATH_LENGTH + 32];
+	if(m_PendingFiles.has_value())
+		str_format(aText, sizeof(aText), "Loading '%s' (%d/%d)…", m_PendingFiles->m_What.c_str(), (int)m_PendingFiles->m_Files.NumArrived(), (int)m_PendingFiles->m_Files.Num());
+	else if(!m_WriterFinishJobs.empty())
+		str_copy(aText, "Saving…");
+	else
 		return;
-
-	const char *pText = "Saving…";
+	const char *pText = aText;
 	const float FontSize = 24.0f;
 
 	Ui()->MapScreen();
@@ -4586,6 +4641,8 @@ void CEditor::CloseMap(size_t Index, bool Confirm)
 	}
 
 	Ui()->ClosePopupMenu(&m_PopupMapTab);
+	// What waits for files may add them to this map.
+	m_PendingFiles.reset();
 	m_vpMaps.erase(m_vpMaps.begin() + Index);
 	if(m_vpMaps.empty())
 	{
@@ -4601,62 +4658,59 @@ void CEditor::CloseMap(size_t Index, bool Confirm)
 	}
 }
 
+void CEditor::LoadTextures()
+{
+	GetCheckerTexture();
+	GetCursorTexture(CURSOR_NORMAL);
+	GetCursorTexture(CURSOR_RESIZE_H);
+	GetEntitiesTexture();
+	GetFrontTexture();
+	GetTeleTexture();
+	GetSpeedupTexture();
+	GetSwitchTexture();
+	GetTuneTexture();
+}
+
 IGraphics::CTextureHandle CEditor::GetFrontTexture()
 {
-	if(!m_FrontTexture.IsValid())
-		m_FrontTexture = Graphics()->LoadTexture("editor/front.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_FrontTexture;
+	return m_EditorTextures.Get(m_FrontTexture, "editor/front.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetTeleTexture()
 {
-	if(!m_TeleTexture.IsValid())
-		m_TeleTexture = Graphics()->LoadTexture("editor/tele.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_TeleTexture;
+	return m_EditorTextures.Get(m_TeleTexture, "editor/tele.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetSpeedupTexture()
 {
-	if(!m_SpeedupTexture.IsValid())
-		m_SpeedupTexture = Graphics()->LoadTexture("editor/speedup.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_SpeedupTexture;
+	return m_EditorTextures.Get(m_SpeedupTexture, "editor/speedup.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetSwitchTexture()
 {
-	if(!m_SwitchTexture.IsValid())
-		m_SwitchTexture = Graphics()->LoadTexture("editor/switch.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_SwitchTexture;
+	return m_EditorTextures.Get(m_SwitchTexture, "editor/switch.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetTuneTexture()
 {
-	if(!m_TuneTexture.IsValid())
-		m_TuneTexture = Graphics()->LoadTexture("editor/tune.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_TuneTexture;
+	return m_EditorTextures.Get(m_TuneTexture, "editor/tune.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetEntitiesTexture()
 {
-	if(!m_EntitiesTexture.IsValid())
-		m_EntitiesTexture = Graphics()->LoadTexture("editor/entities/DDNet.png", IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
-	return m_EntitiesTexture;
+	return m_EditorTextures.Get(m_EntitiesTexture, "editor/entities/DDNet.png", IGraphics::TEXLOAD_LAYERED);
 }
 
 IGraphics::CTextureHandle CEditor::GetCheckerTexture()
 {
-	if(!m_CheckerTexture.IsValid())
-		m_CheckerTexture = Graphics()->LoadTexture("editor/checker.png", IStorage::TYPE_ALL);
-	return m_CheckerTexture;
+	return m_EditorTextures.Get(m_CheckerTexture, "editor/checker.png", 0);
 }
 
 IGraphics::CTextureHandle CEditor::GetCursorTexture(ECursorType Type)
 {
 	// The vertical resize cursor is the horizontal one rotated
 	const ECursorType FileType = Type == CURSOR_RESIZE_V ? CURSOR_RESIZE_H : Type;
-	if(!m_aCursorTextures[FileType].IsValid())
-		m_aCursorTextures[FileType] = Graphics()->LoadTexture(FileType == CURSOR_RESIZE_H ? "editor/cursor_resize.png" : "editor/cursor.png", IStorage::TYPE_ALL);
-	return m_aCursorTextures[FileType];
+	return m_EditorTextures.Get(m_aCursorTextures[FileType], FileType == CURSOR_RESIZE_H ? "editor/cursor_resize.png" : "editor/cursor.png", 0);
 }
 
 void CEditor::ConZoom(IConsole::IResult *pResult, void *pUserData)
@@ -4697,7 +4751,10 @@ void CEditor::Init()
 		OnInput(Event);
 	});
 	m_RenderMap.Init(m_pGraphics, m_pTextRender);
-	m_AssetLoader.Init(m_pEngine, std::clamp(m_pEngine->JobThreadCount() / 2, size_t{1}, size_t{8}));
+	// With HTTP, so that what a browser fetches is fetched rather than read,
+	// see `IStorage::FetchUrl`.
+	m_AssetLoader.Init(m_pEngine, std::clamp(m_pEngine->JobThreadCount() / 2, size_t{1}, size_t{8}), Kernel()->TryGetInterface<IHttp>());
+	m_EditorTextures.Init(Graphics(), Storage(), &m_AssetLoader);
 
 	Reset();
 	AddDefaultMap();
@@ -4931,6 +4988,8 @@ void CEditor::UpdateMapDisplayNames()
 void CEditor::OnUpdate()
 {
 	m_AssetLoader.Update();
+	m_EditorTextures.Update();
+	UpdatePendingFiles();
 	CUIElementBase::Init(Ui()); // update static pointer because game and editor use separate UI
 
 	m_pContainerPannedLast = m_pContainerPanned;
@@ -5007,6 +5066,21 @@ void CEditor::OnRender()
 
 	Ui()->DoBackButton();
 
+	// The editor draws with its own textures everywhere, so it waits for
+	// those that are fetched.
+	if(m_EditorTextures.IsWaiting())
+	{
+		Graphics()->Clear(0.0f, 0.0f, 0.0f);
+		CUIRect View = *Ui()->Screen();
+		Ui()->MapScreen();
+		View.Margin(20.0f, &View);
+		Ui()->DoLabel(&View, "Loading the editor…", 24.0f, TEXTALIGN_MC);
+		Ui()->FinishCheck();
+		Ui()->ClearHotkeys();
+		Input()->Clear();
+		return;
+	}
+
 	Render();
 
 	MapView()->ResetMouseDeltaWorld();
@@ -5035,6 +5109,10 @@ void CEditor::OnActivate()
 {
 	ResetMentions();
 	ResetIngameMoved();
+	// Where they are fetched, all at once, before the editor is drawn.
+	char aUrl[IO_MAX_PATH_LENGTH * 2];
+	if(Storage()->FetchUrl("editor/checker.png", IStorage::TYPE_ALL, aUrl, sizeof(aUrl)))
+		LoadTextures();
 }
 
 void CEditor::OnWindowResize()
@@ -5053,8 +5131,31 @@ void CEditor::OnClose()
 	m_FileBrowser.OnEditorClose();
 }
 
+void CEditor::WhenFilesArrive(const char *pWhat, CEditorFiles Files, std::function<bool(CEditorFiles &Files)> Next)
+{
+	m_PendingFiles.emplace();
+	m_PendingFiles->m_What = pWhat;
+	m_PendingFiles->m_Files = std::move(Files);
+	m_PendingFiles->m_Next = std::move(Next);
+	UpdatePendingFiles();
+}
+
+void CEditor::UpdatePendingFiles()
+{
+	// What `Next` does may close the dialog or ask for other files, so it
+	// runs on its own.
+	while(m_PendingFiles.has_value() && m_PendingFiles->m_Files.Update())
+	{
+		CPendingFiles Pending = std::move(*m_PendingFiles);
+		m_PendingFiles.reset();
+		if(!Pending.m_Next(Pending.m_Files) && !m_PendingFiles.has_value())
+			m_PendingFiles = std::move(Pending);
+	}
+}
+
 void CEditor::OnDialogClose()
 {
+	m_PendingFiles.reset();
 	m_Dialog = DIALOG_NONE;
 	m_CloseMapAfterSave = false;
 	m_FileBrowser.OnDialogClose();
@@ -5063,19 +5164,30 @@ void CEditor::OnDialogClose()
 void CEditor::LoadIngameMap()
 {
 	CGameClient *pGameClient = (CGameClient *)Kernel()->RequestInterface<IGameClient>();
+	IMap *pIngameMap = pGameClient->Map();
 
-	if(Load(pGameClient->Map()->Path(), IStorage::TYPE_SAVE))
+	// The game has the bytes of its map already, which a browser would
+	// otherwise fetch once more.
+	// A `std::function` is copied, so what it takes over is shared.
+	auto pMap = std::make_shared<std::unique_ptr<IMap>>(CreateMap());
+	const std::string Path = pIngameMap->Path();
+	if(!(*pMap)->LoadFromMemory(pIngameMap->FullName(), std::vector<uint8_t>(pIngameMap->MapData(), pIngameMap->MapData() + pIngameMap->Size()), Path.c_str()))
 	{
-		Map()->m_ValidSaveFilename = !str_startswith(pGameClient->Map()->Path(), "downloadedmaps/");
+		ShowFileDialogError("Error: Failed to open map file. See local console for details.");
+		return;
 	}
-	else
-	{
-		Load(pGameClient->Map()->Path(), IStorage::TYPE_ALL);
-		Map()->m_ValidSaveFilename = false;
-	}
-
-	vec2 Center = pGameClient->m_Camera.Center();
-	MapView()->SetWorldOffset(Center);
+	const bool ValidSaveFilename = !str_startswith(Path.c_str(), "downloadedmaps/") && Storage()->FileExists(Path.c_str(), IStorage::TYPE_SAVE);
+	const vec2 Center = pGameClient->m_Camera.Center();
+	CEditorFiles Files;
+	CEditorMap::AddNamedFiles(**pMap, Files, m_AssetLoader, Storage());
+	WhenFilesArrive(Path.c_str(), std::move(Files), [this, pMap, Path, ValidSaveFilename, Center](CEditorFiles &ArrivedFiles) {
+		if(OpenLoadedMap(std::move(*pMap), Path.c_str(), ArrivedFiles))
+		{
+			Map()->m_ValidSaveFilename = ValidSaveFilename;
+			MapView()->SetWorldOffset(Center);
+		}
+		return true;
+	});
 }
 
 bool CEditor::Save(const char *pFilename)
@@ -5095,10 +5207,78 @@ bool CEditor::Save(const char *pFilename)
 bool CEditor::HandleMapDrop(const char *pFilename, int StorageType)
 {
 	OnDialogClose();
-	return Load(pFilename, StorageType);
+	// A map that is fetched shows up later, or an error does.
+	auto pOpened = std::make_shared<std::optional<bool>>();
+	OpenMap(pFilename, StorageType, [pOpened](bool Opened) { *pOpened = Opened; });
+	return pOpened->value_or(true);
 }
 
 bool CEditor::Load(const char *pFilename, int StorageType)
+{
+	std::unique_ptr<IMap> pMap = CreateMap();
+	if(!pMap->Load(Storage(), pFilename, StorageType))
+	{
+		ShowFileDialogError("Error: Failed to open map file. See local console for details.");
+		log_error("editor/load", "Failed to open map file '%s'", pFilename);
+		return false;
+	}
+	return OpenLoadedMap(std::move(pMap), pFilename, CEditorFiles());
+}
+
+void CEditor::WhenMapArrives(const char *pFilename, int StorageType, std::function<void(std::unique_ptr<IMap> pMap, const CEditorFiles &Files)> Next)
+{
+	CEditorFiles Files;
+	Files.Add(m_AssetLoader, Storage(), pFilename, StorageType);
+	// A `std::function` is copied, so what it takes over is shared.
+	auto pMap = std::make_shared<std::unique_ptr<IMap>>();
+	const std::string Filename = pFilename;
+	WhenFilesArrive(pFilename, std::move(Files), [this, pMap, Filename, StorageType, Next](CEditorFiles &ArrivedFiles) {
+		if(*pMap == nullptr)
+		{
+			// First the map, then what it names.
+			*pMap = CreateMap();
+			std::vector<uint8_t> vData;
+			char aFullName[IO_MAX_PATH_LENGTH];
+			fs_split_file_extension(fs_filename(Filename.c_str()), aFullName, sizeof(aFullName));
+			const bool Read = ArrivedFiles.Take(Filename.c_str(), StorageType, vData) ?
+						  (*pMap)->LoadFromMemory(aFullName, std::move(vData), Filename.c_str()) :
+						  !ArrivedFiles.IsMissing(Filename.c_str(), StorageType) && (*pMap)->Load(Storage(), Filename.c_str(), StorageType);
+			if(!Read)
+			{
+				ShowFileDialogError("Error: Failed to open map file. See local console for details.");
+				log_error("editor/load", "Failed to open map file '%s'", Filename.c_str());
+				Next(nullptr, ArrivedFiles);
+				return true;
+			}
+			const size_t NumFiles = ArrivedFiles.Num();
+			CEditorMap::AddNamedFiles(**pMap, ArrivedFiles, m_AssetLoader, Storage());
+			if(ArrivedFiles.Num() != NumFiles)
+				return false;
+		}
+		Next(std::move(*pMap), ArrivedFiles);
+		return true;
+	});
+}
+
+void CEditor::OpenMap(const char *pFilename, int StorageType, std::function<void(bool Opened)> OnOpened)
+{
+	const std::string Filename = pFilename;
+	WhenMapArrives(pFilename, StorageType, [this, Filename, OnOpened](std::unique_ptr<IMap> pMap, const CEditorFiles &Files) {
+		OnOpened(pMap != nullptr && OpenLoadedMap(std::move(pMap), Filename.c_str(), Files));
+	});
+}
+
+void CEditor::WhenFileArrives(const char *pFilename, int StorageType, std::function<void(CEditorFiles &Files)> Next)
+{
+	CEditorFiles Files;
+	Files.Add(m_AssetLoader, Storage(), pFilename, StorageType);
+	WhenFilesArrive(pFilename, std::move(Files), [Next](CEditorFiles &ArrivedFiles) {
+		Next(ArrivedFiles);
+		return true;
+	});
+}
+
+bool CEditor::OpenLoadedMap(std::unique_ptr<IMap> pMap, const char *pFilename, const CEditorFiles &Files)
 {
 	const auto &&ErrorHandler = [this](const char *pErrorMessage) {
 		ShowFileDialogError("%s", pErrorMessage);
@@ -5107,7 +5287,7 @@ bool CEditor::Load(const char *pFilename, int StorageType)
 
 	Reset();
 	std::unique_ptr<CEditorMap> pNewMap = std::make_unique<CEditorMap>(this);
-	const bool Result = pNewMap->Load(pFilename, StorageType, std::move(ErrorHandler));
+	const bool Result = pNewMap->Load(std::move(pMap), pFilename, Files, std::move(ErrorHandler));
 	if(Result)
 	{
 		m_vpMaps.push_back(std::move(pNewMap));

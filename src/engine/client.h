@@ -30,6 +30,7 @@
 #define WT_CONNECTLINK_DOUBLE_SLASH "ddnet+wt://"
 #define WT_CONNECTLINK7_DOUBLE_SLASH "tw-0.7+wt://"
 
+class CAssetLoader;
 class CSnapshot;
 class CSnapshotBuffer;
 class CRenderTrace;
@@ -495,6 +496,11 @@ public:
 	virtual void ProcessDemoSnapshot(CSnapshot *pSnap) = 0;
 
 	virtual void InitializeLanguage() = 0;
+	/**
+	 * The loader of the game's assets, which the client also fetches a map
+	 * with that it does not have to download, see `IStorage::FetchUrl`.
+	 */
+	virtual CAssetLoader &AssetLoader() = 0;
 
 	virtual void ForceUpdateConsoleRemoteCompletionSuggestions() = 0;
 

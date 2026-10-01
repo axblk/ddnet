@@ -89,7 +89,6 @@ private:
 
 	bool m_IsInit;
 
-	CTypedAssetResource<CFileAssetJob> m_MapResource;
 	std::string m_MenuMapName;
 	// Paths to try in order, a theme can have day and night variants
 	std::vector<std::string> m_vMapCandidates;
@@ -97,7 +96,7 @@ private:
 	void ResetPositions();
 
 	void StartLoadingMapCandidate();
-	void FinishMapLoad();
+	void FinishMenuMapLoad();
 	void LoadThemeIcon(CTheme &Theme);
 	void FinishThemeIconLoads();
 	static int ThemeScan(const char *pName, int IsDir, int DirType, void *pUser);

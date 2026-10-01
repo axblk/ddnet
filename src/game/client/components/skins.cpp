@@ -641,6 +641,7 @@ void CSkins::UpdateStartLoading(CSkinLoadingStats &Stats)
 		switch(pSkinContainer->Type())
 		{
 		case CSkinContainer::EType::LOCAL:
+		case CSkinContainer::EType::LOCAL_OR_DOWNLOAD:
 			StartLocalSkinLoad(pSkinContainer.get());
 			break;
 		case CSkinContainer::EType::DOWNLOAD:
@@ -720,6 +721,18 @@ void CSkins::UpdateFinishLoading(CSkinLoadingStats &Stats, std::chrono::nanoseco
 		{
 			pSkinContainer->SetState(CSkinContainer::EState::UNLOADED);
 			Stats.m_NumUnloaded++;
+		}
+		else if(Resource.HttpStatus() == 404 && pSkinContainer->m_Type == CSkinContainer::EType::LOCAL_OR_DOWNLOAD)
+		{
+			// Not in the skins folder, so it is one to download.
+			pSkinContainer->m_Type = CSkinContainer::EType::DOWNLOAD;
+			pSkinContainer->m_StorageType = IStorage::TYPE_SAVE;
+			const CSkinContainer::EState NextState = pSkinContainer->DetermineInitialState() == CSkinContainer::EState::NOT_FOUND ? CSkinContainer::EState::NOT_FOUND : CSkinContainer::EState::PENDING;
+			pSkinContainer->SetState(NextState);
+			if(NextState == CSkinContainer::EState::NOT_FOUND)
+				Stats.m_NumNotFound++;
+			else
+				Stats.m_NumPending++;
 		}
 		else if(Resource.HttpStatus() == 404)
 		{
@@ -911,7 +924,10 @@ const CSkins::CSkinContainer *CSkins::FindContainerImpl(const char *pName)
 	auto ExistingSkin = m_Skins.find(pName);
 	if(ExistingSkin == m_Skins.end())
 	{
-		CSkinContainer SkinContainer(this, pName, CSkinContainer::EType::DOWNLOAD, IStorage::TYPE_SAVE);
+		// A skin that was not listed is not in the skins folder, unless the
+		// folder could not be listed.
+		const bool Listed = Storage()->ListsAllFiles(IStorage::TYPE_ALL);
+		CSkinContainer SkinContainer(this, pName, Listed ? CSkinContainer::EType::DOWNLOAD : CSkinContainer::EType::LOCAL_OR_DOWNLOAD, Listed ? IStorage::TYPE_SAVE : IStorage::TYPE_ALL);
 		auto &&pSkinContainer = std::make_unique<CSkinContainer>(std::move(SkinContainer));
 		pSkinContainer->SetState(pSkinContainer->DetermineInitialState());
 		ExistingSkin = m_Skins.insert({pSkinContainer->Name(), std::move(pSkinContainer)}).first;

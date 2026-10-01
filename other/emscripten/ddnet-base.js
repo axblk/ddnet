@@ -974,7 +974,7 @@ export class Program extends EventTarget {
 			// Read by `src/engine/client/demo_render_client.cpp`.
 			ddnetRenderProgress: status => this.dispatchEvent(new CustomEvent("renderprogress", { detail: status })),
 			ddnetRenderDone: result => this.dispatchEvent(new CustomEvent("renderdone", { detail: result })),
-			// Read by `src/base/webfs.cpp`. A program from another origin brings
+			// Read by `src/base/web_data.cpp`. A program from another origin brings
 			// its data along.
 			ddnetDataBase: options.dataBase ?? (program === null ? undefined : new URL(".", program.base).href),
 			arguments: this.programArguments(),

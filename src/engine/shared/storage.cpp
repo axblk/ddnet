@@ -8,7 +8,7 @@
 #include <base/math.h>
 #include <base/process.h>
 #include <base/str.h>
-#include <base/webfs.h>
+#include <base/web_data.h>
 
 #include <engine/client/updater.h>
 #include <engine/shared/linereader.h>
@@ -125,12 +125,8 @@ public:
 		const char *pExecutablePath = ppArguments[0];
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-		// The page's data directory is fetched, so its index has to be there first.
-		if(!webfs_init())
-		{
-			log_error("storage", "The data directory of this page could not be read.");
-			return false;
-		}
+		// The page's data directory is fetched, from where the page says.
+		web_data_init();
 #endif
 
 		FindUserDirectory();
@@ -376,6 +372,12 @@ public:
 
 	void FindDataDirectory(const char *pArgv0)
 	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		// The page's data directory, which is fetched rather than found.
+		(void)pArgv0;
+		str_copy(m_aDatadir, "data");
+		return;
+#endif
 		// 1) use data-dir in PWD if present
 		if(fs_is_dir("data/mapres"))
 		{
@@ -504,6 +506,39 @@ public:
 		return m_NumPaths;
 	}
 
+	// Whether the files below a path can be listed and looked up. The page's
+	// data directory cannot in a browser program without a mount of it: its
+	// files are fetched by name, see `FetchUrl`, and reading one any other way
+	// is refused and logged.
+	static bool IsListable(const char *pPath)
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		return web_data_mounted() != nullptr || web_data_relative_path(pPath) == nullptr;
+#else
+		(void)pPath;
+		return true;
+#endif
+	}
+
+	bool IsPathListable(int Type) const
+	{
+		return IsListable(m_aaStoragePaths[Type]);
+	}
+
+	bool ListsAllFiles(int Type) const override
+	{
+		if(Type == TYPE_ALL)
+		{
+			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
+			{
+				if(!IsPathListable(i))
+					return false;
+			}
+			return true;
+		}
+		return Type == TYPE_ABSOLUTE || IsPathListable(Type);
+	}
+
 	struct SListDirectoryInfoUniqueCallbackData
 	{
 		FS_LISTDIR_CALLBACK_FILEINFO m_pfnDelegate;
@@ -530,12 +565,16 @@ public:
 			Data.m_pDelegateUser = pUser;
 			// list all available directories
 			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
-				fs_listdir_fileinfo(GetPath(i, pPath, aBuffer, sizeof(aBuffer)), ListDirectoryInfoUniqueCallback, i, &Data);
+			{
+				if(IsPathListable(i))
+					fs_listdir_fileinfo(GetPath(i, pPath, aBuffer, sizeof(aBuffer)), ListDirectoryInfoUniqueCallback, i, &Data);
+			}
 		}
 		else if(Type >= TYPE_SAVE && Type < m_NumPaths)
 		{
 			// list wanted directory
-			fs_listdir_fileinfo(GetPath(Type, pPath, aBuffer, sizeof(aBuffer)), pfnCallback, Type, pUser);
+			if(IsPathListable(Type))
+				fs_listdir_fileinfo(GetPath(Type, pPath, aBuffer, sizeof(aBuffer)), pfnCallback, Type, pUser);
 		}
 		else
 		{
@@ -569,12 +608,16 @@ public:
 			Data.m_pDelegateUser = pUser;
 			// list all available directories
 			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
-				fs_listdir(GetPath(i, pPath, aBuffer, sizeof(aBuffer)), ListDirectoryUniqueCallback, i, &Data);
+			{
+				if(IsPathListable(i))
+					fs_listdir(GetPath(i, pPath, aBuffer, sizeof(aBuffer)), ListDirectoryUniqueCallback, i, &Data);
+			}
 		}
 		else if(Type >= TYPE_SAVE && Type < m_NumPaths)
 		{
 			// list wanted directory
-			fs_listdir(GetPath(Type, pPath, aBuffer, sizeof(aBuffer)), pfnCallback, Type, pUser);
+			if(IsPathListable(Type))
+				fs_listdir(GetPath(Type, pPath, aBuffer, sizeof(aBuffer)), pfnCallback, Type, pUser);
 		}
 		else
 		{
@@ -672,18 +715,50 @@ public:
 			return false;
 		// The first file in `OpenFile`'s order, so that a saved file wins over a
 		// delivered one. Files outside the data directory have no address.
+		// Whether a file of the data directory is there, a mount of it knows;
+		// without one the answer to the request tells, so the search ends there.
 		bool Found = false;
 		GenericExists(pFilename, Type, [&](const char *pPath) {
-			if(!fs_is_file(pPath))
-				return false;
-			Found = webfs_url(pPath, pBuffer, BufferSize);
-			return true;
+			if(web_data_relative_path(pPath) != nullptr)
+			{
+				Found = web_data_url(pPath, pBuffer, BufferSize);
+				return Found || web_data_mounted() == nullptr;
+			}
+			return fs_is_file(pPath) != 0;
 		});
 		return Found;
 #else
 		// Everywhere else a file is a file and is read where it lies.
 		(void)pFilename;
 		(void)Type;
+		return false;
+#endif
+	}
+
+	bool FetchedFileDigests(const char *pFilename, int Type, SHA256_DIGEST *pSha256, unsigned *pCrc) override
+	{
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+		IWebDataMount *pMount = web_data_mounted();
+		if(Type == TYPE_ABSOLUTE || pMount == nullptr)
+			return false;
+		// In `OpenFile`'s order, as `FetchUrl`: a saved file wins.
+		bool Found = false;
+		GenericExists(pFilename, Type, [&](const char *pPath) {
+			if(const char *pRelativePath = web_data_relative_path(pPath))
+			{
+				if(!pMount->IsFile(pRelativePath))
+					return false;
+				Found = pMount->Digests(pRelativePath, pSha256, pCrc);
+				return true;
+			}
+			return fs_is_file(pPath) != 0;
+		});
+		return Found;
+#else
+		(void)pFilename;
+		(void)Type;
+		(void)pSha256;
+		(void)pCrc;
 		return false;
 #endif
 	}
@@ -715,14 +790,15 @@ public:
 		}
 	}
 
+	// Of a path that cannot be listed, nothing is known to exist.
 	bool FileExists(const char *pFilename, int Type) override
 	{
-		return GenericExists(pFilename, Type, fs_is_file);
+		return GenericExists(pFilename, Type, [](const char *pPath) { return IsListable(pPath) && fs_is_file(pPath); });
 	}
 
 	bool FolderExists(const char *pFilename, int Type) override
 	{
-		return GenericExists(pFilename, Type, fs_is_dir);
+		return GenericExists(pFilename, Type, [](const char *pPath) { return IsListable(pPath) && fs_is_dir(pPath); });
 	}
 
 	bool ReadFile(const char *pFilename, int Type, void **ppResult, unsigned *pResultLen) override
@@ -849,6 +925,8 @@ public:
 			// search within all available directories
 			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
 			{
+				if(!IsPathListable(i))
+					continue;
 				fs_listdir(GetPath(i, pPath, aBuf, sizeof(aBuf)), FindFileCallback, i, &Data);
 				if(pBuffer[0])
 					return true;
@@ -857,7 +935,8 @@ public:
 		else if(Type >= TYPE_SAVE && Type < m_NumPaths)
 		{
 			// search within wanted directory
-			fs_listdir(GetPath(Type, pPath, aBuf, sizeof(aBuf)), FindFileCallback, Type, &Data);
+			if(IsPathListable(Type))
+				fs_listdir(GetPath(Type, pPath, aBuf, sizeof(aBuf)), FindFileCallback, Type, &Data);
 		}
 		else
 		{
@@ -914,13 +993,15 @@ public:
 			// search within all available directories
 			for(int i = TYPE_SAVE; i < m_NumPaths; ++i)
 			{
-				fs_listdir(GetPath(i, pPath, aBuf, sizeof(aBuf)), FindFilesCallback, i, &Data);
+				if(IsPathListable(i))
+					fs_listdir(GetPath(i, pPath, aBuf, sizeof(aBuf)), FindFilesCallback, i, &Data);
 			}
 		}
 		else if(Type >= TYPE_SAVE && Type < m_NumPaths)
 		{
 			// search within wanted directory
-			fs_listdir(GetPath(Type, pPath, aBuf, sizeof(aBuf)), FindFilesCallback, Type, &Data);
+			if(IsPathListable(Type))
+				fs_listdir(GetPath(Type, pPath, aBuf, sizeof(aBuf)), FindFilesCallback, Type, &Data);
 		}
 		else
 		{

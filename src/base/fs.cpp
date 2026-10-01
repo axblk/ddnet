@@ -7,7 +7,7 @@
 #include <base/secure.h>
 #include <base/str.h>
 #include <base/types.h>
-#include <base/webfs.h>
+#include <base/web_data.h>
 #include <base/windows.h>
 
 #include <cerrno>
@@ -132,9 +132,18 @@ static inline time_t filetime_to_unixtime(LPFILETIME filetime)
 void fs_listdir(const char *dir, FS_LISTDIR_CALLBACK cb, int type, void *user)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(webfs_owns(dir))
+	if(const char *pRelativePath = web_data_relative_path(dir))
 	{
-		webfs_listdir(dir, cb, type, user);
+		if(IWebDataMount *pMount = web_data_mounted())
+		{
+			pMount->List(pRelativePath, [&](const char *pName, bool IsDir) {
+				return cb(pName, IsDir ? 1 : 0, type, user) != 0;
+			});
+		}
+		else
+		{
+			web_data_refuse("fs_listdir", dir);
+		}
 		return;
 	}
 #endif
@@ -191,9 +200,23 @@ void fs_listdir(const char *dir, FS_LISTDIR_CALLBACK cb, int type, void *user)
 void fs_listdir_fileinfo(const char *dir, FS_LISTDIR_CALLBACK_FILEINFO cb, int type, void *user)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(webfs_owns(dir))
+	if(const char *pRelativePath = web_data_relative_path(dir))
 	{
-		webfs_listdir_fileinfo(dir, cb, type, user);
+		if(IWebDataMount *pMount = web_data_mounted())
+		{
+			// Everything there was written when the page was built.
+			pMount->List(pRelativePath, [&](const char *pName, bool IsDir) {
+				CFsFileInfo Info;
+				Info.m_pName = pName;
+				Info.m_TimeCreated = 0;
+				Info.m_TimeModified = 0;
+				return cb(&Info, IsDir ? 1 : 0, type, user) != 0;
+			});
+		}
+		else
+		{
+			web_data_refuse("fs_listdir_fileinfo", dir);
+		}
 		return;
 	}
 #endif
@@ -438,8 +461,13 @@ int fs_executable_path(char *buffer, int buffer_size)
 int fs_is_file(const char *path)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(webfs_owns(path))
-		return webfs_is_file(path) ? 1 : 0;
+	if(const char *pRelativePath = web_data_relative_path(path))
+	{
+		if(IWebDataMount *pMount = web_data_mounted())
+			return pMount->IsFile(pRelativePath) ? 1 : 0;
+		web_data_refuse("fs_is_file", path);
+		return 0;
+	}
 #endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_path = windows_utf8_to_wide(path);
@@ -456,8 +484,13 @@ int fs_is_file(const char *path)
 int fs_is_dir(const char *path)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(webfs_owns(path))
-		return webfs_is_dir(path) ? 1 : 0;
+	if(const char *pRelativePath = web_data_relative_path(path))
+	{
+		if(IWebDataMount *pMount = web_data_mounted())
+			return pMount->IsDirectory(pRelativePath) ? 1 : 0;
+		web_data_refuse("fs_is_dir", path);
+		return 0;
+	}
 #endif
 #if defined(CONF_FAMILY_WINDOWS)
 	const std::wstring wide_path = windows_utf8_to_wide(path);
@@ -667,13 +700,19 @@ int fs_rename_noreplace(const char *oldname, const char *newname)
 int fs_file_time(const char *name, time_t *created, time_t *modified)
 {
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-	if(webfs_owns(name))
+	if(const char *pRelativePath = web_data_relative_path(name))
 	{
-		int64_t web_created, web_modified;
-		if(!webfs_file_time(name, &web_created, &web_modified))
+		IWebDataMount *pMount = web_data_mounted();
+		if(pMount == nullptr)
+		{
+			web_data_refuse("fs_file_time", name);
 			return 1;
-		*created = web_created;
-		*modified = web_modified;
+		}
+		if(pRelativePath[0] != '\0' && !pMount->IsFile(pRelativePath) && !pMount->IsDirectory(pRelativePath))
+			return 1;
+		// Everything there was written when the page was built.
+		*created = 0;
+		*modified = 0;
 		return 0;
 	}
 #endif

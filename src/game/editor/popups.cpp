@@ -1543,9 +1543,7 @@ CUi::EPopupMenuFunctionResult CEditor::PopupImage(void *pContext, CUIRect View, 
 	}
 	if(s_SelectionPopupContext.m_pSelection != nullptr)
 	{
-		const bool WasExternal = pImg->m_External;
-		const bool Result = pEditor->ReplaceImage(s_SelectionPopupContext.m_pSelection->c_str(), IStorage::TYPE_ALL, false);
-		pImg->m_External = WasExternal;
+		const bool Result = pEditor->ReplaceImage(s_SelectionPopupContext.m_pSelection->c_str(), IStorage::TYPE_ALL, false, (bool)pImg->m_External);
 		s_SelectionPopupContext.Reset();
 		return Result ? CUi::POPUP_CLOSE_CURRENT : CUi::POPUP_KEEP_OPEN;
 	}
@@ -2757,11 +2755,9 @@ CUi::EPopupMenuFunctionResult CEditor::PopupEntities(void *pContext, CUIRect Vie
 				pEditor->m_AllowPlaceUnusedTiles = pEditor->m_SelectEntitiesImage == "DDNet" ? EUnusedEntities::NOT_ALLOWED : EUnusedEntities::ALLOWED_IMPLICIT;
 				pEditor->m_PreventUnusedTilesWasWarned = false;
 
-				pEditor->Graphics()->UnloadTexture(&pEditor->m_EntitiesTexture);
-
 				char aBuf[IO_MAX_PATH_LENGTH];
 				str_format(aBuf, sizeof(aBuf), "editor/entities/%s.png", pName);
-				pEditor->m_EntitiesTexture = pEditor->Graphics()->LoadTexture(aBuf, IStorage::TYPE_ALL, IGraphics::TEXLOAD_LAYERED);
+				pEditor->m_EditorTextures.Replace(pEditor->m_EntitiesTexture, aBuf, IGraphics::TEXLOAD_LAYERED);
 				return CUi::POPUP_CLOSE_CURRENT;
 			}
 		}

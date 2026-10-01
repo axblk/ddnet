@@ -4675,7 +4675,7 @@ void CGameClient::RefreshSkin(const std::shared_ptr<CManagedTeeRenderInfo> &pMan
 	if(SkinDescriptor.m_Flags & CSkinDescriptor::FLAG_SEVEN)
 	{
 		for(int Part = 0; Part < protocol7::NUM_SKINPARTS; Part++)
-			m_Skins7.FindSkinPart(Part, SkinDescriptor.m_Sixup.m_aaSkinPartNames[Part], true)->ApplyTo(TeeInfo.m_Sixup);
+			m_Skins7.RequestSkinPart(Part, SkinDescriptor.m_Sixup.m_aaSkinPartNames[Part], true)->ApplyTo(TeeInfo.m_Sixup);
 
 		if(SkinDescriptor.m_Sixup.m_XmasHat)
 			TeeInfo.m_Sixup.m_HatTexture = m_Skins7.XmasHatTexture();

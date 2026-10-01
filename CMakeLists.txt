@@ -2215,7 +2215,7 @@ add_custom_target(copy_data ALL DEPENDS ${DATA_COPY_OUTPUTS})
 
 if(TARGET_OS STREQUAL "emscripten")
   # A browser cannot list directories, so the build writes an index of `data`
-  # for the client, see `src/base/webfs.h`.
+  # for the client, see `src/engine/client/webfs.h`.
   set(WEB_DATA_INDEX ${PROJECT_BINARY_DIR}/data/index.txt)
   set(WEB_DATA_FILE_LIST ${PROJECT_BINARY_DIR}/web_data_files.txt)
   string(REPLACE ";" "\n" WEB_DATA_FILE_LIST_CONTENT "${DATA}")
@@ -2489,8 +2489,10 @@ set_src(BASE GLOB_RECURSE src/base
   unicode/tolower_data.cpp
   unicode/tolower_data.h
   vmath.h
-  webfs.cpp
-  webfs.h
+  web_data.cpp
+  web_data.h
+  web_data_index.cpp
+  web_data_index.h
   windows.cpp
   windows.h
   # tidy-alphabetical-end
@@ -2944,6 +2946,8 @@ if(CLIENT)
     web/web_platform.h
     web/window_web.cpp
     web/window_web.h
+    webfs.cpp
+    webfs.h
     window_offscreen.cpp
     window_sdl.cpp
     window_sdl.h
@@ -3162,6 +3166,8 @@ if(CLIENT)
     editor_action.h
     editor_actions.cpp
     editor_actions.h
+    editor_files.cpp
+    editor_files.h
     editor_history.cpp
     editor_history.h
     editor_object.cpp
@@ -3691,7 +3697,7 @@ if(CLIENT)
   # game/client/frontend.h), and none of the network, the server browser, the
   # editor or the platform integrations.
   set(DEMO_CLIENT_SRC ${ENGINE_CLIENT} ${ENGINE_CLIENT_DEMO} ${GAME_CLIENT} ${GAME_MAP} ${GAME_GENERATED_CLIENT})
-  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_player_client|demo_render_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater)\\.(cpp|h)$")
+  list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/engine/client/(blocklist_driver|client|connect_target|demo_player_client|demo_render_client|demoedit|discord|favorites|notifications|serverbrowser|serverbrowser_http|serverbrowser_ping_cache|sixup_translate_system|sqlite|steam|updater|webfs)\\.(cpp|h)$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "src/game/client/sixup_translate_connless\\.cpp$")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_FRONTEND_REGEX}")
   list(FILTER DEMO_CLIENT_SRC EXCLUDE REGEX "${GAME_PREDICTION_REGEX}")
@@ -4484,7 +4490,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     uuid_test.cpp
     view_size_test.cpp
     vmath_test.cpp
-    webfs_test.cpp
+    web_data_index_test.cpp
     windows_test.cpp
     # tidy-alphabetical-end
   )
@@ -5241,7 +5247,7 @@ foreach(ext zip tar.gz tar.xz)
     if(TARGET_OS STREQUAL "emscripten")
       # The main target with Emscripten is the .html file, but we instead want
       # the .js and .wasm files and use our own pages. The data directory is
-      # fetched a file at a time, see `src/base/webfs.h`, with an index the build
+      # fetched a file at a time, see `src/base/web_data.h`, with an index the build
       # writes.
       list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${WEB_DATA_INDEX} ${TMPDIR}/data/)
       list(APPEND COPY_TARGET_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:game-client>.js ${TMPDIR}/)

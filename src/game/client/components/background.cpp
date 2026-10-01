@@ -4,12 +4,15 @@
 
 #include <engine/map.h>
 #include <engine/shared/config.h>
+#include <engine/storage.h>
 
 #include <game/client/components/mapimages.h>
 #include <game/client/components/maplayers.h>
 #include <game/client/gameclient.h>
 #include <game/layers.h>
 #include <game/localization.h>
+
+#include <memory>
 
 CBackground::CBackground(ERenderType MapType, bool OnlineOnly) :
 	CMapLayers(MapType, OnlineOnly)
@@ -47,6 +50,7 @@ void CBackground::OnInterfacesInit(CGameClient *pClient)
 
 void CBackground::LoadBackground()
 {
+	m_MapResource.Reset();
 	CMapLayers::Unload();
 	m_pBackgroundImages->Unload();
 	if(m_Loaded && m_pMap == m_pBackgroundMap.get())
@@ -68,18 +72,37 @@ void CBackground::LoadBackground()
 			m_UseCurrentMap = true;
 			return;
 		}
-		if(m_pMap->Load(g_Config.m_ClBackgroundEntities, Storage(), aBuf, IStorage::TYPE_ALL))
-		{
-			m_pLayers->Init(m_pMap, true, true);
-			m_Loaded = true;
-		}
-
-		if(m_Loaded)
-		{
-			m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
-			CMapLayers::Load(m_pLayers, m_pBackgroundImages);
-		}
+		StartMapLoad(g_Config.m_ClBackgroundEntities, aBuf);
 	}
+}
+
+void CBackground::StartMapLoad(const char *pName, const char *pPath)
+{
+	m_LoadingMapName = pName;
+	m_MapResource = GameClient()->AssetLoader().LoadFile(Storage(), pPath, IStorage::TYPE_ALL);
+}
+
+CBackground::EMapLoad CBackground::FinishMapLoad()
+{
+	if(!m_MapResource || !m_MapResource.IsFinished())
+		return EMapLoad::PENDING;
+	bool Loaded = false;
+	if(m_MapResource.IsReady())
+		Loaded = m_pMap->LoadFromMemory(m_LoadingMapName.c_str(), m_MapResource.Result().TakeBytes(), m_MapResource.Path());
+	m_MapResource.Reset();
+	if(!Loaded)
+		return EMapLoad::FAILED;
+
+	m_Loaded = true;
+	m_pLayers->Init(m_pMap, true, true);
+	m_pBackgroundImages->Load(m_pLayers, m_pMap, Sessions()->IsSixup(Sessions()->FocusedSessionId()));
+	CMapLayers::Load(m_pLayers, m_pBackgroundImages);
+	return EMapLoad::LOADED;
+}
+
+void CBackground::OnUpdate()
+{
+	FinishMapLoad();
 }
 
 void CBackground::OnShutdown()

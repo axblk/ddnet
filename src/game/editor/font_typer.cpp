@@ -25,9 +25,7 @@ void CFontTyper::CState::Reset()
 
 IGraphics::CTextureHandle CFontTyper::CursorTextTexture()
 {
-	if(!m_CursorTextTexture.IsValid())
-		m_CursorTextTexture = Graphics()->LoadTexture("editor/cursor_text.png", IStorage::TYPE_ALL, 0);
-	return m_CursorTextTexture;
+	return Editor()->m_EditorTextures.Get(m_CursorTextTexture, "editor/cursor_text.png");
 }
 
 void CFontTyper::SetTile(ivec2 Pos, unsigned char Index, const std::shared_ptr<CLayerTiles> &pLayer)

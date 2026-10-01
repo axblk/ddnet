@@ -62,6 +62,7 @@ public:
 	void OnRender(const CRenderContext &Context) override;
 	void OnShutdown() override;
 	void OnUpdate() override;
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	void LoadBackground();
 	bool UsesCurrentMap() const { return m_UseCurrentMap; }

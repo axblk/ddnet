@@ -887,6 +887,7 @@ public:
 	void OnInterfacesInit(CGameClient *pClient) override;
 	void OnInit() override;
 	void OnUpdate() override;
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	void OnStateChange(int NewState, int OldState) override;
 	void OnWindowResize() override;

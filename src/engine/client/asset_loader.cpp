@@ -23,10 +23,10 @@
 
 namespace
 {
-	// How many files nobody waits for are fetched at once. A browser opens six
-	// connections to a host and queues the rest, so a few at a time keep the
-	// way free for urgent ones.
-	constexpr size_t MAX_CONCURRENT_BACKGROUND_FETCHES = 6;
+	// How many files that are not urgent are fetched at once. A browser opens
+	// six connections to a host and queues the rest in the order they were
+	// asked for, so more than a few at a time keep the urgent ones waiting.
+	constexpr size_t MAX_CONCURRENT_FETCHES = 6;
 } // namespace
 
 class CImageAssetJob final : public CAssetJob
@@ -163,8 +163,7 @@ void CAssetLoader::Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priori
 		pJob->Abort();
 		return;
 	}
-	pJob->m_Background = Priority == EAssetPriority::BACKGROUND;
-	pJob->m_Urgent = Priority == EAssetPriority::URGENT;
+	pJob->m_Priority = Priority;
 	if(pJob->m_pRequest != nullptr)
 		m_vpFetchingJobs.push_back(std::move(pJob));
 	else if(!StartFetching(pJob))
@@ -178,10 +177,15 @@ bool CAssetLoader::StartFetching(const std::shared_ptr<CAssetJob> &pJob)
 	char aUrl[512];
 	if(!pJob->m_pStorage->FetchUrl(pJob->Path(), pJob->m_StorageType, aUrl, sizeof(aUrl)))
 		return false;
-	if(pJob->m_Background && m_BackgroundFetchCount >= MAX_CONCURRENT_BACKGROUND_FETCHES)
-		m_vDeferredFetches.push_back({pJob, aUrl});
-	else
+	if(pJob->m_Priority == EAssetPriority::URGENT || m_CountedFetches < MAX_CONCURRENT_FETCHES)
+	{
 		Fetch(pJob, aUrl);
+		return true;
+	}
+	auto It = m_vDeferredFetches.end();
+	if(pJob->m_Priority == EAssetPriority::NORMAL)
+		It = std::find_if(m_vDeferredFetches.begin(), m_vDeferredFetches.end(), [](const CDeferredFetch &Deferred) { return Deferred.m_pJob->m_Priority == EAssetPriority::BACKGROUND; });
+	m_vDeferredFetches.insert(It, {pJob, aUrl});
 	return true;
 }
 
@@ -195,15 +199,16 @@ void CAssetLoader::Fetch(const std::shared_ptr<CAssetJob> &pJob, const char *pUr
 	pRequest->FailOnErrorStatus(false);
 	pJob->m_pRequest = pRequest;
 	pJob->m_FetchedByLoader = true;
-	if(pJob->m_Background)
-		++m_BackgroundFetchCount;
+	pJob->m_CountedFetch = pJob->m_Priority != EAssetPriority::URGENT;
+	if(pJob->m_CountedFetch)
+		++m_CountedFetches;
 	m_vpFetchingJobs.push_back(pJob);
 	m_pHttp->Run(std::move(pRequest));
 }
 
 void CAssetLoader::StartDeferredFetches()
 {
-	while(!m_vDeferredFetches.empty() && m_BackgroundFetchCount < MAX_CONCURRENT_BACKGROUND_FETCHES)
+	while(!m_vDeferredFetches.empty() && m_CountedFetches < MAX_CONCURRENT_FETCHES)
 	{
 		CDeferredFetch Deferred = std::move(m_vDeferredFetches.front());
 		m_vDeferredFetches.pop_front();
@@ -232,9 +237,39 @@ void CAssetLoader::Enqueue(std::shared_ptr<CAssetJob> pJob)
 void CAssetLoader::Queue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, std::shared_ptr<CAssetJob> pJob)
 {
 	auto It = vpJobs.end();
-	if(pJob->m_Urgent)
-		It = std::find_if(vpJobs.begin(), vpJobs.end(), [](const std::shared_ptr<CAssetJob> &pQueued) { return !pQueued->m_Urgent; });
+	if(pJob->m_Priority == EAssetPriority::URGENT)
+		It = std::find_if(vpJobs.begin(), vpJobs.end(), [](const std::shared_ptr<CAssetJob> &pQueued) { return pQueued->m_Priority != EAssetPriority::URGENT; });
 	vpJobs.insert(It, std::move(pJob));
+}
+
+bool CAssetLoader::Requeue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, const std::shared_ptr<CAssetJob> &pJob)
+{
+	const auto It = std::find(vpJobs.begin(), vpJobs.end(), pJob);
+	if(It == vpJobs.end())
+		return false;
+	vpJobs.erase(It);
+	Queue(vpJobs, pJob);
+	return true;
+}
+
+void CAssetLoader::Prioritize(const CAssetResource &Resource)
+{
+	const std::shared_ptr<CAssetJob> &pJob = Resource.m_pJob;
+	if(pJob == nullptr || pJob->m_Priority == EAssetPriority::URGENT || pJob->Done())
+		return;
+	pJob->m_Priority = EAssetPriority::URGENT;
+	const auto Deferred = std::find_if(m_vDeferredFetches.begin(), m_vDeferredFetches.end(), [&](const CDeferredFetch &Entry) { return Entry.m_pJob == pJob; });
+	if(Deferred != m_vDeferredFetches.end())
+	{
+		const std::string Url = std::move(Deferred->m_Url);
+		m_vDeferredFetches.erase(Deferred);
+		Fetch(pJob, Url.c_str());
+		return;
+	}
+	if(Requeue(m_vpPendingJobs, pJob))
+		return;
+	const CLockScope LockScope(m_ReaderLock);
+	Requeue(m_vpUnreadJobs, pJob);
 }
 
 void CAssetLoader::UpdateFetchingJobs()
@@ -249,10 +284,11 @@ void CAssetLoader::UpdateFetchingJobs()
 			continue;
 		}
 		It = m_vpFetchingJobs.erase(It);
-		if(pJob->m_Background)
+		if(pJob->m_CountedFetch)
 		{
-			dbg_assert(m_BackgroundFetchCount > 0, "Background fetch count underflow");
-			--m_BackgroundFetchCount;
+			dbg_assert(m_CountedFetches > 0, "Fetch count underflow");
+			--m_CountedFetches;
+			pJob->m_CountedFetch = false;
 		}
 		if(pJob->Done())
 			continue;
@@ -455,7 +491,7 @@ void CAssetLoader::Shutdown()
 		pJob->Abort();
 	m_vpFetchingJobs.clear();
 	m_vDeferredFetches.clear();
-	m_BackgroundFetchCount = 0;
+	m_CountedFetches = 0;
 	m_vpPendingJobs.clear();
 	m_vpRunningJobs.clear();
 }

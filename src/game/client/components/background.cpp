@@ -79,7 +79,8 @@ void CBackground::LoadBackground()
 void CBackground::StartMapLoad(const char *pName, const char *pPath)
 {
 	m_LoadingMapName = pName;
-	m_MapResource = GameClient()->AssetLoader().LoadFile(Storage(), pPath, IStorage::TYPE_ALL);
+	// The game waits for it, see OnCollectCriticalAssets.
+	m_MapResource = GameClient()->AssetLoader().Load(std::make_shared<CFileAssetJob>(Storage(), pPath, IStorage::TYPE_ALL), EAssetPriority::URGENT);
 }
 
 CBackground::EMapLoad CBackground::FinishMapLoad()
@@ -103,6 +104,20 @@ CBackground::EMapLoad CBackground::FinishMapLoad()
 void CBackground::OnUpdate()
 {
 	FinishMapLoad();
+	// Also while the game waits for the images on the loading screen.
+	if(m_Loaded && !m_UseCurrentMap)
+		m_pBackgroundImages->Update();
+}
+
+void CBackground::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// Drawn instead of the map's own background.
+	if(Scene != CFirstFrameGate::EScene::GAME)
+		return;
+	if(m_MapResource)
+		Pending.Add(Localize("background"));
+	else if(m_Loaded && !m_UseCurrentMap)
+		Pending.Add(Localize("background images"), m_pBackgroundImages->NumPending());
 }
 
 void CBackground::OnShutdown()

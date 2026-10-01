@@ -112,6 +112,7 @@ public:
 	void Stop(int SetId);
 	bool IsPlaying(int SetId);
 	bool StartupAssetsLoaded() const { return !m_WaitForSoundJob; }
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	ISound::CVoiceHandle PlaySample(int Channel, int SampleId, int Flags, float Volume, bool Offline = false);
 	ISound::CVoiceHandle PlaySampleAt(int Channel, int SampleId, int Flags, float Volume, vec2 Position, bool Offline = false);

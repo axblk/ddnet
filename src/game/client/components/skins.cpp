@@ -549,6 +549,29 @@ void CSkins::OnShutdown()
 	m_Skins.clear();
 }
 
+void CSkins::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// A tee in the menus whose skin is not there is drawn with the default
+	// one, so that one is there from the first frame on. The skins of the
+	// tees in a game are the game's to wait for, see `TeeSkinsLoading`.
+	// The loads of both are made urgent here.
+	if(Scene != CFirstFrameGate::EScene::MENUS)
+	{
+		for(const auto &[_, pSkinContainer] : m_Skins)
+		{
+			if(pSkinContainer->m_State == CSkinContainer::EState::LOADING)
+				Pending.Prioritize(pSkinContainer->m_LoadResource);
+		}
+		return;
+	}
+	const auto Default = m_Skins.find("default");
+	if(Default != m_Skins.end() && (Default->second->m_State == CSkinContainer::EState::PENDING || Default->second->m_State == CSkinContainer::EState::LOADING))
+	{
+		Pending.Add(Localize("skins"));
+		Pending.Prioritize(Default->second->m_LoadResource);
+	}
+}
+
 void CSkins::OnUpdate()
 {
 	// Only update skins periodically to reduce FPS impact

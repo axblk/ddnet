@@ -488,3 +488,38 @@ TEST(AssetLoader, UrgentJobsGoFirst)
 	EXPECT_EQ(vStarted, (std::vector<size_t>{0, 2, 4, 1, 3}));
 	Loader.Shutdown();
 }
+
+TEST(AssetLoader, PrioritizedJobsGoFirst)
+{
+	CQueuedTestEngine Engine;
+	CAssetLoader Loader;
+	Loader.Init(&Engine, 1);
+	std::atomic<int> Running{0};
+	std::atomic<int> MaxRunning{0};
+	std::atomic<bool> Release{false};
+	std::vector<std::shared_ptr<CBlockingAssetJob>> vpJobs;
+	std::vector<CTypedAssetResource<CBlockingAssetJob>> vResources;
+	for(int i = 0; i < 4; ++i)
+	{
+		vpJobs.push_back(std::make_shared<CBlockingAssetJob>(Running, MaxRunning, Release));
+		vResources.push_back(Loader.Load(vpJobs.back(), i == 1 ? EAssetPriority::URGENT : EAssetPriority::NORMAL));
+	}
+
+	// A queued job that somebody now waits for overtakes the others that are
+	// not urgent, but not the urgent ones queued before it
+	Loader.Prioritize(vResources[3]);
+	Loader.Prioritize(vResources[3]);
+	std::vector<size_t> vStarted;
+	while(vStarted.size() < vpJobs.size())
+	{
+		ASSERT_EQ(Engine.m_vpJobs.size(), vStarted.size() + 1);
+		const auto It = std::find(vpJobs.begin(), vpJobs.end(), Engine.m_vpJobs.back());
+		ASSERT_NE(It, vpJobs.end());
+		const size_t Index = It - vpJobs.begin();
+		vStarted.push_back(Index);
+		vResources[Index].Reset();
+		Loader.Update();
+	}
+	EXPECT_EQ(vStarted, (std::vector<size_t>{0, 1, 3, 2}));
+	Loader.Shutdown();
+}

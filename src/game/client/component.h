@@ -7,6 +7,8 @@
 #include <engine/shared/video.h>
 #endif
 
+#include "first_frame_gate.h"
+
 #include <engine/input.h>
 
 class CGameClient;
@@ -285,6 +287,20 @@ public:
 	 * Called on map load.
 	 */
 	virtual void OnMapLoad()
+	{
+	}
+
+	/**
+	 * Adds what this component still loads and a scene cannot be drawn
+	 * without: the scene waits for it on the loading screen, see
+	 * `CFirstFrameGate`. Loads of it that were not urgent are named with
+	 * `CCriticalAssets::Prioritize`.
+	 *
+	 * @param Scene The scene about to be drawn.
+	 * @param SessionId The session the game is of, invalid for the menus.
+	 * @param Pending Receives what still loads.
+	 */
+	virtual void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
 	{
 	}
 

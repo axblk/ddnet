@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 
 using namespace std::chrono_literals;
 
@@ -113,6 +114,9 @@ void CMenuBackground::OnUpdate()
 {
 	FinishMenuMapLoad();
 	FinishThemeIconLoads();
+	// Also while the menus wait for the images on the loading screen.
+	if(m_Loaded)
+		m_pBackgroundImages->Update();
 }
 
 void CMenuBackground::OnShutdown()
@@ -273,6 +277,7 @@ void CMenuBackground::StartLoadingMapCandidate()
 	}
 	const std::string Path = m_vMapCandidates.front();
 	m_vMapCandidates.erase(m_vMapCandidates.begin());
+	// The menus wait for it, see OnCollectCriticalAssets.
 	StartMapLoad(m_MenuMapName.c_str(), Path.c_str());
 }
 
@@ -311,6 +316,17 @@ void CMenuBackground::FinishMenuMapLoad()
 
 void CMenuBackground::OnMapLoad()
 {
+}
+
+void CMenuBackground::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// The menus are drawn over the theme, which would appear under them.
+	if(Scene != CFirstFrameGate::EScene::MENUS)
+		return;
+	if(m_MapResource)
+		Pending.Add(Localize("theme"));
+	else if(m_Loaded)
+		Pending.Add(Localize("theme images"), m_pBackgroundImages->NumPending());
 }
 
 bool CMenuBackground::Render()

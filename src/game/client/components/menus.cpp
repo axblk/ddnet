@@ -1094,7 +1094,8 @@ void CMenus::OnInit()
 	Console()->Chain("demo_play", ConchainDemoPlay, this);
 	Console()->Chain("demo_speed", ConchainDemoSpeed, this);
 
-	m_BlobResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "blob.png", IStorage::TYPE_ALL);
+	// The menus wait for it and the menu images, see OnCollectCriticalAssets.
+	m_BlobResource = GameClient()->AssetLoader().LoadImageFile(Storage(), "blob.png", IStorage::TYPE_ALL, {}, EAssetPriority::URGENT);
 
 	// setup load amount
 	m_LoadingState.m_Current = 0;
@@ -1120,6 +1121,13 @@ void CMenus::OnUpdate()
 {
 	FinishImageLoads();
 	FinishAssetPreviewLoads();
+}
+
+void CMenus::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// The start page draws them.
+	if(Scene == CFirstFrameGate::EScene::MENUS && !StartupAssetsLoaded())
+		Pending.Add(Localize("menu images"), std::count_if(m_vMenuImages.begin(), m_vMenuImages.end(), [](const CMenuImage &Image) { return static_cast<bool>(Image.m_Resource); }) + (m_BlobResource ? 1 : 0));
 }
 
 bool CMenus::StartupAssetsLoaded() const
@@ -3173,13 +3181,15 @@ int CMenus::MenuImageScan(const char *pName, int IsDir, int DirType, void *pUser
 
 	str_truncate(MenuImage.m_aName, sizeof(MenuImage.m_aName), pName, str_length(pName) - str_length(pExtension));
 	MenuImage.m_pGreyImage = std::make_shared<CImageInfo>();
-	MenuImage.m_Resource = pSelf->GameClient()->AssetLoader().LoadImageFile(pSelf->Storage(), aPath, DirType, [pGreyImage = MenuImage.m_pGreyImage](CImageInfo &Info) {
+	auto Postprocess = [pGreyImage = MenuImage.m_pGreyImage](CImageInfo &Info) {
 		if(Info.m_Format != CImageInfo::FORMAT_RGBA)
 			return false;
 		*pGreyImage = Info.DeepCopy();
 		ConvertToGrayscale(*pGreyImage);
 		return true;
-	});
+	};
+	// The menus wait for them, see OnCollectCriticalAssets.
+	MenuImage.m_Resource = pSelf->GameClient()->AssetLoader().LoadImageFile(pSelf->Storage(), aPath, DirType, std::move(Postprocess), EAssetPriority::URGENT);
 	pSelf->m_vMenuImages.push_back(std::move(MenuImage));
 
 	pSelf->RenderLoading(Localize("Loading DDNet Client"), Localize("Loading menu images"), 0);

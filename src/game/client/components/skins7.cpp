@@ -443,6 +443,24 @@ bool CSkins7::StartupAssetsLoaded() const
 	});
 }
 
+void CSkins7::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// The game waits for the parts its tees wear, see `WornPartsLoading`,
+	// and counts them among the skins, so here their loads only become urgent.
+	if(Scene != CFirstFrameGate::EScene::GAME)
+		return;
+	Pending.Prioritize(m_XmasHatResource);
+	Pending.Prioritize(m_BotResource);
+	for(const std::vector<CSkinPart> &vSkinParts : m_avSkinParts)
+	{
+		for(const CSkinPart &Part : vSkinParts)
+		{
+			if(Part.m_Wanted && Part.m_LoadResource)
+				Pending.Prioritize(Part.m_LoadResource);
+		}
+	}
+}
+
 bool CSkins7::WornPartsLoading() const
 {
 	if(m_XmasHatResource || m_BotResource)

@@ -119,10 +119,15 @@ void CSounds::OnInit()
 	{
 		if(Sound()->IsSoundEnabled())
 		{
+			// The menus play none of them, so the client fetches them behind
+			// what the menus show. A program that only shows a demo shows the
+			// game first, which waits for them (see `OnCollectCriticalAssets`),
+			// so it fetches them all at once while it starts.
+			const EAssetPriority Priority = GameClient()->Frontend() != nullptr ? EAssetPriority::BACKGROUND : EAssetPriority::URGENT;
 			for(int SetId = 0; SetId < g_pData->m_NumSounds; ++SetId)
 			{
 				if(Preloaded(SetId))
-					StartLoadingSet(SetId, EAssetPriority::BACKGROUND);
+					StartLoadingSet(SetId, Priority);
 			}
 		}
 		m_WaitForSoundJob = !m_vSoundLoads.empty();
@@ -330,4 +335,20 @@ ISound::CVoiceHandle CSounds::PlaySampleAt(int Channel, int SampleId, int Flags,
 		Flags |= ISound::FLAG_LOOP;
 
 	return Sound()->PlayAt(Channel, SampleId, Flags, Volume, Position, Offline);
+}
+
+void CSounds::OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const
+{
+	// The game plays them from its first tick on.
+	if(Scene != CFirstFrameGate::EScene::GAME || !m_WaitForSoundJob)
+		return;
+	size_t Loading = 0;
+	for(const auto &Load : m_vSoundLoads)
+	{
+		if(Load.m_Resource.IsFinished())
+			continue;
+		++Loading;
+		Pending.Prioritize(Load.m_Resource);
+	}
+	Pending.Add(Localize("sounds"), std::max<size_t>(Loading, 1));
 }

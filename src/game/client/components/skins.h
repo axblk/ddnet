@@ -220,6 +220,7 @@ public:
 	void OnInit() override;
 	void OnShutdown() override;
 	void OnUpdate() override;
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	void RefreshEventSkins();
 	void Refresh(TSkinLoadedCallback &&SkinLoadedCallback);

@@ -107,6 +107,7 @@ public:
 	void Load(CGameSessionContext &Session, std::shared_ptr<CMapPresentation> pMap);
 	void Unload();
 	bool UpdateMapImages() { return m_pMap->m_Images.Update(); }
+	size_t NumMapImagesPending() const { return m_pMap->m_Images.NumPending(); }
 	void PrepareRender(const CRenderContext &Context, bool UsePredictedTime);
 	/**
 	 * Plays the map's sounds as heard from a view, and leaves out those of

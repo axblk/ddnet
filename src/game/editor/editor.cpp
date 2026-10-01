@@ -3098,8 +3098,8 @@ void CEditor::WhenImageArrives(const char *pFilename, int StorageType, std::func
 	CEditorFiles Files;
 	Files.Add(m_AssetLoader, Storage(), pFilename, StorageType);
 	Files.Add(m_AssetLoader, Storage(), aRules, IStorage::TYPE_ALL);
-	WhenFilesArrive(pFilename, std::move(Files), [Next](CEditorFiles &ArrivedFiles) {
-		Next(ArrivedFiles);
+	WhenFilesArrive(pFilename, std::move(Files), [Then = std::move(Next)](CEditorFiles &ArrivedFiles) {
+		Then(ArrivedFiles);
 		return true;
 	});
 }
@@ -5232,7 +5232,7 @@ void CEditor::WhenMapArrives(const char *pFilename, int StorageType, std::functi
 	// A `std::function` is copied, so what it takes over is shared.
 	auto pMap = std::make_shared<std::unique_ptr<IMap>>();
 	const std::string Filename = pFilename;
-	WhenFilesArrive(pFilename, std::move(Files), [this, pMap, Filename, StorageType, Next](CEditorFiles &ArrivedFiles) {
+	WhenFilesArrive(pFilename, std::move(Files), [this, pMap, Filename, StorageType, Then = std::move(Next)](CEditorFiles &ArrivedFiles) {
 		if(*pMap == nullptr)
 		{
 			// First the map, then what it names.
@@ -5247,7 +5247,7 @@ void CEditor::WhenMapArrives(const char *pFilename, int StorageType, std::functi
 			{
 				ShowFileDialogError("Error: Failed to open map file. See local console for details.");
 				log_error("editor/load", "Failed to open map file '%s'", Filename.c_str());
-				Next(nullptr, ArrivedFiles);
+				Then(nullptr, ArrivedFiles);
 				return true;
 			}
 			const size_t NumFiles = ArrivedFiles.Num();
@@ -5255,7 +5255,7 @@ void CEditor::WhenMapArrives(const char *pFilename, int StorageType, std::functi
 			if(ArrivedFiles.Num() != NumFiles)
 				return false;
 		}
-		Next(std::move(*pMap), ArrivedFiles);
+		Then(std::move(*pMap), ArrivedFiles);
 		return true;
 	});
 }
@@ -5263,8 +5263,8 @@ void CEditor::WhenMapArrives(const char *pFilename, int StorageType, std::functi
 void CEditor::OpenMap(const char *pFilename, int StorageType, std::function<void(bool Opened)> OnOpened)
 {
 	const std::string Filename = pFilename;
-	WhenMapArrives(pFilename, StorageType, [this, Filename, OnOpened](std::unique_ptr<IMap> pMap, const CEditorFiles &Files) {
-		OnOpened(pMap != nullptr && OpenLoadedMap(std::move(pMap), Filename.c_str(), Files));
+	WhenMapArrives(pFilename, StorageType, [this, Filename, Done = std::move(OnOpened)](std::unique_ptr<IMap> pMap, const CEditorFiles &Files) {
+		Done(pMap != nullptr && OpenLoadedMap(std::move(pMap), Filename.c_str(), Files));
 	});
 }
 
@@ -5272,8 +5272,8 @@ void CEditor::WhenFileArrives(const char *pFilename, int StorageType, std::funct
 {
 	CEditorFiles Files;
 	Files.Add(m_AssetLoader, Storage(), pFilename, StorageType);
-	WhenFilesArrive(pFilename, std::move(Files), [Next](CEditorFiles &ArrivedFiles) {
-		Next(ArrivedFiles);
+	WhenFilesArrive(pFilename, std::move(Files), [Then = std::move(Next)](CEditorFiles &ArrivedFiles) {
+		Then(ArrivedFiles);
 		return true;
 	});
 }

@@ -698,6 +698,7 @@ void CGameClient::OnUpdate()
 		if(m_CoreImagesPending)
 			return;
 	}
+	EnterPendingGame();
 	UpdateAssetPackLoads();
 	UpdateLanguageLoads();
 	HandleLanguageChanged();
@@ -1010,35 +1011,22 @@ void CGameClient::OnConnected(CSessionId SessionId)
 	CSessionPresentation &Presentation = SessionPresentation(SessionId);
 	Presentation.Load(Session, m_SessionPresentations.MapPresentation(MapContext.Data(), Sessions()->IsSixup(SessionId)));
 
-	// The map images are fetched asynchronously. Their layers were built with
-	// texture coordinates and would draw untextured until they arrive, so the
-	// world is only entered once they are all there - here, where the loading
-	// screen is still up. A session loading in the background has no loading
-	// screen to hold and picks its images up per frame instead; an export in
-	// the background asks IsSessionReadyToRender() before it records a frame.
-	while(Focused && Presentation.UpdateMapImages())
-	{
-		// the loader only starts the next jobs when it is updated
-		m_AssetLoader.Update();
-		RenderLoading(pConnectCaption, Localize("Loading map images"), 0);
-		// The images are read and decoded on other threads, and the loading
-		// screen draws at most 60 times a second (not at all while an export
-		// runs in the background). Asking again right away would keep a
-		// processor from those threads - on one core, or under a scheduler
-		// that runs one thread at a time, for as long as it keeps asking. In a
-		// browser the fetches only finish while the page has its turn.
-		thread_sleep_idle(std::chrono::milliseconds(1));
-	}
-
+	// The map images, the game's graphics and sounds load in the background.
+	// The server learns who joins right away, but the world is only entered
+	// once what it is drawn with is there (see `EnterPendingGame`), so that
+	// the tee does not stand in it while its player still sees the loading
+	// screen; the first frame waits as well (see `HoldFirstFrame`). A session
+	// loading in the background enters at once; an export in the background
+	// asks IsSessionReadyToRender() before it records a frame.
 	if(SessionId == NetworkSessionId())
 	{
 		if(Focused)
-		{
 			Client()->SetLoadingStateDetail(IClient::ELoadingStateDetail::GETTING_READY);
-			RenderLoading(pConnectCaption, Localize("Sending initial client info"), 0);
-		}
 		SendInfo(true);
 		ClientNetwork()->Rcon("crashmeplx");
+		m_EnterGameSessionId = SessionId;
+		m_EnterGameAllowed = false;
+		EnterPendingGame();
 	}
 	if(m_pFrontend != nullptr)
 		m_pFrontend->OnSessionConnected(SessionId);
@@ -1087,14 +1075,98 @@ void CGameClient::FinalizeObservedMatch(CSessionId SessionId, CGameSessionContex
 
 bool CGameClient::IsSessionReadyToRender(CSessionId SessionId)
 {
-	// A session that is not on the screen has nothing else that collects its
-	// finished images, so asking has to do it.
-	const bool MapImagesPending = SessionPresentation(SessionId).UpdateMapImages();
-	// A frame is kept in the video as it was drawn, so the flags the
-	// scoreboard shows are here before it starts rather than a frame after
-	// the scoreboard first asks for them.
+	CCriticalAssets Pending;
+	CollectCriticalAssets(CFirstFrameGate::EScene::GAME, SessionId, Pending);
+	// A frame is kept in a video as it was drawn, so the flags the scoreboard
+	// shows are here before it starts rather than a frame after the
+	// scoreboard first asks for them. On the screen they may come later.
 	m_CountryFlags.Preload();
-	return !m_CoreImagesPending && !MapImagesPending && !TeeSkinsLoading() && m_CountryFlags.Preloaded();
+	return Pending.Empty() && m_CountryFlags.Preloaded();
+}
+
+void CGameClient::CollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending)
+{
+	if(m_CoreImagesPending)
+	{
+		Pending.Add(Localize("game graphics"));
+		for(const auto &Load : m_vStartupImageLoads)
+			Pending.Prioritize(Load.m_Resource);
+		for(const auto &Load : m_vAssetPackLoads)
+		{
+			for(const CImageResource &Resource : Load.m_vResources)
+				Pending.Prioritize(Resource);
+		}
+	}
+	if(Scene == CFirstFrameGate::EScene::GAME)
+	{
+		// A session that is not on the screen has nothing else that collects
+		// its finished images, so asking has to do it.
+		CSessionPresentation &Presentation = SessionPresentation(SessionId);
+		Presentation.UpdateMapImages();
+		Pending.Add(Localize("map images"), Presentation.NumMapImagesPending());
+		if(TeeSkinsLoading())
+			Pending.Add(Localize("skins"));
+	}
+	for(const CComponent *pComponent : m_vpAll)
+		pComponent->OnCollectCriticalAssets(Scene, SessionId, Pending);
+	Pending.PrioritizeIn(m_AssetLoader);
+}
+
+void CGameClient::EnterPendingGame()
+{
+	if(!m_EnterGameSessionId.IsValid())
+		return;
+	if(m_EnterGameSessionId != NetworkSessionId())
+	{
+		m_EnterGameSessionId = CSessionId();
+		return;
+	}
+	// The gate is asked before the server is ready as well, so that its time
+	// limit counts from when the map was loaded.
+	CCriticalAssets Pending;
+	CollectCriticalAssets(CFirstFrameGate::EScene::GAME, m_EnterGameSessionId, Pending);
+	if(m_FirstFrameGate.Waits(CFirstFrameGate::EScene::GAME, m_EnterGameSessionId, Pending))
+		return;
+	// Allowed by the server's message, which only a network client gets.
+	if(!m_EnterGameAllowed || ClientNetwork() == nullptr)
+		return;
+	const CSessionId SessionId = m_EnterGameSessionId;
+	m_EnterGameSessionId = CSessionId();
+	ClientNetwork()->EnterGame(SeatOf(SessionId));
+}
+
+bool CGameClient::HoldFirstFrame(bool NoGame)
+{
+	if(NoGame && m_pFrontend == nullptr)
+		return false;
+	const CFirstFrameGate::EScene Scene = NoGame ? CFirstFrameGate::EScene::MENUS : CFirstFrameGate::EScene::GAME;
+	const CSessionId SessionId = NoGame ? CSessionId() : Sessions()->FocusedSessionId();
+	CCriticalAssets Pending;
+	if(m_FirstFrameGate.IsScene(Scene, SessionId))
+		CollectCriticalAssets(Scene, SessionId, Pending);
+	const bool Hold = m_FirstFrameGate.Hold(Scene, SessionId, Pending, m_AssetLoader);
+	// A demo waits on the loading screen where it stands.
+	const bool Demo = !NoGame && SessionId == Sessions()->DemoSessionId();
+	if(Hold && Demo && !m_FirstFramePausedDemo && !DemoPlayer()->BaseInfo()->m_Paused)
+	{
+		DemoPlayer()->Pause();
+		m_FirstFramePausedDemo = true;
+	}
+	else if(!Hold && m_FirstFramePausedDemo)
+	{
+		m_FirstFramePausedDemo = false;
+		if(Demo)
+			DemoPlayer()->Unpause();
+	}
+	if(Hold)
+	{
+		char aPending[256];
+		Pending.Describe(aPending, sizeof(aPending));
+		char aContent[320];
+		str_format(aContent, sizeof(aContent), "%s: %s", Localize("Loading"), aPending);
+		RenderLoading(NoGame ? Localize("Loading DDNet Client") : (Demo ? Localize("Preparing demo playback") : Localize("Connected")), aContent, 0, false);
+	}
+	return Hold;
 }
 
 bool CGameClient::TeeSkinsLoading()
@@ -1120,6 +1192,8 @@ bool CGameClient::TeeSkinsLoading()
 void CGameClient::OnSessionClosed(CSessionId SessionId)
 {
 	++m_SessionChanges;
+	if(m_EnterGameSessionId == SessionId)
+		m_EnterGameSessionId = CSessionId();
 	CGameSessionContext &Session = SessionContext(SessionId);
 	if(Sessions()->SessionType(SessionId) == ESessionSourceType::NETWORK)
 	{
@@ -1468,6 +1542,12 @@ const CGameClient::SRenderComponentInfo &CGameClient::RenderInfo(const CComponen
 
 void CGameClient::OnRender()
 {
+	// The game's graphics are part of what a scene waits for, so that the
+	// wait names them and has them loaded first; the scene is drawn with
+	// them only.
+	const bool NoGame = Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK;
+	if(HoldFirstFrame(NoGame))
+		return;
 	if(m_CoreImagesPending)
 	{
 		RenderLoading(Localize("Loading DDNet Client"), Localize("Initializing assets"), 0, false);
@@ -1481,16 +1561,6 @@ void CGameClient::OnRender()
 	const CPreparedRenderEntry *pAudibleEntry = m_PreparedIsolatedVideoOutput ? &PrimaryEntry : FindAudibleRenderEntry();
 	const bool IsVideoOutput = m_PreparedVideoOutput;
 	const ColorRGBA ClearColor = color_cast<ColorRGBA>(ColorHSLA(g_Config.m_ClOverlayEntities ? g_Config.m_ClBackgroundEntitiesColor : g_Config.m_ClBackgroundColor));
-	const bool NoGame = Client()->State() != IClient::STATE_ONLINE && Client()->State() != IClient::STATE_DEMOPLAYBACK;
-	if(NoGame)
-	{
-		if(m_pFrontend != nullptr)
-			m_FirstFrameGate.OnDrawn(CFirstFrameGate::EScene::MENUS, CSessionId(), m_AssetLoader);
-	}
-	else
-	{
-		m_FirstFrameGate.OnDrawn(CFirstFrameGate::EScene::GAME, Sessions()->FocusedSessionId(), m_AssetLoader);
-	}
 	if(m_PreparedIsolatedVideoOutput || !m_Backdrop.Begin(ClearColor, NoGame || BackdropWanted()))
 		Graphics()->Clear(ClearColor.r, ClearColor.g, ClearColor.b);
 	auto RenderInView = [this](const CViewport &Viewport, const auto &Render) {
@@ -2375,7 +2445,14 @@ void CGameClient::OnMessage(CSessionId SessionId, int MsgId, CUnpacker *pUnpacke
 	else if(MsgId == NETMSGTYPE_SV_READYTOENTER)
 	{
 		// A demo can carry the message too, but only a server waits for the answer.
-		if(Sessions()->SessionType(SessionId) == ESessionSourceType::NETWORK && ClientNetwork() != nullptr)
+		if(Sessions()->SessionType(SessionId) != ESessionSourceType::NETWORK || ClientNetwork() == nullptr)
+			return;
+		if(SessionId == m_EnterGameSessionId)
+		{
+			m_EnterGameAllowed = true;
+			EnterPendingGame();
+		}
+		else
 			ClientNetwork()->EnterGame(SeatOf(SessionId));
 		return;
 	}

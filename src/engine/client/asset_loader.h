@@ -31,6 +31,7 @@ class IEngine;
 class IHttp;
 class IHttpRequest;
 class IStorage;
+class CAssetResource;
 class CImageAssetJob;
 class CImageResource;
 class CFileAssetJob;
@@ -43,17 +44,19 @@ class CTypedAssetResource;
 enum class EAssetPriority
 {
 	/**
-	 * Entering a map waits for it: it is fetched as soon as it is submitted,
-	 * and read and made ahead of every queued asset that is not urgent.
+	 * What is shown next waits for it: it is fetched as soon as it is
+	 * submitted, and read and made ahead of every queued asset that is not
+	 * urgent. See also `CAssetLoader::Prioritize`.
 	 */
 	URGENT,
 	/**
-	 * Somebody waits for it: it is fetched as soon as it is submitted.
+	 * Somebody wants it soon. Only a few assets that are not urgent are
+	 * fetched at a time, so that they do not take every connection a browser
+	 * opens to a host and the urgent ones go first; these are next.
 	 */
 	NORMAL,
 	/**
-	 * Nobody waits for it. Only a few are fetched at a time, so that they do
-	 * not take every connection a browser opens to a host.
+	 * Nobody waits for it: fetched after the others that are not urgent.
 	 */
 	BACKGROUND,
 };
@@ -83,8 +86,9 @@ class CAssetJob : public IJob
 	std::vector<uint8_t> m_vData;
 	bool m_ReadFailed = false;
 	bool m_Success = false;
-	bool m_Background = false;
-	bool m_Urgent = false;
+	EAssetPriority m_Priority = EAssetPriority::NORMAL;
+	// Takes one of the few fetches of assets that are not urgent
+	bool m_CountedFetch = false;
 
 	static bool ReadFile(IStorage *pStorage, const char *pPath, int StorageType, std::vector<uint8_t> &vData);
 
@@ -136,9 +140,10 @@ class CAssetLoader
 	size_t m_MaxConcurrentJobs = 0;
 	bool m_Shutdown = false;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpFetchingJobs;
-	// Background jobs waiting for their turn to be fetched
+	// Jobs that are not urgent waiting for their turn to be fetched, the
+	// normal ones ahead of the background ones
 	std::deque<CDeferredFetch> m_vDeferredFetches;
-	size_t m_BackgroundFetchCount = 0;
+	size_t m_CountedFetches = 0;
 	std::deque<std::shared_ptr<CAssetJob>> m_vpPendingJobs;
 	std::vector<std::shared_ptr<CAssetJob>> m_vpRunningJobs;
 
@@ -160,6 +165,8 @@ class CAssetLoader
 	static void ReaderThread(void *pUser);
 	// Puts an urgent job behind the urgent ones already queued, any other at the end
 	static void Queue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, std::shared_ptr<CAssetJob> pJob);
+	// Moves a job that became urgent ahead in a queue, whether it is in there
+	static bool Requeue(std::deque<std::shared_ptr<CAssetJob>> &vpJobs, const std::shared_ptr<CAssetJob> &pJob);
 	void ReadLoop() NO_THREAD_SAFETY_ANALYSIS;
 	void Submit(std::shared_ptr<CAssetJob> pJob, EAssetPriority Priority = EAssetPriority::NORMAL) REQUIRES(!m_ReaderLock);
 	void Enqueue(std::shared_ptr<CAssetJob> pJob) REQUIRES(!m_ReaderLock);
@@ -194,6 +201,14 @@ public:
 	CImageResource LoadImageHttp(IHttp *pHttp, std::shared_ptr<IHttpRequest> pRequest, IStorage *pStorage, const char *pPath, int StorageType, bool UseFileOnError, std::function<bool(CImageInfo &)> Postprocess = {}) REQUIRES(!m_ReaderLock);
 	void Update() REQUIRES(!m_ReaderLock);
 	void Shutdown() REQUIRES(!m_ReaderLock);
+	/**
+	 * Makes a load urgent, see `EAssetPriority::URGENT`, wherever it stands:
+	 * one that waits for its turn to be fetched is fetched now, and a queued
+	 * one moves ahead of those that are not urgent. For what somebody
+	 * started to load early and now waits for, see
+	 * `CCriticalAssets::Prioritize`.
+	 */
+	void Prioritize(const CAssetResource &Resource) REQUIRES(!m_ReaderLock);
 
 	/**
 	 * Notes every asset that finishes from now on for a while, and logs them
@@ -218,6 +233,8 @@ public:
  */
 class CAssetResource
 {
+	friend class CAssetLoader;
+
 	std::shared_ptr<CAssetJob> m_pJob;
 
 protected:

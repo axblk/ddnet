@@ -580,6 +580,18 @@ public:
 	 * would be left out of a frame.
 	 */
 	bool TeeSkinsLoading();
+	/**
+	 * What a scene cannot be drawn without and still loads: the game's own
+	 * and what the components add, see
+	 * `CComponent::OnCollectCriticalAssets`. The one list the first frame of
+	 * a scene, the client info of a join and a video wait for (a video
+	 * besides waits for the flags of the scoreboard).
+	 *
+	 * @param Scene The scene.
+	 * @param SessionId The session the game is of, invalid for the menus.
+	 * @param Pending Receives what still loads.
+	 */
+	void CollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending);
 
 	void InitializeLanguage() override;
 	void UpdateLanguageLoads();
@@ -915,6 +927,17 @@ private:
 	bool m_StartupAssetsPending = false;
 	int64_t m_StartupAssetsStart = 0;
 	CFirstFrameGate m_FirstFrameGate;
+	// The demo the gate paused, to go on once it is drawn.
+	bool m_FirstFramePausedDemo = false;
+	// The session that enters the game once what it draws is there, see
+	// `OnConnected`, and whether its server is ready for that.
+	CSessionId m_EnterGameSessionId;
+	bool m_EnterGameAllowed = false;
+	/**
+	 * Whether the frame is held on the loading screen, see `CFirstFrameGate`.
+	 */
+	bool HoldFirstFrame(bool NoGame);
+	void EnterPendingGame();
 	std::vector<CStartupImageLoad> m_vStartupImageLoads;
 	std::vector<CAssetPackLoad> m_vAssetPackLoads;
 	std::unordered_map<std::string, CImageInfo> m_DecodedAssetImages;

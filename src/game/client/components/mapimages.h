@@ -129,6 +129,10 @@ public:
 	// Collects the images the asset loader has finished. Returns whether any are
 	// still outstanding.
 	bool Update();
+	/**
+	 * How many images are still outstanding.
+	 */
+	size_t NumPending() const { return m_vImageLoads.size(); }
 	void SetGameInfo(const CGameInfo &GameInfo);
 
 	IGraphics::CTextureHandle Get(int Index) const override { return m_aTextures[Index]; }

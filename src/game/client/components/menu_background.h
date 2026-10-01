@@ -112,6 +112,7 @@ public:
 	void OnUpdate() override;
 	void OnShutdown() override;
 	void OnMapLoad() override;
+	void OnCollectCriticalAssets(CFirstFrameGate::EScene Scene, CSessionId SessionId, CCriticalAssets &Pending) const override;
 
 	void LoadMenuBackground(bool HasDayHint = true, bool HasNightHint = true);
 

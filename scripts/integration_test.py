@@ -1016,6 +1016,38 @@ def client_can_connect_websockets(test_env):
 	client.wait_for_exit()
 
 
+def client_gets_server_info_over(test_env, scheme):
+	"""The server info comes in the connection, asked for there and sent again
+	when it changes, so it does not depend on the UDP port."""
+	client = test_env.client(["stdout_output_level 1"])
+	server = test_env.server()
+	wait_for_startup([client, server])
+	client.command(f"connect {scheme}://127.0.0.1:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.wait_for_log_exact("client: got server info over the connection", timeout=10)
+	server.command("sv_name changed")
+	client.wait_for_log_exact("client: got server info over the connection", timeout=10)
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+
+
+@test
+def client_gets_server_info_over_quic(test_env):
+	client_gets_server_info_over(test_env, "ddnet+quic")
+
+
+@test
+def client_gets_server_info_over_webtransport(test_env):
+	client_gets_server_info_over(test_env, "ddnet+wt")
+
+
+@test(requires_websockets=True)
+def client_gets_server_info_over_websockets(test_env):
+	client_gets_server_info_over(test_env, "ddnet+ws")
+
+
 # The key file the ddnet-xdp filter service writes, as the server reads it:
 # magic, version, the epoch in use, then four epochs of two SipHash key
 # halves and a validity byte.
@@ -1065,14 +1097,14 @@ def client_can_connect_with_filter_key(test_env):
 def browser_client_can_connect(test_env):
 	server = test_env.server()
 	wait_for_startup([server])
-	if server.identity is None:
-		raise AssertionError("server did not log its identity")
-	client = test_env.browser_client([f'connect "ddnet+ws://127.0.0.1:{server.port}#identity-sha256={server.identity}"'])
+	client = test_env.browser_client(["stdout_output_level 1", f"connect ddnet+ws://127.0.0.1:{server.port}"])
 	wait_for_startup([client])
 	join = server.wait_for_log_prefix("server: player has entered the game", timeout=60).line
 	if "sixup=0" not in join:
 		raise AssertionError(f"sixup=0 not found in {join!r}")
 	client.wait_for_log_prefix("client: connected, sending info", timeout=10)
+	# A browser has no UDP to ask for the server info at.
+	client.wait_for_log_exact("client: got server info over the connection", timeout=10)
 	server.exit()
 	client.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
 	server.wait_for_exit()

@@ -260,6 +260,14 @@ void CClient::SendInfo(int Conn)
 	Msg.AddString(GameClient()->NetVersion());
 	Msg.AddString(m_aPassword);
 	SendMsg(Conn, &Msg, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+
+	// Asks for the server info in the connection, which works over every
+	// transport. A server that does not know this drops it.
+	if(Conn == CONN_MAIN)
+	{
+		CMsgPacker Request(NETMSG_SERVER_INFO_REQUEST, true);
+		SendMsg(Conn, &Request, MSGFLAG_VITAL | MSGFLAG_FLUSH);
+	}
 }
 
 void CClient::SendEnterGame(int Conn)
@@ -658,6 +666,7 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 	m_ConnectionId = RandomUuid();
 	ServerInfoRequest();
+	m_ServerInfoInConnection = false;
 
 	if(m_SendPassword)
 	{
@@ -1899,6 +1908,25 @@ void CClient::ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy)
 			int Vital = (pPacket->m_Flags & NET_CHUNKFLAG_VITAL) != 0 ? MSGFLAG_VITAL : 0;
 			SendMsg(Conn, &MsgP, MSGFLAG_FLUSH | Vital);
 		}
+		else if(Conn == CONN_MAIN && Msg == NETMSG_SERVER_INFO)
+		{
+			// The same bytes as a server info answer outside of the connection,
+			// so it is read the same way.
+			const int Size = Unpacker.GetInt();
+			const unsigned char *pData = Size > 0 ? Unpacker.GetRaw(Size) : nullptr;
+			if(Unpacker.Error() || pData == nullptr)
+			{
+				return;
+			}
+			log_debug("client", "got server info over the connection");
+			m_ServerInfoInConnection = true;
+			CNetChunk Info = {};
+			Info.m_ClientId = -1;
+			Info.m_Address = ServerAddress();
+			Info.m_pData = pData;
+			Info.m_DataSize = Size;
+			ProcessConnlessPacket(&Info);
+		}
 		else if(Conn == CONN_MAIN && Msg == NETMSG_PONGEX)
 		{
 			CUuid *pId = (CUuid *)Unpacker.GetRaw(sizeof(*pId));
@@ -3018,9 +3046,11 @@ void CClient::Update()
 					GameClient()->OnPredict();
 			}
 
-			// fetch server info if we don't have it
+			// fetch server info if we don't have it and the server does not
+			// send it in the connection by itself
 			if(m_CurrentServerInfoRequestTime >= 0 &&
-				time_get() > m_CurrentServerInfoRequestTime)
+				time_get() > m_CurrentServerInfoRequestTime &&
+				!m_ServerInfoInConnection)
 			{
 				m_ServerBrowser.RequestCurrentServer(ServerAddress());
 				m_CurrentServerInfoRequestTime = time_get() + time_freq() * 2;

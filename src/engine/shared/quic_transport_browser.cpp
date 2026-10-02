@@ -711,7 +711,13 @@ bool CQuicTransport::IsWebTransportClientAvailable()
 	return BrowserWebTransportAvailable() != 0;
 }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CTlsServerCertificate::Load(const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, char *pError, int ErrorSize)
+{
+	str_copy(pError, "a browser cannot serve TLS", ErrorSize);
+	return false;
+}
+
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const CTlsServerCertificate *pCertificate, const char *pIdentityPath)
 {
 	str_copy(m_aError, "a browser cannot serve QUIC");
 	return false;
@@ -721,6 +727,12 @@ bool CQuicTransport::MaybeRotateManagedCertificate(bool *pRotated)
 {
 	*pRotated = false;
 	return true;
+}
+
+bool CQuicTransport::ReloadServerCertificate(const CTlsServerCertificate &Certificate)
+{
+	str_copy(m_aError, "a browser cannot serve QUIC");
+	return false;
 }
 
 bool CQuicTransport::StartClient(const NETADDR &Address, const char *pServerName, const CModernTransportPin &Pin, bool Sixup)
@@ -751,6 +763,11 @@ bool CQuicTransport::StartClient(const NETADDR &Address, const char *pServerName
 std::optional<SHA256_DIGEST> CQuicTransport::RawQuicSpkiSha256() const
 {
 	return std::nullopt;
+}
+
+bool CQuicTransport::RawQuicIdentity(CTlsServerCertificate *pIdentity) const
+{
+	return false;
 }
 
 bool CQuicTransport::IsRunning() const

@@ -971,6 +971,7 @@ namespace ModernQuic {
   enum class QuicPin : ::std::uint8_t;
   struct QuicIdentity;
   struct QuicManagedIdentity;
+  struct QuicServerCertificate;
   struct UdpDatagram;
   struct QuicEndpoint;
 }
@@ -1050,6 +1051,31 @@ struct QuicManagedIdentity final {
 };
 #endif // CXXBRIDGE1_STRUCT_ModernQuic$QuicManagedIdentity
 
+#ifndef CXXBRIDGE1_STRUCT_ModernQuic$QuicServerCertificate
+#define CXXBRIDGE1_STRUCT_ModernQuic$QuicServerCertificate
+// A TLS certificate, its key and the certificate announced next, read
+// and checked once for every transport that serves them.
+struct QuicServerCertificate final {
+  // What keeps them from serving, empty if they can.
+  ::rust::String error;
+  // The DER certificates of the chain, the end-entity one first, one
+  // after the other.
+  ::rust::Vec<::std::uint8_t> chain_der;
+  // The private key in DER: PKCS#8, SEC1 or PKCS#1.
+  ::rust::Vec<::std::uint8_t> private_key_der;
+  // The SHA-256 of the end-entity certificate.
+  ::rust::Vec<::std::uint8_t> sha256;
+  // The SHA-256 of the certificate announced next, empty without one.
+  ::rust::Vec<::std::uint8_t> next_sha256;
+  // The SHA-256 of the SubjectPublicKeyInfo of the end-entity certificate.
+  ::rust::Vec<::std::uint8_t> spki_sha256;
+  // When the end-entity certificate expires, in seconds since 1970.
+  ::std::int64_t not_after CXX_DEFAULT_VALUE(0);
+
+  using IsRelocatable = ::std::true_type;
+};
+#endif // CXXBRIDGE1_STRUCT_ModernQuic$QuicServerCertificate
+
 #ifndef CXXBRIDGE1_STRUCT_ModernQuic$UdpDatagram
 #define CXXBRIDGE1_STRUCT_ModernQuic$UdpDatagram
 struct UdpDatagram final {
@@ -1080,11 +1106,13 @@ private:
 
 ::ModernQuic::QuicManagedIdentity quic_managed_identity(::rust::Str identity_path, ::std::int64_t now);
 
-::rust::Vec<::std::uint8_t> quic_leaf_certificate_der(::rust::Slice<::std::uint8_t const> certificate_file);
+::ModernQuic::QuicServerCertificate quic_load_server_certificate(::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Slice<::std::uint8_t const> next_certificate_file) noexcept;
 
 ::rust::Box<::ModernQuic::QuicEndpoint> quic_server_start(bool raw_quic, bool webtransport, ::rust::Slice<::std::uint8_t const> certificate_file, ::rust::Slice<::std::uint8_t const> private_key_file, ::rust::Str identity_path);
 
 ::rust::Vec<::std::uint8_t> quic_server_spki_sha256(::ModernQuic::QuicEndpoint const &endpoint) noexcept;
+
+::ModernQuic::QuicIdentity quic_server_identity(::ModernQuic::QuicEndpoint const &endpoint) noexcept;
 
 void quic_server_update_certificate(::ModernQuic::QuicEndpoint const &endpoint, ::rust::Slice<::std::uint8_t const> certificate_der, ::rust::Slice<::std::uint8_t const> private_key_der);
 

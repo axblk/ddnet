@@ -40,13 +40,17 @@ public:
 	int m_WebsocketSecure = -1;
 	// Whether the address was given without a scheme.
 	bool m_aSchemeless[MAX_SERVER_ADDRESSES] = {};
+	// How the certificate of a secure websocket address is checked, by its
+	// fragment as for a raw QUIC link: TOFU without one.
+	CModernTransportPin m_aWebsocketPins[MAX_SERVER_ADDRESSES] = {};
 
 	/**
 	 * Parses a comma separated connect string and resolves its addresses.
 	 * Addresses that cannot be resolved or reached are logged and skipped.
 	 *
 	 * @param pAddress The connect string.
-	 * @param NetTypes The network types the connection can use.
+	 * @param NetTypes The network types the connection can use, with
+	 * `NETTYPE_WEBSOCKET_TLS` where it can open secure websockets.
 	 * @param Family The address family picked next to the address field.
 	 *
 	 * @return Whether the connect string is valid. It may still resolve to no address.
@@ -211,6 +215,21 @@ public:
 };
 
 /**
+ * Where what the identity of a server is checked against came from.
+ */
+enum class EServerIdentitySource
+{
+	// What an address without a fragment means.
+	ADDRESS,
+	LIST,
+	LINK,
+	// The key of a known host, trusted on first use.
+	REMEMBERED,
+	// `cl_quic_cert`.
+	SETTING,
+};
+
+/**
  * How to start QUIC, or WebTransport in the browser, for a connect.
  */
 class CModernTransportStart
@@ -222,6 +241,7 @@ public:
 	// The name the certificate is checked for, empty for an address.
 	char m_aServerName[256] = {};
 	CModernTransportPin m_Pin = {};
+	EServerIdentitySource m_PinSource = EServerIdentitySource::ADDRESS;
 	bool m_Sixup = false;
 	bool m_WebTransport = false;
 };
@@ -287,6 +307,13 @@ public:
 	 */
 	bool Add(const char *pHost, int Port, const SHA256_DIGEST &SpkiSha256);
 	/**
+	 * Brings the key of a known host up to date with one that was proven by
+	 * other means, such as a pin. An unknown host stays unknown.
+	 *
+	 * @return Whether the key of a known host changed.
+	 */
+	bool Update(const char *pHost, int Port, const SHA256_DIGEST &SpkiSha256);
+	/**
 	 * Forgets a host, on all ports for port 0.
 	 *
 	 * @return Whether anything was forgotten.
@@ -299,8 +326,9 @@ private:
 };
 
 /**
- * Checks the key a QUIC server holds, which TLS proves on connect, against
- * its pin or the known hosts, and remembers it on first use.
+ * Checks the key a QUIC or native secure websocket server holds, which TLS
+ * proves on connect, against its pin or the known hosts, remembers it on first
+ * use and brings a remembered one up to date with a pin.
  */
 class CQuicIdentityCheck
 {
@@ -310,18 +338,19 @@ public:
 		OK,
 		// The transport reported no key.
 		MISSING,
-		// The server holds another key than the known one.
+		// The server holds another key than the pinned or known one.
 		CHANGED,
 		// The key of a new host could not be remembered.
 		NOT_STORED,
-		// The key of a new host was remembered, the known hosts changed.
+		// The key of a new host was remembered, or the one of a known host was
+		// brought up to date with a pin: the known hosts changed.
 		STORED,
 	};
 
 	void Reset();
 	/**
 	 * Sets the check up for a start. A known host turns a TOFU pin into a
-	 * pin of its key.
+	 * pin of its key, and a pin of a known host updates its key.
 	 */
 	void Prepare(CModernTransportStart *pStart, const CQuicKnownHosts &KnownHosts);
 	/**
@@ -342,8 +371,63 @@ private:
 	int m_Port = 0;
 	SHA256_DIGEST m_Expected = {};
 	bool m_Required = false;
+	// A pin of the key, checked here too where the TLS handshake did not
+	// check it, like on a websocket that is used again.
+	bool m_Pinned = false;
 	bool m_Known = false;
 	bool m_Remember = false;
+	bool m_Update = false;
 };
+
+/**
+ * A server whose identity could not be verified: the key or certificate it
+ * showed was not the one expected, or not valid for Web PKI.
+ */
+class CServerIdentityFailure
+{
+public:
+	// The normalized host, see `NormalizeQuicTrustHost`.
+	char m_aHost[128] = {};
+	int m_Port = 0;
+	// "QUIC", "WebTransport" or "wss".
+	const char *m_pTransport = "";
+	CModernTransportPin m_Pin = {};
+	EServerIdentitySource m_Source = EServerIdentitySource::ADDRESS;
+	// The SHA-256 of the key or of the certificate the server showed, as the pin has it.
+	bool m_HasPresented = false;
+	SHA256_DIGEST m_Presented = {};
+
+	/**
+	 * What is expected of a server a modern transport or a secure websocket
+	 * is started to.
+	 *
+	 * @param Start How it is started, after `CQuicIdentityCheck::Prepare`.
+	 * @param pTransport "QUIC", "WebTransport" or "wss".
+	 */
+	static CServerIdentityFailure Expected(const CModernTransportStart &Start, const char *pTransport);
+};
+
+/**
+ * The reason a connection ends with when the identity of the server could not
+ * be verified, the same for every transport.
+ */
+extern const char *const SERVER_IDENTITY_DISCONNECT_REASON;
+
+/**
+ * @return The title of the warning about a server whose identity could not be verified.
+ */
+const char *ServerIdentityWarningTitle();
+
+/**
+ * Writes the warning about a server whose identity could not be verified: the
+ * server and transport, where the expectation came from, the expected and the
+ * received key or certificate where they are known, and what to do next.
+ * This is the one place it is made, for QUIC, WebTransport and wss alike.
+ *
+ * @param pBuffer The buffer to write to.
+ * @param BufferSize The size of the buffer.
+ * @param Failure What failed.
+ */
+void FormatServerIdentityWarning(char *pBuffer, int BufferSize, const CServerIdentityFailure &Failure);
 
 #endif

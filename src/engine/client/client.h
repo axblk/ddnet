@@ -91,6 +91,10 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	int64_t m_QuicLastRecvTime = 0;
 	CQuicKnownHosts m_QuicKnownHosts;
 	CQuicIdentityCheck m_QuicIdentityCheck;
+	// What the identity of the server of the modern transport is checked against.
+	CServerIdentityFailure m_ModernIdentity;
+	// How each secure websocket of the connect is checked, before known hosts.
+	std::vector<CModernTransportStart> m_vWebsocketStarts;
 	CDemoPlayer m_DemoPlayer;
 	CDemoRecorder m_aDemoRecorders[RECORDER_MAX];
 	CDemoRecorder m_aDemoRecordersSixup[RECORDER_MAX];
@@ -405,6 +409,10 @@ public:
 	void ProcessServerInfo(int Type, NETADDR *pFrom, const void *pData, int DataSize);
 	void ProcessServerPacket(CNetChunk *pPacket, int Conn, bool Dummy);
 	bool TryStartModernTransport(const CConnectTarget &Target);
+	// Warns about a server whose identity could not be verified and disconnects.
+	void ServerIdentityFailed(const CServerIdentityFailure &Failure, const char *pDetail);
+	// Checks the keys secure websockets were shown, remembers or updates them.
+	void CheckWebsocketIdentity();
 	void StartLegacyConnection(const NETADDR *pAddrs, int NumAddrs, bool Sixup);
 
 	int UnpackAndValidateSnapshot(CSnapshot *pFrom, CSnapshotBuffer *pTo);

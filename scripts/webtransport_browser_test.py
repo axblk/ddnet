@@ -454,8 +454,8 @@ def main():
 			server_arguments.extend([
 				"sv_quic 0",
 				"sv_webtransport 0",
-				f"sv_websocket_cert {https_certificate}",
-				f"sv_websocket_key {https_private_key}",
+				f"sv_tls_cert {https_certificate}",
+				f"sv_tls_key {https_private_key}",
 				"sv_websocket_origin https://127.0.0.1:8000",
 				"dbg_websockets 1",
 			])

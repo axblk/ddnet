@@ -12,6 +12,7 @@
 #include <base/io.h>
 #include <base/logger.h>
 #include <base/secure.h>
+#include <base/time.h>
 
 #include <engine/config.h>
 #include <engine/console.h>
@@ -43,7 +44,9 @@
 #include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/transport_pin.h>
+#if defined(CONF_WEBSOCKETS)
 #include <engine/shared/websockets.h>
+#endif
 #include <engine/storage.h>
 
 #include <generated/protocol.h>
@@ -1593,7 +1596,7 @@ bool CServer::StartQuic()
 	char aIdentityPath[IO_MAX_PATH_LENGTH] = {};
 	if(UseIdentity)
 		Storage()->GetCompletePath(IStorage::TYPE_SAVE_OR_ABSOLUTE, Config()->m_SvQuicIdentityKey, aIdentityPath, sizeof(aIdentityPath));
-	if(!m_QuicTransport.StartServer(Config()->m_SvQuic, Config()->m_SvWebtransport, Config()->m_SvTlsCert, Config()->m_SvTlsCertNext, Config()->m_SvTlsKey, aIdentityPath))
+	if(!m_QuicTransport.StartServer(Config()->m_SvQuic, Config()->m_SvWebtransport, m_TlsCertificate ? &*m_TlsCertificate : nullptr, aIdentityPath))
 	{
 		log_error("server", "could not start QUIC: %s", m_QuicTransport.ErrorString());
 		return false;
@@ -1611,7 +1614,53 @@ bool CServer::StartQuic()
 		[](void *pUser, const NETADDR *pAddr, const void *pData, int DataSize) { return static_cast<CQuicTransport *>(pUser)->FeedUdp(pAddr, pData, DataSize); },
 		[](void *pUser, const NETADDR *pAddr, bool Known) { static_cast<CQuicTransport *>(pUser)->SetLegacyPeer(pAddr, Known); },
 		&m_QuicTransport);
+	return true;
+}
 
+bool CServer::LoadTlsCertificate()
+{
+	m_TlsCertificate.reset();
+	m_WebsocketTls = false;
+	m_WebsocketIdentitySpkiSha256.reset();
+	// Read where something serves it: QUIC and WebTransport, and websockets,
+	// which serve wss with it.
+	const bool Quic = (Config()->m_SvQuic || Config()->m_SvWebtransport) && CQuicTransport::IsCompiled();
+	bool Websockets = false;
+#if defined(CONF_WEBSOCKETS)
+	Websockets = true;
+#endif
+	const bool Certificate = Config()->m_SvTlsCert[0] != '\0';
+	if((!Quic && !Websockets) || (!Certificate && Config()->m_SvTlsKey[0] == '\0'))
+		return true;
+	if(!Certificate || Config()->m_SvTlsKey[0] == '\0')
+	{
+		log_error("server", "sv_tls_cert and sv_tls_key must either both be set or both be empty");
+		return false;
+	}
+	CTlsServerCertificate Loaded;
+	char aError[256];
+	if(!Loaded.Load(Config()->m_SvTlsCert, Config()->m_SvTlsCertNext, Config()->m_SvTlsKey, aError, sizeof(aError)))
+	{
+		if(Quic)
+		{
+			log_error("server", "could not read the TLS certificate: %s", aError);
+			return false;
+		}
+		// What only websockets would serve does not keep the server from starting.
+		log_warn("server", "websockets are served as ws instead of wss: %s", aError);
+		return true;
+	}
+#if defined(CONF_WEBSOCKETS)
+	m_WebsocketTls = websocket_set_server_certificate(Loaded.m_vChain.data(), Loaded.m_vChain.size(), Loaded.m_vPrivateKey.data(), Loaded.m_vPrivateKey.size(), aError, sizeof(aError));
+	if(!m_WebsocketTls)
+		log_warn("server", "websockets are served as ws instead of wss: %s", aError);
+#endif
+	m_TlsCertificate = std::move(Loaded);
+	return true;
+}
+
+void CServer::LogTlsTransports() const
+{
 	// A connect link needs these, so they are logged where they can be read off.
 	char aQuicFragment[160];
 	char aWebTransportFragment[160];
@@ -1620,7 +1669,17 @@ bool CServer::StartQuic()
 		log_info("server", "QUIC listening on port %d #%s", Port(), aQuicFragment);
 	if(m_WebTransportStarted)
 		log_info("server", "WebTransport listening on port %d path=/ddnet%s%s", Port(), aWebTransportFragment[0] ? " #" : "", aWebTransportFragment);
-	return true;
+	if(m_WebsocketTls && m_TlsCertificate)
+	{
+		// Like raw QUIC, checked by Web PKI where the certificate has a name,
+		// otherwise by the key DDNet clients are shown.
+		CModernTransportPin Pin = {};
+		Pin.m_Trust = Config()->m_SvRegisterHostname[0] != '\0' ? EModernTransportTrust::WEBPKI : EModernTransportTrust::SPKI_HASH;
+		Pin.m_Fingerprint = m_WebsocketIdentitySpkiSha256.value_or(m_TlsCertificate->m_SpkiSha256);
+		char aFragment[160];
+		FormatModernTransportFragment(aFragment, sizeof(aFragment), false, Pin);
+		log_info("server", "wss listening on port %d #%s", Port(), aFragment);
+	}
 }
 
 bool CServer::UpdateQuicMaps()
@@ -3937,6 +3996,11 @@ int CServer::Run()
 		}
 	}
 
+	// The certificate is needed before the websockets are opened, which serve
+	// wss with it.
+	if(!LoadTlsCertificate())
+		return -1;
+
 	// start server
 	NETADDR BindAddr;
 	if(g_Config.m_Bindaddr[0] == '\0')
@@ -3963,6 +4027,20 @@ int CServer::Run()
 	m_NetServer.SetLegacyConnections(m_LegacyUdpStarted);
 	if(!StartQuic())
 		return -1;
+#if defined(CONF_WEBSOCKETS)
+	// DDNet clients are shown the key raw QUIC has, so that they check the same
+	// one on either.
+	CTlsServerCertificate Identity;
+	char aIdentityError[256];
+	if(m_WebsocketTls && m_QuicStarted && m_QuicTransport.RawQuicIdentity(&Identity))
+	{
+		if(websocket_set_server_identity(Identity.m_vChain.data(), Identity.m_vChain.size(), Identity.m_vPrivateKey.data(), Identity.m_vPrivateKey.size(), aIdentityError, sizeof(aIdentityError)))
+			m_WebsocketIdentitySpkiSha256 = Identity.m_SpkiSha256;
+		else
+			log_warn("server", "wss shows DDNet clients the TLS certificate instead of the identity key: %s", aIdentityError);
+	}
+#endif
+	LogTlsTransports();
 	if(!m_LegacyUdpStarted && !m_QuicStarted && !m_WebTransportStarted)
 	{
 		log_error("server", "sv_legacy_udp is disabled, but neither QUIC nor WebTransport is running");
@@ -5023,12 +5101,88 @@ void CServer::ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData)
 	pThis->ReadAnnouncementsFile();
 }
 
-#if defined(CONF_WEBSOCKETS)
-void CServer::ConReloadWebsocketCert(IConsole::IResult *pResult, void *pUserData)
+void CServer::ConReloadTlsCert(IConsole::IResult *pResult, void *pUserData)
 {
-	websocket_reload_certs();
-}
+	CServer *pThis = static_cast<CServer *>(pUserData);
+	const bool Modern = pThis->m_QuicStarted || pThis->m_WebTransportStarted;
+	CTlsServerCertificate Certificate;
+	char aError[256] = "";
+	const auto Reload = [&]() {
+		if(!Modern && !pThis->m_WebsocketTls)
+		{
+			str_copy(aError, "neither QUIC, WebTransport nor wss is running");
+			return false;
+		}
+		if(!pThis->m_TlsCertificate)
+		{
+			str_copy(aError, "the server was started with a managed certificate, which it rotates itself");
+			return false;
+		}
+		if(!Certificate.Load(pThis->Config()->m_SvTlsCert, pThis->Config()->m_SvTlsCertNext, pThis->Config()->m_SvTlsKey, aError, sizeof(aError)))
+			return false;
+		if(Certificate.m_NotAfter <= time_timestamp())
+		{
+			str_copy(aError, "the TLS certificate has expired");
+			return false;
+		}
+#if defined(CONF_WEBSOCKETS)
+		if(pThis->m_WebsocketTls && !websocket_set_server_certificate(Certificate.m_vChain.data(), Certificate.m_vChain.size(), Certificate.m_vPrivateKey.data(), Certificate.m_vPrivateKey.size(), aError, sizeof(aError)))
+			return false;
 #endif
+		if(Modern && !pThis->m_QuicTransport.ReloadServerCertificate(Certificate))
+		{
+			str_copy(aError, pThis->m_QuicTransport.ErrorString());
+#if defined(CONF_WEBSOCKETS)
+			// Everything keeps the certificate it had, which wss has already replaced.
+			const CTlsServerCertificate &Old = *pThis->m_TlsCertificate;
+			char aUnused[256];
+			if(pThis->m_WebsocketTls)
+				websocket_set_server_certificate(Old.m_vChain.data(), Old.m_vChain.size(), Old.m_vPrivateKey.data(), Old.m_vPrivateKey.size(), aUnused, sizeof(aUnused));
+#endif
+			return false;
+		}
+		return true;
+	};
+
+	if(!Reload() && aError[0] == '\0')
+		str_copy(aError, "could not read the TLS certificate");
+	char aLine[512];
+	if(aError[0] != '\0')
+	{
+		// The reason is quoted with single quotes, so it must not hold one.
+		for(char *pChar = aError; *pChar; pChar++)
+		{
+			if(*pChar == '\'')
+				*pChar = '"';
+		}
+		str_format(aLine, sizeof(aLine), "v=1 ev=reload result=error reason='%s'", aError);
+		pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tls", aLine);
+		return;
+	}
+	pThis->m_TlsCertificate = std::move(Certificate);
+	const CTlsServerCertificate &New = *pThis->m_TlsCertificate;
+	char aSha256[SHA256_MAXSTRSIZE];
+	char aNextSha256[SHA256_MAXSTRSIZE] = "-";
+	char aSpkiSha256[SHA256_MAXSTRSIZE];
+	sha256_str(New.m_Sha256, aSha256, sizeof(aSha256));
+	if(New.m_NextSha256)
+		sha256_str(*New.m_NextSha256, aNextSha256, sizeof(aNextSha256));
+	sha256_str(New.m_SpkiSha256, aSpkiSha256, sizeof(aSpkiSha256));
+	str_format(aLine, sizeof(aLine), "v=1 ev=reload result=ok cert_sha256=%s next_sha256=%s spki_sha256=%s not_after=%lld", aSha256, aNextSha256, aSpkiSha256, (long long)New.m_NotAfter);
+	pThis->Console()->Print(IConsole::OUTPUT_LEVEL_STANDARD, "tls", aLine);
+
+	if(Modern)
+	{
+		// Clients that pin the certificate by its hash or its key need the new links.
+		char aQuicFragment[160];
+		char aWebTransportFragment[160];
+		pThis->FormatModernTransportFragments(aQuicFragment, sizeof(aQuicFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+		if(pThis->m_pRegister)
+			pThis->m_pRegister->OnModernTrustChanged(aQuicFragment, aWebTransportFragment);
+		pThis->ExpireServerInfo();
+	}
+	pThis->LogTlsTransports();
+}
 
 void CServer::ConReloadMaplist(IConsole::IResult *pResult, void *pUserData)
 {
@@ -5364,9 +5518,7 @@ void CServer::RegisterCommands()
 
 	Console()->Register("reload_announcement", "", CFGFLAG_SERVER, ConReloadAnnouncement, this, "Reload the announcements");
 	Console()->Register("reload_maplist", "", CFGFLAG_SERVER, ConReloadMaplist, this, "Reload the maplist");
-#if defined(CONF_WEBSOCKETS)
-	Console()->Register("reload_websocket_cert", "", CFGFLAG_SERVER, ConReloadWebsocketCert, this, "Reload the TLS certificate used for websocket connections");
-#endif
+	Console()->Register("reload_tls_cert", "", CFGFLAG_SERVER, ConReloadTlsCert, this, "Read sv_tls_cert, sv_tls_cert_next and sv_tls_key again for new QUIC, WebTransport and wss connections, keeping the certificate on errors");
 
 	RustVersionRegister(*Console());
 

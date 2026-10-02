@@ -255,6 +255,13 @@ public:
 	bool m_LegacyUdpStarted = true;
 	// Whether clients check the certificate with Web PKI, not by its hash or the identity key.
 	bool m_ModernTransportWebPki = false;
+	// The certificate of `sv_tls_cert`, read at the start and by `reload_tls_cert`,
+	// for QUIC, WebTransport and secure websockets. Empty for a managed one.
+	std::optional<CTlsServerCertificate> m_TlsCertificate;
+	// Whether websockets are served as `wss` with it.
+	bool m_WebsocketTls = false;
+	// The key wss shows DDNet clients where it is the identity key of raw QUIC.
+	std::optional<SHA256_DIGEST> m_WebsocketIdentitySpkiSha256;
 	CEcon m_Econ;
 	CFifo m_Fifo;
 	CServerBan m_ServerBan;
@@ -386,7 +393,10 @@ public:
 	void SendCapabilities(int ClientId);
 	void SendMap(int ClientId);
 	void SendMapData(int ClientId, int Chunk);
+	bool LoadTlsCertificate();
 	bool StartQuic();
+	// Logs the lines a connect link is made from, for each transport with TLS that runs.
+	void LogTlsTransports() const;
 	bool UpdateQuicMaps();
 	void SendQuic(int ClientId, const void *pData, int DataSize, bool Vital);
 	void SendMapReload(int ClientId);
@@ -522,9 +532,7 @@ public:
 
 	static void ConReloadAnnouncement(IConsole::IResult *pResult, void *pUserData);
 	static void ConReloadMaplist(IConsole::IResult *pResult, void *pUserData);
-#if defined(CONF_WEBSOCKETS)
-	static void ConReloadWebsocketCert(IConsole::IResult *pResult, void *pUserData);
-#endif
+	static void ConReloadTlsCert(IConsole::IResult *pResult, void *pUserData);
 
 	static void ConchainSpecialInfoupdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);
 	static void ConchainMaxclientsperipUpdate(IConsole::IResult *pResult, void *pUserData, IConsole::FCommandCallback pfnCallback, void *pCallbackUserData);

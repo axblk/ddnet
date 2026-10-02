@@ -14,6 +14,9 @@
 #include <engine/shared/compression.h>
 #include <engine/shared/packer.h>
 #include <engine/shared/protocol.h>
+#if defined(CONF_WEBSOCKETS)
+#include <engine/shared/websockets.h>
+#endif
 
 const int g_DummyMapCrc = 0x6AF73DAF;
 const unsigned char g_aDummyMapData[] = {
@@ -60,7 +63,7 @@ bool CNetServer::Open(NETADDR BindAddr, CNetBan *pNetBan, int MaxClients, int Ma
 		RequiredWebsocketTypes |= NETTYPE_WEBSOCKET_IPV6;
 	bool WebsocketTlsRequested = false;
 #if defined(CONF_WEBSOCKETS)
-	WebsocketTlsRequested = g_Config.m_SvWebsocketCert[0] != '\0' || g_Config.m_SvWebsocketKey[0] != '\0';
+	WebsocketTlsRequested = websocket_server_tls();
 #endif
 	if(WebsocketTlsRequested && (SocketTypes & RequiredWebsocketTypes) != RequiredWebsocketTypes)
 	{

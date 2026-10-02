@@ -10,6 +10,8 @@
 #include <engine/shared/config.h>
 #include <engine/shared/quic_transport.h>
 
+#include <game/localization.h>
+
 #include <algorithm>
 #include <iterator>
 
@@ -127,7 +129,7 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 	// which already takes IPv6 where a hostname has it and IPv4 where it does
 	// not. IPv4 is the one that rules a family out.
 	*this = CConnectTarget();
-	int LookupNetType = NetTypes;
+	int LookupNetType = NetTypes & ~NETTYPE_WEBSOCKET_TLS;
 	if(Family == EConnectAddressFamily::IPV4)
 		LookupNetType &= ~(NETTYPE_IPV6 | NETTYPE_WEBSOCKET_IPV6);
 	char aBuffer[256];
@@ -142,6 +144,30 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 			return false;
 		}
 		m_Link = Link;
+
+		// A secure websocket says in the fragment how its certificate is
+		// checked, which is not part of the address.
+		CModernTransportPin WebsocketPin = {};
+		WebsocketPin.m_Trust = EModernTransportTrust::TOFU;
+		if(const char *pRest = str_startswith(aBuffer, "wss://"))
+		{
+			// What is typed is read as the versioned scheme addresses are
+			// written with, which is all the address parser takes.
+			char aRest[sizeof(aBuffer)];
+			str_copy(aRest, pRest);
+			str_format(aBuffer, sizeof(aBuffer), "ddnet-20+wss://%s", aRest);
+		}
+		if(str_startswith(aBuffer, "ddnet-20+wss://"))
+		{
+			char *pFragment = const_cast<char *>(str_find(aBuffer, "#"));
+			if(!ParseWebsocketPin(pFragment ? pFragment : "", &WebsocketPin))
+			{
+				log_error("client", "invalid wss fragment, it can be #webpki or #spki-sha256=");
+				return false;
+			}
+			if(pFragment)
+				*pFragment = '\0';
+		}
 
 		NETADDR NextAddr;
 		char aHost[128];
@@ -189,8 +215,13 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 			}
 			m_WebsocketSecure = NextWebsocketSecure;
 		}
+		if(WebsocketPin.m_Trust == EModernTransportTrust::SPKI_HASH)
+		{
+			log_error("client", "a browser checks secure websockets by Web PKI only, not by a key");
+			return false;
+		}
 #else
-		if((NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0)
+		if((NextAddr.type & NETTYPE_WEBSOCKET_TLS) != 0 && (NetTypes & NETTYPE_WEBSOCKET_TLS) == 0)
 		{
 			log_error("client", "secure websockets (ddnet-20+wss://) are not supported by this client");
 			continue;
@@ -223,6 +254,7 @@ bool CConnectTarget::Parse(const char *pAddress, int NetTypes, EConnectAddressFa
 		net_addr_url_str(&NextAddr, aNextAddr, sizeof(aNextAddr), true);
 		log_debug("client", "resolved connect address '%s' to %s", aBuffer, aNextAddr);
 		m_aSchemeless[m_NumAddrs] = UrlResult > 0;
+		m_aWebsocketPins[m_NumAddrs] = WebsocketPin;
 		m_aAddrs[m_NumAddrs++] = NextAddr;
 	}
 
@@ -257,6 +289,7 @@ EConnectTransport ChooseConnectTransport(const CConnectTarget &Target, const CCo
 	*pStart = CModernTransportStart();
 	pStart->m_Address = Target.m_aAddrs[0];
 	pStart->m_Pin = Target.m_LinkPin;
+	pStart->m_PinSource = Target.m_Link ? EServerIdentitySource::LINK : EServerIdentitySource::ADDRESS;
 	pStart->m_Sixup = Target.m_OnlySixup;
 	pStart->m_WebTransport = WebTransport;
 	str_copy(pStart->m_aHost, Target.m_aaHosts[0]);
@@ -304,6 +337,7 @@ EConnectTransport ChooseConnectTransport(const CConnectTarget &Target, const CCo
 		if(pInfo)
 		{
 			pStart->m_Pin = pInfo->m_Pin;
+			pStart->m_PinSource = EServerIdentitySource::LIST;
 			if(pInfo->m_aHostname[0] != '\0')
 				pServerName = pInfo->m_aHostname;
 		}
@@ -322,6 +356,7 @@ EConnectTransport ChooseConnectTransport(const CConnectTarget &Target, const CCo
 		{
 			pStart->m_Pin = {};
 			pStart->m_Pin.m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
+			pStart->m_PinSource = EServerIdentitySource::SETTING;
 			if(sha256_from_str(&pStart->m_Pin.m_Fingerprint, Options.m_pCertificateSha256) != 0)
 			{
 				log_error("client", "cl_quic_cert must be a SHA-256 hash");
@@ -591,6 +626,22 @@ bool CQuicKnownHosts::Add(const char *pHost, int Port, const SHA256_DIGEST &Spki
 	return true;
 }
 
+bool CQuicKnownHosts::Update(const char *pHost, int Port, const SHA256_DIGEST &SpkiSha256)
+{
+	char aNormalizedHost[128];
+	if(!NormalizeQuicTrustHost(pHost, aNormalizedHost, sizeof(aNormalizedHost)))
+		return false;
+	for(CHost &Host : m_vHosts)
+	{
+		if(Host.m_Port == Port && str_comp(Host.m_aHost, aNormalizedHost) == 0 && Host.m_SpkiSha256 != SpkiSha256)
+		{
+			Host.m_SpkiSha256 = SpkiSha256;
+			return true;
+		}
+	}
+	return false;
+}
+
 bool CQuicKnownHosts::Forget(const char *pHost, int Port)
 {
 	char aNormalizedHost[128];
@@ -614,23 +665,30 @@ void CQuicIdentityCheck::Prepare(CModernTransportStart *pStart, const CQuicKnown
 	Reset();
 	if(pStart->m_WebTransport)
 		return;
+	str_copy(m_aHost, pStart->m_aHost);
+	m_Port = pStart->m_Address.port;
+	const CQuicKnownHosts::CHost *pKnownHost = KnownHosts.Find(pStart->m_aHost, pStart->m_Address.port);
 	if(pStart->m_Pin.m_Trust == EModernTransportTrust::SPKI_HASH)
 	{
+		// The pin of a list or a link is what counts. A key remembered for the
+		// host is brought up to date with it once it is proven, a new host is
+		// not remembered, or every listed server would end up in the settings.
 		m_Expected = pStart->m_Pin.m_Fingerprint;
 		m_Required = true;
+		m_Pinned = true;
+		m_Update = pKnownHost != nullptr;
 	}
 	else if(pStart->m_Pin.m_Trust == EModernTransportTrust::TOFU)
 	{
 		// Trusted on first use, and remembered from then on.
 		m_Required = true;
-		str_copy(m_aHost, pStart->m_aHost);
-		m_Port = pStart->m_Address.port;
-		if(const CQuicKnownHosts::CHost *pKnownHost = KnownHosts.Find(pStart->m_aHost, pStart->m_Address.port))
+		if(pKnownHost)
 		{
 			m_Expected = pKnownHost->m_SpkiSha256;
 			m_Known = true;
 			pStart->m_Pin.m_Trust = EModernTransportTrust::SPKI_HASH;
 			pStart->m_Pin.m_Fingerprint = pKnownHost->m_SpkiSha256;
+			pStart->m_PinSource = EServerIdentitySource::REMEMBERED;
 		}
 		else
 			m_Remember = true;
@@ -645,8 +703,13 @@ CQuicIdentityCheck::EResult CQuicIdentityCheck::Check(const void *pData, int Dat
 		return EResult::MISSING;
 	SHA256_DIGEST SpkiSha256;
 	mem_copy(SpkiSha256.data, pData, sizeof(SpkiSha256.data));
-	if(m_Known && SpkiSha256 != m_Expected)
+	if((m_Known || m_Pinned) && SpkiSha256 != m_Expected)
 		return EResult::CHANGED;
+	if(m_Update)
+	{
+		m_Update = false;
+		return pKnownHosts->Update(m_aHost, m_Port, SpkiSha256) ? EResult::STORED : EResult::OK;
+	}
 	if(!m_Remember)
 		return EResult::OK;
 	if(!pKnownHosts->Add(m_aHost, m_Port, SpkiSha256))
@@ -655,4 +718,98 @@ CQuicIdentityCheck::EResult CQuicIdentityCheck::Check(const void *pData, int Dat
 	m_Known = true;
 	m_Remember = false;
 	return EResult::STORED;
+}
+
+const char *const SERVER_IDENTITY_DISCONNECT_REASON = "server identity could not be verified";
+
+CServerIdentityFailure CServerIdentityFailure::Expected(const CModernTransportStart &Start, const char *pTransport)
+{
+	CServerIdentityFailure Failure;
+	str_copy(Failure.m_aHost, Start.m_aHost);
+	Failure.m_Port = Start.m_Address.port;
+	Failure.m_pTransport = pTransport;
+	Failure.m_Pin = Start.m_Pin;
+	Failure.m_Source = Start.m_PinSource;
+	return Failure;
+}
+
+const char *ServerIdentityWarningTitle()
+{
+	return Localize("Server identity could not be verified");
+}
+
+// The start of a hash, enough to tell two apart by eye.
+static void ShortSha256(const SHA256_DIGEST &Sha256, char *pBuffer, int BufferSize)
+{
+	char aSha256[SHA256_MAXSTRSIZE];
+	sha256_str(Sha256, aSha256, sizeof(aSha256));
+	str_format(pBuffer, BufferSize, "%.16s…", aSha256);
+}
+
+static const char *ServerIdentitySourceText(EServerIdentitySource Source)
+{
+	switch(Source)
+	{
+	case EServerIdentitySource::ADDRESS: return Localize("The address says how to check it.");
+	case EServerIdentitySource::LIST: return Localize("The server list says how to check it.");
+	case EServerIdentitySource::LINK: return Localize("The link says how to check it.");
+	case EServerIdentitySource::REMEMBERED: return Localize("Its key was remembered from an earlier connection.");
+	case EServerIdentitySource::SETTING: return Localize("cl_quic_cert says how to check it.");
+	}
+	dbg_assert_failed("invalid server identity source %d", static_cast<int>(Source));
+}
+
+void FormatServerIdentityWarning(char *pBuffer, int BufferSize, const CServerIdentityFailure &Failure)
+{
+	char aServer[160];
+	if(str_find(Failure.m_aHost, ":"))
+		str_format(aServer, sizeof(aServer), "[%s]:%d", Failure.m_aHost, Failure.m_Port);
+	else
+		str_format(aServer, sizeof(aServer), "%s:%d", Failure.m_aHost, Failure.m_Port);
+	str_format(pBuffer, BufferSize, Localize("Could not verify the identity of %s over %s."), aServer, Failure.m_pTransport);
+
+	str_append(pBuffer, " ", BufferSize);
+	str_append(pBuffer, ServerIdentitySourceText(Failure.m_Source), BufferSize);
+
+	char aExpected[32];
+	char aPresented[32];
+	ShortSha256(Failure.m_Pin.m_Fingerprint, aExpected, sizeof(aExpected));
+	ShortSha256(Failure.m_Presented, aPresented, sizeof(aPresented));
+	char aCheck[256] = "";
+	switch(Failure.m_Pin.m_Trust)
+	{
+	case EModernTransportTrust::SPKI_HASH:
+		if(Failure.m_HasPresented)
+			str_format(aCheck, sizeof(aCheck), Localize("It should hold the key %s, it showed %s."), aExpected, aPresented);
+		else
+			str_format(aCheck, sizeof(aCheck), Localize("It should hold the key %s."), aExpected);
+		break;
+	case EModernTransportTrust::CERTIFICATE_HASH:
+		if(Failure.m_HasPresented)
+			str_format(aCheck, sizeof(aCheck), Localize("It should show the certificate %s, it showed %s."), aExpected, aPresented);
+		else
+			str_format(aCheck, sizeof(aCheck), Localize("It should show the certificate %s."), aExpected);
+		break;
+	case EModernTransportTrust::WEBPKI:
+		str_copy(aCheck, Localize("Its certificate should be valid for its name (Web PKI)."));
+		break;
+	case EModernTransportTrust::TOFU:
+	case EModernTransportTrust::INVALID:
+		break;
+	}
+	if(aCheck[0] != '\0')
+	{
+		str_append(pBuffer, " ", BufferSize);
+		str_append(pBuffer, aCheck, BufferSize);
+	}
+
+	if(Failure.m_Source == EServerIdentitySource::REMEMBERED)
+	{
+		char aForget[256];
+		str_format(aForget, sizeof(aForget), Localize("Once you have made sure that the server changed its key, forget the old one with 'quic_forget_host %s %d'."), Failure.m_aHost, Failure.m_Port);
+		str_append(pBuffer, " ", BufferSize);
+		str_append(pBuffer, aForget, BufferSize);
+	}
+	str_append(pBuffer, " ", BufferSize);
+	str_append(pBuffer, Localize("Refresh the server list, or pick another transport next to the address."), BufferSize);
 }

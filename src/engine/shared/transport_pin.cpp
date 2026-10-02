@@ -179,6 +179,30 @@ bool FormatModernTransportUrl(char *pBuffer, int BufferSize, bool WebTransport, 
 	return true;
 }
 
+// The pins a fragment names: `#webpki`, and where they are allowed,
+// `#cert-sha256=` and `#spki-sha256=`.
+static bool ParsePinFragment(const char *pFragment, bool CertificateHashes, bool Spki, CModernTransportPin *pPin)
+{
+	if(pFragment[0] != '#' || pFragment[1] == '\0')
+		return false;
+	if(const char *pValue = str_startswith(pFragment, "#cert-sha256="); pValue && CertificateHashes)
+	{
+		pPin->m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
+		return ParseCertificateHashes(pValue, pPin);
+	}
+	if(str_comp(pFragment, "#webpki") == 0)
+	{
+		pPin->m_Trust = EModernTransportTrust::WEBPKI;
+		return true;
+	}
+	if(const char *pValue = str_startswith(pFragment, "#spki-sha256="); pValue && Spki)
+	{
+		pPin->m_Trust = EModernTransportTrust::SPKI_HASH;
+		return sha256_from_str(&pPin->m_Fingerprint, pValue) == 0;
+	}
+	return false;
+}
+
 bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, CModernTransportPin *pPin)
 {
 	const char *pHost = str_startswith(pUrl, "ddnet+quic://");
@@ -207,23 +231,18 @@ bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, CModernTrans
 		pPin->m_Trust = *pWebTransport ? EModernTransportTrust::WEBPKI : EModernTransportTrust::TOFU;
 		return true;
 	}
-	if(pFragment == pHost || pFragment[1] == '\0')
+	if(pFragment == pHost)
 		return false;
-	if(const char *pValue = str_startswith(pFragment, "#cert-sha256="))
+	return ParsePinFragment(pFragment, true, !*pWebTransport, pPin);
+}
+
+bool ParseWebsocketPin(const char *pFragment, CModernTransportPin *pPin)
+{
+	*pPin = {};
+	if(pFragment[0] == '\0')
 	{
-		pPin->m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
-		return ParseCertificateHashes(pValue, pPin);
-	}
-	if(str_comp(pFragment, "#webpki") == 0)
-	{
-		pPin->m_Trust = EModernTransportTrust::WEBPKI;
+		pPin->m_Trust = EModernTransportTrust::TOFU;
 		return true;
 	}
-	const char *pValue = str_startswith(pFragment, "#spki-sha256=");
-	if(!*pWebTransport && pValue)
-	{
-		pPin->m_Trust = EModernTransportTrust::SPKI_HASH;
-		return sha256_from_str(&pPin->m_Fingerprint, pValue) == 0;
-	}
-	return false;
+	return ParsePinFragment(pFragment, false, true, pPin);
 }

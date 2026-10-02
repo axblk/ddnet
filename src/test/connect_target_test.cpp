@@ -64,6 +64,47 @@ TEST(ConnectTarget, Links)
 }
 
 #if !defined(CONF_PLATFORM_EMSCRIPTEN)
+TEST(ConnectTarget, SecureWebsockets)
+{
+	CConnectTarget Target;
+	// Only where the client can open them.
+	EXPECT_TRUE(Target.Parse("ddnet-20+wss://127.0.0.1:8303", NETTYPE_ALL, EConnectAddressFamily::IPV6));
+	EXPECT_EQ(Target.m_NumAddrs, 0);
+
+	const int NetTypes = NETTYPE_ALL | NETTYPE_WEBSOCKET_TLS;
+	ASSERT_TRUE(Target.Parse("ddnet-20+wss://127.0.0.1:8303", NetTypes, EConnectAddressFamily::IPV6));
+	ASSERT_EQ(Target.m_NumAddrs, 1);
+	EXPECT_EQ(Target.m_aAddrs[0].type, NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_TLS);
+	// Without a fragment the key is trusted on first use, as for raw QUIC.
+	EXPECT_EQ(Target.m_aWebsocketPins[0].m_Trust, EModernTransportTrust::TOFU);
+	NETADDR aAddrs[MAX_SERVER_ADDRESSES];
+	ASSERT_EQ(Target.LegacyAddresses(NetTypes, aAddrs), 1);
+	EXPECT_EQ(aAddrs[0].type, NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_TLS);
+
+	// The fragment pins the key, and wss:// is read as ddnet-20+wss://.
+	char aAddress[256];
+	str_format(aAddress, sizeof(aAddress), "wss://127.0.0.1:8304#spki-sha256=%s", SPKI_SHA256);
+	ASSERT_TRUE(Target.Parse(aAddress, NetTypes, EConnectAddressFamily::IPV6));
+	ASSERT_EQ(Target.m_NumAddrs, 1);
+	EXPECT_EQ(Target.m_aAddrs[0].type, NETTYPE_WEBSOCKET_IPV4 | NETTYPE_WEBSOCKET_TLS);
+	EXPECT_EQ(Target.m_aAddrs[0].port, 8304);
+	EXPECT_EQ(Target.m_aWebsocketPins[0].m_Trust, EModernTransportTrust::SPKI_HASH);
+	SHA256_DIGEST Expected;
+	ASSERT_EQ(sha256_from_str(&Expected, SPKI_SHA256), 0);
+	EXPECT_EQ(Target.m_aWebsocketPins[0].m_Fingerprint, Expected);
+
+	ASSERT_TRUE(Target.Parse("ddnet-20+ws://127.0.0.1:8303,ddnet-20+wss://127.0.0.1:8304#webpki", NetTypes, EConnectAddressFamily::IPV6));
+	ASSERT_EQ(Target.m_NumAddrs, 2);
+	EXPECT_EQ(Target.m_aAddrs[0].type, NETTYPE_WEBSOCKET_IPV4);
+	EXPECT_EQ(Target.m_aWebsocketPins[1].m_Trust, EModernTransportTrust::WEBPKI);
+
+	// Certificate hashes are for WebTransport, not for wss.
+	str_format(aAddress, sizeof(aAddress), "ddnet-20+wss://127.0.0.1:8303#cert-sha256=%s", SPKI_SHA256);
+	EXPECT_FALSE(Target.Parse(aAddress, NetTypes, EConnectAddressFamily::IPV6));
+	EXPECT_FALSE(Target.Parse("ddnet-20+wss://127.0.0.1:8303#spki-sha256=00", NetTypes, EConnectAddressFamily::IPV6));
+	EXPECT_FALSE(Target.Parse("ddnet-20+wss://127.0.0.1:8303#", NetTypes, EConnectAddressFamily::IPV6));
+}
+
 TEST(ConnectTarget, ChooseTransport)
 {
 	CConnectTarget Target;
@@ -174,6 +215,151 @@ TEST(ConnectTarget, KeyCheck)
 	Start.m_Pin.m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
 	Check.Prepare(&Start, KnownHosts);
 	EXPECT_EQ(Check.Check(nullptr, 0, &KnownHosts), CQuicIdentityCheck::EResult::OK);
+}
+
+// A key remembered on first use, then the server changes its key and the list
+// pins the new one: the list wins and brings the remembered key up to date, so
+// that a link without a pin works afterwards. Natively wss does the same.
+TEST(ConnectTarget, KeyCheckPinUpdatesRememberedKey)
+{
+	SHA256_DIGEST KeyA;
+	ASSERT_EQ(sha256_from_str(&KeyA, SPKI_SHA256), 0);
+	SHA256_DIGEST KeyB = KeyA;
+	KeyB.data[0] ^= 1;
+
+	CModernTransportStart Tofu;
+	ASSERT_EQ(net_addr_from_str(&Tofu.m_Address, "127.0.0.1:8303"), 0);
+	str_copy(Tofu.m_aHost, "127.0.0.1");
+	Tofu.m_Pin.m_Trust = EModernTransportTrust::TOFU;
+
+	CQuicKnownHosts KnownHosts;
+	CQuicIdentityCheck Check;
+	CModernTransportStart Start = Tofu;
+	Check.Prepare(&Start, KnownHosts);
+	EXPECT_EQ(Check.Check(KeyA.data, sizeof(KeyA.data), &KnownHosts), CQuicIdentityCheck::EResult::STORED);
+
+	// The server now holds B, which a link without a pin refuses.
+	Start = Tofu;
+	Check.Prepare(&Start, KnownHosts);
+	EXPECT_EQ(Start.m_PinSource, EServerIdentitySource::REMEMBERED);
+	EXPECT_EQ(Check.Check(KeyB.data, sizeof(KeyB.data), &KnownHosts), CQuicIdentityCheck::EResult::CHANGED);
+
+	// The list pins B. The pin counts, and the remembered key follows it.
+	CModernTransportStart Listed = Tofu;
+	Listed.m_Pin.m_Trust = EModernTransportTrust::SPKI_HASH;
+	Listed.m_Pin.m_Fingerprint = KeyB;
+	Listed.m_PinSource = EServerIdentitySource::LIST;
+	Start = Listed;
+	Check.Prepare(&Start, KnownHosts);
+	EXPECT_EQ(Start.m_Pin.m_Fingerprint, KeyB);
+	EXPECT_EQ(Start.m_PinSource, EServerIdentitySource::LIST);
+	EXPECT_EQ(Check.Check(KeyB.data, sizeof(KeyB.data), &KnownHosts), CQuicIdentityCheck::EResult::STORED);
+	ASSERT_NE(KnownHosts.Find("127.0.0.1", 8303), nullptr);
+	EXPECT_EQ(KnownHosts.Find("127.0.0.1", 8303)->m_SpkiSha256, KeyB);
+	// The same key again changes nothing.
+	Start = Listed;
+	Check.Prepare(&Start, KnownHosts);
+	EXPECT_EQ(Check.Check(KeyB.data, sizeof(KeyB.data), &KnownHosts), CQuicIdentityCheck::EResult::OK);
+
+	// Now a link without a pin works.
+	Start = Tofu;
+	Check.Prepare(&Start, KnownHosts);
+	EXPECT_EQ(Start.m_Pin.m_Fingerprint, KeyB);
+	EXPECT_EQ(Check.Check(KeyB.data, sizeof(KeyB.data), &KnownHosts), CQuicIdentityCheck::EResult::OK);
+
+	// A pin of a host that is not known does not add it, or every listed
+	// server would end up in the settings. Another key is refused.
+	CModernTransportStart Other = Listed;
+	ASSERT_EQ(net_addr_from_str(&Other.m_Address, "127.0.0.1:8304"), 0);
+	Check.Prepare(&Other, KnownHosts);
+	EXPECT_EQ(Check.Check(KeyA.data, sizeof(KeyA.data), &KnownHosts), CQuicIdentityCheck::EResult::CHANGED);
+	Check.Prepare(&Other, KnownHosts);
+	EXPECT_EQ(Check.Check(KeyB.data, sizeof(KeyB.data), &KnownHosts), CQuicIdentityCheck::EResult::OK);
+	EXPECT_EQ(KnownHosts.Find("127.0.0.1", 8304), nullptr);
+	EXPECT_EQ(KnownHosts.Hosts().size(), 1u);
+}
+
+TEST(ConnectTarget, KnownHostsUpdate)
+{
+	SHA256_DIGEST Key;
+	ASSERT_EQ(sha256_from_str(&Key, SPKI_SHA256), 0);
+	SHA256_DIGEST OtherKey = Key;
+	OtherKey.data[0] ^= 1;
+	CQuicKnownHosts KnownHosts;
+	EXPECT_FALSE(KnownHosts.Update("example.com", 8303, Key));
+	EXPECT_TRUE(KnownHosts.Hosts().empty());
+	ASSERT_TRUE(KnownHosts.Add("example.com", 8303, Key));
+	EXPECT_FALSE(KnownHosts.Update("Example.com.", 8303, Key));
+	EXPECT_TRUE(KnownHosts.Update("Example.com.", 8303, OtherKey));
+	EXPECT_EQ(KnownHosts.Find("example.com", 8303)->m_SpkiSha256, OtherKey);
+}
+
+TEST(ConnectTarget, ServerIdentityWarning)
+{
+	SHA256_DIGEST Key;
+	ASSERT_EQ(sha256_from_str(&Key, SPKI_SHA256), 0);
+	SHA256_DIGEST OtherKey;
+	ASSERT_EQ(sha256_from_str(&OtherKey, "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"), 0);
+
+	CModernTransportStart Start;
+	ASSERT_EQ(net_addr_from_str(&Start.m_Address, "127.0.0.1:8303"), 0);
+	str_copy(Start.m_aHost, "example.com");
+	Start.m_Pin.m_Trust = EModernTransportTrust::SPKI_HASH;
+	Start.m_Pin.m_Fingerprint = Key;
+	Start.m_PinSource = EServerIdentitySource::REMEMBERED;
+	char aWarning[1024];
+
+	// A remembered key that differs: what it was and is, and how to forget it.
+	CServerIdentityFailure Failure = CServerIdentityFailure::Expected(Start, "QUIC");
+	Failure.m_HasPresented = true;
+	Failure.m_Presented = OtherKey;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), Failure);
+	EXPECT_STREQ(aWarning,
+		"Could not verify the identity of example.com:8303 over QUIC. "
+		"Its key was remembered from an earlier connection. "
+		"It should hold the key 0101010101010101…, it showed abcdef0123456789…. "
+		"Once you have made sure that the server changed its key, forget the old one with 'quic_forget_host example.com 8303'. "
+		"Refresh the server list, or pick another transport next to the address.");
+
+	// A pin from the list or a link, over wss, without the key that was shown.
+	Start.m_PinSource = EServerIdentitySource::LIST;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), CServerIdentityFailure::Expected(Start, "wss"));
+	EXPECT_STREQ(aWarning,
+		"Could not verify the identity of example.com:8303 over wss. "
+		"The server list says how to check it. "
+		"It should hold the key 0101010101010101…. "
+		"Refresh the server list, or pick another transport next to the address.");
+	Start.m_PinSource = EServerIdentitySource::LINK;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), CServerIdentityFailure::Expected(Start, "QUIC"));
+	EXPECT_NE(str_find(aWarning, " The link says how to check it. "), nullptr);
+
+	// A certificate hash of WebTransport, an IPv6 host.
+	str_copy(Start.m_aHost, "2001:db8::1");
+	Start.m_Pin.m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
+	Start.m_PinSource = EServerIdentitySource::LIST;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), CServerIdentityFailure::Expected(Start, "WebTransport"));
+	EXPECT_STREQ(aWarning,
+		"Could not verify the identity of [2001:db8::1]:8303 over WebTransport. "
+		"The server list says how to check it. "
+		"It should show the certificate 0101010101010101…. "
+		"Refresh the server list, or pick another transport next to the address.");
+	Start.m_PinSource = EServerIdentitySource::SETTING;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), CServerIdentityFailure::Expected(Start, "QUIC"));
+	EXPECT_NE(str_find(aWarning, " cl_quic_cert says how to check it. "), nullptr);
+
+	// Web PKI, for an address entered by hand.
+	str_copy(Start.m_aHost, "example.com");
+	Start.m_Pin.m_Trust = EModernTransportTrust::WEBPKI;
+	Start.m_PinSource = EServerIdentitySource::ADDRESS;
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), CServerIdentityFailure::Expected(Start, "wss"));
+	EXPECT_STREQ(aWarning,
+		"Could not verify the identity of example.com:8303 over wss. "
+		"The address says how to check it. "
+		"Its certificate should be valid for its name (Web PKI). "
+		"Refresh the server list, or pick another transport next to the address.");
+
+	EXPECT_STREQ(ServerIdentityWarningTitle(), "Server identity could not be verified");
+	EXPECT_STREQ(SERVER_IDENTITY_DISCONNECT_REASON, "server identity could not be verified");
 }
 
 static NETADDR Url(const char *pUrl)

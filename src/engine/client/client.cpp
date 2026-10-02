@@ -58,6 +58,9 @@
 #include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
+#if defined(CONF_WEBSOCKETS)
+#include <engine/shared/websockets.h>
+#endif
 #include <engine/sound.h>
 #include <engine/steam.h>
 #include <engine/storage.h>
@@ -677,6 +680,7 @@ bool CClient::TryStartModernTransport(const CConnectTarget &Target)
 		return true;
 
 	m_QuicIdentityCheck.Prepare(&Start, m_QuicKnownHosts);
+	m_ModernIdentity = CServerIdentityFailure::Expected(Start, Start.m_WebTransport ? "WebTransport" : "QUIC");
 	if(!m_QuicTransport.StartClient(Start.m_Address, Start.m_aServerName, Start.m_Pin, Start.m_Sixup))
 	{
 		log_error("client", "could not start %s: %s", Start.m_WebTransport ? "WebTransport" : "QUIC", m_QuicTransport.ErrorString());
@@ -711,8 +715,13 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	str_format(aMsg, sizeof(aMsg), "connecting to '%s'", m_aConnectAddressStr);
 	m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", aMsg, CLIENT_NETWORK_PRINT_COLOR);
 
+	int NetTypes = m_aNetClient[CONN_MAIN].NetType();
+#if defined(CONF_WEBSOCKETS)
+	if(websocket_tls_available())
+		NetTypes |= NETTYPE_WEBSOCKET_TLS;
+#endif
 	CConnectTarget Target;
-	const bool Valid = Target.Parse(m_aConnectAddressStr, m_aNetClient[CONN_MAIN].NetType(), (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily);
+	const bool Valid = Target.Parse(m_aConnectAddressStr, NetTypes, (EConnectAddressFamily)g_Config.m_ClConnectAddressFamily);
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
 	// The browser's websockets share one scheme, so it applies globally.
 	if(Valid && Target.m_WebsocketSecure >= 0)
@@ -788,8 +797,73 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 		AddWarning(Warning);
 		return;
 	}
+	// The websockets check the certificate of a secure one when they open it,
+	// by the same rules and known hosts as QUIC.
+	m_vWebsocketStarts.clear();
+	for(int i = 0; i < Target.m_NumAddrs; i++)
+	{
+		if((Target.m_aAddrs[i].type & NETTYPE_WEBSOCKET_TLS) == 0)
+			continue;
+		CModernTransportStart Start;
+		Start.m_Address = Target.m_aAddrs[i];
+		str_copy(Start.m_aHost, Target.m_aaHosts[i]);
+		Start.m_Pin = Target.m_aWebsocketPins[i];
+		Start.m_PinSource = Target.m_aWebsocketPins[i].m_Trust == EModernTransportTrust::TOFU ? EServerIdentitySource::ADDRESS : EServerIdentitySource::LINK;
+		m_vWebsocketStarts.push_back(Start);
+#if defined(CONF_WEBSOCKETS)
+		CQuicIdentityCheck Check;
+		Check.Prepare(&Start, m_QuicKnownHosts);
+		websocket_set_client_tls(&Start.m_Address, Start.m_aHost, Start.m_Pin);
+#endif
+	}
 	SetState(IClient::STATE_CONNECTING);
 	StartLegacyConnection(aLegacyAddrs, NumLegacyAddrs, Target.m_OnlySixup);
+}
+
+void CClient::ServerIdentityFailed(const CServerIdentityFailure &Failure, const char *pDetail)
+{
+	log_error("client", "%s: %s", SERVER_IDENTITY_DISCONNECT_REASON, pDetail);
+	char aWarning[1024];
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), Failure);
+	SWarning Warning(ServerIdentityWarningTitle(), aWarning);
+	Warning.m_AutoHide = false;
+	AddWarning(Warning);
+	DisconnectWithReason(SERVER_IDENTITY_DISCONNECT_REASON);
+}
+
+void CClient::CheckWebsocketIdentity()
+{
+#if defined(CONF_WEBSOCKETS)
+	const bool Online = m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE;
+	for(const CModernTransportStart &Planned : m_vWebsocketStarts)
+	{
+		SHA256_DIGEST Presented;
+		bool Failed;
+		const bool HasPresented = websocket_client_tls_result(&Planned.m_Address, &Presented, &Failed);
+		if(!Failed && !(Online && *m_aNetClient[CONN_MAIN].ServerAddress() == Planned.m_Address))
+			continue;
+		// Set up as when it was opened, with the known hosts as they are.
+		CModernTransportStart Start = Planned;
+		m_QuicIdentityCheck.Prepare(&Start, m_QuicKnownHosts);
+		CServerIdentityFailure Failure = CServerIdentityFailure::Expected(Start, "wss");
+		Failure.m_HasPresented = HasPresented && Start.m_Pin.m_Trust == EModernTransportTrust::SPKI_HASH;
+		Failure.m_Presented = Presented;
+		if(Failed)
+		{
+			ServerIdentityFailed(Failure, "the server certificate was refused");
+			return;
+		}
+		const CQuicIdentityCheck::EResult Identity = m_QuicIdentityCheck.Check(Presented.data, HasPresented ? sizeof(Presented.data) : 0, &m_QuicKnownHosts);
+		if(Identity == CQuicIdentityCheck::EResult::CHANGED || Identity == CQuicIdentityCheck::EResult::MISSING)
+			ServerIdentityFailed(Failure, "the server key is not the expected one");
+		else if(Identity == CQuicIdentityCheck::EResult::NOT_STORED)
+			DisconnectWithReason("could not store the server key");
+		else if(Identity == CQuicIdentityCheck::EResult::STORED && !m_pConfigManager->Save())
+			log_warn("client", "could not persist trusted server key");
+		m_vWebsocketStarts.clear();
+		return;
+	}
+#endif
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -2829,7 +2903,13 @@ void CClient::PumpNetwork()
 			}
 			if(Identity == CQuicIdentityCheck::EResult::CHANGED)
 			{
-				DisconnectWithReason("QUIC server key changed");
+				CServerIdentityFailure Failure = m_ModernIdentity;
+				if(QuicEvent.m_Message.m_DataSize == (int)sizeof(Failure.m_Presented.data))
+				{
+					mem_copy(Failure.m_Presented.data, QuicEvent.m_Message.m_pData, sizeof(Failure.m_Presented.data));
+					Failure.m_HasPresented = true;
+				}
+				ServerIdentityFailed(Failure, "the server key is not the expected one");
 				break;
 			}
 			if(Identity == CQuicIdentityCheck::EResult::NOT_STORED)
@@ -2915,15 +2995,17 @@ void CClient::PumpNetwork()
 			m_QuicConnected = false;
 			char aReason[256];
 			str_copy(aReason, QuicEvent.m_pReason ? QuicEvent.m_pReason : "QUIC connection closed");
-			if(m_QuicIdentityCheck.Known() && m_QuicTransport.ConnectFailure() == EQuicConnectFailure::PIN)
+			if(m_QuicTransport.ConnectFailure() == EQuicConnectFailure::PIN)
 			{
-				char aExpected[SHA256_MAXSTRSIZE];
-				sha256_str(m_QuicIdentityCheck.Expected(), aExpected, sizeof(aExpected));
-				char aWarning[768];
-				str_format(aWarning, sizeof(aWarning), "The QUIC server key of %s:%d changed. Expected %s; %s. The connection was blocked. Verify the server before using quic_forget_host.", m_QuicIdentityCheck.Host(), m_QuicIdentityCheck.Port(), aExpected, aReason);
-				SWarning Warning(Localize("Server identity changed"), aWarning);
-				Warning.m_AutoHide = false;
-				AddWarning(Warning);
+				// A key that was not the pinned one comes with the event.
+				CServerIdentityFailure Failure = m_ModernIdentity;
+				if(QuicEvent.m_Message.m_DataSize == (int)sizeof(Failure.m_Presented.data) && Failure.m_Pin.m_Trust == EModernTransportTrust::SPKI_HASH)
+				{
+					mem_copy(Failure.m_Presented.data, QuicEvent.m_Message.m_pData, sizeof(Failure.m_Presented.data));
+					Failure.m_HasPresented = true;
+				}
+				ServerIdentityFailed(Failure, aReason);
+				break;
 			}
 			DisconnectWithReason(aReason);
 			break;
@@ -2957,6 +3039,9 @@ void CClient::PumpNetwork()
 				}
 			}
 		}
+
+		if(!m_UseQuic && State() == IClient::STATE_CONNECTING && !m_vWebsocketStarts.empty())
+			CheckWebsocketIdentity();
 
 		// check if main was connected
 		if(!m_UseQuic && State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)

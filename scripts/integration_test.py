@@ -96,6 +96,82 @@ class QuicCertificate(namedtuple("QuicCertificate", "certificate private_key sha
 		return [f"sv_tls_cert {self.certificate}", f"sv_tls_key {self.private_key}"]
 
 
+class TlsCertificate(namedtuple("TlsCertificate", "certificate private_key sha256 spki_sha256")):
+	def server_args(self):
+		return [f"sv_tls_cert {self.certificate}", f"sv_tls_key {self.private_key}"]
+
+
+class TlsTestCertificates:
+	"""A test certificate authority with an intermediate one, which signs
+	server certificates for localhost and 127.0.0.1, made with openssl."""
+
+	def __init__(self, directory):
+		self.directory = directory
+		self.root_certificate, self.root_key = self._certificate_authority("root", None)
+		self.intermediate_certificate, self.intermediate_key = self._certificate_authority("intermediate", (self.root_certificate, self.root_key))
+
+	def _path(self, name):
+		return os.path.abspath(os.path.join(self.directory, name)).replace("\\", "/")
+
+	@staticmethod
+	def _openssl(*args):
+		return subprocess.run(["openssl", *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+
+	def _key(self, name):
+		key = self._path(f"{name}-key.pem")
+		self._openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", key)
+		return key
+
+	def _sign(self, name, key, extensions, issuer):
+		request = self._path(f"{name}.csr")
+		certificate = self._path(f"{name}-cert.pem")
+		extensions_path = self._path(f"{name}.ext")
+		with open(extensions_path, "w", encoding="ascii") as f:
+			f.write(extensions)
+		self._openssl("req", "-new", "-key", key, "-subj", f"/CN=DDNet test {name}", "-out", request)
+		issuer_certificate, issuer_key = issuer
+		self._openssl("x509", "-req", "-in", request, "-CA", issuer_certificate, "-CAkey", issuer_key, "-set_serial", str(int.from_bytes(os.urandom(8), "big")), "-days", "1", "-extfile", extensions_path, "-out", certificate)
+		return certificate
+
+	def _certificate_authority(self, name, issuer):
+		key = self._key(name)
+		if issuer is None:
+			certificate = self._path(f"{name}-cert.pem")
+			self._openssl("req", "-x509", "-new", "-key", key, "-subj", f"/CN=DDNet test {name}", "-days", "1", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-out", certificate)
+			return certificate, key
+		return self._sign(name, key, "basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n", issuer), key
+
+	def server(self, name, der=False):
+		"""A server certificate with the intermediate one after it, PEM or DER."""
+		key = self._key(name)
+		leaf = self._sign(name, key, "subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n", (self.intermediate_certificate, self.intermediate_key))
+		leaf_der = self._openssl("x509", "-in", leaf, "-outform", "DER")
+		intermediate_der = self._openssl("x509", "-in", self.intermediate_certificate, "-outform", "DER")
+		spki_der = self._openssl("pkey", "-in", key, "-pubout", "-outform", "DER")
+		chain = self._path(f"{name}-chain.{'der' if der else 'pem'}")
+		with open(chain, "wb") as f:
+			if der:
+				f.write(leaf_der + intermediate_der)
+			else:
+				with open(leaf, "rb") as leaf_file, open(self.intermediate_certificate, "rb") as intermediate_file:
+					f.write(leaf_file.read() + intermediate_file.read())
+		if der:
+			key_der = self._path(f"{name}-key.der")
+			with open(key_der, "wb") as f:
+				f.write(self._openssl("pkey", "-in", key, "-outform", "DER"))
+			key = key_der
+		return TlsCertificate(chain, key, hashlib.sha256(leaf_der).hexdigest(), hashlib.sha256(spki_der).hexdigest())
+
+
+def parse_tls_reload(line):
+	"""The fields of a `tls: v=1 ev=reload` line."""
+	fields = line.removeprefix("tls: ")
+	if " reason='" in fields:
+		fields, reason = fields.split(" reason='", 1)
+		return {**dict(field.split("=", 1) for field in fields.split(" ")), "reason": reason.removesuffix("'")}
+	return dict(field.split("=", 1) for field in fields.split(" "))
+
+
 # TODO: less strict default timeouts?
 
 # TODO: what kind of ASAN support did integration_test.sh have?
@@ -550,7 +626,7 @@ def open_fifo(name):
 
 
 class Client(Runnable):
-	def __init__(self, test_env, extra_args=[]):  # noqa: B006 mutable-default-arguments
+	def __init__(self, test_env, extra_args=[], extra_env_vars={}):  # noqa: B006 mutable-default-arguments
 		name = f"client{test_env.num_clients}"
 		self.fifo_name, self.fifo_path = fifo_name_path(test_env, name)
 		# Delay opening the FIFO until the client has started, because it will
@@ -568,6 +644,7 @@ class Client(Runnable):
 				f"conn_timeout {test_env.runner.conn_timeout}",
 			]
 			+ extra_args,
+			extra_env_vars=extra_env_vars,
 		)
 		test_env.num_clients += 1
 
@@ -590,6 +667,7 @@ class Server(Runnable):
 		# How clients check the QUIC and WebTransport certificate, as in a link.
 		self.quic_fragment = None
 		self.webtransport_fragment = None
+		self.wss_fragment = None
 		# Delay opening the FIFO until the server has started, because it will
 		# block.
 		self.fifo = None
@@ -624,6 +702,8 @@ class Server(Runnable):
 				self.quic_fragment = event.line.split(" #", 1)[1]
 			elif event.line.startswith("server: WebTransport listening on port "):
 				self.webtransport_fragment = event.line.split(" #", 1)[1] if " #" in event.line else ""
+			elif event.line.startswith("server: wss listening on port "):
+				self.wss_fragment = event.line.split(" #", 1)[1]
 		return event
 
 	def exit(self):
@@ -861,7 +941,7 @@ def client_connects_quic_link_with_stable_identity(test_env):
 	client = test_env.client()
 	client.wait_for_startup(timeout=30)
 	client.command(f'connect "ddnet+quic://127.0.0.1:{server.port}#spki-sha256={"0" * 64}"')
-	client.wait_for_log_prefix("client: disconnecting. reason='server key does not match the pin (presented ", timeout=10)
+	client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=10)
 	if any("player has entered the game" in line for line in server.full_stdout):
 		raise AssertionError("identity mismatch joined the server")
 	client.exit()
@@ -901,7 +981,7 @@ def client_tofu_persists_identity_and_rejects_key_change(test_env):
 	stop(server, client)
 
 	server, client = start(server_port, certificate, "quic_identity_changed.pk8", [])
-	client.wait_for_log_prefix("client: disconnecting. reason='server key does not match the pin (presented ", timeout=10)
+	client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=10)
 	if any("player has entered the game" in line for line in server.full_stdout):
 		raise AssertionError("TOFU identity mismatch joined the server")
 	stop(server, client)
@@ -953,6 +1033,66 @@ def client_ban_blocks_quic_reconnect(test_env):
 	server.exit()
 	client.wait_for_exit()
 	server.wait_for_exit()
+
+
+@test(requires_quic=True)
+def server_reloads_tls_certificate(test_env):
+	certificate, other_certificate = test_env.runner.quic_certificates
+	cert_path = os.path.join(test_env.tmp_dir, "tls-cert.der")
+	key_path = os.path.join(test_env.tmp_dir, "tls-key.der")
+
+	def install(certificate):
+		shutil.copyfile(certificate.certificate, cert_path)
+		shutil.copyfile(certificate.private_key, key_path)
+
+	def connect(client, certificate):
+		client.command(f"cl_quic_cert {certificate.sha256}")
+		client.command(f"connect 127.0.0.1:{server.port}")
+
+	install(certificate)
+	# With a hostname the certificate is the Web PKI one, which raw QUIC presents too.
+	server = test_env.server(["sv_ipv4only 1", "sv_register_hostname localhost", f"sv_tls_cert {cert_path}", f"sv_tls_key {key_path}"])
+	first = test_env.client(["cl_connect_protocol 1", "player_name first"])
+	second = test_env.client(["cl_connect_protocol 1", "player_name second"])
+	wait_for_startup([server, first, second])
+	if server.quic_fragment != "webpki" or server.webtransport_fragment != "":
+		raise AssertionError(f"fragments {server.quic_fragment!r} {server.webtransport_fragment!r}")
+	connect(first, certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	install(other_certificate)
+	server.command("reload_tls_cert")
+	reload = parse_tls_reload(server.wait_for_log_prefix("tls: v=1 ev=reload ", timeout=10).line)
+	if reload["result"] != "ok" or reload["cert_sha256"] != other_certificate.sha256 or reload["next_sha256"] != "-" or int(reload["not_after"]) <= time():
+		raise AssertionError(f"reload {reload!r}")
+	# The links are logged again; with Web PKI they name no certificate.
+	server.wait_for_log_exact(f"server: QUIC listening on port {server.port} #webpki", timeout=10)
+
+	# The connection from before goes on with the old certificate.
+	first.command("say still here")
+	server.wait_for_log_exact("chat: 0:-2:first: still here", timeout=10)
+	# A new one gets the new certificate.
+	connect(second, certificate)
+	second.wait_for_log_prefix("client: disconnecting. reason=", timeout=10)
+	connect(second, other_certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	# A broken key is refused, and the certificate stays.
+	with open(key_path, "wb") as f:
+		f.write(b"not a key")
+	server.command("reload_tls_cert")
+	reload = parse_tls_reload(server.wait_for_log_prefix("tls: v=1 ev=reload ", timeout=10).line)
+	if reload["result"] != "error" or not reload["reason"]:
+		raise AssertionError(f"reload with a broken key: {reload!r}")
+	second.command("disconnect")
+	server.wait_for_log_suffix("has left the game (application disconnect)", timeout=10)
+	connect(second, other_certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+	for runnable in (first, second, server):
+		runnable.exit()
+	for runnable in (first, second, server):
+		runnable.wait_for_exit()
 
 
 def request_server_info(family, address):
@@ -1139,6 +1279,180 @@ def client_can_connect_websockets(test_env):
 	client.exit()
 	server.wait_for_exit()
 	client.wait_for_exit()
+
+
+@test(requires_websockets=True)
+def client_connects_wss_with_pin(test_env):
+	# DER, with the intermediate certificate after the server one.
+	certificate = TlsTestCertificates(test_env.tmp_dir).server("server", der=True)
+	server = test_env.server(["sv_ipv4only 1", *certificate.server_args()])
+	client = test_env.client(["player_name pinned"])
+	alias = test_env.client(["player_name alias"])
+	wrong = test_env.client(["player_name wrong"])
+	wait_for_startup([client, alias, wrong, server])
+	# Without a name for Web PKI, wss is checked by the key DDNet clients are
+	# shown, the identity key of raw QUIC.
+	if server.wss_fragment != (server.quic_fragment or f"spki-sha256={certificate.spki_sha256}"):
+		raise AssertionError(f"wss fragment {server.wss_fragment!r}, QUIC {server.quic_fragment!r}")
+	identity = server.wss_fragment.removeprefix("spki-sha256=")
+	client.command(f'connect "ddnet-20+wss://127.0.0.1:{server.port}#{server.wss_fragment}"')
+	join = server.wait_for_log_prefix("server: player has entered the game", timeout=15).line
+	if "sixup=0" not in join:
+		raise AssertionError(f"sixup=0 not found in {join!r}")
+	alias.command(f'connect "wss://127.0.0.1:{server.port}#{server.wss_fragment}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+
+	wrong.command(f'connect "ddnet-20+wss://127.0.0.1:{server.port}#spki-sha256={"0" * 64}"')
+	wrong.wait_for_log_exact(f"websockets: server key does not match the pin (presented {identity})", timeout=15)
+	wrong.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=15)
+	sleep(1)
+	if sum("player has entered the game" in line for line in server.full_stdout) != 2:
+		raise AssertionError("a client with the wrong pin joined")
+	for runnable in (client, alias, wrong, server):
+		runnable.exit()
+	for runnable in (client, alias, wrong, server):
+		runnable.wait_for_exit()
+
+
+@test(requires_websockets=True)
+def client_connects_wss_with_webpki(test_env):
+	certificates = TlsTestCertificates(test_env.tmp_dir)
+	certificate = certificates.server("server")
+	server = test_env.server(["sv_ipv4only 1", "sv_register_hostname localhost", *certificate.server_args()])
+	# The test authority is trusted through OpenSSL's own setting.
+	trusting = test_env.client(["player_name trusting", "cl_connect_address_family 0"], extra_env_vars={"SSL_CERT_FILE": certificates.root_certificate})
+	untrusting = test_env.client(["player_name untrusting", "cl_connect_address_family 0"])
+	wait_for_startup([trusting, untrusting, server])
+	if server.wss_fragment != "webpki":
+		raise AssertionError(f"wss fragment {server.wss_fragment!r}")
+	# Without a fragment the key would be trusted on first use.
+	trusting.command(f'connect "ddnet-20+wss://localhost:{server.port}#webpki"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+	untrusting.command(f'connect "wss://localhost:{server.port}#webpki"')
+	untrusting.wait_for_log_prefix("websockets: Connection failed: ", timeout=15)
+	untrusting.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=15)
+	sleep(1)
+	if sum("player has entered the game" in line for line in server.full_stdout) != 1:
+		raise AssertionError("a client without the certificate authority joined")
+	for runnable in (trusting, untrusting, server):
+		runnable.exit()
+	for runnable in (trusting, untrusting, server):
+		runnable.wait_for_exit()
+
+
+@test(requires_websockets=True, requires_quic=True)
+def client_wss_shares_remembered_keys_with_quic(test_env):
+	certificate = TlsTestCertificates(test_env.tmp_dir).server("server")
+
+	def start_server(port, identity_key):
+		server = test_env.server(["sv_ipv4only 1", f"sv_port {port}", *certificate.server_args(), f"sv_quic_identity_key {identity_key}"])
+		server.wait_for_startup()
+		return server
+
+	def stop(*runnables):
+		for runnable in runnables:
+			runnable.exit()
+		for runnable in runnables:
+			runnable.wait_for_exit()
+
+	# wss without a fragment trusts the key on first use, and remembers it where
+	# raw QUIC does, for the same host and port.
+	server = start_server(0, "quic_identity.pk8")
+	port = server.port
+	client = test_env.client(["cl_save_settings 1"])
+	client.wait_for_startup()
+	client.command(f"connect wss://127.0.0.1:{port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+	stop(client)
+	with open(os.path.join(test_env.tmp_dir, "settings_ddnet.cfg"), encoding="utf-8") as settings:
+		remembered = [line for line in settings if line.startswith("quic_known_host ")]
+	if remembered != [f'quic_known_host "127.0.0.1" {port} {server.wss_fragment}\n']:
+		raise AssertionError(f"remembered {remembered!r}, wss {server.wss_fragment!r}")
+
+	# Raw QUIC finds the key wss remembered.
+	client = test_env.client()
+	client.wait_for_startup()
+	client.command(f'connect "ddnet+quic://127.0.0.1:{port}"')
+	client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	stop(client, server)
+
+	# Another key is refused over either.
+	server = start_server(port, "quic_identity_changed.pk8")
+	for link in (f"wss://127.0.0.1:{port}", f"ddnet+quic://127.0.0.1:{port}"):
+		client = test_env.client()
+		client.wait_for_startup()
+		client.command(f'connect "{link}"')
+		client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=15)
+		stop(client)
+	if any("player has entered the game" in line for line in server.full_stdout):
+		raise AssertionError("a changed key joined the server")
+	stop(server)
+
+
+@test(requires_websockets=True)
+def server_reloads_wss_certificate(test_env):
+	certificates = TlsTestCertificates(test_env.tmp_dir)
+	certificate = certificates.server("first")
+	other_certificate = certificates.server("second", der=True)
+	cert_path = os.path.join(test_env.tmp_dir, "tls-cert")
+	key_path = os.path.join(test_env.tmp_dir, "tls-key")
+
+	def install(certificate):
+		shutil.copyfile(certificate.certificate, cert_path)
+		shutil.copyfile(certificate.private_key, key_path)
+
+	def connect(client, certificate):
+		client.command(f'connect "ddnet-20+wss://127.0.0.1:{server.port}#spki-sha256={certificate.spki_sha256}"')
+
+	install(certificate)
+	server = test_env.server(["sv_ipv4only 1", "sv_quic 0", "sv_webtransport 0", f"sv_tls_cert {cert_path}", f"sv_tls_key {key_path}"])
+	first = test_env.client(["player_name first"])
+	second = test_env.client(["player_name second"])
+	wait_for_startup([server, first, second])
+	connect(first, certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+
+	install(other_certificate)
+	server.command("reload_tls_cert")
+	reload = parse_tls_reload(server.wait_for_log_prefix("tls: v=1 ev=reload ", timeout=10).line)
+	if reload["result"] != "ok" or reload["cert_sha256"] != other_certificate.sha256 or reload["spki_sha256"] != other_certificate.spki_sha256 or reload["next_sha256"] != "-" or int(reload["not_after"]) <= time():
+		raise AssertionError(f"reload {reload!r}")
+	server.wait_for_log_exact(f"server: wss listening on port {server.port} #spki-sha256={other_certificate.spki_sha256}", timeout=10)
+
+	# The connection from before goes on with the old certificate.
+	first.command("say still here")
+	server.wait_for_log_exact("chat: 0:-2:first: still here", timeout=10)
+	# A new one gets the new certificate.
+	connect(second, certificate)
+	second.wait_for_log_exact(f"websockets: server key does not match the pin (presented {other_certificate.spki_sha256})", timeout=15)
+	second.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=15)
+	connect(second, other_certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+
+	# A broken key is refused, and the certificate stays.
+	with open(key_path, "wb") as f:
+		f.write(b"not a key")
+	server.command("reload_tls_cert")
+	reload = parse_tls_reload(server.wait_for_log_prefix("tls: v=1 ev=reload ", timeout=10).line)
+	if reload["result"] != "error":
+		raise AssertionError(f"reload with a broken key: {reload!r}")
+	second.command("disconnect")
+	server.wait_for_log_suffix("has left the game", timeout=10)
+	connect(second, other_certificate)
+	server.wait_for_log_prefix("server: player has entered the game", timeout=15)
+
+	# The websocket stays open after a disconnect and is used again without
+	# another handshake, still checked against the pin of the new connect.
+	second.command("disconnect")
+	server.wait_for_log_suffix("has left the game", timeout=10)
+	connect(second, certificate)
+	second.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=15)
+
+	for runnable in (first, second, server):
+		runnable.exit()
+	for runnable in (first, second, server):
+		runnable.wait_for_exit()
 
 
 @test
@@ -1510,6 +1824,63 @@ def client_connects_info_quic_from_any_tab(test_env):
 
 
 @test(requires_mastersrv=True, requires_quic=True)
+def client_list_pin_updates_remembered_key(test_env):
+	certificate, _ = test_env.runner.quic_certificates
+
+	def entered(server):
+		return sum("player has entered the game" in line for line in server.full_stdout)
+
+	# The list shows key B for the server.
+	mastersrv = test_env.mastersrv()
+	mastersrv.wait_for_startup()
+	server = start_registered_server(test_env, mastersrv, [*certificate.server_args(), "sv_quic_identity_key identity_b.pk8"])
+	port = server.port
+	servers_json = wait_for_server_addresses(mastersrv, legacy_addresses(server) | modern_addresses(server))
+	listed = with_addresses(servers_json, legacy_addresses(server) | {f"ddnet+quic://[::1]:{port}#{server.quic_fragment}"})
+	server.exit()
+	server.wait_for_exit()
+	mastersrv.exit()
+	mastersrv.wait_for_exit()
+
+	with StaticServerList(listed) as serverlist_url:
+		client = client_with_server_list(test_env, serverlist_url)
+
+		# A link without a pin trusts key A on first use. Links do not look at
+		# the list.
+		server = test_env.server([f"sv_port {port}", *certificate.server_args(), "sv_quic_identity_key identity_a.pk8"])
+		server.wait_for_startup()
+		client.command(f'connect "ddnet+quic://[::1]:{port}"')
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		client.command("disconnect")
+		client.wait_for_log_prefix("client: disconnecting. reason=", timeout=10)
+		server.exit()
+		server.wait_for_exit()
+
+		# The server moves to B. A link without a pin refuses it, the list
+		# that pins B connects and brings the remembered key up to date, and
+		# then the link works again.
+		server = test_env.server([f"sv_port {port}", *certificate.server_args(), "sv_quic_identity_key identity_b.pk8"])
+		server.wait_for_startup()
+		client.command(f'connect "ddnet+quic://[::1]:{port}"')
+		client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=10)
+		if entered(server) != 0:
+			raise AssertionError("the remembered key did not refuse the new one")
+		client.command(f"connect [::1]:{port}")
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		client.command("disconnect")
+		client.wait_for_log_prefix("client: disconnecting. reason=", timeout=10)
+		client.command(f'connect "ddnet+quic://[::1]:{port}"')
+		client.wait_for_log_exact("client: QUIC connected, sending info", timeout=10)
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		client.exit()
+		client.wait_for_exit()
+	server.exit()
+	server.wait_for_exit()
+
+
+@test(requires_mastersrv=True, requires_quic=True)
 def client_auto_quic_checks_listed_key(test_env):
 	certificate, _ = test_env.runner.quic_certificates
 	mastersrv = test_env.mastersrv()
@@ -1532,7 +1903,7 @@ def client_auto_quic_checks_listed_key(test_env):
 	with StaticServerList(listed_with(f"spki-sha256={'0' * 64}")) as serverlist_url:
 		mismatch_client = client_with_server_list(test_env, serverlist_url)
 		mismatch_client.command(f"connect [::1]:{server.port}")
-		mismatch_client.wait_for_log_prefix("client: disconnecting. reason='server key does not match the pin (presented ", timeout=10)
+		mismatch_client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=10)
 	if len([line for line in server.full_stdout if "player has entered the game" in line]) != 1:
 		raise AssertionError("key mismatch reached the server through legacy UDP")
 

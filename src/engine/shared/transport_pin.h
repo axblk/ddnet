@@ -47,6 +47,18 @@ bool IsModernTransportUrl(const char *pUrl);
 bool ParseModernTransportUrl(const char *pUrl, bool *pWebTransport, CModernTransportPin *pPin);
 
 /**
+ * Reads the fragment of a `ddnet-20+wss://` address the way a raw QUIC link
+ * has it: TOFU without one, Web PKI with `#webpki`, the key of the server
+ * with `#spki-sha256=`.
+ *
+ * @param pFragment The fragment with its `#`, or an empty string.
+ * @param pPin Set to the pin.
+ *
+ * @return Whether it is a valid fragment for a secure websocket.
+ */
+bool ParseWebsocketPin(const char *pFragment, CModernTransportPin *pPin);
+
+/**
  * Formats a `ddnet+quic://`, `tw-0.7+quic://`, `ddnet+wt://` or `tw-0.7+wt://`
  * address with its pin in the fragment, the way `ParseModernTransportUrl` reads
  * it back. A pin that is the default of the transport, TOFU for QUIC and Web PKI

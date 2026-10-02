@@ -47,10 +47,32 @@ namespace
 		return true;
 	}
 
-	SHA256_DIGEST LeafCertificateSha256(rust::Slice<const uint8_t> Certificate)
+	SHA256_DIGEST Sha256FromVec(const rust::Vec<uint8_t> &vSha256)
 	{
-		const rust::Vec<uint8_t> Der = ModernQuic::quic_leaf_certificate_der(Certificate);
-		return sha256(Der.data(), Der.size());
+		SHA256_DIGEST Digest = {};
+		if(vSha256.size() == sizeof(Digest.data))
+			mem_copy(Digest.data, vSha256.data(), sizeof(Digest.data));
+		return Digest;
+	}
+
+	// The one place certificates are read, for files and the managed certificate alike.
+	bool LoadCertificate(rust::Slice<const uint8_t> Certificate, rust::Slice<const uint8_t> PrivateKey, rust::Slice<const uint8_t> NextCertificate, CTlsServerCertificate *pResult, char *pError, int ErrorSize)
+	{
+		const ModernQuic::QuicServerCertificate Loaded = ModernQuic::quic_load_server_certificate(Certificate, PrivateKey, NextCertificate);
+		if(!Loaded.error.empty())
+		{
+			str_copy(pError, std::string(Loaded.error).c_str(), ErrorSize);
+			return false;
+		}
+		pResult->m_vChain.assign(Loaded.chain_der.begin(), Loaded.chain_der.end());
+		pResult->m_vPrivateKey.assign(Loaded.private_key_der.begin(), Loaded.private_key_der.end());
+		pResult->m_Sha256 = Sha256FromVec(Loaded.sha256);
+		pResult->m_NextSha256.reset();
+		if(!Loaded.next_sha256.empty())
+			pResult->m_NextSha256 = Sha256FromVec(Loaded.next_sha256);
+		pResult->m_SpkiSha256 = Sha256FromVec(Loaded.spki_sha256);
+		pResult->m_NotAfter = Loaded.not_after;
+		return true;
 	}
 
 	ModernQuic::QuicPin QuicPin(EModernTransportTrust Trust)
@@ -75,6 +97,7 @@ public:
 	ModernQuic::QuicEvent m_Event = {};
 	ModernQuic::UdpDatagram m_UdpDatagram = {};
 	std::unordered_map<uint64_t, NETADDR> m_PeerAddresses;
+	// Where the managed certificate is kept, empty for a certificate read from a file.
 	std::string m_ManagedIdentityPath;
 	int64_t m_ManagedCertificateRotateAt = 0;
 
@@ -152,43 +175,56 @@ bool CQuicTransport::IsWebTransportClientAvailable()
 	return false;
 }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CTlsServerCertificate::Load(const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, char *pError, int ErrorSize)
 {
-	Shutdown();
-	if((pCertificatePath[0] == '\0') != (pPrivateKeyPath[0] == '\0'))
+	if(pCertificatePath[0] == '\0' || pPrivateKeyPath[0] == '\0')
 	{
-		str_copy(m_aError, "TLS certificate and private key must either both be set or both be empty");
+		str_copy(pError, "TLS certificate and private key must both be set", ErrorSize);
 		return false;
 	}
 	std::vector<uint8_t> vCertificate;
 	std::vector<uint8_t> vNextCertificate;
 	std::vector<uint8_t> vPrivateKey;
-	if(pCertificatePath[0] != '\0' &&
-		(!ReadFile(pCertificatePath, vCertificate, m_aError, sizeof(m_aError)) || !ReadFile(pPrivateKeyPath, vPrivateKey, m_aError, sizeof(m_aError))))
+	if(!ReadFile(pCertificatePath, vCertificate, pError, ErrorSize) ||
+		!ReadFile(pPrivateKeyPath, vPrivateKey, pError, ErrorSize) ||
+		(pNextCertificatePath[0] != '\0' && !ReadFile(pNextCertificatePath, vNextCertificate, pError, ErrorSize)))
 		return false;
+	CTlsServerCertificate Loaded;
+	if(!LoadCertificate(Slice(vCertificate), Slice(vPrivateKey), Slice(vNextCertificate), &Loaded, pError, ErrorSize))
+		return false;
+	*this = std::move(Loaded);
+	return true;
+}
+
+void CQuicTransport::SetServerCertificateHashes(const CTlsServerCertificate &Certificate)
+{
+	m_CertificateSha256 = Certificate.m_Sha256;
+	m_HasCertificateSha256 = true;
+	m_NextCertificateSha256 = Certificate.m_NextSha256.value_or(SHA256_DIGEST{});
+	m_HasNextCertificateSha256 = Certificate.m_NextSha256.has_value() && *Certificate.m_NextSha256 != Certificate.m_Sha256;
+}
+
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const CTlsServerCertificate *pCertificate, const char *pIdentityPath)
+{
+	Shutdown();
 	try
 	{
+		CTlsServerCertificate Managed;
 		int64_t ManagedCertificateRotateAt = 0;
-		if(pCertificatePath[0] == '\0')
+		if(!pCertificate)
 		{
 			const auto Identity = ModernQuic::quic_managed_identity(pIdentityPath, time_timestamp());
-			vCertificate.assign(Identity.certificate_der.begin(), Identity.certificate_der.end());
-			vPrivateKey.assign(Identity.private_key_der.begin(), Identity.private_key_der.end());
-			vNextCertificate.assign(Identity.next_certificate_der.begin(), Identity.next_certificate_der.end());
+			if(!LoadCertificate(Slice(Identity.certificate_der), Slice(Identity.private_key_der), Slice(Identity.next_certificate_der), &Managed, m_aError, sizeof(m_aError)))
+				return false;
 			ManagedCertificateRotateAt = Identity.rotate_at;
+			pCertificate = &Managed;
 		}
-		if(pNextCertificatePath[0] != '\0' && !ReadFile(pNextCertificatePath, vNextCertificate, m_aError, sizeof(m_aError)))
-			return false;
-		m_CertificateSha256 = LeafCertificateSha256(Slice(vCertificate));
-		if(!vNextCertificate.empty())
-			m_NextCertificateSha256 = LeafCertificateSha256(Slice(vNextCertificate));
-		auto Endpoint = ModernQuic::quic_server_start(RawQuic, WebTransport, Slice(vCertificate), Slice(vPrivateKey), pIdentityPath);
+		auto Endpoint = ModernQuic::quic_server_start(RawQuic, WebTransport, Slice(pCertificate->m_vChain), Slice(pCertificate->m_vPrivateKey), pIdentityPath);
 		m_pImpl = std::make_unique<CImpl>(std::move(Endpoint), false);
 		m_pImpl->m_ManagedCertificateRotateAt = ManagedCertificateRotateAt;
 		if(ManagedCertificateRotateAt != 0)
 			m_pImpl->m_ManagedIdentityPath = pIdentityPath;
-		m_HasCertificateSha256 = true;
-		m_HasNextCertificateSha256 = !vNextCertificate.empty() && m_NextCertificateSha256 != m_CertificateSha256;
+		SetServerCertificateHashes(*pCertificate);
 		return true;
 	}
 	catch(const std::exception &Error)
@@ -206,12 +242,14 @@ bool CQuicTransport::MaybeRotateManagedCertificate(bool *pRotated)
 	try
 	{
 		const auto Identity = ModernQuic::quic_managed_identity(m_pImpl->m_ManagedIdentityPath, time_timestamp());
-		const SHA256_DIGEST CertificateSha256 = LeafCertificateSha256(Slice(Identity.certificate_der));
-		const SHA256_DIGEST NextCertificateSha256 = Identity.next_certificate_der.empty() ? SHA256_DIGEST{} : LeafCertificateSha256(Slice(Identity.next_certificate_der));
-		ModernQuic::quic_server_update_certificate(*m_pImpl->m_Endpoint, Slice(Identity.certificate_der), Slice(Identity.private_key_der));
-		m_CertificateSha256 = CertificateSha256;
-		m_NextCertificateSha256 = NextCertificateSha256;
-		m_HasNextCertificateSha256 = !Identity.next_certificate_der.empty() && NextCertificateSha256 != CertificateSha256;
+		CTlsServerCertificate Managed;
+		if(!LoadCertificate(Slice(Identity.certificate_der), Slice(Identity.private_key_der), Slice(Identity.next_certificate_der), &Managed, m_aError, sizeof(m_aError)))
+		{
+			m_pImpl->m_ManagedCertificateRotateAt = time_timestamp() + 60;
+			return false;
+		}
+		ModernQuic::quic_server_update_certificate(*m_pImpl->m_Endpoint, Slice(Managed.m_vChain), Slice(Managed.m_vPrivateKey));
+		SetServerCertificateHashes(Managed);
 		m_pImpl->m_ManagedCertificateRotateAt = Identity.rotate_at;
 		*pRotated = true;
 		return true;
@@ -220,6 +258,33 @@ bool CQuicTransport::MaybeRotateManagedCertificate(bool *pRotated)
 	{
 		str_copy(m_aError, Error.what());
 		m_pImpl->m_ManagedCertificateRotateAt = time_timestamp() + 60;
+		return false;
+	}
+}
+
+bool CQuicTransport::ReloadServerCertificate(const CTlsServerCertificate &Certificate)
+{
+	if(!m_pImpl || m_pImpl->m_Client)
+	{
+		str_copy(m_aError, "no QUIC or WebTransport server is running");
+		return false;
+	}
+	if(!m_pImpl->m_ManagedIdentityPath.empty())
+	{
+		str_copy(m_aError, "the server was started with a managed certificate, which it rotates itself");
+		return false;
+	}
+	try
+	{
+		// Checks the key and whether it belongs to the certificate, and only
+		// then replaces the certificate.
+		ModernQuic::quic_server_update_certificate(*m_pImpl->m_Endpoint, Slice(Certificate.m_vChain), Slice(Certificate.m_vPrivateKey));
+		SetServerCertificateHashes(Certificate);
+		return true;
+	}
+	catch(const std::exception &Error)
+	{
+		str_copy(m_aError, Error.what());
 		return false;
 	}
 }
@@ -283,6 +348,15 @@ std::optional<SHA256_DIGEST> CQuicTransport::RawQuicSpkiSha256() const
 		return std::nullopt;
 	mem_copy(Digest.data, Sha256.data(), sizeof(Digest.data));
 	return Digest;
+}
+
+bool CQuicTransport::RawQuicIdentity(CTlsServerCertificate *pIdentity) const
+{
+	if(!m_pImpl || m_pImpl->m_Client)
+		return false;
+	const ModernQuic::QuicIdentity Identity = ModernQuic::quic_server_identity(*m_pImpl->m_Endpoint);
+	char aError[256];
+	return !Identity.certificate_der.empty() && LoadCertificate(Slice(Identity.certificate_der), Slice(Identity.private_key_der), {}, pIdentity, aError, sizeof(aError));
 }
 
 bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSize, bool Vital)
@@ -402,7 +476,14 @@ CQuicTransport::~CQuicTransport() = default;
 bool CQuicTransport::IsCompiled() { return false; }
 bool CQuicTransport::IsWebTransportClientAvailable() { return false; }
 
-bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath)
+bool CTlsServerCertificate::Load(const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, char *pError, int ErrorSize)
+{
+	// The certificate is read by the QUIC code, in Rust.
+	str_copy(pError, "this build cannot read TLS certificates, QUIC support is not compiled in", ErrorSize);
+	return false;
+}
+
+bool CQuicTransport::StartServer(bool RawQuic, bool WebTransport, const CTlsServerCertificate *pCertificate, const char *pIdentityPath)
 {
 	str_copy(m_aError, "QUIC support is not compiled in");
 	return false;
@@ -414,6 +495,12 @@ bool CQuicTransport::MaybeRotateManagedCertificate(bool *pRotated)
 	return true;
 }
 
+bool CQuicTransport::ReloadServerCertificate(const CTlsServerCertificate &Certificate)
+{
+	str_copy(m_aError, "QUIC support is not compiled in");
+	return false;
+}
+
 bool CQuicTransport::StartClient(const NETADDR &Address, const char *pServerName, const CModernTransportPin &Pin, bool Sixup)
 {
 	str_copy(m_aError, "QUIC support is not compiled in");
@@ -422,6 +509,7 @@ bool CQuicTransport::StartClient(const NETADDR &Address, const char *pServerName
 
 bool CQuicTransport::IsRunning() const { return false; }
 std::optional<SHA256_DIGEST> CQuicTransport::RawQuicSpkiSha256() const { return std::nullopt; }
+bool CQuicTransport::RawQuicIdentity(CTlsServerCertificate *pIdentity) const { return false; }
 bool CQuicTransport::Send(CQuicSessionId Session, const void *pData, int DataSize, bool Vital) { return false; }
 bool CQuicTransport::SetMap(uint32_t MapId, const char *pName, uint32_t Crc, const SHA256_DIGEST &Sha256, const void *pData, size_t DataSize) { return false; }
 bool CQuicTransport::SendMap(CQuicSessionId Session, uint32_t MapId) { return false; }

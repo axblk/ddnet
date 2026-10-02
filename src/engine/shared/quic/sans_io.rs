@@ -832,6 +832,9 @@ impl RawEndpoint {
                 } else {
                     super::ffi::QuicEventKind::Disconnected
                 };
+                // A key that is not the pinned one comes with the key, for the
+                // client to show what it got.
+                let mut payload = Vec::new();
                 if let Mode::Client {
                     spki_pin: Some(pin),
                     ..
@@ -845,9 +848,10 @@ impl RawEndpoint {
                             "server key does not match the pin (presented {})",
                             super::hex(&presented)
                         );
+                        payload = presented.to_vec();
                     }
                 }
-                self.push_event(kind, session_id, Vec::new(), reason_text, sixup);
+                self.push_event(kind, session_id, payload, reason_text, sixup);
             }
             Event::Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
                 let stream = self
@@ -1879,7 +1883,9 @@ mod tests {
         .as_ref()
         .try_into()
         .unwrap();
-        let server = server_config(true, true, certificate, None).unwrap().0;
+        let server = server_config(true, true, certificate, None, None)
+            .unwrap()
+            .0;
         let (client, spki_pin) =
             client_config(ServerCertificatePin::Sha256(vec![certificate_sha256])).unwrap();
         (server, client, spki_pin)
@@ -2309,7 +2315,7 @@ mod tests {
     fn identity_key() -> Arc<CertifiedKey> {
         let key = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .unwrap();
-        identity_certificate(key.as_ref()).unwrap()
+        identity_certificate(key.as_ref()).unwrap().0
     }
 
     fn spki(key: &CertifiedKey) -> [u8; 32] {
@@ -2319,7 +2325,7 @@ mod tests {
     /// A server that serves raw QUIC with `identity` and WebTransport with a
     /// TLS certificate of its own, like one without Web PKI.
     fn identity_server(identity: Arc<CertifiedKey>) -> RawEndpoint {
-        let config = server_config(true, true, tls_certificate(), Some(identity))
+        let config = server_config(true, true, tls_certificate(), Some(identity), None)
             .unwrap()
             .0;
         RawEndpoint::server(10, config, true, true)
@@ -2388,6 +2394,7 @@ mod tests {
                 hex(&spki(&identity))
             )
         );
+        assert_eq!(event.payload, spki(&identity));
     }
 
     /// A server that shows the certificate of a pinned key without holding
@@ -2447,7 +2454,7 @@ mod tests {
     #[test]
     fn webtransport_gets_the_tls_certificate() {
         let tls = tls_certificate();
-        let config = server_config(true, true, tls.clone(), Some(identity_key()))
+        let config = server_config(true, true, tls.clone(), Some(identity_key()), None)
             .unwrap()
             .0;
         let mut server = RawEndpoint::server(10, config, true, true);

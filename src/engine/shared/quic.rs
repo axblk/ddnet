@@ -108,6 +108,27 @@ pub mod ffi {
         rotate_at: i64,
     }
 
+    /// A TLS certificate, its key and the certificate announced next, read
+    /// and checked once for every transport that serves them.
+    #[derive(Default)]
+    struct QuicServerCertificate {
+        /// What keeps them from serving, empty if they can.
+        error: String,
+        /// The DER certificates of the chain, the end-entity one first, one
+        /// after the other.
+        chain_der: Vec<u8>,
+        /// The private key in DER: PKCS#8, SEC1 or PKCS#1.
+        private_key_der: Vec<u8>,
+        /// The SHA-256 of the end-entity certificate.
+        sha256: Vec<u8>,
+        /// The SHA-256 of the certificate announced next, empty without one.
+        next_sha256: Vec<u8>,
+        /// The SHA-256 of the SubjectPublicKeyInfo of the end-entity certificate.
+        spki_sha256: Vec<u8>,
+        /// When the end-entity certificate expires, in seconds since 1970.
+        not_after: i64,
+    }
+
     struct UdpDatagram {
         source_ip: Vec<u8>,
         source_port: u16,
@@ -120,7 +141,11 @@ pub mod ffi {
 
         fn quic_generate_identity(server_name: &str) -> Result<QuicIdentity>;
         fn quic_managed_identity(identity_path: &str, now: i64) -> Result<QuicManagedIdentity>;
-        fn quic_leaf_certificate_der(certificate_file: &[u8]) -> Result<Vec<u8>>;
+        fn quic_load_server_certificate(
+            certificate_file: &[u8],
+            private_key_file: &[u8],
+            next_certificate_file: &[u8],
+        ) -> QuicServerCertificate;
         fn quic_server_start(
             raw_quic: bool,
             webtransport: bool,
@@ -129,6 +154,7 @@ pub mod ffi {
             identity_path: &str,
         ) -> Result<Box<QuicEndpoint>>;
         fn quic_server_spki_sha256(endpoint: &QuicEndpoint) -> Vec<u8>;
+        fn quic_server_identity(endpoint: &QuicEndpoint) -> QuicIdentity;
         fn quic_server_update_certificate(
             endpoint: &QuicEndpoint,
             certificate_der: &[u8],
@@ -428,6 +454,9 @@ struct RotatingServerCert {
     current: Mutex<Arc<CertifiedKey>>,
     /// The certificate of the identity key, for raw QUIC.
     identity: Option<Arc<CertifiedKey>>,
+    /// The same as DER, the certificate and the PKCS#8 key, for secure
+    /// websockets to show the same key to DDNet clients.
+    identity_der: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl RotatingServerCert {
@@ -624,6 +653,90 @@ pub fn quic_managed_identity(
     Ok(identity)
 }
 
+/// One DER element at the start of `data`: its tag, its contents and what follows it.
+fn der_element(data: &[u8]) -> Result<(u8, &[u8], &[u8]), String> {
+    const INVALID: &str = "invalid DER in the TLS certificate";
+    let (&tag, rest) = data.split_first().ok_or(INVALID)?;
+    let (&first, mut rest) = rest.split_first().ok_or(INVALID)?;
+    let length = if first < 0x80 {
+        usize::from(first)
+    } else {
+        let num_bytes = usize::from(first & 0x7f);
+        if num_bytes == 0 || num_bytes > 4 || rest.len() < num_bytes {
+            return Err(INVALID.into());
+        }
+        let length = rest[..num_bytes]
+            .iter()
+            .fold(0usize, |length, &byte| (length << 8) | usize::from(byte));
+        rest = &rest[num_bytes..];
+        length
+    };
+    if rest.len() < length {
+        return Err(INVALID.into());
+    }
+    Ok((tag, &rest[..length], &rest[length..]))
+}
+
+/// A `UTCTime` or `GeneralizedTime` of X.509 in seconds since 1970.
+fn der_time(tag: u8, value: &[u8]) -> Result<i64, String> {
+    const INVALID: &str = "invalid time in the TLS certificate";
+    let text = std::str::from_utf8(value).map_err(|_| INVALID)?;
+    let (year, rest) = match (tag, text.len()) {
+        // RFC 5280: YYMMDDHHMMSSZ, the years 1950 to 2049.
+        (0x17, 13) => {
+            let year: i32 = text[..2].parse().map_err(|_| INVALID)?;
+            (
+                if year >= 50 { 1900 + year } else { 2000 + year },
+                &text[2..],
+            )
+        }
+        (0x18, 15) => (text[..4].parse().map_err(|_| INVALID)?, &text[4..]),
+        _ => return Err(INVALID.into()),
+    };
+    if !rest.ends_with('Z') || !rest[..10].bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(INVALID.into());
+    }
+    let field = |index: usize| rest[index..index + 2].parse::<u8>().unwrap();
+    let month = time::Month::try_from(field(0)).map_err(|_| INVALID)?;
+    let date = time::Date::from_calendar_date(year, month, field(2)).map_err(|_| INVALID)?;
+    let time = time::Time::from_hms(field(4), field(6), field(8)).map_err(|_| INVALID)?;
+    Ok(time::PrimitiveDateTime::new(date, time)
+        .assume_utc()
+        .unix_timestamp())
+}
+
+/// When a DER certificate expires, in seconds since 1970.
+fn certificate_not_after(certificate: &CertificateDer<'_>) -> Result<i64, String> {
+    const INVALID: &str = "invalid X.509 structure in the TLS certificate";
+    // Certificate ::= SEQUENCE { tbsCertificate SEQUENCE { [0] version OPTIONAL,
+    // serialNumber, signature, issuer, validity SEQUENCE { notBefore, notAfter }, ... } ... }
+    let (tag, certificate, _) = der_element(certificate.as_ref())?;
+    let (tbs_tag, tbs, _) = der_element(certificate)?;
+    if tag != 0x30 || tbs_tag != 0x30 {
+        return Err(INVALID.into());
+    }
+    let mut rest = tbs;
+    let (tag, _, after) = der_element(rest)?;
+    if tag == 0xa0 {
+        rest = after;
+    }
+    for expected in [0x02, 0x30, 0x30] {
+        let (tag, _, after) = der_element(rest)?;
+        if tag != expected {
+            return Err(INVALID.into());
+        }
+        rest = after;
+    }
+    let (tag, validity, _) = der_element(rest)?;
+    if tag != 0x30 {
+        return Err(INVALID.into());
+    }
+    let (_, _, after_not_before) = der_element(validity)?;
+    let (tag, not_after, _) = der_element(after_not_before)?;
+    der_time(tag, not_after)
+}
+
+/// Reads a PEM certificate chain, or DER certificates one after the other.
 fn certificate_chain(certificate_file: &[u8]) -> Result<Vec<CertificateDer<'static>>, String> {
     if certificate_file.starts_with(b"-----BEGIN") {
         let certificates = rustls_pemfile::certs(&mut Cursor::new(certificate_file))
@@ -636,7 +749,15 @@ fn certificate_chain(certificate_file: &[u8]) -> Result<Vec<CertificateDer<'stat
     } else if certificate_file.is_empty() {
         Err("TLS certificate is empty".into())
     } else {
-        Ok(vec![CertificateDer::from(certificate_file.to_vec())])
+        let mut certificates = Vec::new();
+        let mut rest = certificate_file;
+        while !rest.is_empty() {
+            let (_, _, after) = der_element(rest)?;
+            let length = rest.len() - after.len();
+            certificates.push(CertificateDer::from(rest[..length].to_vec()));
+            rest = after;
+        }
+        Ok(certificates)
     }
 }
 
@@ -656,9 +777,58 @@ fn private_key(private_key_file: &[u8]) -> Result<PrivateKeyDer<'static>, String
     }
 }
 
-/// Returns the end-entity DER certificate from a DER or PEM certificate file.
-pub fn quic_leaf_certificate_der(certificate_file: &[u8]) -> Result<Vec<u8>, String> {
-    Ok(certificate_chain(certificate_file)?[0].as_ref().to_vec())
+fn sha256(data: &[u8]) -> Vec<u8> {
+    ring::digest::digest(&SHA256, data).as_ref().to_vec()
+}
+
+/// Reads a TLS certificate, PEM or DER, its private key and the optional
+/// certificate announced next, and checks that the key belongs to the
+/// certificate. QUIC, WebTransport and secure websockets are all served from
+/// what this returns, so the files are read and checked in one place.
+///
+/// An error is returned in the result rather than as a `Result`, which would
+/// reach C++ as an exception; a bad file must be an error message and never
+/// take a server down where exceptions are not caught, as on macOS.
+pub fn quic_load_server_certificate(
+    certificate_file: &[u8],
+    private_key_file: &[u8],
+    next_certificate_file: &[u8],
+) -> ffi::QuicServerCertificate {
+    let load = || -> Result<ffi::QuicServerCertificate, String> {
+        let chain = certificate_chain(certificate_file)?;
+        let key = private_key(private_key_file)?;
+        let private_key_der = key.secret_der().to_vec();
+        // Checks that the key belongs to the certificate.
+        CertifiedKey::from_der(
+            chain.clone(),
+            key,
+            &rustls::crypto::ring::default_provider(),
+        )
+        .map_err(|error| error.to_string())?;
+        let next_sha256 = if next_certificate_file.is_empty() {
+            Vec::new()
+        } else {
+            sha256(certificate_chain(next_certificate_file)?[0].as_ref())
+        };
+        Ok(ffi::QuicServerCertificate {
+            error: String::new(),
+            chain_der: chain
+                .iter()
+                .flat_map(|certificate| certificate.as_ref().iter().copied())
+                .collect(),
+            private_key_der,
+            sha256: sha256(chain[0].as_ref()),
+            next_sha256,
+            spki_sha256: spki_sha256(&chain[0])
+                .map_err(|error| error.to_string())?
+                .to_vec(),
+            not_after: certificate_not_after(&chain[0])?,
+        })
+    };
+    load().unwrap_or_else(|error| ffi::QuicServerCertificate {
+        error,
+        ..Default::default()
+    })
 }
 
 fn read_server_identity(path: &str) -> Result<Vec<u8>, String> {
@@ -708,7 +878,7 @@ fn load_or_generate_server_identity(path: &str) -> Result<Vec<u8>, String> {
 
 /// A self-signed certificate of the identity key of a server, which is what a
 /// raw QUIC link pins. Only its key counts, so it is made anew on every start.
-fn identity_certificate(key: &[u8]) -> Result<Arc<CertifiedKey>, String> {
+fn identity_certificate(key: &[u8]) -> Result<(Arc<CertifiedKey>, Vec<u8>), String> {
     let signing_key = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
         &PrivatePkcs8KeyDer::from(key),
         &rcgen::PKCS_ED25519,
@@ -721,7 +891,7 @@ fn identity_certificate(key: &[u8]) -> Result<Arc<CertifiedKey>, String> {
         now - time::Duration::hours(1),
         now + time::Duration::days(SERVER_IDENTITY_CERTIFICATE_DAYS),
     )?;
-    certified_key(&certificate, key)
+    Ok((certified_key(&certificate, key)?, certificate))
 }
 
 /// Starts a server endpoint whose UDP I/O is driven by the C++ gameplay socket.
@@ -739,17 +909,19 @@ pub fn quic_server_start(
         return Err("at least one modern transport must be enabled".into());
     }
     let identity = if raw_quic && !identity_path.is_empty() {
-        Some(identity_certificate(&load_or_generate_server_identity(
-            identity_path,
-        )?)?)
+        let key = load_or_generate_server_identity(identity_path)?;
+        let (certified, certificate) = identity_certificate(&key)?;
+        Some((certified, (certificate, key)))
     } else {
         None
     };
+    let (identity, identity_der) = identity.unzip();
     let (config, certificate_resolver) = server_config(
         raw_quic,
         webtransport,
         certified_key(certificate_file, private_key_file)?,
         identity,
+        identity_der,
     )?;
     Ok(Box::new(QuicEndpoint {
         inner: Mutex::new(sans_io::RawEndpoint::server(
@@ -773,8 +945,23 @@ pub fn quic_server_spki_sha256(endpoint: &QuicEndpoint) -> Vec<u8> {
         .map_or_else(Vec::new, |sha256| sha256.to_vec())
 }
 
+/// Returns the certificate of the identity key a server serves raw QUIC with
+/// and the key, both DER, or nothing where raw QUIC has the TLS certificate.
+pub fn quic_server_identity(endpoint: &QuicEndpoint) -> ffi::QuicIdentity {
+    let (certificate_der, private_key_der) = endpoint
+        .certificate_resolver
+        .as_ref()
+        .and_then(|resolver| resolver.identity_der.clone())
+        .unwrap_or_default();
+    ffi::QuicIdentity {
+        certificate_der,
+        private_key_der,
+    }
+}
+
 /// Replaces the TLS certificate used by new server handshakes without
-/// restarting the endpoint. The certificate of the identity key stays.
+/// restarting the endpoint. Handshakes that have started and connections that
+/// run keep theirs. The certificate of the identity key stays.
 pub fn quic_server_update_certificate(
     endpoint: &QuicEndpoint,
     certificate_der: &[u8],
@@ -1096,10 +1283,12 @@ fn server_config(
     webtransport: bool,
     certificate: Arc<CertifiedKey>,
     identity: Option<Arc<CertifiedKey>>,
+    identity_der: Option<(Vec<u8>, Vec<u8>)>,
 ) -> Result<(ServerConfig, Arc<RotatingServerCert>), String> {
     let resolver = Arc::new(RotatingServerCert {
         current: Mutex::new(certificate),
         identity,
+        identity_der,
     });
     let mut tls = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -1253,6 +1442,36 @@ mod tests {
             start(&certificate, ""),
             spki_sha256(&CertificateDer::from(certificate.certificate_der.clone())).unwrap()
         );
+
+        // Secure websockets get the same certificate to show DDNet clients.
+        let endpoint = quic_server_start(
+            true,
+            true,
+            &certificate.certificate_der,
+            &certificate.private_key_der,
+            &path,
+        )
+        .unwrap();
+        let identity = quic_server_identity(&endpoint);
+        assert_eq!(identity.private_key_der, key);
+        assert_eq!(
+            spki_sha256(&CertificateDer::from(identity.certificate_der.clone()))
+                .unwrap()
+                .to_vec(),
+            pin
+        );
+        let loaded =
+            quic_load_server_certificate(&identity.certificate_der, &identity.private_key_der, b"");
+        assert_eq!(loaded.error, "");
+        let without = quic_server_start(
+            true,
+            true,
+            &certificate.certificate_der,
+            &certificate.private_key_der,
+            "",
+        )
+        .unwrap();
+        assert!(quic_server_identity(&without).certificate_der.is_empty());
         fs::remove_file(path).unwrap();
     }
 
@@ -1291,5 +1510,88 @@ mod tests {
         certified_key(&identity.certificate_der, sec1).unwrap();
 
         assert!(private_key(b"\x04\x02\x00\x00").is_err());
+    }
+
+    #[test]
+    fn certificate_not_after_reads_both_time_forms() {
+        // 2049-12-31 23:59:58, written as UTCTime, and 2050-01-02 03:04:05,
+        // written as GeneralizedTime.
+        for not_after in [2_524_607_998, 2_524_705_445] {
+            let identity = generate_identity(
+                "localhost",
+                time::OffsetDateTime::from_unix_timestamp(1_767_225_600).unwrap(),
+                time::OffsetDateTime::from_unix_timestamp(not_after).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                certificate_not_after(&CertificateDer::from(identity.certificate_der)).unwrap(),
+                not_after
+            );
+        }
+        assert!(certificate_not_after(&CertificateDer::from(&b""[..])).is_err());
+        assert!(
+            certificate_not_after(&CertificateDer::from(&b"\x30\x05\x30\x03\x02\x01"[..])).is_err()
+        );
+    }
+
+    #[test]
+    fn load_server_certificate() {
+        let identity = quic_generate_identity("localhost").unwrap();
+        let other = quic_generate_identity("localhost").unwrap();
+        let cert = &identity.certificate_der;
+        let key = &identity.private_key_der;
+
+        let loaded = quic_load_server_certificate(cert, key, b"");
+        assert_eq!(loaded.error, "");
+        assert_eq!(&loaded.chain_der, cert);
+        assert_eq!(&loaded.private_key_der, key);
+        assert_eq!(loaded.sha256, sha256(cert));
+        assert!(loaded.next_sha256.is_empty());
+        assert_eq!(
+            loaded.spki_sha256,
+            spki_sha256(&CertificateDer::from(cert.clone())).unwrap()
+        );
+        assert!(loaded.not_after > time::OffsetDateTime::now_utc().unix_timestamp());
+        // What it returns can be loaded again, which is how the transports take it.
+        let reloaded =
+            quic_load_server_certificate(&loaded.chain_der, &loaded.private_key_der, b"");
+        assert_eq!(reloaded.error, "");
+        assert_eq!(reloaded.sha256, loaded.sha256);
+
+        let next = quic_load_server_certificate(cert, key, &other.certificate_der);
+        assert_eq!(next.error, "");
+        assert_eq!(next.next_sha256, sha256(&other.certificate_der));
+
+        for (cert, key, next) in [
+            (&cert[..], &b"not a key"[..], &b""[..]),
+            (cert, b"", b""),
+            (cert, &other.private_key_der, b""),
+            (b"not a certificate", key, b""),
+            (cert, key, b"-----BEGIN nothing"),
+        ] {
+            let failed = quic_load_server_certificate(cert, key, next);
+            assert_ne!(failed.error, "");
+            assert!(failed.chain_der.is_empty() && failed.private_key_der.is_empty());
+        }
+    }
+
+    /// A chain in DER is its certificates one after the other, as in PEM.
+    #[test]
+    fn der_certificate_chain() {
+        let leaf = quic_generate_identity("localhost").unwrap();
+        let issuer = quic_generate_identity("issuer").unwrap();
+        let mut chain_der = leaf.certificate_der.clone();
+        chain_der.extend_from_slice(&issuer.certificate_der);
+        let chain = certificate_chain(&chain_der).unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].as_ref(), &leaf.certificate_der[..]);
+        assert_eq!(chain[1].as_ref(), &issuer.certificate_der[..]);
+        let loaded = quic_load_server_certificate(&chain_der, &leaf.private_key_der, b"");
+        assert_eq!(loaded.error, "");
+        assert_eq!(loaded.chain_der, chain_der);
+        assert_eq!(loaded.sha256, sha256(&leaf.certificate_der));
+
+        chain_der.push(0x30);
+        assert!(certificate_chain(&chain_der).is_err());
     }
 }

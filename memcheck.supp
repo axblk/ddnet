@@ -101,3 +101,15 @@
    fun:*ring*aead*
    ...
 }
+
+# libwebsockets 4.3.3 to 4.3.5: when the TLS of a client connection fails,
+# lws_http_client_socket_service frees the connection and still returns 0, so
+# rops_handle_POLLIN_h1 reads its state afterwards. A wss server whose pin is
+# refused ends the connection this way, inside the system library.
+{
+   LibwebsocketsClientUseAfterCloseOnTlsError
+   Memcheck:Addr2
+   obj:*libwebsockets.so*
+   fun:lws_service_fd_tsi
+   ...
+}

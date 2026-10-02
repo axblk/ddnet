@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 class CQuicSessionId
 {
@@ -67,6 +68,43 @@ enum class EQuicConnectFailure
 };
 
 /**
+ * The TLS certificate of a server as `sv_tls_cert`, `sv_tls_cert_next` and
+ * `sv_tls_key` name it, read and checked once for QUIC, WebTransport and
+ * secure websockets alike.
+ */
+class CTlsServerCertificate
+{
+public:
+	// The DER certificates of the chain, the end-entity one first, one after the other.
+	std::vector<unsigned char> m_vChain;
+	// The private key in DER: PKCS#8, SEC1 or PKCS#1.
+	std::vector<unsigned char> m_vPrivateKey;
+	SHA256_DIGEST m_Sha256 = {};
+	// The certificate announced ahead of a rotation.
+	std::optional<SHA256_DIGEST> m_NextSha256;
+	// The SHA-256 of the DER SubjectPublicKeyInfo of the end-entity certificate,
+	// which a key pin checks.
+	SHA256_DIGEST m_SpkiSha256 = {};
+	// When the end-entity certificate expires, in seconds since 1970.
+	int64_t m_NotAfter = 0;
+
+	/**
+	 * Reads a certificate, PEM or DER, its key and the certificate announced
+	 * next, and checks that the key belongs to the certificate. Only builds
+	 * with QUIC can read them.
+	 *
+	 * @param pCertificatePath The certificate or chain.
+	 * @param pNextCertificatePath The certificate announced ahead of a rotation, may be empty.
+	 * @param pPrivateKeyPath The key of the certificate.
+	 * @param pError Receives why they cannot be used.
+	 * @param ErrorSize The size of the error buffer.
+	 *
+	 * @return Whether they can be used. On failure this is left as it was.
+	 */
+	bool Load(const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, char *pError, int ErrorSize);
+};
+
+/**
  * The QUIC and WebTransport endpoint of a client or server.
  *
  * Natively this is raw QUIC, and on a server WebTransport as well, driven by
@@ -83,6 +121,8 @@ class CQuicTransport
 	bool m_HasNextCertificateSha256 = false;
 	EQuicConnectFailure m_ConnectFailure = EQuicConnectFailure::NONE;
 	char m_aError[256] = {};
+
+	void SetServerCertificateHashes(const CTlsServerCertificate &Certificate);
 
 public:
 	CQuicTransport();
@@ -105,15 +145,26 @@ public:
 	 *
 	 * @param RawQuic Serve raw QUIC.
 	 * @param WebTransport Serve WebTransport.
-	 * @param pCertificatePath The TLS certificate, a managed one if empty.
-	 * @param pNextCertificatePath The certificate announced ahead of a rotation, may be empty.
-	 * @param pPrivateKeyPath The key of the TLS certificate, empty for a managed one.
+	 * @param pCertificate The TLS certificate, a managed one if null.
 	 * @param pIdentityPath Where the identity key and the managed certificate
 	 * are kept. Raw QUIC is served with a certificate of the identity key, or
 	 * with the TLS certificate if this is empty.
 	 */
-	bool StartServer(bool RawQuic, bool WebTransport, const char *pCertificatePath, const char *pNextCertificatePath, const char *pPrivateKeyPath, const char *pIdentityPath);
+	bool StartServer(bool RawQuic, bool WebTransport, const CTlsServerCertificate *pCertificate, const char *pIdentityPath);
 	bool MaybeRotateManagedCertificate(bool *pRotated);
+	/**
+	 * Replaces the TLS certificate of a running server for the handshakes from
+	 * now on. Connections that run keep theirs, and on failure the server keeps
+	 * the certificate it has. The certificate of the identity key stays.
+	 *
+	 * Only a server started with a certificate of its own can do this; a
+	 * managed one is rotated by the server itself.
+	 *
+	 * @param Certificate The new certificate.
+	 *
+	 * @return Whether the certificate was replaced, `ErrorString` says why not.
+	 */
+	bool ReloadServerCertificate(const CTlsServerCertificate &Certificate);
 	/**
 	 * Connects to a server, over raw QUIC natively and over WebTransport in the
 	 * browser.
@@ -147,6 +198,15 @@ public:
 	 * serves raw QUIC with, which is what a raw QUIC link pins.
 	 */
 	std::optional<SHA256_DIGEST> RawQuicSpkiSha256() const;
+	/**
+	 * The certificate of the identity key a server serves raw QUIC with, for
+	 * secure websockets to show DDNet clients the same key.
+	 *
+	 * @param pIdentity Set to the certificate and the key.
+	 *
+	 * @return Whether raw QUIC has one, it has the TLS certificate where not.
+	 */
+	bool RawQuicIdentity(CTlsServerCertificate *pIdentity) const;
 };
 
 #endif

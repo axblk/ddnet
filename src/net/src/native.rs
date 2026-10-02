@@ -11,6 +11,7 @@ pub(crate) mod quic;
 pub(crate) mod tw06;
 pub(crate) mod tw07;
 pub(crate) mod vanilla;
+pub(crate) mod web_pki;
 pub(crate) mod webtransport;
 #[cfg(feature = "websocket")]
 pub(crate) mod ws;

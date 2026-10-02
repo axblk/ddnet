@@ -312,6 +312,10 @@ impl Net {
         Ok(())
     }
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
+        self.connect_named(addr, None)
+    }
+    /// The browser takes the name from the address, see `host_from_url`.
+    pub fn connect_named(&mut self, addr: &str, _server_name: Option<&str>) -> Result<PeerIndex> {
         let parsed: Addr = addr.parse()?;
         let (webtransport, tls, sock_addr, host, sixup) = match parsed {
             Addr::Quic(QuicAddr { addr, host, webtransport: true, sixup, .. }) => (true, true, addr, host, sixup),

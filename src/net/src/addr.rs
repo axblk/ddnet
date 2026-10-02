@@ -91,6 +91,10 @@ pub struct RawAddr(pub SocketAddr);
 /// it; natively the library takes IP addresses only, and the name stays
 /// `None`.
 pub type HostName = ArrayString<[u8; 128]>;
+/// The start of the reason a browser's WebTransport session ends with when
+/// it could not be opened, see `Pin::browser_refused`.
+pub const BROWSER_REFUSAL: &str =
+    "the browser could not open WebTransport: the server is unreachable or its certificate is not the expected one";
 /// What a client checks the certificate of a server against, as the
 /// fragment of its address says.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +106,9 @@ pub enum Pin {
     /// SHA-256, as a browser takes one over WebTransport; the second hash
     /// is the certificate that takes over next.
     Certificate([u8; 32], Option<[u8; 32]>),
+    /// `webpki`: a certificate from a public CA for the name the server
+    /// is connected by, checked against the roots browsers trust.
+    WebPki,
 }
 
 impl Pin {
@@ -111,25 +118,25 @@ impl Pin {
         match self {
             Pin::Spki(pinned) => pinned == spki,
             Pin::Certificate(current, next) => current == certificate || next.as_ref() == Some(certificate),
+            // The chain decides, see `native::web_pki`.
+            Pin::WebPki => false,
         }
     }
     /// The certificate hashes a browser is told to take.
     pub fn certificates(&self) -> Vec<[u8; 32]> {
         match self {
-            Pin::Spki(_) => Vec::new(),
+            Pin::Spki(_) | Pin::WebPki => Vec::new(),
             Pin::Certificate(current, next) => [Some(*current), *next].into_iter().flatten().collect(),
         }
     }
-    /// The pin in a URL's fragment, if any. `webpki`, a certificate from a
-    /// public CA for the host name, pins nothing: a browser checks it, the
-    /// native client takes what it is shown. Anything else is refused, a
+    /// The pin in a URL's fragment, if any. Anything else is refused, a
     /// typo must not quietly turn the pin off.
     fn from_fragment(url: &Url) -> Result<Option<Pin>> {
         let Some(fragment) = url.fragment().filter(|fragment| !fragment.is_empty()) else {
             return Ok(None);
         };
         if fragment == "webpki" {
-            return Ok(None);
+            return Ok(Some(Pin::WebPki));
         }
         if let Some(hex) = fragment.strip_prefix("spki-sha256=") {
             return Ok(Some(Pin::Spki(hex.parse().context("addr: spki-sha256")?)));
@@ -145,12 +152,41 @@ impl Pin {
         }
         Ok(Some(Pin::Certificate(current, next)))
     }
+    /// Why a client refuses a server that showed `presented` where this
+    /// was pinned: what it showed comes as a fragment, to be copied.
+    pub fn refusal(&self, presented: Pin) -> String {
+        let what = match self {
+            Pin::Spki(_) => "key",
+            Pin::Certificate(..) | Pin::WebPki => "certificate",
+        };
+        format!("server {} does not match the pin (presented {})", what, presented)
+    }
+    /// Whether the reason of a disconnect says that a browser could not
+    /// open a WebTransport session. It does not tell an unreachable server
+    /// from a certificate it refused, so this counts as the server's
+    /// identity not being verified.
+    pub fn browser_refused(reason: &str) -> bool {
+        reason.starts_with(BROWSER_REFUSAL)
+    }
+    /// What a server showed, read back from a `refusal`; `None` for any
+    /// other reason. The client tells a server that is not who it should
+    /// be apart from one that is not there by it.
+    pub fn presented_in(reason: &str) -> Option<Pin> {
+        let presented = ["server key", "server certificate"]
+            .iter()
+            .find_map(|what| reason.strip_prefix(what))?
+            .strip_prefix(" does not match the pin (presented ")?
+            .strip_suffix(')')?;
+        let url = Url::parse(&format!("ddnet+quic://0.0.0.0#{}", presented)).ok()?;
+        Pin::from_fragment(&url).ok()?
+    }
 }
 
 impl fmt::Display for Pin {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Pin::Spki(spki) => write!(f, "spki-sha256={}", spki),
+            Pin::WebPki => write!(f, "webpki"),
             Pin::Certificate(current, next) => {
                 write!(f, "cert-sha256={}", Identity::from_bytes(*current))?;
                 if let Some(next) = next {
@@ -356,10 +392,13 @@ mod test {
             format!("ddnet+wss://[::1]:8303#spki-sha256={}", hex),
             format!("ddnet+wt://[::1]:8303#cert-sha256={}", hex),
             format!("ddnet+wt://[::1]:8303#cert-sha256={},{}", hex, other),
+            "ddnet+wt://[::1]:8303#webpki".to_owned(),
+            "ddnet+wss://[::1]:8303#webpki".to_owned(),
+            "ddnet+quic://[::1]:8303#webpki".to_owned(),
         ] {
             assert_eq!(addr.parse::<Addr>().unwrap().to_string(), addr);
         }
-        assert_eq!(pin("ddnet+wt://[::1]:8303#webpki"), None);
+        assert_eq!(pin("ddnet+wt://[::1]:8303#webpki"), Some("webpki".to_owned()));
         // The old form and anything else unknown is no pin to drop quietly.
         assert!(format!("ddnet+quic://[::1]:8303#identity-sha256={}", hex).parse::<Addr>().is_err());
         assert!("ddnet+quic://[::1]:8303#spki-sha256=zz".parse::<Addr>().is_err());
@@ -376,6 +415,22 @@ mod test {
         assert!(!Pin::Certificate([0; 32], None).matches(&spki, &certificate));
     }
 
+    /// A refusal names what the server showed, and the client reads it
+    /// back from the reason.
+    #[test]
+    fn refusal_names_what_was_presented() {
+        let spki: crate::Identity = "89b84bbc4b430a74642a8d6ee9086048318b20090e5a5d0c807aba4ce2c0d22f".parse().unwrap();
+        let other: crate::Identity = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".parse().unwrap();
+        let refusal = Pin::Spki(spki).refusal(Pin::Spki(other));
+        assert_eq!(refusal, format!("server key does not match the pin (presented spki-sha256={})", other));
+        assert_eq!(Pin::presented_in(&refusal), Some(Pin::Spki(other)));
+        let refusal = Pin::Certificate(*spki.as_bytes(), None).refusal(Pin::Certificate(*other.as_bytes(), None));
+        assert_eq!(refusal, format!("server certificate does not match the pin (presented cert-sha256={})", other));
+        assert_eq!(Pin::presented_in(&refusal), Some(Pin::Certificate(*other.as_bytes(), None)));
+        assert_eq!(Pin::presented_in("Timeout"), None);
+        assert_eq!(Pin::presented_in("server key does not match the pin (presented spki-sha256=zz)"), None);
+    }
+
     #[test]
     fn host_names() {
         let host = |addr: &str| match addr.parse::<Addr>().unwrap() {
@@ -388,7 +443,7 @@ mod test {
         assert_eq!(host("ddnet+wss://ger10.ddnet.org:8303"), ("[::]:8303".parse().unwrap(), Some("ger10.ddnet.org".to_owned())));
         assert_eq!(host("ddnet+wss://ger10.ddnet.org:8303").0.port(), 8303);
         assert_eq!("ddnet+wss://ger10.ddnet.org:8303".parse::<Addr>().unwrap().to_string(), "ddnet+wss://ger10.ddnet.org:8303");
-        assert_eq!("ddnet+wt://ger10.ddnet.org:8303#webpki".parse::<Addr>().unwrap().to_string(), "ddnet+wt://ger10.ddnet.org:8303");
+        assert_eq!("ddnet+wt://ger10.ddnet.org:8303#webpki".parse::<Addr>().unwrap().to_string(), "ddnet+wt://ger10.ddnet.org:8303#webpki");
         assert!("ddnet+wss://ger10.ddnet.org".parse::<Addr>().is_err());
         assert!("ddnet+wss://ger_10:8303".parse::<Addr>().is_err());
         assert!("tw-0.6+udp://ger10.ddnet.org:8303".parse::<Addr>().is_err());

@@ -787,6 +787,15 @@ def client_can_connect_quic_pinned(test_env):
 	client_checks_pin(client, server, f"ddnet+quic://[::1]:{server.port}")
 
 
+def wait_for_identity_refusal(client, reason):
+	"""Waits for the client to refuse a server that showed another key or
+	certificate than expected, for every transport the same way."""
+	refused = client.wait_for_log_prefix("client: server identity could not be verified: ", timeout=10).line
+	if reason not in refused:
+		raise AssertionError(f"expected {reason!r}, got {refused!r}")
+	client.wait_for_log_exact("client: disconnecting. reason='server identity could not be verified'", timeout=10)
+
+
 def client_checks_pin(client, server, address):
 	client.command(f'connect "{address}#spki-sha256={server.identity}"')
 	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
@@ -795,9 +804,7 @@ def client_checks_pin(client, server, address):
 	# A wrong pin is refused; the client does not take whatever answers.
 	wrong = server.identity[:-1] + ("0" if server.identity[-1] != "0" else "1")
 	client.command(f'connect "{address}#spki-sha256={wrong}"')
-	refused = client.wait_for_log_prefix("client: offline error=", timeout=10).line
-	if "server key does not match the pin (presented spki-sha256=" + server.identity not in refused:
-		raise AssertionError(f"expected a pin error, got {refused!r}")
+	wait_for_identity_refusal(client, f"server key does not match the pin (presented spki-sha256={server.identity})")
 	server.exit()
 	client.exit()
 	server.wait_for_exit()
@@ -1470,6 +1477,94 @@ def client_connects_over_info_transport_from_any_tab(test_env):
 		fake.close()
 
 
+# A key trusted on first use is remembered in the settings, in the form the
+# QUIC transport of the other branch writes it. The server comes back with
+# another key: a link without a pin is refused with the warning, the pin of
+# the server list counts and brings the remembered key up to date, and from
+# then on the link without a pin connects again, natively over wss as well.
+@test(requires_mastersrv=True, timeout=180)
+def client_remembers_key_and_takes_the_listed_one(test_env):
+	def known_hosts():
+		with open(os.path.join(test_env.tmp_dir, "settings_ddnet.cfg"), encoding="utf-8") as f:
+			return [line.rstrip("\n") for line in f if line.startswith("quic_known_host ")]
+
+	server = test_env.server(["sv_quic_identity_key identity_a.pk8"])
+	client = test_env.client(["cl_save_settings 1"])
+	wait_for_startup([server, client])
+	port = server.port
+	key_a = server.identity
+	link = f"ddnet+quic://[::1]:{port}"
+	client.command(f'connect "{link}"')
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	client.exit()
+	server.exit()
+	client.wait_for_exit()
+	server.wait_for_exit()
+	if known_hosts() != [f'quic_known_host "::1" {port} spki-sha256={key_a}']:
+		raise AssertionError(f"expected the key of the server remembered, got {known_hosts()!r}")
+
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		f"sv_port {port}",
+		"sv_quic_identity_key identity_b.pk8",
+		"http_allow_insecure 1",
+		"sv_register ipv6",
+		f"sv_register_url {mastersrv.register_url()}",
+	])
+	wait_for_startup([server])
+	key_b = server.identity
+	if key_b == key_a:
+		raise AssertionError("the server kept its key")
+	# The list the master would serve, which pins the new key.
+	servers_json = wait_for_server_address_bases(mastersrv, {f"tw-0.6+udp://[::1]:{port}", link})
+	mastersrv.exit()
+	fake = FakeMastersrv(servers_json)
+	try:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as f:
+			f.write(f"{fake.url()}\n")
+		client = test_env.client(["cl_save_settings 1", "http_allow_insecure 1", "cl_show_welcome 0", "ui_page 8"])
+		wait_for_startup([client])
+
+		# The remembered key is what the server has to show.
+		client.command(f'connect "{link}"')
+		wait_for_identity_refusal(client, f"server key does not match the pin (presented spki-sha256={key_b})")
+		if any("player has entered the game" in line for line in server.full_stdout):
+			raise AssertionError("a changed key joined the server")
+
+		# The list pins the new key, which counts and is remembered from now on.
+		client.command("ui_page 6")
+		line = select_server(client, f"[::1]:{port}")
+		if line != f"{link}#spki-sha256={key_b}":
+			raise AssertionError(f"expected the listed QUIC address, got {line!r}")
+		client.command(f'connect "{line}"')
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		if known_hosts() != [f'quic_known_host "::1" {port} spki-sha256={key_b}']:
+			raise AssertionError(f"expected the new key remembered, got {known_hosts()!r}")
+		client.command("disconnect")
+		server.wait_for_log_prefix("game: leave player=", timeout=10)
+
+		# The link without a pin takes the remembered key.
+		client.command(f'connect "{link}"')
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		if test_env.runner.test_websockets:
+			client.command("disconnect")
+			server.wait_for_log_prefix("game: leave player=", timeout=10)
+			client.command(f'connect "ddnet+wss://[::1]:{port}"')
+			server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+
+		# Forgetting the host leaves nothing in the settings.
+		client.command(f"quic_forget_host ::1 {port}")
+		client.exit()
+		server.exit()
+		client.wait_for_exit()
+		server.wait_for_exit()
+	finally:
+		fake.close()
+	if known_hosts() != []:
+		raise AssertionError(f"expected no known host, got {known_hosts()!r}")
+
+
 def server_can_register_protocol(test_env, protocol_config, protocol_log, protocol_scheme, mastersrv_args=()):
 	mastersrv = test_env.mastersrv(list(mastersrv_args))
 	wait_for_startup([mastersrv])
@@ -1649,7 +1744,7 @@ def server_reloads_tls_certificate(test_env):
 		if shown != b:
 			raise AssertionError(f"wss showed {shown}, expected {b}")
 	new.command(f'connect "ddnet+wt://127.0.0.1:{server.port}#cert-sha256={a}"')
-	new.wait_for_log_prefix("client: offline error=", timeout=10)
+	wait_for_identity_refusal(new, f"server certificate does not match the pin (presented cert-sha256={b})")
 	new.command(f'connect "ddnet+wt://127.0.0.1:{server.port}#cert-sha256={b}"')
 	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
 	wait_for_registered_webtransport_fragment(mastersrv, f"cert-sha256={b}")
@@ -1710,9 +1805,7 @@ def server_uses_web_pki_for_raw_quic(test_env):
 	server.wait_for_log_prefix("game: leave player=", timeout=10)
 	wrong = spki[:-1] + ("0" if spki[-1] != "0" else "1")
 	client.command(f'connect "ddnet+quic://[::1]:{server.port}#spki-sha256={wrong}"')
-	refused = client.wait_for_log_prefix("client: offline error=", timeout=10).line
-	if f"server key does not match the pin (presented spki-sha256={spki})" not in refused:
-		raise AssertionError(f"expected a pin error, got {refused!r}")
+	wait_for_identity_refusal(client, f"server key does not match the pin (presented spki-sha256={spki})")
 	if test_env.runner.test_websockets:
 		# A native `wss://` client is shown the certificate as well.
 		client.command(f'connect "ddnet+wss://127.0.0.1:{server.port}#spki-sha256={spki}"')

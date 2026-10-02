@@ -13,6 +13,7 @@
 #include <engine/client/checksum.h>
 #include <engine/client/friends.h>
 #include <engine/client/ghost.h>
+#include <engine/client/server_identity.h>
 #include <engine/client/serverbrowser.h>
 #include <engine/client/updater.h>
 #include <engine/editor.h>
@@ -91,6 +92,14 @@ class CClient : public IClient, public CDemoPlayer::IListener
 	CFriends m_Foes;
 
 	char m_aConnectAddressStr[MAX_SERVER_ADDRESSES * NETADDR_MAXSTRSIZE] = "";
+	// The keys of QUIC and native wss servers trusted on first use, and the
+	// check of the server the main connection goes to.
+	CQuicKnownHosts m_QuicKnownHosts;
+	CQuicIdentityCheck m_QuicIdentityCheck;
+	// What the server of the main connection has to show, as a warning has it
+	// when it does not; only for a transport that shows the server's identity.
+	bool m_HasServerIdentity = false;
+	CServerIdentityFailure m_ServerIdentity;
 
 	CUuid m_ConnectionId = UUID_ZEROED;
 	bool m_Sixup;
@@ -350,6 +359,21 @@ public:
 	void Connect(const char *pAddress, const char *pPassword = nullptr) override;
 	void DisconnectWithReason(const char *pReason);
 	void Disconnect() override;
+	/**
+	 * Warns that the server is not who it should be, the same way for every
+	 * transport, and disconnects without falling back to anything else.
+	 *
+	 * @param Failure What was expected and what the server showed.
+	 * @param pDetail What went wrong, for the log.
+	 */
+	void ServerIdentityFailed(const CServerIdentityFailure &Failure, const char *pDetail);
+	/**
+	 * Checks the key the server of the main connection showed once it is
+	 * online, and remembers it on first use.
+	 *
+	 * @return Whether the connection may go on.
+	 */
+	bool CheckServerIdentity();
 
 	void DummyDisconnect(const char *pReason) override;
 	void DummyConnect() override;
@@ -465,6 +489,9 @@ public:
 	static void Con_EndFavoriteGroup(IConsole::IResult *pResult, void *pUserData);
 	static void Con_AddFavorite(IConsole::IResult *pResult, void *pUserData);
 	static void Con_RemoveFavorite(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData);
+	static void Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData);
+	static void QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData);
 	static void Con_Play(IConsole::IResult *pResult, void *pUserData);
 	static void Con_Record(IConsole::IResult *pResult, void *pUserData);
 	static void Con_StopRecord(IConsole::IResult *pResult, void *pUserData);

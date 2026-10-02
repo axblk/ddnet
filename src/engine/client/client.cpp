@@ -43,6 +43,7 @@
 #include <engine/shared/assertion_logger.h>
 #include <engine/shared/compression.h>
 #include <engine/shared/config.h>
+#include <engine/shared/connect_choice.h>
 #include <engine/shared/connect_target.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/fifo.h>
@@ -685,6 +686,24 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 
 	m_CanReceiveServerCapabilities = true;
 
+	// What the server has to show: the pin of the address, or the key it
+	// showed before where the address pins nothing. The library holds it to
+	// that during the TLS handshake.
+	m_QuicIdentityCheck.Reset();
+	CModernTransportStart Identity;
+	char aListedFragment[sizeof(Target.m_aFragment)] = "";
+	if(const CServerInfo *pListed = FindListedServer(m_ServerBrowser, m_aConnectAddressStr))
+		pListed->m_Pin.Fragment(Target.m_aAddrs[0], aListedFragment, sizeof(aListedFragment));
+	const bool Listed = aListedFragment[0] != '\0' && str_comp(aListedFragment, Target.m_aFragment) == 0;
+	m_HasServerIdentity = SetModernTransportStart(&Identity, Target.m_aAddrs[0], Target.m_aHost, Target.m_aFragment, Listed);
+	if(m_HasServerIdentity)
+	{
+		m_QuicIdentityCheck.Prepare(&Identity, m_QuicKnownHosts);
+		if(Identity.m_PinSource == EServerIdentitySource::REMEMBERED)
+			FormatModernTransportFragment(Target.m_aFragment, sizeof(Target.m_aFragment), Identity.m_WebTransport, Identity.m_Pin);
+		m_ServerIdentity = CServerIdentityFailure::Expected(Identity, ModernTransportName(Identity));
+	}
+
 	m_Sixup = Target.m_Sixup;
 	Target.Start(m_aNetClient[CONN_MAIN]);
 
@@ -695,6 +714,47 @@ void CClient::Connect(const char *pAddress, const char *pPassword)
 	m_aGametimeMarginGraphs[CONN_MAIN].Init(-150.0f, 150.0f);
 
 	GenerateTimeoutCodes(Target.m_aAddrs, Target.m_NumAddrs);
+}
+
+void CClient::ServerIdentityFailed(const CServerIdentityFailure &Failure, const char *pDetail)
+{
+	log_error("client", "%s: %s", SERVER_IDENTITY_DISCONNECT_REASON, pDetail);
+	char aWarning[1024];
+	FormatServerIdentityWarning(aWarning, sizeof(aWarning), Failure);
+	SWarning Warning(ServerIdentityWarningTitle(), aWarning);
+	Warning.m_AutoHide = false;
+	AddWarning(Warning);
+	DisconnectWithReason(SERVER_IDENTITY_DISCONNECT_REASON);
+}
+
+bool CClient::CheckServerIdentity()
+{
+	if(!m_HasServerIdentity)
+		return true;
+	SHA256_DIGEST Presented;
+	const bool HasPresented = sha256_from_str(&Presented, m_aNetClient[CONN_MAIN].ServerIdentity()) == 0;
+	const CQuicIdentityCheck::EResult Identity = m_QuicIdentityCheck.Check(Presented.data, HasPresented ? sizeof(Presented.data) : 0, &m_QuicKnownHosts);
+	if(Identity == CQuicIdentityCheck::EResult::MISSING)
+	{
+		DisconnectWithReason("the transport did not report the server key");
+		return false;
+	}
+	if(Identity == CQuicIdentityCheck::EResult::CHANGED)
+	{
+		CServerIdentityFailure Failure = m_ServerIdentity;
+		Failure.m_HasPresented = Failure.m_Pin.m_Trust == EModernTransportTrust::SPKI_HASH;
+		Failure.m_Presented = Presented;
+		ServerIdentityFailed(Failure, "the server key is not the expected one");
+		return false;
+	}
+	if(Identity == CQuicIdentityCheck::EResult::NOT_STORED)
+	{
+		DisconnectWithReason("could not store the server key");
+		return false;
+	}
+	if(Identity == CQuicIdentityCheck::EResult::STORED && !m_pConfigManager->Save())
+		log_warn("client", "could not persist trusted server key");
+	return true;
 }
 
 void CClient::DisconnectWithReason(const char *pReason)
@@ -2779,7 +2839,20 @@ void CClient::PumpNetwork()
 		// check for errors of main and dummy
 		if(State() != IClient::STATE_OFFLINE && State() < IClient::STATE_QUITTING)
 		{
-			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
+			SHA256_DIGEST Presented;
+			bool PresentedCertificate;
+			if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE && State() == IClient::STATE_CONNECTING && m_HasServerIdentity &&
+				m_aNetClient[CONN_MAIN].PinRefused(&Presented, &PresentedCertificate))
+			{
+				// The server showed another key or certificate than its pin.
+				CServerIdentityFailure Failure = m_ServerIdentity;
+				Failure.m_HasPresented = PresentedCertificate == (Failure.m_Pin.m_Trust == EModernTransportTrust::CERTIFICATE_HASH);
+				Failure.m_Presented = Presented;
+				char aDetail[256];
+				str_copy(aDetail, m_aNetClient[CONN_MAIN].ErrorString());
+				ServerIdentityFailed(Failure, aDetail);
+			}
+			else if(m_aNetClient[CONN_MAIN].State() == NETSTATE_OFFLINE)
 			{
 				// This will also disconnect the dummy, so the branch below is an `else if`
 				Disconnect();
@@ -2803,7 +2876,7 @@ void CClient::PumpNetwork()
 		}
 
 		// check if main was connected
-		if(State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE)
+		if(State() == IClient::STATE_CONNECTING && m_aNetClient[CONN_MAIN].State() == NETSTATE_ONLINE && CheckServerIdentity())
 		{
 			// we switched to online
 			m_pConsole->Print(IConsole::OUTPUT_LEVEL_STANDARD, "client", "connected, sending info", CLIENT_NETWORK_PRINT_COLOR);
@@ -3275,6 +3348,7 @@ void CClient::InitInterfaces()
 #endif
 
 	m_pConfigManager->RegisterCallback(IFavorites::ConfigSaveCallback, m_pFavorites);
+	m_pConfigManager->RegisterCallback(QuicKnownHostsConfigSaveCallback, this);
 	m_Friends.Init();
 	m_Foes.Init(true);
 
@@ -4067,6 +4141,54 @@ void CClient::Con_RemoveFavorite(IConsole::IResult *pResult, void *pUserData)
 		pSelf->m_pFavorites->Remove(&Addr, 1);
 }
 
+void CClient::Con_QuicKnownHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	// The kind of key is part of the value, so an entry of another kind, like
+	// one from before keys were pinned this way, is dropped and not mistaken.
+	const char *pSpkiSha256 = str_startswith(pResult->GetString(2), "spki-sha256=");
+	if(!pSpkiSha256)
+	{
+		log_info("client", "dropping QUIC known host %s:%d of an old format", pResult->GetString(0), pResult->GetInteger(1));
+		return;
+	}
+	SHA256_DIGEST SpkiSha256;
+	if(sha256_from_str(&SpkiSha256, pSpkiSha256) != 0 ||
+		!pSelf->m_QuicKnownHosts.Add(pResult->GetString(0), pResult->GetInteger(1), SpkiSha256))
+		log_error("client", "invalid or conflicting QUIC known host");
+}
+
+void CClient::Con_QuicForgetHost(IConsole::IResult *pResult, void *pUserData)
+{
+	CClient *pSelf = static_cast<CClient *>(pUserData);
+	char aHost[128];
+	if(!NormalizeQuicTrustHost(pResult->GetString(0), aHost, sizeof(aHost)))
+	{
+		log_error("client", "invalid QUIC known host");
+		return;
+	}
+	const int Port = pResult->NumArguments() > 1 ? pResult->GetInteger(1) : 0;
+	if(!pSelf->m_QuicKnownHosts.Forget(aHost, Port))
+	{
+		log_info("client", "QUIC known host not found");
+		return;
+	}
+	pSelf->m_pConfigManager->Save();
+}
+
+void CClient::QuicKnownHostsConfigSaveCallback(IConfigManager *pConfigManager, void *pUserData)
+{
+	const CClient *pSelf = static_cast<const CClient *>(pUserData);
+	for(const CQuicKnownHosts::CHost &KnownHost : pSelf->m_QuicKnownHosts.Hosts())
+	{
+		char aSpkiSha256[SHA256_MAXSTRSIZE];
+		sha256_str(KnownHost.m_SpkiSha256, aSpkiSha256, sizeof(aSpkiSha256));
+		char aLine[256];
+		str_format(aLine, sizeof(aLine), "quic_known_host \"%s\" %d spki-sha256=%s", KnownHost.m_aHost, KnownHost.m_Port, aSpkiSha256);
+		pConfigManager->WriteLine(aLine);
+	}
+}
+
 void CClient::DemoSliceBegin()
 {
 	const CDemoPlayer::CPlaybackInfo *pInfo = m_DemoPlayer.Info();
@@ -4768,6 +4890,8 @@ void CClient::RegisterCommands()
 	m_pConsole->Register("end_favorite_group", "", CFGFLAG_CLIENT, Con_EndFavoriteGroup, this, "Use this after `add_favorite` to group favorites. Start with `begin_favorite_group`");
 	m_pConsole->Register("add_favorite", "s[host|ip] ?s['allow_ping']", CFGFLAG_CLIENT, Con_AddFavorite, this, "Add a server as a favorite");
 	m_pConsole->Register("remove_favorite", "r[host|ip]", CFGFLAG_CLIENT, Con_RemoveFavorite, this, "Remove a server from favorites");
+	m_pConsole->Register("quic_known_host", "s[host] i[port] s[key]", CFGFLAG_CLIENT, Con_QuicKnownHost, this, "Remember the verified key of a QUIC server, as spki-sha256=<hash>");
+	m_pConsole->Register("quic_forget_host", "s[host] ?i[port]", CFGFLAG_CLIENT, Con_QuicForgetHost, this, "Forget the trusted key of a QUIC server");
 	m_pConsole->Register("demo_slice_start", "", CFGFLAG_CLIENT, Con_DemoSliceBegin, this, "Mark the beginning of a demo cut");
 	m_pConsole->Register("demo_slice_end", "", CFGFLAG_CLIENT, Con_DemoSliceEnd, this, "Mark the end of a demo cut");
 	m_pConsole->Register("demo_play", "", CFGFLAG_CLIENT, Con_DemoPlay, this, "Play/pause the current demo");

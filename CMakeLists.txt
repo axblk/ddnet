@@ -1245,6 +1245,7 @@ set_glob(RUST_NET_SRC GLOB_RECURSE "rs" src/net/src
   native/tw06.rs
   native/tw07.rs
   native/vanilla.rs
+  native/web_pki.rs
   native/webtransport.rs
   native/ws.rs
   session.rs
@@ -2819,6 +2820,8 @@ if(CLIENT)
     keynames.h
     notifications.cpp
     notifications.h
+    server_identity.cpp
+    server_identity.h
     serverbrowser.cpp
     serverbrowser.h
     serverbrowser_http.cpp
@@ -3702,6 +3705,7 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     replace_words_test.cpp
     score_test.cpp
     secure_random_test.cpp
+    server_identity_test.cpp
     server_pin_test.cpp
     server_test.cpp
     serverbrowser_test.cpp
@@ -3725,6 +3729,8 @@ if((GTEST_FOUND OR DOWNLOAD_GTEST) AND SERVER)
     # tidy-alphabetical-start
     src/engine/client/blocklist_driver.cpp
     src/engine/client/blocklist_driver.h
+    src/engine/client/server_identity.cpp
+    src/engine/client/server_identity.h
     src/engine/client/serverbrowser.cpp
     src/engine/client/serverbrowser.h
     src/engine/client/serverbrowser_http.cpp

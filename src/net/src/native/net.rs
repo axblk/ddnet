@@ -1,4 +1,7 @@
+use crate::addr::HostName;
+use crate::addr::QuicAddr;
 use crate::addr::RawAddr;
+use crate::addr::WsAddr;
 use crate::libtw2_patch;
 use crate::normalize;
 use crate::quic;
@@ -1364,14 +1367,28 @@ impl Net {
         Ok(())
     }
     pub fn connect(&mut self, addr: &str) -> Result<PeerIndex> {
+        self.connect_named(addr, None)
+    }
+    /// Connects to `addr`, an IP address, as `server_name`, the name it was
+    /// looked up by, where there is one: the server is told the name, and
+    /// `#webpki` checks the certificate for it.
+    pub fn connect_named(&mut self, addr: &str, server_name: Option<&str>) -> Result<PeerIndex> {
         let idx = self.cb.next_peer_index.get_and_increment();
-        let addr: Addr = match addr.parse() {
+        let mut addr: Addr = match addr.parse() {
             Err(error) => {
                 self.connect_errors.push_back((idx, error));
                 return Ok(idx);
             }
             Ok(addr) => addr,
         };
+        // An address is no name: it is in the URL already.
+        let name = server_name.filter(|name| name.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_err());
+        if let Some(name) = name.and_then(|name| HostName::from(name).ok()) {
+            match &mut addr {
+                Addr::Quic(QuicAddr { host, .. }) | Addr::Ws(WsAddr { host, .. }) => *host = Some(name),
+                _ => {}
+            }
+        }
         let socket_addr = *addr.socket_addr();
         // A TCP peer is not told apart by its address.
         let over_udp = !matches!(addr, Addr::Ws(_));

@@ -78,6 +78,18 @@ bool ddnet_net_decode_map_header(const uint8_t *payload,
                                  const uint8_t **name,
                                  size_t *name_len);
 
+/**
+ * Whether the reason of a disconnect says that the server showed another
+ * key or certificate than its pin, and which: the hash the pin compares,
+ * with `certificate` set for the hash of a certificate. A browser that
+ * could not open WebTransport counts too, with nothing presented: all
+ * zeros, `certificate` unset.
+ */
+bool ddnet_net_pin_refused(const char *reason,
+                           size_t reason_len,
+                           uint8_t (*presented)[32],
+                           bool *certificate);
+
 uint64_t ddnet_net_ev_connect_peer_index(const struct DdnetNetEvent *ev);
 
 void ddnet_net_ev_connect_addr(struct DdnetNetEvent *ev, const char **addr_ptr, size_t *addr_len);
@@ -319,6 +331,8 @@ bool ddnet_net_cancel_map(struct DdnetNet *net, uint64_t peer_index);
 bool ddnet_net_connect(struct DdnetNet *net,
                        const char *addr,
                        size_t addr_len,
+                       const char *server_name,
+                       size_t server_name_len,
                        uint64_t *peer_index);
 
 bool ddnet_net_close(struct DdnetNet *net,

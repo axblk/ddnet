@@ -12,6 +12,8 @@ use crate::PeerIndex;
 use crate::Pin;
 use crate::PrivateIdentity;
 use crate::ProtocolEvent;
+use crate::addr::HostName;
+use crate::native::web_pki;
 use crate::QuicAddr as Addr;
 use crate::Result;
 use crate::TIMEOUT_REASON;
@@ -25,12 +27,14 @@ use crate::mapstream;
 use crate::session;
 use log::debug;
 use log::info;
+use log::warn;
 use arrayvec::ArrayVec;
 use std::cmp;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::ops;
@@ -185,7 +189,7 @@ impl Shared {
             boring::ssl::SslContext::builder(boring::ssl::SslMethod::tls())
                 .context("boring::SslContext::builder")?;
         context
-            .set_sigalgs_list("ed25519:ecdsa_secp256r1_sha256")
+            .set_sigalgs_list(SIGNATURE_ALGORITHMS)
             .context("boring::SslContext::set_sigalgs_list")?;
         // What the context starts with; the callback below picks per
         // handshake.
@@ -715,6 +719,11 @@ impl ChallengerExt for Challenger {
     }
 }
 
+/// What the handshake is signed with: Ed25519 for an identity key, and what
+/// the certificates of public CAs use for Web PKI.
+pub(crate) const SIGNATURE_ALGORITHMS: &str =
+    "ed25519:ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512";
+
 /// What a client checks the server's certificate against, and what the
 /// server showed.
 #[derive(Clone, Copy)]
@@ -723,6 +732,8 @@ pub(crate) enum PeerIdentity {
     /// client that pinned nothing, which then reports what it saw.
     AcceptAny,
     Wanted(Pin),
+    /// `#webpki`: a certificate from a public CA for the name.
+    WebPki(HostName),
     Known(Shown),
     /// The peer showed `shown` where `wanted` was pinned.
     Invalid { wanted: Pin, shown: Shown },
@@ -736,14 +747,39 @@ impl PeerIdentity {
             _ => panic!("peer identity should be known"),
         }
     }
+    /// What a client connecting to `addr` as `host` checks, as the pin of
+    /// its address says.
+    pub(crate) fn of_pin(pin: Option<Pin>, host: Option<HostName>, addr: &SocketAddr) -> PeerIdentity {
+        match pin {
+            Some(Pin::WebPki) => PeerIdentity::WebPki(host.unwrap_or_else(|| {
+                let mut name = HostName::new();
+                let _ = write!(name, "{}", addr.ip());
+                name
+            })),
+            Some(pin) => PeerIdentity::Wanted(pin),
+            None => PeerIdentity::AcceptAny,
+        }
+    }
+    /// Whether the client checks the peer against something it was given.
+    pub(crate) fn pinned(&self) -> bool {
+        matches!(self, PeerIdentity::Wanted(_) | PeerIdentity::WebPki(_))
+    }
     /// Takes the certificate the peer showed, if it is the one wanted.
-    /// TLS checks that the peer holds its key.
-    pub(crate) fn check(&mut self, shown: Shown) -> bool {
+    /// TLS checks that the peer holds its key. `chain` is the DER of the
+    /// certificate and the intermediates the peer sent, for Web PKI.
+    pub(crate) fn check(&mut self, shown: Shown, chain: impl FnOnce() -> Vec<Vec<u8>>) -> bool {
         use self::PeerIdentity::*;
         match *self {
             AcceptAny => *self = Known(shown),
             Wanted(wanted) if wanted.matches(&shown.spki, &shown.certificate) => *self = Known(shown),
             Wanted(wanted) => *self = Invalid { wanted, shown },
+            WebPki(name) => match web_pki::verify(&chain(), &name) {
+                Ok(()) => *self = Known(shown),
+                Err(error) => {
+                    warn!("server certificate is not valid for {} by Web PKI: {}", name, error);
+                    *self = Invalid { wanted: Pin::WebPki, shown };
+                }
+            },
             Known(known) if known.spki == shown.spki => {}
             Known(known) => *self = Invalid { wanted: Pin::Spki(known.spki), shown },
             Invalid { .. } => {}
@@ -755,10 +791,11 @@ impl PeerIdentity {
         let PeerIdentity::Invalid { wanted, shown } = self else {
             return None;
         };
-        Some(match wanted {
-            Pin::Spki(_) => format!("server key does not match the pin (presented spki-sha256={})", shown.spki),
-            Pin::Certificate(..) => format!("server certificate does not match the pin (presented cert-sha256={})", Identity::from_bytes(shown.certificate)),
-        })
+        let presented = match wanted {
+            Pin::Spki(_) => Pin::Spki(shown.spki),
+            Pin::Certificate(..) | Pin::WebPki => Pin::Certificate(shown.certificate, None),
+        };
+        Some(wanted.refusal(presented))
     }
 }
 
@@ -811,7 +848,10 @@ fn config(
             let Some(shown) = store.chain().and_then(|chain| chain.get(0)).and_then(Shown::of) else {
                 return false;
             };
-            peer_identity.check(shown)
+            peer_identity.check(shown, || {
+                let leaf = store.chain().into_iter().flatten().take(1);
+                web_pki::der_chain(leaf.chain(store.untrusted().into_iter().flatten()))
+            })
         },
     );
     let mut config = quiche::Config::with_boring_ssl_ctx_builder(
@@ -1147,7 +1187,7 @@ impl Protocol {
         addr: Addr,
         idx: PeerIndex,
     ) -> Result<Connection> {
-        let Addr { addr: sock_addr, pin, webtransport, sixup, .. } = addr;
+        let Addr { addr: sock_addr, host, pin, webtransport, sixup } = addr;
         let cid = self.new_conn_id(cb);
         let config = self.config.client();
         config
@@ -1157,7 +1197,7 @@ impl Protocol {
             config.set_initial_max_streams_uni(HTTP3_UNI_STREAMS + MAX_INCOMING_MAP_STREAMS);
         }
         let mut conn = quiche::connect(
-            None,
+            host.as_deref(),
             &cid.as_raw(),
             cb.local_addr,
             sock_addr,
@@ -1172,10 +1212,7 @@ impl Protocol {
             self.shared.clone(),
             true,
             sock_addr,
-            match pin {
-                Some(pin) => PeerIdentity::Wanted(pin),
-                None => PeerIdentity::AcceptAny,
-            },
+            PeerIdentity::of_pin(pin, host, &sock_addr),
             webtransport,
             sixup,
         );
@@ -1343,7 +1380,7 @@ impl Connection {
             prelude_read: client,
             shared,
             client,
-            pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
+            pinned: peer_identity.pinned(),
             peer_addr,
             peer_identity,
             state: State::Connecting,

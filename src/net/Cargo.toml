@@ -56,6 +56,11 @@ pre-rfc3243-libtw2-net = "0.2.0"
 pre-rfc3243-libtw2-warn = "0.2.0"
 quiche = { version = "0.20.0", features = ["boringssl-boring-crate"] }
 ring = "0.17.14"
+# Web PKI (`#webpki`): the roots and the chain check of rustls, the same
+# the browsers' roots come from.
+rustls-pki-types = "1"
+rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
+webpki-roots = "=1.0.2"
 socket2 = { version = "0.5", features = ["all"] }
 # WebSockets are optional: handshake and framing from tungstenite, TLS from
 # the same boring the rest uses.

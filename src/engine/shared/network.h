@@ -515,6 +515,15 @@ public:
 	void SetConnectTarget(const char *pHost, const char *pFragment);
 	const char *ServerIdentity() const { return m_aServerIdentity; }
 	const char *ConnectHost() const { return m_aConnectHost; }
+	/**
+	 * Whether the connection ended because the server showed another key or
+	 * certificate than the fragment pinned, as its error string says.
+	 *
+	 * @param pPresented Set to the hash of what the server showed.
+	 * @param pCertificate Set to whether that is the hash of a certificate,
+	 * not of a key.
+	 */
+	bool PinRefused(SHA256_DIGEST *pPresented, bool *pCertificate) const;
 
 	// communication
 	int Recv(CNetChunk *pChunk, SECURITY_TOKEN *pResponseToken, bool Sixup);

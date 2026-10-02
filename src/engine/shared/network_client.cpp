@@ -124,6 +124,13 @@ void CNetClient::Disconnect(const char *pReason)
 		m_PeerId = -1;
 		m_State = NETSTATE_OFFLINE;
 	}
+	else if(pReason && pReason[0] != '\0')
+	{
+		// The client's reason for a connection the library already ended,
+		// such as a server whose identity could not be verified, is the one
+		// the user is told.
+		str_copy(m_aErrorString, pReason);
+	}
 }
 
 void CNetClient::Connect(const NETADDR *pAddr, int NumAddrs)
@@ -140,6 +147,12 @@ void CNetClient::SetConnectTarget(const char *pHost, const char *pFragment)
 {
 	str_copy(m_aConnectHost, pHost);
 	str_copy(m_aConnectFragment, pFragment);
+}
+
+bool CNetClient::PinRefused(SHA256_DIGEST *pPresented, bool *pCertificate) const
+{
+	// The library says so in the reason, which it reads back.
+	return ddnet_net_pin_refused(m_aErrorString, str_length(m_aErrorString), &pPresented->data, pCertificate);
 }
 
 void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
@@ -193,7 +206,10 @@ void CNetClient::ConnectImpl(const NETADDR *pAddr, int NumAddrs, bool Sixup)
 	}
 	m_aServerIdentity[0] = '\0';
 	uint64_t PeerId;
-	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), &PeerId))
+	// The name the address was looked up by goes along: the server is told
+	// it, and `#webpki` checks the certificate for it.
+	const char *pServerName = pAddr[0].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET) ? m_aConnectHost : "";
+	if(NET_CALL(ddnet_net_connect, m_pNet, aUrl, str_length(aUrl), pServerName, str_length(pServerName), &PeerId))
 	{
 		str_format(m_aErrorString, sizeof(m_aErrorString), "Network error: %s", m_pNet != nullptr ? ddnet_net_error(m_pNet) : "network library not open");
 		return;

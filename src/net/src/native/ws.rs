@@ -26,6 +26,9 @@ use crate::quic::PeerIdentity;
 use crate::quic::Shared;
 use crate::quic::GAME_ALPN;
 use crate::quic::Shown;
+use crate::quic::SIGNATURE_ALGORITHMS;
+use crate::addr::HostName;
+use crate::native::web_pki;
 use crate::webtransport;
 use crate::wire;
 use crate::CallbackData;
@@ -217,7 +220,7 @@ impl Protocol {
             .context("boring::SslContext::builder")?;
         client_context.set_verify(boring::ssl::SslVerifyMode::NONE);
         client_context
-            .set_sigalgs_list("ed25519:ecdsa_secp256r1_sha256")
+            .set_sigalgs_list(SIGNATURE_ALGORITHMS)
             .context("boring::SslContext::set_sigalgs_list")?;
         // The ALPN list on the wire: the name behind its length.
         let alpn = [&[GAME_ALPN.len() as u8][..], GAME_ALPN].concat();
@@ -252,14 +255,13 @@ impl Protocol {
         Ok(Some((conn, from)))
     }
     pub fn connect(&self, addr: Addr) -> Result<Connection> {
-        let Addr { addr: sock_addr, tls, pin, .. } = addr;
+        let Addr { addr: sock_addr, host, tls, pin } = addr;
         let stream = TcpStream::connect(sock_addr).context("TcpStream::connect")?;
         let _ = stream.set_nodelay(true);
-        let peer_identity = match pin {
-            Some(pin) => PeerIdentity::Wanted(pin),
-            None => PeerIdentity::AcceptAny,
-        };
-        Ok(Connection::new(self, stream, true, sock_addr, peer_identity, Some(tls)))
+        let peer_identity = PeerIdentity::of_pin(pin, host, &sock_addr);
+        let mut conn = Connection::new(self, stream, true, sock_addr, peer_identity, Some(tls));
+        conn.server_name = host;
+        Ok(conn)
     }
 }
 
@@ -287,6 +289,8 @@ pub struct Connection {
     /// The client's or the server's side of `wss://`; a server without a
     /// listener has none.
     tls_context: Option<boring::ssl::SslContext>,
+    /// The name a client tells the server, where it connected by one.
+    server_name: Option<HostName>,
     peer_identity: PeerIdentity,
     pinned: bool,
     game: Game,
@@ -326,7 +330,8 @@ impl Connection {
             tls,
             peer_addr,
             tls_context: if client { Some(proto.client_context.clone()) } else { proto.server_context.clone() },
-            pinned: matches!(peer_identity, PeerIdentity::Wanted(_)),
+            server_name: None,
+            pinned: peer_identity.pinned(),
             peer_identity,
             game: Game::Hello,
             master: Arc::new(AtomicBool::new(false)),
@@ -386,7 +391,10 @@ impl Connection {
                         Err(error) => return Err(error).context("TcpStream::peer_addr"),
                     }
                     if self.tls == Some(true) {
-                        let ssl = boring::ssl::Ssl::new(self.tls_context.as_ref().unwrap()).context("boring::Ssl::new")?;
+                        let mut ssl = boring::ssl::Ssl::new(self.tls_context.as_ref().unwrap()).context("boring::Ssl::new")?;
+                        if let Some(name) = &self.server_name {
+                            ssl.set_hostname(name).context("boring::Ssl::set_hostname")?;
+                        }
                         match ssl.connect(stream) {
                             Ok(tls) => self.tls_done(Stream::Tls(tls))?,
                             Err(boring::ssl::HandshakeError::WouldBlock(mid)) => {
@@ -483,7 +491,13 @@ impl Connection {
             let Some(shown) = tls.ssl().peer_certificate().as_deref().and_then(Shown::of) else {
                 bail!("server showed no certificate");
             };
-            if !self.peer_identity.check(shown) {
+            let ssl = tls.ssl();
+            let chain = || {
+                let leaf = ssl.peer_certificate();
+                let leaf = leaf.as_deref().into_iter();
+                web_pki::der_chain(leaf.chain(ssl.peer_cert_chain().into_iter().flatten()))
+            };
+            if !self.peer_identity.check(shown, chain) {
                 bail!("{}", self.peer_identity.mismatch().unwrap_or_default());
             }
         }

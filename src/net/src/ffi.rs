@@ -8,6 +8,7 @@ use crate::wire;
 use crate::Net as NetImpl;
 use crate::NetBuilder as NetBuilderImpl;
 use crate::PeerIndex;
+use crate::Pin;
 use crate::types::ClassicSwitches;
 use crate::types::VanillaSettings;
 use crate::Protocol;
@@ -319,6 +320,42 @@ pub extern "C" fn ddnet_net_decode_map_header(
     *sha256 = header.sha256;
     *name = header.name.as_ptr();
     *name_len = header.name.len();
+    true
+}
+/// Whether the reason of a disconnect says that the server showed another
+/// key or certificate than its pin, and which: the hash the pin compares,
+/// with `certificate` set for the hash of a certificate. A browser that
+/// could not open WebTransport counts too, with nothing presented: all
+/// zeros, `certificate` unset.
+#[no_mangle]
+pub extern "C" fn ddnet_net_pin_refused(
+    reason: *const c_char,
+    reason_len: usize,
+    presented: &mut [u8; 32],
+    certificate: &mut bool,
+) -> bool {
+    let reason = unsafe { slice::from_raw_parts(reason as *const u8, reason_len) };
+    let reason = str::from_utf8(reason).unwrap_or("");
+    // A browser does not say what the server showed.
+    if Pin::browser_refused(reason) {
+        *presented = [0; 32];
+        *certificate = false;
+        return true;
+    }
+    let Some(pin) = Pin::presented_in(reason) else {
+        return false;
+    };
+    match pin {
+        Pin::Spki(spki) => {
+            *presented = *spki.as_bytes();
+            *certificate = false;
+        }
+        Pin::Certificate(sha256, _) => {
+            *presented = sha256;
+            *certificate = true;
+        }
+        Pin::WebPki => return false,
+    }
     true
 }
 #[no_mangle]
@@ -973,13 +1010,23 @@ pub extern "C" fn ddnet_net_connect(
     net: &mut DdnetNet,
     addr: *const c_char,
     addr_len: usize,
+    // The name the address was looked up by, empty for none: the server is
+    // told it, and `#webpki` checks the certificate for it.
+    server_name: *const c_char,
+    server_name_len: usize,
     peer_index: &mut u64,
 ) -> bool {
     net.good(|impl_| {
         let addr =
             unsafe { slice::from_raw_parts(addr as *const u8, addr_len) };
         let addr = str::from_utf8(addr).unwrap();
-        *peer_index = impl_.connect(addr)?.0;
+        let server_name = if server_name.is_null() || server_name_len == 0 {
+            None
+        } else {
+            let server_name = unsafe { slice::from_raw_parts(server_name as *const u8, server_name_len) };
+            Some(str::from_utf8(server_name).unwrap())
+        };
+        *peer_index = impl_.connect_named(addr, server_name)?.0;
         Ok(())
     })
 }

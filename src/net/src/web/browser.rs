@@ -424,7 +424,8 @@ async fn start_webtransport(session: Shared, url: String, hashes: Vec<[u8; 32]>)
         });
     }
     if let Err(error) = JsFuture::from(transport.ready()).await {
-        return end(&session, JsEvent::Failed, &reason_of(&error, "WebTransport failed"));
+        let reason = format!("{} ({})", crate::addr::BROWSER_REFUSAL, reason_of(&error, "WebTransport failed"));
+        return end(&session, JsEvent::Failed, &reason);
     }
     let datagrams = transport.datagrams();
     let max_datagram_size = datagrams.max_datagram_size();

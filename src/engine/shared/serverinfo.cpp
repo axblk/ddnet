@@ -3,6 +3,7 @@
 #include "json.h"
 
 #include <base/mem.h>
+#include <base/net.h>
 #include <base/str.h>
 
 #include <engine/external/json-parser/json.h>
@@ -314,4 +315,185 @@ CServerInfo2::operator CServerInfo() const
 	Result.m_Latency = -1;
 
 	return Result;
+}
+
+static constexpr char QUIC_SERVERINFO_EXTRA_PREFIX[] = "quic|spki-sha256=";
+static constexpr char QUIC_SERVERINFO_EXTRA_SUFFIX[] = "|capabilities=datagram,map-stream,resume-v1,game-protocol-7";
+// A server that only serves WebTransport has no raw QUIC key to send, so it
+// says so in its own prefix.
+static constexpr char QUIC_SERVERINFO_EXTRA_WT_PREFIX[] = "webtransport";
+
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra)
+{
+	if(Extra.m_RawQuic)
+	{
+		char aSpkiSha256[SHA256_MAXSTRSIZE];
+		sha256_str(Extra.m_QuicSpkiSha256, aSpkiSha256, sizeof(aSpkiSha256));
+		str_format(pBuffer, BufferSize, "%s%s%s", QUIC_SERVERINFO_EXTRA_PREFIX, aSpkiSha256, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+	else
+	{
+		str_format(pBuffer, BufferSize, "%s%s", QUIC_SERVERINFO_EXTRA_WT_PREFIX, QUIC_SERVERINFO_EXTRA_SUFFIX);
+	}
+
+	// Everything past the capabilities is optional and keyed, so a client skips
+	// the segments it does not know.
+	if(Extra.m_WebTransport)
+	{
+		const CModernTransportPin &Pin = Extra.m_WebTransportPin;
+		if(Pin.m_Trust == EModernTransportTrust::CERTIFICATE_HASH)
+		{
+			char aCertificates[2 * SHA256_MAXSTRSIZE];
+			FormatCertificateHashes(aCertificates, sizeof(aCertificates), Pin);
+			str_append(pBuffer, "|webtransport=hash|wt-cert-sha256=", BufferSize);
+			str_append(pBuffer, aCertificates, BufferSize);
+		}
+		else
+		{
+			str_append(pBuffer, "|webtransport=webpki", BufferSize);
+			// Web PKI cannot validate a bare address, so the client needs the name.
+			if(Extra.m_pHostname != nullptr && Extra.m_pHostname[0] != '\0')
+			{
+				str_append(pBuffer, "|hostname=", BufferSize);
+				str_append(pBuffer, Extra.m_pHostname, BufferSize);
+			}
+		}
+	}
+	if(Extra.m_Websocket)
+		str_append(pBuffer, Extra.m_WebsocketTls ? "|websocket=wss" : "|websocket=ws", BufferSize);
+}
+
+static bool ValidHostname(const char *pHostname)
+{
+	if(pHostname[0] == '\0' || str_length(pHostname) >= 128)
+		return false;
+	for(const char *p = pHostname; *p; p++)
+	{
+		if(!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '.' || *p == '-'))
+			return false;
+	}
+	return true;
+}
+
+// The address of a transport on the host and port of a UDP address, or on a
+// host name and that port, with what it is pinned by as the fragment.
+static void FormatTransportUrl(char *pBuffer, int BufferSize, NETADDR Addr, int SchemeType, const char *pHostname, const char *pFragment)
+{
+	Addr.type = (Addr.type & (NETTYPE_IPV4 | NETTYPE_IPV6 | NETTYPE_TW7)) | SchemeType;
+	char aUrl[NETADDR_URL_MAXSTRSIZE];
+	net_addr_url_str(&Addr, aUrl, sizeof(aUrl), true);
+	if(pHostname[0] != '\0')
+	{
+		char aScheme[32];
+		str_truncate(aScheme, sizeof(aScheme), aUrl, str_find(aUrl, "://") + 3 - aUrl);
+		str_format(pBuffer, BufferSize, "%s%s:%d", aScheme, pHostname, Addr.port);
+	}
+	else
+	{
+		str_copy(pBuffer, aUrl, BufferSize);
+	}
+	if(pFragment[0] != '\0')
+	{
+		str_append(pBuffer, "#", BufferSize);
+		str_append(pBuffer, pFragment, BufferSize);
+	}
+}
+
+int ParseQuicServerInfoExtra(const char *pExtraInfo, const NETADDR &Addr, char (*paUrls)[QUIC_SERVERINFO_URL_MAXSIZE])
+{
+	char aSpkiFragment[SHA256_MAXSTRSIZE + 16] = "";
+	const char *pSegments;
+	if(const char *pWebTransportOnly = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_WT_PREFIX))
+	{
+		pSegments = str_startswith(pWebTransportOnly, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		if(pSegments == nullptr)
+			return -1;
+	}
+	else
+	{
+		const char *pFingerprint = str_startswith(pExtraInfo, QUIC_SERVERINFO_EXTRA_PREFIX);
+		if(!pFingerprint || str_length(pFingerprint) < (int)SHA256_DIGEST_LENGTH * 2)
+			return -1;
+		pSegments = str_startswith(pFingerprint + SHA256_DIGEST_LENGTH * 2, QUIC_SERVERINFO_EXTRA_SUFFIX);
+		char aFingerprint[SHA256_MAXSTRSIZE];
+		str_truncate(aFingerprint, sizeof(aFingerprint), pFingerprint, SHA256_DIGEST_LENGTH * 2);
+		SHA256_DIGEST Fingerprint;
+		if(pSegments == nullptr || sha256_from_str(&Fingerprint, aFingerprint))
+			return -1;
+		CModernTransportPin Pin = {};
+		Pin.m_Trust = EModernTransportTrust::SPKI_HASH;
+		Pin.m_Fingerprint = Fingerprint;
+		FormatModernTransportFragment(aSpkiFragment, sizeof(aSpkiFragment), false, Pin);
+	}
+
+	// Unknown segments are skipped, so a server can add one without shutting out
+	// the clients that do not know it yet.
+	CModernTransportPin WebTransportPin = {};
+	bool WebTransportHashes = false;
+	char aHostname[128] = "";
+	const char *pWebsocket = nullptr;
+	while(*pSegments == '|')
+	{
+		char aSegment[2 * SHA256_MAXSTRSIZE + 32];
+		const char *pEnd = str_find(pSegments + 1, "|");
+		if(pEnd == nullptr)
+			str_copy(aSegment, pSegments + 1);
+		else
+			str_truncate(aSegment, sizeof(aSegment), pSegments + 1, pEnd - pSegments - 1);
+		pSegments = pEnd ? pEnd : "";
+
+		if(const char *pMode = str_startswith(aSegment, "webtransport="))
+		{
+			if(str_comp(pMode, "hash") == 0)
+				WebTransportPin.m_Trust = EModernTransportTrust::CERTIFICATE_HASH;
+			else if(str_comp(pMode, "webpki") == 0)
+				WebTransportPin.m_Trust = EModernTransportTrust::WEBPKI;
+		}
+		else if(const char *pCertificates = str_startswith(aSegment, "wt-cert-sha256="))
+		{
+			CModernTransportPin Pin = {};
+			if(ParseCertificateHashes(pCertificates, &Pin))
+			{
+				WebTransportPin.m_Fingerprint = Pin.m_Fingerprint;
+				WebTransportPin.m_NextFingerprint = Pin.m_NextFingerprint;
+				WebTransportPin.m_HasNextFingerprint = Pin.m_HasNextFingerprint;
+				WebTransportHashes = true;
+			}
+		}
+		else if(const char *pHostname = str_startswith(aSegment, "hostname="))
+		{
+			// This becomes the TLS server name and the host of the WebTransport URL.
+			if(ValidHostname(pHostname))
+				str_copy(aHostname, pHostname);
+		}
+		else if(const char *pWebsocketMode = str_startswith(aSegment, "websocket="))
+		{
+			if(str_comp(pWebsocketMode, "ws") == 0 || str_comp(pWebsocketMode, "wss") == 0)
+				pWebsocket = str_comp(pWebsocketMode, "wss") == 0 ? "wss" : "ws";
+		}
+	}
+
+	int NumUrls = 0;
+	if(aSpkiFragment[0] != '\0')
+		FormatTransportUrl(paUrls[NumUrls++], QUIC_SERVERINFO_URL_MAXSIZE, Addr, NETTYPE_QUIC, "", aSpkiFragment);
+	if(WebTransportPin.m_Trust == EModernTransportTrust::CERTIFICATE_HASH && WebTransportHashes)
+	{
+		char aFragment[2 * SHA256_MAXSTRSIZE + 16];
+		FormatModernTransportFragment(aFragment, sizeof(aFragment), true, WebTransportPin);
+		FormatTransportUrl(paUrls[NumUrls++], QUIC_SERVERINFO_URL_MAXSIZE, Addr, NETTYPE_QUIC | NETTYPE_WEBTRANSPORT, "", aFragment);
+	}
+	else if(WebTransportPin.m_Trust == EModernTransportTrust::WEBPKI)
+	{
+		FormatTransportUrl(paUrls[NumUrls++], QUIC_SERVERINFO_URL_MAXSIZE, Addr, NETTYPE_QUIC | NETTYPE_WEBTRANSPORT, aHostname, "webpki");
+	}
+	// WebSockets only carry DDNet. `wss://` shows the key raw QUIC shows, or a
+	// certificate Web PKI checks for the host name.
+	if(pWebsocket != nullptr && (Addr.type & NETTYPE_TW7) == 0)
+	{
+		if(str_comp(pWebsocket, "wss") == 0)
+			FormatTransportUrl(paUrls[NumUrls++], QUIC_SERVERINFO_URL_MAXSIZE, Addr, NETTYPE_WEBSOCKET | NETTYPE_WEBSOCKET_TLS, aSpkiFragment[0] ? "" : aHostname, aSpkiFragment[0] ? aSpkiFragment : (aHostname[0] ? "webpki" : ""));
+		else
+			FormatTransportUrl(paUrls[NumUrls++], QUIC_SERVERINFO_URL_MAXSIZE, Addr, NETTYPE_WEBSOCKET, "", "");
+	}
+	return NumUrls;
 }

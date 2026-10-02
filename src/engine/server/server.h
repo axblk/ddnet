@@ -78,6 +78,8 @@ class CServer : public IServer
 	char m_aLastIdentityFragment[160] = {};
 	char m_aLastWebTransportFragment[160] = {};
 	void FormatModernTransportFragments(char *pIdentityFragment, int IdentityFragmentSize, char *pWebTransportFragment, int WebTransportFragmentSize);
+	// The modern transports as the LAN extra info and `experimental.transports` describe them.
+	void FormatTransportExtraInfo(char *pBuffer, int BufferSize);
 
 #if defined(CONF_UPNP)
 	CUPnP m_UPnP;

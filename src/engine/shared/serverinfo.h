@@ -3,8 +3,11 @@
 
 #include "protocol.h"
 
+#include <base/hash.h>
+
 #include <engine/map.h>
 #include <engine/serverbrowser.h>
+#include <engine/shared/transport_pin.h>
 
 typedef struct _json_value json_value;
 class CServerInfo;
@@ -55,5 +58,49 @@ public:
 };
 
 bool ParseCrc(unsigned int *pResult, const char *pString);
+
+/**
+ * What a server advertises about its modern transports, in the reserved extra
+ * info field of an extended server info answer and in `experimental.transports`
+ * of the info it registers. This is how a LAN server, which no master server
+ * lists, announces them, and how the others do until the masters list them.
+ */
+struct CQuicServerInfoExtra
+{
+	bool m_RawQuic;
+	// What a raw QUIC link pins, see `EModernTransportTrust::SPKI_HASH`.
+	SHA256_DIGEST m_QuicSpkiSha256;
+	bool m_WebTransport;
+	CModernTransportPin m_WebTransportPin;
+	const char *m_pHostname;
+	// WebSockets, with TLS for `ddnet+wss://`, on the same port over TCP.
+	bool m_Websocket;
+	bool m_WebsocketTls;
+};
+
+enum
+{
+	// Two certificate hashes and a hostname on top of the base string. The
+	// packer takes this as an upper bound, only the actual text is sent.
+	QUIC_SERVERINFO_EXTRA_MAXSIZE = 640,
+	// An address with a host name of the maximum length and two certificate hashes.
+	QUIC_SERVERINFO_URL_MAXSIZE = 384,
+	// Raw QUIC, WebTransport and a WebSocket.
+	QUIC_SERVERINFO_MAX_URLS = 3,
+};
+
+void FormatQuicServerInfoExtra(char *pBuffer, int BufferSize, const CQuicServerInfoExtra &Extra);
+/**
+ * Reads the modern transports of a server from the extra info field of its
+ * extended server info answer, or from the info it registers.
+ *
+ * @param pExtraInfo The text the server describes them with.
+ * @param Addr A UDP address of the server, which the transports share.
+ * @param paUrls Receives the addresses of the transports, with what they are
+ * pinned by as the fragment, like a master lists them.
+ *
+ * @return The number of addresses, -1 if the text cannot be read.
+ */
+int ParseQuicServerInfoExtra(const char *pExtraInfo, const NETADDR &Addr, char (*paUrls)[QUIC_SERVERINFO_URL_MAXSIZE]);
 
 #endif // ENGINE_SHARED_SERVERINFO_H

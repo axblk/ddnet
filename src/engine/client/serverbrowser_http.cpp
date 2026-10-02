@@ -362,7 +362,7 @@ private:
 		std::vector<CServerInfo> &Servers() { return m_vServers; }
 
 	private:
-		void Run() override { m_Success = !Parse(m_pJson, &m_vServers); }
+		void Run() override { m_Success = !ServerBrowserHttpParse(m_pJson, &m_vServers); }
 
 		json_value *m_pJson;
 		bool m_Success = false;
@@ -370,7 +370,6 @@ private:
 	};
 
 	static bool Validate(json_value *pJson);
-	static bool Parse(json_value *pJson, std::vector<CServerInfo> *pvServers);
 	void OnListFailure();
 
 	IEngine *m_pEngine;
@@ -521,12 +520,61 @@ static bool ServerbrowserParseUrl(NETADDR *pOut, const char *pUrl, char *pHostna
 	return pOut->port == 0;
 }
 
+// Reads one address the master lists into the server's entry, with what
+// its fragment pins and the host name it is listed under.
+static void AddListedAddress(CServerInfo *pInfo, const char *pUrl)
+{
+	NETADDR ParsedAddr;
+	char aHostname[sizeof(pInfo->m_aHostname)];
+	if(ServerbrowserParseUrl(&ParsedAddr, pUrl, aHostname, sizeof(aHostname)))
+	{
+		// Skip unknown addresses.
+		return;
+	}
+	if(pInfo->m_aHostname[0] == '\0')
+	{
+		str_copy(pInfo->m_aHostname, aHostname);
+	}
+	if(const char *pFragment = str_find(pUrl, "#"))
+	{
+		pInfo->m_Pin.AddFragment(ParsedAddr, pFragment + 1);
+	}
+	if(pInfo->m_NumAddresses < (int)std::size(pInfo->m_aAddresses))
+	{
+		pInfo->m_aAddresses[pInfo->m_NumAddresses] = ParsedAddr;
+		pInfo->m_NumAddresses += 1;
+	}
+}
+
+// The master servers do not list the QUIC, WebTransport and WebSocket
+// addresses yet, so a server describes them in its info until they do, in
+// the text of its LAN extra info. They share the host and port of its UDP
+// addresses and are read like the ones the master lists.
+static void AddInfoTransports(CServerInfo *pInfo, const json_value &Info)
+{
+	const json_value &Transports = Info["experimental"]["transports"];
+	if(Transports.type != json_string)
+		return;
+	const int NumUdp = pInfo->m_NumAddresses;
+	for(int i = 0; i < NumUdp; i++)
+	{
+		const NETADDR Addr = pInfo->m_aAddresses[i];
+		if((Addr.type & NETTYPE_SCHEME & ~NETTYPE_TW7) != 0)
+			continue;
+		char aaUrls[QUIC_SERVERINFO_MAX_URLS][QUIC_SERVERINFO_URL_MAXSIZE];
+		const int NumUrls = ParseQuicServerInfoExtra(Transports, Addr, aaUrls);
+		for(int u = 0; u < NumUrls; u++)
+			AddListedAddress(pInfo, aaUrls[u]);
+	}
+}
+
 bool CServerBrowserHttp::Validate(json_value *pJson)
 {
 	std::vector<CServerInfo> vServers;
-	return Parse(pJson, &vServers);
+	return ServerBrowserHttpParse(pJson, &vServers);
 }
-bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvServers)
+
+bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServers)
 {
 	std::vector<CServerInfo> vServers;
 
@@ -566,7 +614,8 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 		CServerInfo SetInfo = ParsedInfo;
 		SetInfo.m_Location = ParsedLocation;
 		SetInfo.m_NumAddresses = 0;
-		bool GotVersion6 = false;
+		// Every endpoint is kept; which of them this client uses, 0.7 only
+		// without DDNet among them, is `ConnectEndpointUsable`'s to say.
 		for(unsigned int a = 0; a < Addresses.u.array.length; a++)
 		{
 			const json_value &Address = Addresses[a];
@@ -574,44 +623,13 @@ bool CServerBrowserHttp::Parse(json_value *pJson, std::vector<CServerInfo> *pvSe
 			{
 				return true;
 			}
-			if(str_startswith(Addresses[a], "tw-0.6+udp://"))
-			{
-				GotVersion6 = true;
-				break;
-			}
+			AddListedAddress(&SetInfo, Address);
 		}
-		for(unsigned int a = 0; a < Addresses.u.array.length; a++)
-		{
-			const json_value &Address = Addresses[a];
-			if(Address.type != json_string)
-			{
-				return true;
-			}
-			if(GotVersion6 && str_startswith(Addresses[a], "tw-0.7+udp://"))
-			{
-				continue;
-			}
-			NETADDR ParsedAddr;
-			char aHostname[sizeof(SetInfo.m_aHostname)];
-			if(ServerbrowserParseUrl(&ParsedAddr, Addresses[a], aHostname, sizeof(aHostname)))
-			{
-				// Skip unknown addresses.
-				continue;
-			}
-			if(SetInfo.m_aHostname[0] == '\0')
-			{
-				str_copy(SetInfo.m_aHostname, aHostname);
-			}
-			if(const char *pFragment = str_find(Addresses[a], "#"))
-			{
-				SetInfo.m_Pin.AddFragment(ParsedAddr, pFragment + 1);
-			}
-			if(SetInfo.m_NumAddresses < (int)std::size(SetInfo.m_aAddresses))
-			{
-				SetInfo.m_aAddresses[SetInfo.m_NumAddresses] = ParsedAddr;
-				SetInfo.m_NumAddresses += 1;
-			}
-		}
+		bool ListsModern = false;
+		for(int a = 0; a < SetInfo.m_NumAddresses; a++)
+			ListsModern |= (SetInfo.m_aAddresses[a].type & (NETTYPE_QUIC | NETTYPE_WEBSOCKET)) != 0;
+		if(!ListsModern)
+			AddInfoTransports(&SetInfo, Info);
 		if(SetInfo.m_NumAddresses > 0)
 		{
 			vServers.push_back(SetInfo);

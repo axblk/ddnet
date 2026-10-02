@@ -2606,6 +2606,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   teehistorian_ex_chunks.h
   translation_context.cpp
   translation_context.h
+  transport_pin.cpp
+  transport_pin.h
   uuid_manager.cpp
   uuid_manager.h
   video.cpp

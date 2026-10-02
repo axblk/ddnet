@@ -55,6 +55,7 @@
 #include <engine/shared/protocol_ex.h>
 #include <engine/shared/protocolglue.h>
 #include <engine/shared/rust_version.h>
+#include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/shared/uuid_manager.h>
 #include <engine/sound.h>
@@ -1362,6 +1363,29 @@ static int SavedServerInfoType(int Type)
 	return Type;
 }
 
+// A LAN server, which no master lists, describes its modern transports in
+// the extra info of its answer. Host names are left to a master's list:
+// looking one up here would hold up the client.
+static void AddExtraInfoTransports(CServerInfo *pInfo, const char *pExtraInfo, const NETADDR &From)
+{
+	char aaUrls[QUIC_SERVERINFO_MAX_URLS][QUIC_SERVERINFO_URL_MAXSIZE];
+	const int NumUrls = ParseQuicServerInfoExtra(pExtraInfo, From, aaUrls);
+	for(int u = 0; u < NumUrls; u++)
+	{
+		NETADDR Addr;
+		if(net_addr_from_url(&Addr, aaUrls[u], nullptr, 0) != 0)
+			continue;
+		bool Known = false;
+		for(int i = 0; i < pInfo->m_NumAddresses && !Known; i++)
+			Known = pInfo->m_aAddresses[i] == Addr;
+		if(Known || pInfo->m_NumAddresses >= (int)std::size(pInfo->m_aAddresses))
+			continue;
+		if(const char *pFragment = str_find(aaUrls[u], "#"))
+			pInfo->m_Pin.AddFragment(Addr, pFragment + 1);
+		pInfo->m_aAddresses[pInfo->m_NumAddresses++] = Addr;
+	}
+}
+
 void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, int DataSize)
 {
 	CServerBrowser::CServerEntry *pEntry = m_ServerBrowser.Find(*pFrom);
@@ -1460,7 +1484,9 @@ void CClient::ProcessServerInfo(int RawType, NETADDR *pFrom, const void *pData, 
 	bool DuplicatedPacket = false;
 	if(SavedType == SERVERINFO_EXTENDED)
 	{
-		Up.GetString(); // extra info, reserved
+		const char *pExtraInfo = Up.GetString();
+		if(RawType == SERVERINFO_EXTENDED && m_ServerBrowser.GetCurrentType() == IServerBrowser::TYPE_LAN)
+			AddExtraInfoTransports(&Info, pExtraInfo, *pFrom);
 
 		uint64_t Flag = (uint64_t)1 << PacketNo;
 		DuplicatedPacket = Info.m_ReceivedPackets & Flag;

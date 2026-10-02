@@ -13,6 +13,7 @@
 #include <engine/shared/config.h>
 #include <engine/shared/jobs.h>
 #include <engine/shared/json.h>
+#include <engine/shared/jsonwriter.h>
 #include <engine/shared/masterserver.h>
 #include <engine/shared/network.h>
 #include <engine/shared/packer.h>
@@ -140,13 +141,13 @@ class CRegister : public IRegister
 		char m_aChallengeToken[128] = {0};
 
 		void CheckChallengeStatus();
-		void FormatAddress(char *pBuffer, int BufferSize) const;
 
 	public:
 		int64_t m_PrevRegister = -1;
 		int64_t m_NextRegister = -1;
 
 		CProtocol(CRegister *pParent, int Protocol);
+		void FormatAddress(char *pBuffer, int BufferSize) const;
 		void OnToken(const char *pToken);
 		void SendRegister();
 		void SendDeleteIfRegistered(bool Shutdown);
@@ -190,6 +191,8 @@ class CRegister : public IRegister
 
 public:
 	CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHttp *pHttp, int ServerPort, unsigned SixupSecurityToken, const CRegisterTransports &Transports, const char *pRegisterHostname, const char *pIdentityFragment, const char *pWebTransportFragment);
+	// Whether the protocol is to be registered, before any master turned it down.
+	bool ProtocolWanted(int Protocol) const;
 	void UpdateProtocolEnabled();
 	void Update() override;
 	void OnConfigChange() override;
@@ -640,25 +643,31 @@ CRegister::CRegister(CConfig *pConfig, IConsole *pConsole, IEngine *pEngine, IHt
 	m_pConsole->Chain("sv_ipv4only", ConchainOnConfigChange, this);
 }
 
+bool CRegister::ProtocolWanted(int Protocol) const
+{
+	const SProtocolInfo &Info = PROTOCOLS[Protocol];
+	bool Wanted = m_aProtocolRequested[Protocol];
+	switch(Info.m_Transport)
+	{
+	case ETransport::UDP: Wanted &= m_Transports.m_LegacyUdp && (!Info.m_Sixup || m_Transports.m_LegacySixupUdp); break;
+	case ETransport::QUIC: Wanted &= m_Transports.m_Quic; break;
+	case ETransport::WEBTRANSPORT: Wanted &= m_Transports.m_WebTransport; break;
+	case ETransport::WEBSOCKET: Wanted &= m_Transports.m_Websocket; break;
+	}
+	if(Info.m_Sixup)
+		Wanted &= m_pConfig->m_SvSixup != 0;
+	if(Info.m_Ipresolve == IPRESOLVE::V6)
+		Wanted &= m_pConfig->m_SvIpv4Only == 0;
+	return Wanted;
+}
+
 void CRegister::UpdateProtocolEnabled()
 {
 	for(int Protocol = 0; Protocol < NUM_PROTOCOLS; Protocol++)
 	{
-		const SProtocolInfo &Info = PROTOCOLS[Protocol];
-		bool Enabled = m_aProtocolRequested[Protocol];
-		switch(Info.m_Transport)
-		{
-		case ETransport::UDP: Enabled &= m_Transports.m_LegacyUdp && (!Info.m_Sixup || m_Transports.m_LegacySixupUdp); break;
-		case ETransport::QUIC: Enabled &= m_Transports.m_Quic; break;
-		case ETransport::WEBTRANSPORT: Enabled &= m_Transports.m_WebTransport; break;
-		case ETransport::WEBSOCKET: Enabled &= m_Transports.m_Websocket; break;
-		}
-		if(Info.m_Transport != ETransport::UDP)
+		bool Enabled = ProtocolWanted(Protocol);
+		if(PROTOCOLS[Protocol].m_Transport != ETransport::UDP)
 			Enabled &= !m_aProtocols[Protocol].Unsupported();
-		if(Info.m_Sixup)
-			Enabled &= m_pConfig->m_SvSixup != 0;
-		if(Info.m_Ipresolve == IPRESOLVE::V6)
-			Enabled &= m_pConfig->m_SvIpv4Only == 0;
 		if(Enabled == m_aProtocolEnabled[Protocol])
 			continue;
 		m_aProtocolEnabled[Protocol] = Enabled;

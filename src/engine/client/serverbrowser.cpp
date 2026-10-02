@@ -1005,6 +1005,17 @@ void CServerBrowser::OnServerInfoUpdate(const NETADDR &Addr, int Token, const CS
 	if(m_ServerlistType == IServerBrowser::TYPE_LAN)
 	{
 		SetInfo(pEntry, *pInfo);
+		// The modern transports a LAN server describes in its answer, which
+		// `SetInfo` leaves to the list otherwise.
+		for(int i = 0; i < pInfo->m_NumAddresses; i++)
+		{
+			bool Known = false;
+			for(int j = 0; j < pEntry->m_Info.m_NumAddresses && !Known; j++)
+				Known = pEntry->m_Info.m_aAddresses[j] == pInfo->m_aAddresses[i];
+			if(!Known && pEntry->m_Info.m_NumAddresses < (int)std::size(pEntry->m_Info.m_aAddresses))
+				pEntry->m_Info.m_aAddresses[pEntry->m_Info.m_NumAddresses++] = pInfo->m_aAddresses[i];
+		}
+		ServerBrowserFormatAddresses(pEntry->m_Info.m_aAddress, sizeof(pEntry->m_Info.m_aAddress), pEntry->m_Info);
 		pEntry->m_Info.m_Latency = std::min(static_cast<int>((time_get() - m_BroadcastTime) * 1000 / time_freq()), 999);
 	}
 	else if(pEntry->m_RequestTime > 0)

@@ -2,10 +2,24 @@
 #define ENGINE_CLIENT_SERVERBROWSER_HTTP_H
 #include <base/types.h>
 
+#include <engine/external/json-parser/json.h>
+
+#include <vector>
+
 class CServerInfo;
 class IEngine;
 class IStorage;
 class IHttp;
+
+/**
+ * Reads the server list a master answers with.
+ *
+ * @param pJson The answer.
+ * @param pvServers Receives the servers.
+ *
+ * @return Whether the answer is not a server list.
+ */
+bool ServerBrowserHttpParse(json_value *pJson, std::vector<CServerInfo> *pvServers);
 
 class IServerBrowserHttp
 {

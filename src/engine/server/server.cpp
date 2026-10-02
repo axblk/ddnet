@@ -39,6 +39,7 @@
 #include <engine/shared/protocol7.h>
 #include <engine/shared/protocol_ex.h>
 #include <engine/shared/rust_version.h>
+#include <engine/shared/serverinfo.h>
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
 
@@ -2518,7 +2519,13 @@ void CServer::CacheServerInfo(CCache *pCache, int Type, bool SendClients)
 	ADD_INT(p, std::min(MaxClientsProtocol, std::max(MaxClients - Config()->m_SvReservedSlots, ClientCount))); // max clients
 
 	if(Type == SERVERINFO_EXTENDED)
-		p.AddString("", 0); // extra info, reserved
+	{
+		// There is no master server on a LAN, so this answer is the only place a
+		// client learns about the modern transports there.
+		char aExtraInfo[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+		FormatTransportExtraInfo(aExtraInfo, sizeof(aExtraInfo));
+		p.AddString(aExtraInfo, sizeof(aExtraInfo), false);
+	}
 
 	const void *pPrefix = p.Data();
 	int PrefixSize = p.Size();
@@ -2989,6 +2996,20 @@ void CServer::UpdateRegisterServerInfo()
 		{
 			JsonWriter.EndArray();
 		}
+	}
+
+	// The master servers do not list QUIC, WebTransport and WebSocket addresses
+	// yet, so the clients read them from here until they do: the text of the LAN
+	// extra info, for the host and port of the UDP addresses.
+	char aTransports[QUIC_SERVERINFO_EXTRA_MAXSIZE];
+	FormatTransportExtraInfo(aTransports, sizeof(aTransports));
+	if(aTransports[0] != '\0')
+	{
+		JsonWriter.WriteAttribute("experimental");
+		JsonWriter.BeginObject();
+		JsonWriter.WriteAttribute("transports");
+		JsonWriter.WriteStrValue(aTransports);
+		JsonWriter.EndObject();
 	}
 
 	JsonWriter.WriteAttribute("clients");
@@ -3513,6 +3534,26 @@ void CServer::FormatModernTransportFragments(char *pIdentityFragment, int Identi
 	}
 }
 
+void CServer::FormatTransportExtraInfo(char *pBuffer, int BufferSize)
+{
+	pBuffer[0] = '\0';
+	if(!m_RegisterTransports.m_Quic && !m_RegisterTransports.m_WebTransport)
+		return;
+	CQuicServerInfoExtra Extra = {};
+	unsigned char aIdentity[32];
+	Extra.m_RawQuic = m_RegisterTransports.m_Quic && m_NetServer.Identity(aIdentity);
+	if(Extra.m_RawQuic)
+		mem_copy(Extra.m_QuicSpkiSha256.data, aIdentity, sizeof(aIdentity));
+	char aIdentityFragment[160];
+	char aWebTransportFragment[160];
+	FormatModernTransportFragments(aIdentityFragment, sizeof(aIdentityFragment), aWebTransportFragment, sizeof(aWebTransportFragment));
+	Extra.m_WebTransport = m_RegisterTransports.m_WebTransport && ParseModernTransportFragment(aWebTransportFragment, true, &Extra.m_WebTransportPin);
+	Extra.m_pHostname = Config()->m_SvRegisterHostname;
+	Extra.m_Websocket = m_RegisterTransports.m_Websocket;
+	Extra.m_WebsocketTls = m_RegisterTransports.m_WebsocketTls;
+	FormatQuicServerInfoExtra(pBuffer, BufferSize, Extra);
+}
+
 int CServer::Run()
 {
 	if(m_RunServer == UNINITIALIZED)
@@ -3865,6 +3906,8 @@ int CServer::Run()
 						str_copy(m_aLastIdentityFragment, aIdentityFragment);
 						str_copy(m_aLastWebTransportFragment, aWebTransportFragment);
 						m_pRegister->OnModernTrustChanged(aIdentityFragment, aWebTransportFragment);
+						// The server info describes them as well.
+						ExpireServerInfo();
 					}
 				}
 				m_pRegister->Update();

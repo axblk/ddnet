@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 from collections import namedtuple
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Queue
 from threading import Thread
-from time import time
+from time import sleep, time
 from urllib import request
 from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
@@ -1323,10 +1324,150 @@ def server_can_register(test_env):
 	servers_json = wait_for_server_address_bases(mastersrv, expected_bases)
 	if servers_json["servers"][0]["info"]["map"]["name"] != "Tutorial":
 		raise AssertionError(f"unexpected servers.json\n{servers_json}")
+	# Until the masters list them, the info describes the modern transports
+	# in the text of the LAN extra info, for the host and port of the UDP
+	# addresses.
+	transports = servers_json["servers"][0]["info"].get("experimental", {}).get("transports", "")
+	expected = f"quic|spki-sha256={server.identity}|capabilities=datagram,map-stream,resume-v1,game-protocol-7|webtransport=hash|wt-cert-sha256="
+	if not transports.startswith(expected) or test_env.runner.test_websockets != transports.endswith("|websocket=ws"):
+		raise AssertionError(f"{expected!r} not described in the server info\n{servers_json}")
 	server.exit()
 	wait_for_no_servers(mastersrv)
 	mastersrv.exit()
 	mastersrv.wait_for_exit()
+
+
+class FakeMastersrv:
+	"""Answers with a fixed server list, the way a master that lists no QUIC,
+	WebTransport or WebSocket addresses would."""
+
+	def __init__(self, servers_json):
+		body = json.dumps(servers_json).encode()
+
+		class Handler(BaseHTTPRequestHandler):
+			def do_HEAD(self):
+				self.send_response(200)
+				self.send_header("Content-Type", "application/json")
+				self.send_header("Content-Length", str(len(body)))
+				self.end_headers()
+
+			def do_GET(self):
+				self.do_HEAD()
+				self.wfile.write(body)
+
+			def log_message(self, format, *args):  # noqa: A002 builtin-argument-shadowing
+				pass
+
+		ThreadingHTTPServer.address_family = socket.AF_INET6
+		self.httpd = ThreadingHTTPServer(("::1", 0), Handler)
+		self.port = self.httpd.server_address[1]
+		Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+	def url(self):
+		return f"http://[::1]:{self.port}/ddnet/15/servers.json"
+
+	def close(self):
+		self.httpd.shutdown()
+		self.httpd.server_close()
+
+
+def request_server_info(family, address):
+	with socket.socket(family, socket.SOCK_DGRAM) as connectionless:
+		connectionless.settimeout(1)
+		for _ in range(5):
+			connectionless.sendto(b"xe" + b"\x00" * 4 + b"\xff" * 4 + b"gie3\x01", address)
+			try:
+				response, _ = connectionless.recvfrom(1400)
+			except TimeoutError:
+				continue
+			if not response.startswith(b"\xff" * 10 + b"iext"):
+				raise AssertionError(f"invalid connectionless response prefix: {response[:16]!r}")
+			return response[14:].split(b"\0")
+	raise AssertionError("timed out waiting for connectionless response")
+
+
+# On a LAN the server info is where a client learns about the modern
+# transports, in the text the QUIC transport of the other branch writes and
+# reads.
+@test
+def server_describes_transports_on_lan(test_env):
+	server = test_env.server()
+	server.wait_for_startup()
+	fields = request_server_info(socket.AF_INET6, ("::1", server.port))
+	expected = f"quic|spki-sha256={server.identity}|capabilities=datagram,map-stream,resume-v1,game-protocol-7|webtransport=hash|wt-cert-sha256=".encode()
+	if len(fields) <= 12 or not fields[12].startswith(expected):
+		raise AssertionError(f"unexpected extended serverinfo metadata: {fields!r}")
+	server.exit()
+	server.wait_for_exit()
+
+
+def select_server(client, address, timeout=30):
+	"""Selects the server in the list as a click would, once the list has it;
+	returns what went into the address box."""
+	deadline = time() + timeout
+	while True:
+		client.command(f"select_server {address}")
+		line = client.wait_for_log(lambda l: l.line.startswith(("menus: selected server, address ", "menus: no listed server has the address ")), "server selection", timeout=5).line
+		if line.startswith("menus: selected server, address "):
+			return line.split("'")[1]
+		if time() > deadline:
+			raise AssertionError(f"{address} was not listed within {timeout} seconds")
+		sleep(0.5)
+
+
+# A server whose QUIC endpoint only its info describes, as the masters do not
+# list it yet. Selecting it in the list puts its QUIC address into the address
+# box, another tab leaves the box alone, and the box connects over QUIC: the
+# server takes no DDNet connections over UDP.
+@test(requires_mastersrv=True, timeout=120)
+def client_connects_over_info_transport_from_any_tab(test_env):
+	mastersrv = test_env.mastersrv()
+	wait_for_startup([mastersrv])
+	server = test_env.server([
+		"http_allow_insecure 1",
+		"sv_register ipv6",
+		f"sv_register_url {mastersrv.register_url()}",
+	])
+	wait_for_startup([server])
+	servers_json = wait_for_server_address_bases(mastersrv, {f"tw-0.6+udp://[::1]:{server.port}"})
+	mastersrv.exit()
+	transports = servers_json["servers"][0]["info"].get("experimental", {}).get("transports", "")
+	if not transports.startswith(f"quic|spki-sha256={server.identity}|"):
+		raise AssertionError(f"QUIC not described in the server info\n{servers_json}")
+	for listed in servers_json["servers"]:
+		listed["addresses"] = [address for address in listed["addresses"] if "+udp://" in address]
+	fake = FakeMastersrv(servers_json)
+	try:
+		with open(os.path.join(test_env.tmp_dir, "ddnet-serverlist-urls.cfg"), "w", encoding="utf-8") as f:
+			f.write(f"{fake.url()}\n")
+		server.command("sv_ddnet_connections 0")
+		server.wait_for_log_prefix("net: classic protocols: ddnet 0.6 off", timeout=5)
+
+		client = test_env.client(["http_allow_insecure 1", "cl_show_welcome 0", "ui_page 8"])
+		wait_for_startup([client])
+		# The internet tab lists the server.
+		client.command("ui_page 6")
+		line = select_server(client, f"[::1]:{server.port}")
+		expected = f"ddnet+quic://[::1]:{server.port}#spki-sha256={server.identity}"
+		if line != expected:
+			raise AssertionError(f"expected {expected!r} in the address box, got {line!r}")
+		# The favorites tab does not, and the box stays.
+		client.command("ui_page 8")
+		client.command(f"select_server [::1]:{server.port}")
+		client.wait_for_log_exact(f"menus: no listed server has the address '[::1]:{server.port}'", timeout=5)
+		client.command("ui_server_address")
+		client.wait_for_log_exact(f"config: Value: {expected}", timeout=5)
+		# What the connect button does with the box.
+		client.command(f'connect "{line}"')
+		client.wait_for_log_exact(f"client: connecting to '{expected}'", timeout=5)
+		server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+		server.exit()
+		client.wait_for_log_exact("client: offline error='Server shutdown'", timeout=10)
+		client.exit()
+		server.wait_for_exit()
+		client.wait_for_exit()
+	finally:
+		fake.close()
 
 
 def server_can_register_protocol(test_env, protocol_config, protocol_log, protocol_scheme, mastersrv_args=()):

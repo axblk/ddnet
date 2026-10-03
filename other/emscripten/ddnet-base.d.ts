@@ -273,6 +273,12 @@ export declare function paintIcons(root?: ParentNode): void;
 export declare function supportError(needsWebGpu?: boolean): Promise<DDNetBaseError | null>;
 /** A parameter of the page address, after `#` or `?`. */
 export declare function urlParameter(name: string): string | null;
+/**
+ * The connect link that the page address asks for with `#connect=<link>` (the
+ * rest of the address) or `?connect=<link>`, for the arguments of the client,
+ * or `null`.
+ */
+export declare function connectLink(address?: { hash: string; search: string }): string | null;
 /** Sets parameters after `#` without a new history entry; `null` removes one. */
 export declare function setUrlParameters(values: Record<string, string | number | null>): void;
 

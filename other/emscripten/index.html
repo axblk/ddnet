@@ -20,7 +20,7 @@
 		<div id="rotate">Turn your device sideways</div>
 		<script src="DDNet.js"></script>
 		<script type="module">
-			import { Program, fillTouchScreen } from "./ddnet-base.js";
+			import { Program, connectLink, fillTouchScreen } from "./ddnet-base.js";
 
 			const canvas = document.getElementById('canvas');
 			const error = document.getElementById('error');
@@ -30,8 +30,11 @@
 			// is all there is to look at: a fatal error, or the end.
 			const showLog = () => { output.hidden = false; };
 
-			// A demo, a map or a `ddnet://` link is dropped onto the window.
-			const client = new Program({ module: DDNetClient, programName: "Client", canvas, accept: [".demo", ".map"], acceptLinks: true });
+			// A demo, a map or a `ddnet://` link is dropped onto the window. A
+			// page address that ends in `#connect=<link>` joins that server
+			// right away.
+			const link = connectLink();
+			const client = new Program({ module: DDNetClient, programName: "Client", canvas, accept: [".demo", ".map"], acceptLinks: true, arguments: link === null ? [] : [link] });
 			client.addEventListener('output', event => {
 				const { message, kind } = event.detail;
 				const line = Object.assign(document.createElement('span'), { className: "line", textContent: message });

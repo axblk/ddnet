@@ -42,6 +42,30 @@ export function urlParameter(name) {
 	return new URLSearchParams(location.search).get(name);
 }
 
+// The server a page address asks the client to join: `#connect=<link>`, or
+// `?connect=<link>` with the link escaped. After `#` the link is the rest of
+// the address, as it ends in a fragment of its own, the pin of the server, and
+// a parameter parser would read the plus of its scheme as a space. The result
+// is a connect link for the command line of the client, which reads its
+// arguments as console lines: nothing that could end one and begin a command
+// gets there. An address without a scheme of a link becomes a `ddnet://` one.
+const CONNECT_LINK = /^(?:ddnet:|ddnet\+quic:\/\/|tw-0\.7\+quic:\/\/|ddnet\+wt:\/\/|tw-0\.7\+wt:\/\/)/;
+
+export function connectLink(address = location) {
+	const fragment = /(?:^|&)connect=(.*)$/.exec(address.hash.slice(1));
+	const query = /[?&]connect=([^&]*)/.exec(address.search);
+	let link = fragment?.[1] ?? query?.[1] ?? "";
+	try {
+		link = decodeURIComponent(link);
+	} catch {
+		// A percent sign that escapes nothing: the link is taken as written.
+	}
+	if (link === "" || /[\s;"\\]/.test(link)) {
+		return null;
+	}
+	return CONNECT_LINK.test(link) ? link : `ddnet://${link}`;
+}
+
 // Written by hand rather than with `URLSearchParams`, which would escape every
 // slash of a URL in the fragment and make the link unreadable.
 export function setUrlParameters(values) {

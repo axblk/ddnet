@@ -65,3 +65,10 @@ for their request; everything else is fetched without waiting (see
 
 `demo.html`, `map.html`, `render.html` and `index.html` are the pages of the
 web site built by the `web-site` target; `server.py` serves them locally.
+
+`index.html#connect=<link>` starts the client and joins a server right away.
+The link is what the server browser copies, for example
+`ddnet+wt://203.0.113.5:8303#cert-sha256=…`, and it is the rest of the page
+address, so it comes last. `?connect=` works as well, with the link escaped
+(`%23` for its `#`). An address without the scheme of a link, such as
+`wss://example.org:8304`, is joined as it is.

@@ -274,6 +274,7 @@ public:
 	void Init() override;
 	void Reset(const char *pScriptName) override;
 	void ResetGameSettings() override;
+	void SetDefault(const char *pScriptName, int Default) override;
 	void SetReadOnly(const char *pScriptName, bool ReadOnly) override;
 	void SetGameSettingsReadOnly(bool ReadOnly) override;
 	bool Save() override;

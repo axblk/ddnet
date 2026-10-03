@@ -123,6 +123,28 @@ body:has(canvas#canvas) #error {
 	   than the writing around it. */
 	touch-action: none;
 }
+/* The game is laid out for the long side of a screen. A phone held upright is
+   asked to turn; the page turns it itself where the browser lets it, on the
+   first tap, which this takes as well as the canvas would. */
+#rotate {
+	display: none;
+}
+@media (pointer: coarse) and (orientation: portrait) {
+	#rotate {
+		display: flex;
+		position: fixed;
+		inset: 0;
+		z-index: 1;
+		align-items: center;
+		justify-content: center;
+		padding: 1rem;
+		background-color: #000;
+		color: #fff;
+		font-size: 1.25rem;
+		text-align: center;
+		touch-action: none;
+	}
+}
 /* A page that is nothing but a viewer puts the element where the canvas would
    otherwise be: over the whole window, with the page's own bar inside it. The
    element brings its own canvas and fills itself with it. */

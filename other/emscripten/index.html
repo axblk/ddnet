@@ -17,9 +17,10 @@
 			<div id="outputcontent"></div>
 		</div>
 		<canvas id="canvas" tabindex="0" aria-label="DDNet">Canvas not supported.</canvas>
+		<div id="rotate">Turn your device sideways</div>
 		<script src="DDNet.js"></script>
 		<script type="module">
-			import { Program } from "./ddnet-base.js";
+			import { Program, fillTouchScreen } from "./ddnet-base.js";
 
 			const canvas = document.getElementById('canvas');
 			const error = document.getElementById('error');
@@ -54,6 +55,8 @@
 				outputContent.append(reload);
 				showLog();
 			});
+			// On a phone the game takes the whole screen, sideways.
+			fillTouchScreen();
 			client.start().then(() => canvas.focus(), startError => {
 				error.textContent = startError.message;
 				error.hidden = false;

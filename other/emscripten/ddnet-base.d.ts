@@ -174,6 +174,14 @@ export declare function autoHide(elements: Element[], options?: AutoHideOptions)
  * canvas the program was handed is sized.
  */
 export declare function followSize(element: Element, program: { setSize(width: number, height: number): void }, options?: { signal?: AbortSignal }): { stop(): void };
+/** Whether the device is steered with a finger: a phone or a tablet, not a laptop with a touch screen. */
+export declare function touchDevice(): boolean;
+/**
+ * On a touch device, fills the screen with `element` (the page by default) and
+ * turns it to its long side on the first tap, and on the next one after the
+ * user has left again. Does nothing elsewhere, or where the browser cannot.
+ */
+export declare function fillTouchScreen(options?: { element?: Element; signal?: AbortSignal }): void;
 /** Makes `button` fill the screen with `element`, or hides it where that is not possible. */
 export declare function fullscreen(button: HTMLElement, options?: { element?: Element; shortcut?: string | null; signal?: AbortSignal }): void;
 

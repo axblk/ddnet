@@ -354,6 +354,23 @@ void CConfigManager::ResetGameSettings()
 	}
 }
 
+void CConfigManager::SetDefault(const char *pScriptName, int Default)
+{
+	for(SConfigVariable *pVariable : m_vpAllVariables)
+	{
+		if(str_comp(pScriptName, pVariable->m_pScriptName) == 0)
+		{
+			dbg_assert(pVariable->m_Type == SConfigVariable::VAR_INT, "SetDefault is for integer variables: '%s'", pScriptName);
+			SIntConfigVariable *pIntVariable = static_cast<SIntConfigVariable *>(pVariable);
+			pIntVariable->m_Default = Default;
+			pIntVariable->m_OldValue = Default;
+			*pIntVariable->m_pVariable = Default;
+			return;
+		}
+	}
+	dbg_assert_failed("Invalid command for SetDefault: '%s'", pScriptName);
+}
+
 void CConfigManager::SetReadOnly(const char *pScriptName, bool ReadOnly)
 {
 	for(SConfigVariable *pVariable : m_vpAllVariables)

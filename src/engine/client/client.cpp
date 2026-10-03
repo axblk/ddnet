@@ -5648,6 +5648,18 @@ static bool SaveUnknownCommandCallback(const char *pCommand, void *pUser)
 		Upstream latency
 */
 
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+// Whether the device is steered with a finger: a phone or a tablet, but not a
+// laptop that has a touch screen next to its trackpad. The page fills the
+// screen by the same test, see `touchDevice` in ddnet-base.js.
+static bool BrowserTouchDevice()
+{
+	return MAIN_THREAD_EM_ASM_INT({
+		return window.matchMedia("(pointer: coarse)").matches && navigator.maxTouchPoints > 0 ? 1 : 0;
+	}) != 0;
+}
+#endif
+
 #if defined(CONF_PLATFORM_MACOS)
 extern "C" int TWMain(int argc, const char **argv)
 #elif defined(CONF_PLATFORM_ANDROID)
@@ -6018,6 +6030,17 @@ int main(int argc, const char **argv)
 	pEngine->Init();
 	pConsole->Init();
 	pConfigManager->Init();
+#if defined(CONF_PLATFORM_EMSCRIPTEN)
+	// A browser runs on a desk as well as in a hand, so what the Android and
+	// iOS builds turn on for everyone is the default here where the device is
+	// steered with a finger: the touch controls, and the back button, as there
+	// is no escape key either. Whoever turns them off again keeps it that way.
+	if(BrowserTouchDevice())
+	{
+		pConfigManager->SetDefault("cl_touch_controls", 1);
+		pConfigManager->SetDefault("cl_back_button", 1);
+	}
+#endif
 	pNotifications->Init(GAME_NAME " Client");
 
 	// register all console commands

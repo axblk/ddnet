@@ -368,6 +368,39 @@ function toggleFullscreen(element = document.documentElement) {
 	Promise.resolve(request.call(element)).catch(error => console.warn("DDNetBase: the browser refused to fill the screen:", error?.message ?? error));
 }
 
+// Whether the device is steered with a finger: a phone or a tablet, but not a
+// laptop that has a touch screen next to its trackpad. The client turns its
+// touch controls on by the same test.
+export const touchDevice = () => window.matchMedia("(pointer: coarse)").matches && navigator.maxTouchPoints > 0;
+
+// A game in a hand wants the whole screen and its long side. The browser
+// grants both only from within a tap, and the turn only to what fills the
+// screen, so the first tap asks for them, and so does the next one after the
+// user has left again. Where the browser cannot do it, nothing happens.
+export function fillTouchScreen(options = {}) {
+	const { element = document.documentElement, signal } = options;
+	if (!touchDevice() || !fullscreenSupported()) {
+		return;
+	}
+	let asking = false;
+	const enter = () => {
+		if (asking || fullscreenElement() !== null) {
+			return;
+		}
+		asking = true;
+		// The prefixed variant returns nothing.
+		const request = element.requestFullscreen || element.webkitRequestFullscreen;
+		Promise.resolve(request.call(element, { navigationUI: "hide" }))
+			.then(() => screen.orientation?.lock?.("landscape"))
+			.catch(error => console.warn("DDNetBase: the browser refused to fill the screen or to turn it:", error?.message ?? error))
+			.finally(() => { asking = false; });
+	};
+	// A finger counts as having tapped when it is lifted.
+	for (const type of ["pointerup", "touchend"]) {
+		document.addEventListener(type, enter, { signal });
+	}
+}
+
 export function fullscreen(button, options = {}) {
 	const { element = document.documentElement, shortcut = null, signal } = options;
 	if (!fullscreenSupported()) {

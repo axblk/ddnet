@@ -1,7 +1,12 @@
+#include "test.h"
+
 #include <base/str.h>
 
+#include <engine/config.h>
 #include <engine/console.h>
+#include <engine/kernel.h>
 #include <engine/shared/config.h>
+#include <engine/storage.h>
 
 #include <gtest/gtest.h>
 
@@ -150,4 +155,35 @@ TEST_F(ConsoleComments, CommentInsideStringIsKept)
 {
 	m_pConsole->ExecuteLine("capture \"quoted # text\"", IConsole::CLIENT_ID_UNSPECIFIED, true);
 	EXPECT_NE(str_find(m_aCaptured, "#"), nullptr);
+}
+
+// The variables are the console's, with defaults a device may decide.
+TEST(Config, DefaultSetAtStartup)
+{
+	CTestInfo Info;
+	Info.m_DeleteTestStorageFilesOnSuccess = true;
+	std::unique_ptr<IStorage> pStorage = Info.CreateTestStorage();
+	ASSERT_NE(pStorage, nullptr);
+	std::unique_ptr<IKernel> pKernel(IKernel::Create());
+	pKernel->RegisterInterface(pStorage.get(), false);
+	IConsole *pConsole = CreateConsole(CFGFLAG_CLIENT).release();
+	pKernel->RegisterInterface(pConsole);
+	IConfigManager *pConfigManager = CreateConfigManager();
+	pKernel->RegisterInterface(pConfigManager);
+	pConsole->Init();
+	pConfigManager->Init();
+	const int BuildDefault = g_Config.m_ClTouchControls;
+
+	// The variable takes the default the device asked for, and goes back to it.
+	pConfigManager->SetDefault("cl_touch_controls", 1 - BuildDefault);
+	EXPECT_EQ(g_Config.m_ClTouchControls, 1 - BuildDefault);
+	pConsole->ExecuteLine("cl_touch_controls 0", IConsole::CLIENT_ID_UNSPECIFIED);
+	pConsole->ExecuteLine("cl_touch_controls 1", IConsole::CLIENT_ID_UNSPECIFIED);
+	EXPECT_EQ(g_Config.m_ClTouchControls, 1);
+	pConfigManager->Reset("cl_touch_controls");
+	EXPECT_EQ(g_Config.m_ClTouchControls, 1 - BuildDefault);
+
+	// The configuration is global: leave it as the build made it.
+	pConfigManager->SetDefault("cl_touch_controls", BuildDefault);
+	EXPECT_EQ(g_Config.m_ClTouchControls, BuildDefault);
 }

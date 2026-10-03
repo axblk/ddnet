@@ -15,6 +15,15 @@ public:
 	virtual void Init() = 0;
 	virtual void Reset(const char *pScriptName) = 0;
 	virtual void ResetGameSettings() = 0;
+	/**
+	 * Changes the default of an integer variable, for a default that the
+	 * device decides rather than the build. The variable takes the new
+	 * default, so this is for before the config file is executed.
+	 *
+	 * @param pScriptName The name of the variable.
+	 * @param Default Its new default.
+	 */
+	virtual void SetDefault(const char *pScriptName, int Default) = 0;
 	virtual void SetReadOnly(const char *pScriptName, bool ReadOnly) = 0;
 	virtual void SetGameSettingsReadOnly(bool ReadOnly) = 0;
 	virtual bool Save() = 0;

@@ -186,6 +186,13 @@ public:
 	 * rendering, i.e. for user interfaces, then this is called automatically by calling @link Clear @endlink.
 	 */
 	virtual void ClearTouchDeltas() = 0;
+	/**
+	 * Whether the last key, button or finger pressed was a finger on a touch device, as opposed to a
+	 * keyboard, a mouse or a joystick. The mouse buttons that the system presses for a finger count as the finger.
+	 *
+	 * @return `true` if a touch device was used last
+	 */
+	virtual bool TouchUsedLast() const = 0;
 
 	// clipboard
 	virtual std::string GetClipboardText() = 0;

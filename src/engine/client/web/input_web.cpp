@@ -139,6 +139,7 @@ class CWebInput : public IEngineInput
 	bool m_aCurrentKeyStates[KEY_LAST] = {};
 	bool m_aFrameKeyStates[KEY_LAST] = {};
 	std::vector<CTouchFingerState> m_vTouchFingerStates;
+	bool m_TouchUsedLast = false;
 	// The pointer in CSS pixels of the canvas, and its buttons by the numbers
 	// of `MouseEvent.button`.
 	vec2 m_MousePos = vec2(0.0f, 0.0f);
@@ -206,6 +207,8 @@ class CWebInput : public IEngineInput
 		const bool Touch = (Event.m_Code & POINTER_TOUCH) != 0;
 		const bool Primary = (Event.m_Code & POINTER_PRIMARY) != 0;
 		const int Button = Event.m_Code & POINTER_BUTTON_MASK;
+		if(Event.m_Type == WEB_POINTER_DOWN)
+			m_TouchUsedLast = Touch;
 		if(Touch)
 		{
 			const vec2 Viewport = CanvasToViewport(Position);
@@ -350,6 +353,7 @@ public:
 	}
 
 	const std::vector<CTouchFingerState> &TouchFingerStates() const override { return m_vTouchFingerStates; }
+	bool TouchUsedLast() const override { return m_TouchUsedLast; }
 	void ClearTouchDeltas() override
 	{
 		for(CTouchFingerState &State : m_vTouchFingerStates)

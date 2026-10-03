@@ -60,6 +60,7 @@ public:
 	}
 	const std::vector<CTouchFingerState> &TouchFingerStates() const override { return m_vTouchFingerStates; }
 	void ClearTouchDeltas() override {}
+	bool TouchUsedLast() const override { return false; }
 	std::string GetClipboardText() override { return {}; }
 	void SetClipboardText(const char *) override {}
 	void StartTextInput() override {}

@@ -99,6 +99,7 @@ private:
 	bool m_aFrameKeyStates[KEY_LAST];
 	uint32_t m_InputCounter;
 	std::vector<CTouchFingerState> m_vTouchFingerStates;
+	bool m_TouchUsedLast = false;
 
 	void HandleJoystickAxisMotionEvent(const SDL_JoyAxisEvent &Event);
 	void HandleJoystickButtonEvent(const SDL_JoyButtonEvent &Event);
@@ -148,6 +149,7 @@ public:
 
 	const std::vector<CTouchFingerState> &TouchFingerStates() const override;
 	void ClearTouchDeltas() override;
+	bool TouchUsedLast() const override { return m_TouchUsedLast; }
 
 	std::string GetClipboardText() override;
 	void SetClipboardText(const char *pText) override;

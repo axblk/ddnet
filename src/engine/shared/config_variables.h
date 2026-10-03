@@ -27,9 +27,9 @@ MACRO_CONFIG_INT(ClAntiPingPreInput, cl_antiping_preinput, 1, 0, 1, CFGFLAG_CLIE
 MACRO_CONFIG_INT(ClPredictionMargin, cl_prediction_margin, 10, 1, 300, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Prediction margin in ms (adds latency, can reduce lag from ping jumps)")
 MACRO_CONFIG_INT(ClSubTickAiming, cl_sub_tick_aiming, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Send aiming data at sub-tick accuracy")
 #if defined(CONF_PLATFORM_ANDROID) || defined(CONF_PLATFORM_IOS)
-MACRO_CONFIG_INT(ClTouchControls, cl_touch_controls, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Enable ingame touch controls")
+MACRO_CONFIG_INT(ClTouchControls, cl_touch_controls, 1, 0, 2, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Ingame touch controls (0 = off, 1 = on, 2 = while the touch screen is the input used last)")
 #else
-MACRO_CONFIG_INT(ClTouchControls, cl_touch_controls, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Enable ingame touch controls")
+MACRO_CONFIG_INT(ClTouchControls, cl_touch_controls, 0, 0, 2, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Ingame touch controls (0 = off, 1 = on, 2 = while the touch screen is the input used last)")
 #endif
 #if defined(CONF_PLATFORM_IOS)
 // iOS has neither a back button nor a keyboard to press the escape-key with.

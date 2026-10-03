@@ -75,6 +75,11 @@ public:
 		m_DirectTouchSpectate = DirectTouchSpectate;
 		m_EditingChanges = true;
 	}
+	/**
+	 * Whether the touch controls are in use: turned on, or set to follow the input while the touch screen
+	 * is the input used last. The menus offer their settings whenever `cl_touch_controls` is not off.
+	 */
+	bool IsEnabled() const;
 	bool IsEditingActive() const { return m_EditingActive; }
 	void SetEditingActive(bool EditingActive) { m_EditingActive = EditingActive; }
 	bool HasEditingChanges() const { return m_EditingChanges; }
@@ -654,6 +659,7 @@ private:
 	CGameSessionContext *m_pControllerSession = nullptr;
 	CGameState *m_pControllerState = nullptr;
 	CGameView *m_pControllerView = nullptr;
+	bool m_GameEnabled = false;
 	bool m_RenderGameButtons = false;
 	bool m_RenderEditor = false;
 

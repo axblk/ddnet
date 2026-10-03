@@ -852,6 +852,7 @@ int CInput::Update()
 
 		// handle keys
 		case SDL_KEYDOWN:
+			m_TouchUsedLast = false;
 			AddKeyEventChecked(TranslateKeyEventKey(Event.key), IInput::FLAG_PRESS | (Event.key.repeat != 0 ? FLAG_REPEAT : 0));
 			break;
 
@@ -866,6 +867,7 @@ int CInput::Update()
 
 		case SDL_JOYBUTTONUP:
 		case SDL_JOYBUTTONDOWN:
+			m_TouchUsedLast = false;
 			HandleJoystickButtonEvent(Event.jbutton);
 			break;
 
@@ -883,6 +885,8 @@ int CInput::Update()
 
 		// handle mouse buttons
 		case SDL_MOUSEBUTTONDOWN:
+			if(Event.button.which != SDL_TOUCH_MOUSEID)
+				m_TouchUsedLast = false;
 			AddKeyEventChecked(TranslateMouseButtonEventKey(Event.button), IInput::FLAG_PRESS);
 			break;
 
@@ -891,10 +895,13 @@ int CInput::Update()
 			break;
 
 		case SDL_MOUSEWHEEL:
+			if(Event.wheel.which != SDL_TOUCH_MOUSEID)
+				m_TouchUsedLast = false;
 			AddKeyEventChecked(TranslateMouseWheelEventKey(Event.wheel), IInput::FLAG_PRESS | IInput::FLAG_RELEASE);
 			break;
 
 		case SDL_FINGERDOWN:
+			m_TouchUsedLast = true;
 			HandleTouchDownEvent(Event.tfinger);
 			break;
 

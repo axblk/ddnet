@@ -115,7 +115,7 @@ void CImportantAlert::RenderImportantAlert(const CRenderContext &Context)
 	{
 		const float CloseAlpha = Alpha * (Seconds < (MINIMUM_ACTIVE_SECONDS + 1.0f) ? (Seconds - MINIMUM_ACTIVE_SECONDS) : 1.0f);
 		const float CloseHintY = 40.0f - CloseHintFontSize - 2.0f;
-		const bool TouchActive = g_Config.m_ClTouchControls != 0;
+		const bool TouchActive = GameClient()->m_TouchControls.IsEnabled();
 		if(m_CloseHintTextContainerIndex.Valid() && m_CloseHintShownForTouch != TouchActive)
 		{
 			TextRender()->DeleteTextContainer(m_CloseHintTextContainerIndex);
@@ -242,7 +242,7 @@ bool CImportantAlert::OnTouchState(std::vector<IInput::CTouchFingerState> &vTouc
 		}
 	}
 
-	if(!g_Config.m_ClTouchControls ||
+	if(!GameClient()->m_TouchControls.IsEnabled() ||
 		!IsActive() ||
 		SecondsActive() < MINIMUM_ACTIVE_SECONDS ||
 		m_FadeOutSince >= 0.0f ||

@@ -828,6 +828,12 @@ void CTouchControls::OnWindowResize()
 	m_RenderEditor = false;
 }
 
+bool CTouchControls::IsEnabled() const
+{
+	// The buttons are moved around by finger, but their settings are a menu that a mouse uses as well.
+	return g_Config.m_ClTouchControls == 1 || (g_Config.m_ClTouchControls == 2 && (Input()->TouchUsedLast() || m_EditingActive));
+}
+
 bool CTouchControls::MatchesController(const CGameSessionContext &Session, const CGameState &State, const CGameView &View) const
 {
 	return m_pControllerSession == &Session && m_pControllerState == &State && m_pControllerView == &View;
@@ -884,7 +890,11 @@ bool CTouchControls::UpdateController(CGameView &View, std::span<const IInput::C
 	}
 
 	const bool IsGameActive = Client()->State() == IClient::STATE_ONLINE || Client()->State() == IClient::STATE_DEMOPLAYBACK;
-	const bool GameEnabled = g_Config.m_ClTouchControls && IsGameActive;
+	const bool GameEnabled = IsEnabled() && IsGameActive;
+	// The finger that brings the controls back did not see them, so it presses none of them.
+	if(GameEnabled && !m_GameEnabled && g_Config.m_ClTouchControls == 2)
+		CancelController(vTouchFingerStates);
+	m_GameEnabled = GameEnabled;
 	const bool VisualBlocked = GameClient()->m_Chat.IsActive() || GameClient()->m_Emoticon.IsActive() || GameClient()->m_Spectator.IsActive();
 	m_RenderGameButtons = GameEnabled && !VisualBlocked && !m_EditingActive;
 	m_RenderEditor = GameEnabled && !VisualBlocked && m_EditingActive;

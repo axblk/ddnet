@@ -5649,14 +5649,24 @@ static bool SaveUnknownCommandCallback(const char *pCommand, void *pUser)
 */
 
 #if defined(CONF_PLATFORM_EMSCRIPTEN)
-// Whether the device is steered with a finger: a phone or a tablet, but not a
-// laptop that has a touch screen next to its trackpad. The page fills the
-// screen by the same test, see `touchDevice` in ddnet-base.js.
-static bool BrowserTouchDevice()
+// How much of the device is a touch screen: steered with a finger, as a phone
+// or a tablet is, a touch screen next to a mouse or trackpad, as on a laptop,
+// or none. The page fills the screen by the first test, see `touchDevice` in
+// ddnet-base.js.
+enum class EBrowserTouch
 {
-	return MAIN_THREAD_EM_ASM_INT({
-		return window.matchMedia("(pointer: coarse)").matches && navigator.maxTouchPoints > 0 ? 1 : 0;
-	}) != 0;
+	NONE,
+	BESIDE_POINTER,
+	ONLY,
+};
+
+static EBrowserTouch BrowserTouch()
+{
+	return (EBrowserTouch)MAIN_THREAD_EM_ASM_INT({
+		if(!(navigator.maxTouchPoints > 0))
+			return 0;
+		return window.matchMedia("(pointer: coarse)").matches ? 2 : 1;
+	});
 }
 #endif
 
@@ -6035,10 +6045,18 @@ int main(int argc, const char **argv)
 	// iOS builds turn on for everyone is the default here where the device is
 	// steered with a finger: the touch controls, and the back button, as there
 	// is no escape key either. Whoever turns them off again keeps it that way.
-	if(BrowserTouchDevice())
+	// Next to a mouse the touch controls come and go with the finger.
+	switch(BrowserTouch())
 	{
+	case EBrowserTouch::NONE:
+		break;
+	case EBrowserTouch::BESIDE_POINTER:
+		pConfigManager->SetDefault("cl_touch_controls", 2);
+		break;
+	case EBrowserTouch::ONLY:
 		pConfigManager->SetDefault("cl_touch_controls", 1);
 		pConfigManager->SetDefault("cl_back_button", 1);
+		break;
 	}
 #endif
 	pNotifications->Init(GAME_NAME " Client");

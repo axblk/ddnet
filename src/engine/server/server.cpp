@@ -64,6 +64,9 @@
 
 using namespace std::chrono_literals;
 
+// How long a live stream goes on after the last player left, see `LiveUpdateEpoch`.
+static constexpr std::chrono::nanoseconds LIVE_REST_DELAY = 10s;
+
 // why a 0.7 client is dropped, or not let in, while the map has no 0.7 version
 static constexpr const char *SIXUP_MAP_MISSING = "This map has no version for Teeworlds 0.7. Join with the DDNet client to play it.";
 static constexpr const char *SIXUP_MAP_UNCONVERTIBLE = "This map could not be converted for Teeworlds 0.7. Join with the DDNet client to play it.";
@@ -4731,6 +4734,7 @@ int CServer::Run()
 			// snap game
 			if(NewTicks)
 			{
+				LiveUpdateEpoch();
 				DoSnapshot();
 				m_LiveRecorder.Update(time_get_nanoseconds());
 
@@ -4857,7 +4861,7 @@ int CServer::Run()
 			else if(NonActive &&
 				!m_aDemoRecorder[RECORDER_MANUAL].IsRecording() &&
 				!m_aDemoRecorder[RECORDER_AUTO].IsRecording() &&
-				!m_LiveRecorder.IsActive() &&
+				!m_LiveRecorder.IsBusy() &&
 				m_pMapConversionJob == nullptr)
 			{
 				net_socket_read_wait(m_NetServer.Socket(), QuicWait(1s));
@@ -5427,9 +5431,9 @@ void CServer::DemoRecorder_HandleAutoStart()
 		m_LiveAutoStarted = true;
 		LiveStart("");
 	}
-	else if(m_LiveRecorder.NeedsEpoch())
+	else
 	{
-		LiveBeginEpoch();
+		LiveUpdateEpoch();
 	}
 }
 
@@ -5466,7 +5470,8 @@ void CServer::LiveStart(const char *pName)
 		log_error("live", "could not start: %s", aError);
 		return;
 	}
-	LiveBeginEpoch();
+	m_LiveEmptySince.reset();
+	LiveUpdateEpoch();
 }
 
 void CServer::LiveBeginEpoch()
@@ -5479,6 +5484,37 @@ void CServer::LiveBeginEpoch()
 		m_aCurrentMapSize[MAP_TYPE_SIX],
 		CurrentMapData(MAP_TYPE_SIX),
 		time_get_nanoseconds());
+}
+
+bool CServer::LiveHasPlayers() const
+{
+	if(Config()->m_SvLiveEmpty)
+		return true;
+	return std::any_of(std::begin(m_aClients), std::end(m_aClients), [](const CClient &Client) {
+		return Client.m_State != CClient::STATE_EMPTY && !Client.m_DebugDummy;
+	});
+}
+
+void CServer::LiveUpdateEpoch()
+{
+	if(!m_LiveRecorder.IsLive())
+		return;
+	const std::chrono::nanoseconds Now = time_get_nanoseconds();
+	if(LiveHasPlayers())
+	{
+		m_LiveEmptySince.reset();
+		if(m_LiveRecorder.NeedsEpoch())
+			LiveBeginEpoch();
+	}
+	else if(m_aDemoRecorder[RECORDER_LIVE].IsRecording())
+	{
+		// Who leaves and comes back, or makes way for the next one, does
+		// not cut the demo in two.
+		if(!m_LiveEmptySince.has_value())
+			m_LiveEmptySince = Now;
+		else if(Now - *m_LiveEmptySince >= LIVE_REST_DELAY)
+			m_aDemoRecorder[RECORDER_LIVE].Stop(IDemoRecorder::EStopMode::KEEP_FILE);
+	}
 }
 
 void CServer::ConLiveStart(IConsole::IResult *pResult, void *pUser)

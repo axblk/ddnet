@@ -20,7 +20,8 @@ class IStorage;
  * Streams the server demo into a directory that any static web server can
  * hand out, the way a HLS muxer writes a playlist and its segments:
  *
- * - `init-<epoch>`: the demo header and the map, once per map (epoch);
+ * - `init-<epoch>`: the demo header and the map, once per map and once more
+ *   after each rest of the stream (epoch);
  * - `seg-<n>`: the demo from one keyframe to the next cut, the last one grows;
  * - `index.json`: the epochs, the segments with their ticks and sizes, the
  *   markers and whether the stream is still live, replaced atomically. Its
@@ -270,6 +271,11 @@ public:
 	 * Whether a stream records or still writes what it held back.
 	 */
 	bool IsActive() const { return m_State != EState::OFF; }
+	/**
+	 * Whether there is something to write: a demo is being made, or what was
+	 * held back is not all on disk yet. A stream that rests is not busy.
+	 */
+	bool IsBusy() const { return m_State == EState::DRAINING || (m_State == EState::LIVE && (m_pEncoder->IsRecording() || !m_vQueue.empty() || m_IndexDirty || m_IndexStale)); }
 	/**
 	 * Whether the stream waits for the demo of a map to begin.
 	 */

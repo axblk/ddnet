@@ -297,7 +297,7 @@ def main():
 		shutil.copytree(args.web_root, web_root, copy_function=link_or_copy)
 		(web_root / "live-test.html").write_text(TEST_PAGE, encoding="utf-8")
 		try:
-			server = GameServer(args.server.resolve(), game_directory, [f"sv_port {free_port()}", "sv_map dm1", f"sv_live_delay {args.delay}", "sv_live_segment 2", "sv_live_max_duration 30"])
+			server = GameServer(args.server.resolve(), game_directory, [f"sv_port {free_port()}", "sv_map dm1", f"sv_live_delay {args.delay}", "sv_live_segment 2", "sv_live_max_duration 30", "sv_live_empty 1"])
 			server.command("live_start test")
 			server.wait_for_log("live: started name=test", 5)
 

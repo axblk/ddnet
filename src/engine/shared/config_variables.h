@@ -534,6 +534,7 @@ MACRO_CONFIG_INT(SvLiveDelay, sv_live_delay, 30, 0, 3600, CFGFLAG_SERVER, "Secon
 MACRO_CONFIG_INT(SvLiveSegment, sv_live_segment, 10, 1, 600, CFGFLAG_SERVER, "Seconds of a live demo stream per segment file (applies from the next live_start)")
 MACRO_CONFIG_INT(SvLiveMaxDuration, sv_live_max_duration, 3600, 0, 604800, CFGFLAG_SERVER, "Seconds of a live demo stream that are kept, older segments are deleted (0 = no limit, applies from the next live_start)")
 MACRO_CONFIG_INT(SvLiveMaxSize, sv_live_max_size, 262144, 0, 1073741824, CFGFLAG_SERVER, "KiB of segments of a live demo stream that are kept, older segments are deleted (0 = no limit, applies from the next live_start)")
+MACRO_CONFIG_INT(SvLiveEmpty, sv_live_empty, 0, 0, 1, CFGFLAG_SERVER, "Go on with a live demo stream while no player is on the server (otherwise it rests there and begins anew with the next player)")
 MACRO_CONFIG_INT(SvTeeHistorian, sv_tee_historian, 0, 0, 1, CFGFLAG_SERVER, "Activate the tee historian that writes complete gameplay data to disk (WARNING: This will use a lot of disk space)")
 MACRO_CONFIG_STR(SvMatchReportDir, sv_match_report_dir, IO_MAX_PATH_LENGTH, "", CFGFLAG_SERVER, "Directory in the storage to write a JSON file with the report of every round to, and log its name (empty = off; race modes such as ddnet have no rounds and write none)")
 MACRO_CONFIG_INT(SvVanillaAntiSpoof, sv_vanilla_antispoof, 1, 0, 1, CFGFLAG_SERVER, "Enable antispoof for vanilla 0.6 clients")

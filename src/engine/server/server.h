@@ -381,6 +381,9 @@ public:
 	CLiveRecorder m_LiveRecorder{&m_aDemoRecorder[RECORDER_LIVE]};
 	// `sv_live_auto` starts one stream per server run.
 	bool m_LiveAutoStarted = false;
+	// Since when no player is on the server, for the stream to rest; unset
+	// while one is.
+	std::optional<std::chrono::nanoseconds> m_LiveEmptySince;
 	CAuthManager m_AuthManager;
 
 	// start of the second the connection-less server info responses are counted in
@@ -659,6 +662,17 @@ public:
 	 * Starts the demo of the current map in a running live stream.
 	 */
 	void LiveBeginEpoch();
+	/**
+	 * Whether there is somebody whose game the live stream shows: a client
+	 * that is not a dummy of the server, or anything with `sv_live_empty`.
+	 */
+	bool LiveHasPlayers() const;
+	/**
+	 * Begins the demo of the live stream when a player is there and ends it
+	 * a while after the last one left, so that the stream rests instead of
+	 * filling its limits with an empty map.
+	 */
+	void LiveUpdateEpoch();
 	static void ConLiveStart(IConsole::IResult *pResult, void *pUser);
 	static void ConLiveStop(IConsole::IResult *pResult, void *pUser);
 	static void ConLiveStatus(IConsole::IResult *pResult, void *pUser);

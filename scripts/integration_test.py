@@ -3130,7 +3130,8 @@ def server_streams_live_demo(test_env):
 
 @test
 def server_streams_live_demo_from_start(test_env):
-	server = test_env.server(["sv_live_auto 1", "sv_live_delay 1", "sv_live_dir streams/public"])
+	# Nobody joins, and a stream rests on an empty server unless told not to.
+	server = test_env.server(["sv_live_auto 1", "sv_live_delay 1", "sv_live_dir streams/public", "sv_live_empty 1"])
 	# The stream starts with the game, before the server says it is up.
 	started = server.wait_for_log_prefix("live: started name=", timeout=5).line
 	server.wait_for_startup()
@@ -3144,6 +3145,36 @@ def server_streams_live_demo_from_start(test_env):
 	server.wait_for_log_exact(f"live: stopped name={name} reason=shutdown", timeout=5)
 	server.wait_for_exit()
 	assert read_live_index(test_env, name, root)["state"] == "ended"
+
+
+@test
+def server_live_stream_rests_while_empty(test_env):
+	client = test_env.client(["cl_auto_demo_record 0"])
+	server = test_env.server(["sv_gametype dm", "sv_map dm1", "sv_live_auto 1", "sv_live_delay 0", "sv_live_segment 2"])
+	name = server.wait_for_log_prefix("live: started name=", timeout=5).line.split("name=", 1)[1].split(" ", 1)[0]
+	wait_for_startup([client, server])
+	# Nobody is there to play: the stream is announced and has nothing in it.
+	sleep(1)
+	index = read_live_index(test_env, name)
+	assert index is not None and index["state"] == "live" and index["epochs"] == [] and index["segments"] == [], index
+
+	# The demo of the map begins with the first player.
+	client.command(f"connect localhost:{server.port}")
+	server.wait_for_log_prefix("server: player has entered the game", timeout=10)
+	index = wait_for_live_index(test_env, name, lambda i: i["segments"], "no segment with a player on the server")
+	assert len(index["epochs"]) == 1, index
+
+	# It ends some seconds after the last one left, and the stream stays live.
+	client.exit()
+	client.wait_for_exit()
+	index = wait_for_live_index(test_env, name, lambda i: i["segments"][-1]["complete"], "the stream did not come to rest", timeout=20)
+	assert index["state"] == "live", index
+	segments = len(index["segments"])
+	sleep(3)
+	index = read_live_index(test_env, name)
+	assert len(index["segments"]) == segments and len(index["epochs"]) == 1, index
+	server.exit()
+	server.wait_for_exit()
 
 
 @test

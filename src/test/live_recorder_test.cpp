@@ -448,6 +448,46 @@ TEST_F(LiveRecorder, AMapChangeStartsAnEpoch)
 	m_pStorage->RemoveFile("demos/stream_1.demo", IStorage::TYPE_SAVE);
 }
 
+TEST_F(LiveRecorder, AStreamAtRestHasNothingToWrite)
+{
+	CLiveRecorder::CSettings Settings;
+	Settings.m_SegmentSeconds = 1;
+	Settings.m_Delay = 2s;
+	Start(Settings);
+	Ticks(SERVER_TICK_SPEED);
+	EXPECT_TRUE(m_Live.IsBusy());
+	// The server ends the demo once its last player left. What was held back
+	// is still to be written.
+	m_Encoder.Stop(IDemoRecorder::EStopMode::KEEP_FILE);
+	EXPECT_TRUE(m_Live.NeedsEpoch());
+	EXPECT_TRUE(m_Live.IsBusy());
+	for(int i = 0; i < 4 * SERVER_TICK_SPEED && m_Live.IsBusy(); i++)
+	{
+		m_Now += 20ms;
+		m_Live.Update(m_Now);
+	}
+	EXPECT_FALSE(m_Live.IsBusy());
+	EXPECT_TRUE(m_Live.IsLive());
+
+	json_value *pIndex = Index();
+	ASSERT_TRUE(pIndex);
+	EXPECT_STREQ(json_string_get(json_object_get(pIndex, "state")), "live");
+	ASSERT_EQ(json_array_length(json_object_get(pIndex, "epochs")), 1);
+	const json_value *pSegments = json_object_get(pIndex, "segments");
+	ASSERT_EQ(json_array_length(pSegments), 1);
+	EXPECT_TRUE(json_boolean_get(json_object_get(json_array_get(pSegments, 0), "complete")));
+	json_value_free(pIndex);
+
+	// The next player begins another demo of the same map.
+	BeginEpoch("map");
+	EXPECT_TRUE(m_Live.IsBusy());
+	Ticks(3 * SERVER_TICK_SPEED);
+	pIndex = Index();
+	ASSERT_TRUE(pIndex);
+	ASSERT_EQ(json_array_length(json_object_get(pIndex, "epochs")), 2);
+	json_value_free(pIndex);
+}
+
 TEST_F(LiveRecorder, ANameIsReusedAndChecked)
 {
 	CLiveRecorder::CSettings Settings;

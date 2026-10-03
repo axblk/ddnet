@@ -230,6 +230,20 @@
 			}
 		},
 		{
+			"x": 416667,
+			"y": 133333,
+			"w": 83333,
+			"h": 66667,
+			"shape": "rect",
+			"visibilities": [
+				"extra-menu"
+			],
+			"behavior": {
+				"type": "predefined",
+				"id": "ingame-menu"
+			}
+		},
+		{
 			"x": 16667,
 			"y": 333333,
 			"w": 83333,

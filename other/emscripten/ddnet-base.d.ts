@@ -182,6 +182,11 @@ export declare function touchDevice(): boolean;
  * user has left again. Does nothing elsewhere, or where the browser cannot.
  */
 export declare function fillTouchScreen(options?: { element?: Element; signal?: AbortSignal }): void;
+/**
+ * Has `canvas` lock the pointer with the moves of the mouse as the device made
+ * them (`unadjustedMovement`), and the usual way where there are none.
+ */
+export declare function lockPointerUnadjusted(canvas: HTMLCanvasElement): void;
 /** Makes `button` fill the screen with `element`, or hides it where that is not possible. */
 export declare function fullscreen(button: HTMLElement, options?: { element?: Element; shortcut?: string | null; signal?: AbortSignal }): void;
 

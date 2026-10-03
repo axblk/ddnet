@@ -397,6 +397,26 @@ function toggleFullscreen(element = document.documentElement) {
 // touch controls on by the same test.
 export const touchDevice = () => window.matchMedia("(pointer: coarse)").matches && navigator.maxTouchPoints > 0;
 
+// A program that locks the pointer to aim with it gets the moves of the mouse
+// as the device made them. What a browser reports otherwise went through the
+// pointer acceleration of the system, and Chrome works it out from a hidden
+// pointer that it keeps putting back, which now and then comes out as a jump.
+// Where the browser or the system has no such moves, the lock is the usual one.
+export function lockPointerUnadjusted(canvas) {
+	const lock = canvas.requestPointerLock.bind(canvas);
+	let unadjusted = true;
+	canvas.requestPointerLock = () => {
+		if (!unadjusted) {
+			return lock();
+		}
+		const locked = lock({ unadjustedMovement: true });
+		return locked instanceof Promise ? locked.catch(() => {
+			unadjusted = false;
+			return lock();
+		}) : locked;
+	};
+}
+
 // A game in a hand wants the whole screen and its long side. The browser
 // grants both only from within a tap, and the turn only to what fills the
 // screen, so the first tap asks for them, and so does the next one after the

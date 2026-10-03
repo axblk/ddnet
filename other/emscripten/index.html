@@ -20,7 +20,7 @@
 		<div id="rotate">Turn your device sideways</div>
 		<script src="DDNet.js"></script>
 		<script type="module">
-			import { Program, connectLink, fillTouchScreen } from "./ddnet-base.js";
+			import { Program, connectLink, fillTouchScreen, lockPointerUnadjusted } from "./ddnet-base.js";
 
 			const canvas = document.getElementById('canvas');
 			const error = document.getElementById('error');
@@ -60,6 +60,7 @@
 			});
 			// On a phone the game takes the whole screen, sideways.
 			fillTouchScreen();
+			lockPointerUnadjusted(canvas);
 			client.start().then(() => canvas.focus(), startError => {
 				error.textContent = startError.message;
 				error.hidden = false;

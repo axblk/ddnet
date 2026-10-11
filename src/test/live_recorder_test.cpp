@@ -9,6 +9,7 @@
 #include <engine/server/live_recorder.h>
 #include <engine/shared/demo.h>
 #include <engine/shared/json.h>
+#include <engine/shared/live_stream.h>
 #include <engine/shared/snapshot.h>
 #include <engine/storage.h>
 
@@ -156,6 +157,25 @@ protected:
 	{
 		const std::vector<unsigned char> vIndex = Read(Path("index.json"));
 		return vIndex.empty() ? nullptr : JsonParse((const char *)vIndex.data(), vIndex.size());
+	}
+
+	// What the index says, as anything that reads a stream takes it.
+	CLiveStream Stream() const
+	{
+		CLiveStream Result;
+		const std::vector<unsigned char> vIndex = Read(Path("index.json"));
+		char aError[256] = "";
+		EXPECT_TRUE(Result.ParseIndex((const char *)vIndex.data(), vIndex.size(), aError, sizeof(aError))) << aError;
+		return Result;
+	}
+
+	// Writes a demo of the stream beside the ones the server keeps.
+	std::string WriteDemo(const CLiveStream::CDemo &Demo) const
+	{
+		m_pStorage->CreateFolder("demos", IStorage::TYPE_SAVE);
+		const std::string Filename = "demos/made_" + Demo.m_Name + ".demo";
+		EXPECT_TRUE(CLiveStream::WriteDemo(Demo, m_pStorage.get(), IStorage::TYPE_SAVE, "live/stream", Filename.c_str())) << Filename;
+		return Filename;
 	}
 
 	// Writes the init of an epoch and the given segments into one file.
@@ -578,4 +598,224 @@ TEST_F(LiveRecorder, APlayerFollowsTheGrowingDemo)
 	EXPECT_GT(Listener.m_Snapshots, 2 * SERVER_TICK_SPEED);
 	Player.Stop();
 	m_pStorage->RemoveFile("follow.demo", IStorage::TYPE_SAVE);
+}
+
+TEST_F(LiveRecorder, AStreamMakesDemosOfEpochsAndOfMatches)
+{
+	CLiveRecorder::CSettings Settings;
+	Settings.m_SegmentSeconds = 1;
+	Start(Settings);
+	// Two matches end on the first map and a third one is cut off by the
+	// map change, then one ends on the next map.
+	Ticks(2 * SERVER_TICK_SPEED + 10);
+	const int FirstEnd = m_Tick;
+	m_GameOver = true;
+	Ticks(SERVER_TICK_SPEED / 2);
+	m_GameOver = false;
+	Ticks(3 * SERVER_TICK_SPEED);
+	const int SecondEnd = m_Tick;
+	m_GameOver = true;
+	Ticks(20);
+	m_GameOver = false;
+	Ticks(SERVER_TICK_SPEED);
+	const int LastTick = m_Tick - 1;
+	m_Encoder.Stop(IDemoRecorder::EStopMode::KEEP_FILE);
+	m_Live.Update(m_Now);
+	m_Tick = 0;
+	BeginEpoch("other");
+	Ticks(SERVER_TICK_SPEED + 5);
+	const int ThirdEnd = m_Tick;
+	m_GameOver = true;
+	Ticks(SERVER_TICK_SPEED);
+
+	// While the stream is live, the segment that grows is in no demo.
+	CLiveStream Live = Stream();
+	EXPECT_TRUE(Live.m_Live);
+	EXPECT_EQ(Live.m_Name, "stream");
+	EXPECT_EQ(Live.m_SegmentSeconds, 1);
+	ASSERT_EQ(Live.m_vSegments.size(), 11u);
+	EXPECT_FALSE(Live.m_vSegments.back().m_Complete);
+	std::vector<CLiveStream::CDemo> vDemos = Live.Demos(CLiveStream::ECut::EPOCHS);
+	ASSERT_EQ(vDemos.size(), 2u);
+	EXPECT_EQ(vDemos[0].m_Name, "stream_0");
+	EXPECT_EQ(vDemos[0].m_vSegments, (std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7}));
+	EXPECT_EQ(vDemos[0].m_vMarkers, (std::vector<int>{FirstEnd, SecondEnd}));
+	EXPECT_EQ(vDemos[1].m_Name, "stream_1");
+	EXPECT_EQ(vDemos[1].m_vSegments, (std::vector<int>{8, 9}));
+	EXPECT_EQ(vDemos[1].m_LastTick, 2 * SERVER_TICK_SPEED - 1);
+
+	// A match is cut at the segments its end and the end before it are in.
+	vDemos = Live.Demos(CLiveStream::ECut::MATCHES);
+	ASSERT_EQ(vDemos.size(), 3u);
+	EXPECT_EQ(vDemos[0].m_Name, "stream_0_" + std::to_string(FirstEnd));
+	EXPECT_EQ(vDemos[0].m_vSegments, (std::vector<int>{0, 1, 2}));
+	EXPECT_EQ(vDemos[0].m_vMarkers, (std::vector<int>{FirstEnd}));
+	EXPECT_EQ(vDemos[1].m_Name, "stream_0_" + std::to_string(SecondEnd));
+	EXPECT_EQ(vDemos[1].m_vSegments, (std::vector<int>{2, 3, 4, 5}));
+	EXPECT_EQ(vDemos[1].m_vMarkers, (std::vector<int>{FirstEnd, SecondEnd}));
+	EXPECT_EQ(vDemos[2].m_Name, "stream_1_" + std::to_string(ThirdEnd));
+	EXPECT_EQ(vDemos[2].m_Epoch, 1);
+	EXPECT_EQ(vDemos[2].m_vSegments, (std::vector<int>{8, 9}));
+	EXPECT_EQ(vDemos[2].m_vMarkers, (std::vector<int>{ThirdEnd}));
+	for(const CLiveStream::CDemo &Demo : vDemos)
+	{
+		const std::string Filename = WriteDemo(Demo);
+		ExpectPlayable(Filename.c_str(), Demo.m_FirstTick, Demo.m_LastTick);
+		const std::unique_ptr<CSnapshotDelta> pDelta = std::make_unique<CSnapshotDelta>();
+		const std::unique_ptr<CDemoPlayer> pPlayer = NewPlayer(pDelta.get());
+		CDemoHeader Header;
+		CTimelineMarkers TimelineMarkers;
+		CMapInfo MapInfo;
+		ASSERT_TRUE(pPlayer->GetDemoInfo(m_pStorage.get(), Filename.c_str(), IStorage::TYPE_SAVE, &Header, &TimelineMarkers, &MapInfo));
+		EXPECT_STREQ(Header.m_aMapName, Demo.m_Epoch == 0 ? "map" : "other");
+		EXPECT_EQ(bytes_be_to_uint(Header.m_aLength), (unsigned)((Demo.m_LastTick - Demo.m_FirstTick) / SERVER_TICK_SPEED));
+		ASSERT_EQ(bytes_be_to_uint(TimelineMarkers.m_aNumTimelineMarkers), Demo.m_vMarkers.size());
+		EXPECT_EQ(bytes_be_to_uint(TimelineMarkers.m_aTimelineMarkers[Demo.m_vMarkers.size() - 1]), (unsigned)Demo.m_vMarkers.back());
+		m_pStorage->RemoveFile(Filename.c_str(), IStorage::TYPE_SAVE);
+	}
+	EXPECT_EQ(vDemos[0].m_FirstTick, 100);
+	EXPECT_EQ(vDemos[0].m_LastTick, 100 + 3 * SERVER_TICK_SPEED - 1);
+	EXPECT_EQ(vDemos[1].m_FirstTick, 100 + 2 * SERVER_TICK_SPEED);
+	EXPECT_EQ(vDemos[1].m_LastTick, 100 + 6 * SERVER_TICK_SPEED - 1);
+
+	// What the index of the stream that ended makes are the demos the
+	// server keeps.
+	m_Live.Stop(true, "test");
+	m_Live.Update(m_Now);
+	const CLiveStream Ended = Stream();
+	EXPECT_FALSE(Ended.m_Live);
+	vDemos = Ended.Demos(CLiveStream::ECut::EPOCHS);
+	ASSERT_EQ(vDemos.size(), 2u);
+	EXPECT_EQ(vDemos[0].m_LastTick, LastTick);
+	EXPECT_EQ(vDemos[1].m_vSegments, (std::vector<int>{8, 9, 10}));
+	for(const CLiveStream::CDemo &Demo : vDemos)
+	{
+		const std::string Filename = WriteDemo(Demo);
+		const std::string Kept = "demos/" + Demo.m_Name + ".demo";
+		const std::vector<unsigned char> vKept = Read(Kept);
+		EXPECT_FALSE(vKept.empty());
+		EXPECT_EQ(Read(Filename), vKept);
+		m_pStorage->RemoveFile(Filename.c_str(), IStorage::TYPE_SAVE);
+		m_pStorage->RemoveFile(Kept.c_str(), IStorage::TYPE_SAVE);
+	}
+
+	// A demo that cannot be made whole is not left behind.
+	m_pStorage->RemoveFile(Path("seg-9").c_str(), IStorage::TYPE_SAVE);
+	EXPECT_FALSE(CLiveStream::WriteDemo(vDemos[1], m_pStorage.get(), IStorage::TYPE_SAVE, "live/stream", "demos/broken.demo"));
+	EXPECT_FALSE(m_pStorage->FileExists("demos/broken.demo", IStorage::TYPE_SAVE));
+}
+
+TEST_F(LiveRecorder, AMatchWithoutItsBeginningIsNoDemo)
+{
+	CLiveRecorder::CSettings Settings;
+	Settings.m_SegmentSeconds = 1;
+	Settings.m_MaxDurationSeconds = 4;
+	Start(Settings);
+	Ticks(3 * SERVER_TICK_SPEED);
+	m_GameOver = true;
+	Ticks(SERVER_TICK_SPEED / 2);
+	m_GameOver = false;
+	Ticks(4 * SERVER_TICK_SPEED);
+	const int SecondEnd = m_Tick;
+	m_GameOver = true;
+	Ticks(SERVER_TICK_SPEED / 2);
+	m_GameOver = false;
+	Ticks(SERVER_TICK_SPEED + 10);
+
+	// The limit deleted the segments the second match began in, and nothing
+	// of the first one is left.
+	CLiveStream Live = Stream();
+	ASSERT_FALSE(Live.m_vSegments.empty());
+	EXPECT_GT(Live.m_vSegments.front().m_Number, 0);
+	ASSERT_EQ(Live.m_vMarkers.size(), 1u);
+	EXPECT_EQ(Live.m_vMarkers[0].m_Tick, SecondEnd);
+	EXPECT_TRUE(Live.Demos(CLiveStream::ECut::MATCHES).empty());
+	EXPECT_EQ(Live.Demos(CLiveStream::ECut::EPOCHS).size(), 1u);
+
+	// The match after it is all there.
+	const int ThirdEnd = m_Tick;
+	m_GameOver = true;
+	Ticks(SERVER_TICK_SPEED / 2);
+	m_GameOver = false;
+	Ticks(SERVER_TICK_SPEED / 2);
+	Live = Stream();
+	ASSERT_EQ(Live.m_vMarkers.size(), 2u);
+	const std::vector<CLiveStream::CDemo> vDemos = Live.Demos(CLiveStream::ECut::MATCHES);
+	ASSERT_EQ(vDemos.size(), 1u);
+	EXPECT_EQ(vDemos[0].m_Name, "stream_0_" + std::to_string(ThirdEnd));
+	EXPECT_EQ(vDemos[0].m_vSegments.front(), Live.m_vSegments.front().m_Number);
+	EXPECT_LE(vDemos[0].m_FirstTick, SecondEnd);
+	EXPECT_GT(vDemos[0].m_FirstTick + SERVER_TICK_SPEED, SecondEnd);
+	EXPECT_GE(vDemos[0].m_LastTick, ThirdEnd);
+	EXPECT_EQ(vDemos[0].m_vMarkers, (std::vector<int>{SecondEnd, ThirdEnd}));
+	const std::string Filename = WriteDemo(vDemos[0]);
+	ExpectPlayable(Filename.c_str(), vDemos[0].m_FirstTick, vDemos[0].m_LastTick);
+	m_pStorage->RemoveFile(Filename.c_str(), IStorage::TYPE_SAVE);
+}
+
+TEST(LiveStream, AnIndexIsReadAsItWasWritten)
+{
+	CLiveStream Stream;
+	Stream.m_Name = "2026-10-11_20-34-17_dm1";
+	Stream.m_Id = 1791750857123;
+	Stream.m_Live = true;
+	Stream.m_DelayMs = 30000;
+	Stream.m_SegmentSeconds = 10;
+	Stream.m_MaxDurationSeconds = 7200;
+	Stream.m_MaxBytes = (int64_t)5 * 1024 * 1024 * 1024;
+	Stream.m_vEpochs.push_back({0, "dm1", sha256("dm1", 3), 5805});
+	Stream.m_vEpochs.push_back({1, "ctf2", sha256("ctf2", 4), 12345});
+	Stream.m_vSegments.push_back({4, 0, 2000, 2499, 70000, 1791750900000, true});
+	Stream.m_vSegments.push_back({5, 1, 0, 499, 60000, 1791750910000, true});
+	Stream.m_vSegments.push_back({6, 1, 500, 620, 9000, 1791750920000, false});
+	Stream.m_vMarkers.push_back({0, 2100, CLiveStream::EMarkerKind::MATCH_END, ""});
+	Stream.m_vMarkers.push_back({1, 130, CLiveStream::EMarkerKind::MANUAL, "a \"good\" one"});
+	const std::string Index = Stream.FormatIndex(1791750925000);
+
+	CLiveStream Read;
+	char aError[256] = "";
+	ASSERT_TRUE(Read.ParseIndex(Index.data(), Index.size(), aError, sizeof(aError))) << aError;
+	EXPECT_EQ(Read.FormatIndex(1791750925000), Index);
+	EXPECT_EQ(Read.m_vEpochs[1].m_Map, "ctf2");
+	EXPECT_EQ(Read.m_vSegments[2].m_WallTime, 1791750920000);
+	EXPECT_EQ(Read.m_vMarkers[1].m_Label, "a \"good\" one");
+
+	// What is not the index of a stream of this version is not taken for one.
+	const auto Rejects = [&](const CLiveStream &Other, const char *pFrom = nullptr, const char *pTo = nullptr) {
+		std::string Text = Other.FormatIndex(0);
+		if(pFrom != nullptr)
+		{
+			const size_t Position = Text.find(pFrom);
+			EXPECT_NE(Position, std::string::npos) << pFrom;
+			if(Position == std::string::npos)
+				return false;
+			Text.replace(Position, str_length(pFrom), pTo);
+		}
+		CLiveStream Result;
+		aError[0] = '\0';
+		const bool Rejected = !Result.ParseIndex(Text.data(), Text.size(), aError, sizeof(aError));
+		return Rejected && aError[0] != '\0' && Result.m_vSegments.empty();
+	};
+	EXPECT_FALSE(Rejects(Stream));
+	EXPECT_TRUE(Rejects(Stream, "\"version\": 1", "\"version\": 2"));
+	EXPECT_TRUE(Rejects(Stream, "\"match_end\"", "\"half_time\""));
+	EXPECT_TRUE(Rejects(Stream, "\"complete\": true", "\"complete\": 1"));
+	EXPECT_TRUE(Rejects(Stream, "\"segments\": [", "\"segments\": 0, \"other\": ["));
+	EXPECT_TRUE(Rejects(Stream, "{", "["));
+	// The name becomes the name of a file.
+	CLiveStream Other = Stream;
+	Other.m_Name = "../up";
+	EXPECT_TRUE(Rejects(Other));
+	Other.m_Name = "";
+	EXPECT_TRUE(Rejects(Other));
+	// The cuts rely on the order of the segments.
+	Other = Stream;
+	std::swap(Other.m_vSegments[1], Other.m_vSegments[2]);
+	EXPECT_TRUE(Rejects(Other));
+	Other = Stream;
+	Other.m_vSegments[2].m_StartTick = 400;
+	EXPECT_TRUE(Rejects(Other));
+	Other = Stream;
+	Other.m_vSegments[0].m_EndTick = 1999;
+	EXPECT_TRUE(Rejects(Other));
 }

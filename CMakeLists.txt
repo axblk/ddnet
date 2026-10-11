@@ -2609,6 +2609,8 @@ set_src(ENGINE_SHARED GLOB_RECURSE src/engine/shared
   kernel.cpp
   linereader.cpp
   linereader.h
+  live_stream.cpp
+  live_stream.h
   localization.h
   map.cpp
   map.h
@@ -4359,6 +4361,7 @@ if(TOOLS)
     dilate.cpp
     dummy_map.cpp
     ghost_to_demo.cpp
+    live_to_demo.cpp
     map_convert.cpp
     map_diff.cpp
     map_extract.cpp

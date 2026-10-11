@@ -40,7 +40,7 @@ const SPEC_FREEVIEW = -1;
 export const programUrl = new URL(PROGRAM, import.meta.url).href;
 
 // The version of a live stream's `index.json` the player reads, which is
-// `CLiveRecorder::INDEX_VERSION` of the server.
+// `CLiveStream::INDEX_VERSION` of the server.
 const LIVE_INDEX_VERSION = 1;
 // How often the index of a live stream is read.
 const LIVE_POLL_MS = 1000;

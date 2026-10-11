@@ -57,7 +57,7 @@ def main():
 
 	# The stream format the server writes is the one the player reads, or the
 	# bundle would promise what it cannot play.
-	server_version = version_number(os.path.join(args.source, "src/engine/server/live_recorder.h"), r"INDEX_VERSION = (\d+);", "INDEX_VERSION")
+	server_version = version_number(os.path.join(args.source, "src/engine/shared/live_stream.h"), r"INDEX_VERSION = (\d+);", "INDEX_VERSION")
 	player_version = version_number(os.path.join(args.source, "other/emscripten/packages/demo-player/demo-player.js"), r"LIVE_INDEX_VERSION = (\d+);", "LIVE_INDEX_VERSION")
 	if server_version != player_version:
 		print(f"error: the server writes live streams of version {server_version}, the player reads version {player_version}", file=sys.stderr)

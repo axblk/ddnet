@@ -7,6 +7,7 @@
 #include <base/types.h>
 
 #include <engine/shared/demo.h>
+#include <engine/shared/live_stream.h>
 
 #include <chrono>
 #include <deque>
@@ -26,7 +27,7 @@ class IStorage;
  * - `index.json`: the epochs, the segments with their ticks and sizes, the
  *   markers and whether the stream is still live, replaced atomically. Its
  *   sizes are in bytes, also the limit `max_bytes`, which `sv_live_max_size`
- *   sets in KiB.
+ *   sets in KiB. `CLiveStream` is what it says.
  *
  * An `init` followed by the segments of its epoch, oldest first, is a valid
  * demo, also after old segments were deleted. Nothing younger than the delay
@@ -36,12 +37,6 @@ class IStorage;
 class CLiveRecorder : public IDemoSink
 {
 public:
-	/**
-	 * The version of `index.json`, which the web demo player checks
-	 * (`LIVE_INDEX_VERSION` in `demo-player.js`).
-	 */
-	static constexpr int INDEX_VERSION = 1;
-
 	/**
 	 * How a stream is written, taken when it starts.
 	 */
@@ -66,11 +61,7 @@ public:
 		int64_t m_MaxBytes = 0;
 	};
 
-	enum class EMarkerKind
-	{
-		MATCH_END,
-		MANUAL,
-	};
+	using EMarkerKind = CLiveStream::EMarkerKind;
 
 private:
 	enum class EItemKind
@@ -97,36 +88,6 @@ private:
 		SHA256_DIGEST m_Sha256 = {};
 	};
 
-	class CEpoch
-	{
-	public:
-		int m_Id;
-		std::string m_Map;
-		SHA256_DIGEST m_Sha256;
-		int64_t m_InitBytes;
-	};
-
-	class CSegment
-	{
-	public:
-		int m_Number;
-		int m_Epoch;
-		int m_StartTick;
-		int m_EndTick;
-		int64_t m_Bytes;
-		int64_t m_WallTime;
-		bool m_Complete;
-	};
-
-	class CMarker
-	{
-	public:
-		int m_Epoch;
-		int m_Tick;
-		EMarkerKind m_Kind;
-		std::string m_Label;
-	};
-
 	enum class EState
 	{
 		OFF,
@@ -139,9 +100,7 @@ private:
 
 	EState m_State = EState::OFF;
 	CSettings m_Settings;
-	char m_aName[128] = "";
 	char m_aDir[IO_MAX_PATH_LENGTH] = "";
-	int64_t m_StreamId = 0;
 	std::chrono::nanoseconds m_StartTime{0};
 	std::chrono::nanoseconds m_LastNow{0};
 	bool m_Keep = false;
@@ -159,11 +118,9 @@ private:
 	std::deque<CItem> m_vQueue;
 	int64_t m_QueueBytes = 0;
 
-	// What is on disk.
+	// What is on disk, as the index says it.
+	CLiveStream m_Stream;
 	int m_NextSegment = 0;
-	std::vector<CEpoch> m_vEpochs;
-	std::vector<CSegment> m_vSegments;
-	std::vector<CMarker> m_vMarkers;
 	IOHANDLE m_SegmentFile = nullptr;
 	bool m_SegmentDirty = false;
 	bool m_IndexDirty = false;
@@ -284,7 +241,7 @@ public:
 	 * The stream's directory relative to the save directory.
 	 */
 	const char *Directory() const { return m_aDir; }
-	const char *Name() const { return m_aName; }
+	const char *Name() const { return m_Stream.m_Name.c_str(); }
 	/**
 	 * One line on how the stream is, for `live_status`.
 	 *
@@ -297,7 +254,7 @@ public:
 	/**
 	 * The number of segments on disk.
 	 */
-	int NumSegments() const { return (int)m_vSegments.size(); }
+	int NumSegments() const { return (int)m_Stream.m_vSegments.size(); }
 	/**
 	 * The bytes of the segments on disk.
 	 */

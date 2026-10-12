@@ -51,6 +51,9 @@ const LIVE_EDGE_SECONDS = 4;
 // How close to the beginning of what was read of a live stream the older part
 // is read, a poll after the viewer went there.
 const LIVE_START_SECONDS = 3;
+// How long the program is given to go where a part of a live stream was
+// opened at.
+const LIVE_ARRIVE_MS = 3000;
 
 const sleep = (milliseconds, signal) => new Promise(resolve => {
 	const timer = setTimeout(resolve, milliseconds);
@@ -112,22 +115,30 @@ function wholeChunks(bytes) {
 
 /**
  * Follows a live stream that a server writes (`live_start`): it reads the
- * stream's `index.json` every second, puts the init of a map and its
- * segments together into one demo file of the program and appends to it
- * what the segments grow by, with range requests. Any static web server
- * does. A viewer who joins at the live end gets the last minutes of the map
- * (`backlogSeconds`), and older ones when seeking back to where they
- * begin; at the live end, what goes back further than `maxBacklogSeconds`
- * is dropped.
+ * stream's `index.json` every second, puts the init of a map and segments
+ * of it together into one demo file of the program and appends to it what
+ * the segments grow by, with range requests. Any static web server does.
+ *
+ * A stream is a row of parts, one for each map it went through (and one for
+ * each visit, where the stream rests while the server is empty). The file
+ * holds a piece of the part that plays: the last minutes of it for a viewer
+ * who joins at the live end (`backlogSeconds`), and as much around where a
+ * viewer seeks in the part, `seekTo`. What follows the piece is appended as
+ * the playback gets near it (`aheadSeconds`), and what lies further behind
+ * than `maxBacklogSeconds` is dropped.
  */
 export class LiveFeed extends EventTarget {
-	// How much of a map a viewer who joins at the live end gets at first;
-	// seeking back to where that begins brings twice as much, and so on.
+	// How much of a part before where it opens is in the file; going back to
+	// where the file begins brings twice as much, and so on.
 	static backlogSeconds = 120;
-	// How much of a map is kept while it plays at its live end: more than this
-	// is dropped by opening the map's newest part again, so that a stream that
+	// How much of a part behind where it plays is kept: more than this is
+	// dropped by opening the part where it plays again, so that a stream that
 	// runs for days does not fill the memory.
 	static maxBacklogSeconds = 30 * 60;
+	// How far ahead of where it plays a part is read.
+	static aheadSeconds = 10 * 60;
+	// How many segments are fetched at a time, and added with a poll.
+	static fetches = 6;
 
 	constructor(player, url) {
 		super();
@@ -136,7 +147,7 @@ export class LiveFeed extends EventTarget {
 		this.stopping = new AbortController();
 		this.queue = Promise.resolve();
 		this.index = null;
-		// What the demo file of the program is: the stream and the map
+		// What the demo file of the program is: the stream and the part
 		// (epoch) it is of, and how far each segment of it was read. A chunk
 		// that is not whole yet waits in `tail`.
 		this.stream = null;
@@ -145,13 +156,18 @@ export class LiveFeed extends EventTarget {
 		this.read = new Map();
 		this.next = -1;
 		this.tail = new Uint8Array(0);
-		// The first segment in the file, and how many seconds back from the
-		// newest it was cut off (`null` for not at all).
+		// The first segment in the file, and how many seconds it reached back
+		// from where it was opened.
 		this.firstRead = -1;
-		this.backlog = null;
-		// Whether all of the map is in the file: the stream went on with
-		// another map, or ended.
+		this.behind = LiveFeed.backlogSeconds;
+		// Whether the part is in the file up to its end: the stream went on
+		// with another part, or ended.
 		this.complete = false;
+		// The tick the playback is on its way to: of a seek that reads
+		// another piece of the part first, and of a file that was opened
+		// until the program plays it there.
+		this.seekTick = null;
+		this.openTick = null;
 		this.state = "loading";
 		this.error = "";
 	}
@@ -160,18 +176,61 @@ export class LiveFeed extends EventTarget {
 		return this.stopping.signal;
 	}
 
-	// The markers of the map that plays, `{ tick, kind, label }`.
+	// The tick the playback is on its way to, `null` once it is there.
+	get pendingTick() {
+		return this.seekTick ?? this.openTick;
+	}
+
+	// The markers of the part that plays, `{ tick, kind, label }`.
 	get markers() {
 		return (this.index?.markers ?? []).filter(marker => marker.epoch === this.epoch);
 	}
 
-	// Whether the stream has older segments of the map that plays than the
+	// The parts of the stream: `{ epoch, map, first, last, time }`, with the
+	// ticks the part begins and ends at and when it began.
+	get parts() {
+		const index = this.index;
+		const parts = [];
+		for (const entry of index?.epochs ?? []) {
+			const segments = index.segments.filter(segment => segment.epoch === entry.epoch);
+			if (segments.length > 0) {
+				parts.push({ epoch: entry.epoch, map: entry.map, first: segments[0].start_tick, last: segments.at(-1).end_tick, time: segments[0].time });
+			}
+		}
+		return parts;
+	}
+
+	// The ticks the part that plays begins and ends at, of which the file
+	// holds a piece; `null` while nothing plays.
+	get range() {
+		const ticks = this.player.ticks();
+		const part = this.parts.find(one => one.epoch === this.epoch);
+		if (this.epoch === null || ticks.first < 0) {
+			return null;
+		}
+		if (part === undefined) {
+			return { first: ticks.first, last: ticks.last };
+		}
+		// The file may have more of the part than the stream still has. For
+		// a frame after it was opened, the program says the ticks of the
+		// file before, which are no ticks of this part.
+		const ofPart = ticks.first <= part.last && ticks.last >= part.first;
+		return ofPart ? { first: Math.min(part.first, ticks.first), last: Math.max(part.last, ticks.last) } : { first: part.first, last: part.last };
+	}
+
+	// Whether the stream has older segments of the part that plays than the
 	// file.
 	get earlier() {
 		return (this.index?.segments ?? []).some(segment => segment.epoch === this.epoch && segment.n < this.firstRead);
 	}
 
-	// Whether a newer map than the one that plays has begun.
+	// Whether the stream has newer segments of the part that plays than the
+	// file.
+	get later() {
+		return (this.index?.segments ?? []).some(segment => segment.epoch === this.epoch && segment.n > this.next);
+	}
+
+	// Whether a newer part than the one that plays has begun.
 	get newerMap() {
 		return (this.index?.segments ?? []).some(segment => segment.epoch > this.epoch);
 	}
@@ -180,7 +239,7 @@ export class LiveFeed extends EventTarget {
 		this.stopping.abort();
 	}
 
-	// One thing at a time: a poll, going live, going to the next map.
+	// One thing at a time: a poll, going live, going to another part.
 	serial(action) {
 		const run = this.queue.then(() => this.signal.aborted ? undefined : action());
 		this.queue = run.catch(() => {});
@@ -203,9 +262,6 @@ export class LiveFeed extends EventTarget {
 				this.error = error?.message ?? String(error);
 				this.player.output(`Live stream: ${this.error}`, { error: true });
 				this.changed();
-			}
-			if (this.state === "ended") {
-				return;
 			}
 			await sleep(LIVE_POLL_MS, this.signal);
 		}
@@ -238,7 +294,8 @@ export class LiveFeed extends EventTarget {
 	}
 
 	async poll() {
-		const index = await this.fetchIndex();
+		// An ended stream stays as it is; what plays of it still moves on.
+		const index = this.index?.state === "ended" ? this.index : await this.fetchIndex();
 		if (index.version !== LIVE_INDEX_VERSION) {
 			throw new Error(`the stream is of version ${index.version}, this player reads version ${LIVE_INDEX_VERSION}`);
 		}
@@ -252,44 +309,59 @@ export class LiveFeed extends EventTarget {
 		if (this.epoch === null) {
 			if (newest === undefined) {
 				this.state = index.state === "ended" ? "ended" : "waiting";
+			} else if (index.state === "ended") {
+				// An ended stream is watched from its beginning.
+				await this.open(index.segments[0].epoch, "start");
 			} else {
-				await this.open(newest.epoch, true, LiveFeed.backlogSeconds);
+				await this.open(newest.epoch, "end");
 			}
 			this.changed();
 			return;
 		}
 		await this.append();
-		// Who watched a map to its end watches the next one.
 		const ticks = this.player.ticks();
 		const tickSpeed = index.tick_speed ?? 50;
 		if (this.complete && this.newerMap && ticks.current >= ticks.last - 1) {
+			// Who watched a part to its end watches the next one.
 			const next = index.segments.find(segment => segment.epoch > this.epoch).epoch;
-			await this.open(next, false);
+			await this.open(next, "start");
 		} else if (this.earlier && ticks.first >= 0 && ticks.current <= ticks.first + LIVE_START_SECONDS * tickSpeed) {
 			// The viewer went back to where the file begins.
-			await this.open(this.epoch, false, 2 * (this.backlog ?? LiveFeed.backlogSeconds), ticks.current);
-		} else if (this.atLiveEdge() && ticks.last - ticks.first > LiveFeed.maxBacklogSeconds * tickSpeed) {
-			await this.open(this.epoch, true, LiveFeed.backlogSeconds);
+			await this.open(this.epoch, ticks.current, Math.min(2 * this.behind, LiveFeed.maxBacklogSeconds / 2));
+		} else if (ticks.first >= 0 && ticks.current - ticks.first > LiveFeed.maxBacklogSeconds * tickSpeed) {
+			await this.open(this.epoch, this.atLiveEdge() ? "end" : ticks.current);
 		}
 		this.changed();
 	}
 
-	// Puts the init of a map and what is left of its segments into a demo
-	// file and has the program play it, at its live end, at `seekTick` or at
-	// its beginning. At the live end or a tick, only the segments of the last
-	// `backlog` seconds are read, if it is not `null`.
-	async open(epoch, atEnd, backlog = null, seekTick = null) {
+	// Puts the init of a part and the segments of it around `at` into a demo
+	// file and has the program play it from there: `"end"` is the live end of
+	// the part, `"start"` its beginning, a number the tick. The file reaches
+	// `behind` seconds back from there and `backlogSeconds` on, and `append`
+	// goes on from there; at a tick, the demo stays paused unless `play` says
+	// otherwise.
+	async open(epoch, at, behind = LiveFeed.backlogSeconds, play = null) {
 		const index = this.index;
+		const player = this.player;
+		const tickSpeed = index.tick_speed ?? 50;
 		const init = index.epochs.find(entry => entry.epoch === epoch);
-		let segments = index.segments.filter(segment => segment.epoch === epoch);
-		// An ended stream is watched from its beginning.
-		atEnd = atEnd && index.state !== "ended";
-		if (!atEnd && seekTick === null) {
-			backlog = null;
+		const all = index.segments.filter(segment => segment.epoch === epoch);
+		// An ended stream has no live end, it is watched from its beginning.
+		if (at === "end" && index.state === "ended") {
+			at = "start";
 		}
-		if (backlog !== null && segments.length > 0) {
-			const from = segments.at(-1).end_tick - backlog * (index.tick_speed ?? 50);
-			segments = segments.filter((segment, i) => i === segments.length - 1 || segment.end_tick > from);
+		if (typeof at !== "number") {
+			play = true;
+		} else if (play === null) {
+			play = !player.paused;
+		}
+		let segments = all;
+		let tick = null;
+		if (all.length > 0) {
+			tick = at === "end" ? all.at(-1).end_tick : at === "start" ? all[0].start_tick : Math.min(Math.max(at, all[0].start_tick), all.at(-1).end_tick);
+			const from = at === "start" ? tick : tick - behind * tickSpeed;
+			const to = tick + LiveFeed.backlogSeconds * tickSpeed;
+			segments = all.filter((segment, i) => (segment.end_tick > from || i === all.length - 1) && segment.start_tick <= to);
 		}
 		const header = await this.fetchBytes(init.init, 0);
 		if (header === null) {
@@ -297,41 +369,34 @@ export class LiveFeed extends EventTarget {
 		}
 		const read = new Map();
 		const parts = [];
-		for (const segment of segments) {
-			const bytes = await this.fetchBytes(segment.file, 0);
-			if (bytes === null) {
-				// Deleted while this read the ones before: the stream is
-				// read again from the next poll on.
-				if (parts.length === 0) {
-					continue;
+		const kept = [];
+		for (let i = 0; i < segments.length; i += LiveFeed.fetches) {
+			const batch = segments.slice(i, i + LiveFeed.fetches);
+			const fetched = await Promise.all(batch.map(segment => this.fetchBytes(segment.file, 0)));
+			for (const [j, bytes] of fetched.entries()) {
+				if (bytes === null) {
+					// Deleted while this read the ones before: the stream is
+					// read again from the next poll on.
+					if (parts.length === 0) {
+						continue;
+					}
+					throw new Error(`${batch[j].file} is gone`);
 				}
-				throw new Error(`${segment.file} is gone`);
+				parts.push(bytes);
+				kept.push(batch[j]);
+				read.set(batch[j].n, bytes.length);
 			}
-			parts.push(bytes);
-			read.set(segment.n, bytes.length);
 		}
 		const body = concatBytes(parts);
 		const whole = wholeChunks(body);
 
-		const FS = this.player.module.FS;
-		const directory = `${this.player.homePath}/demos/live`;
+		const FS = player.module.FS;
+		const directory = `${player.homePath}/demos/live`;
 		FS.mkdirTree(directory);
 		const name = String(index.name).replace(/[^A-Za-z0-9._-]/g, "_");
 		const path = `${directory}/${name}-${epoch}.demo`;
 		FS.writeFile(path, concatBytes([header, body.subarray(0, whole)]));
-		const previous = this.path;
-		this.path = path;
-		this.epoch = epoch;
-		this.read = read;
-		this.next = segments.at(-1)?.n ?? -1;
-		this.firstRead = segments[0]?.n ?? -1;
-		this.backlog = backlog;
-		this.tail = body.slice(whole);
-		this.complete = false;
-		this.state = "live";
 
-		const player = this.player;
-		const paused = player.paused;
 		const loads = player.number("DemoPlayerLoadCount") ?? 0;
 		player.dispatchEvent(new CustomEvent("loadstart", { detail: { url: this.url.href } }));
 		player.call("EmscriptenCallbackDropFile", null, ["string"], [path]);
@@ -341,6 +406,18 @@ export class LiveFeed extends EventTarget {
 			}
 			await sleep(50, this.signal);
 		}
+		// What the feed says is of the file that plays, the one before until
+		// here.
+		const previous = this.path;
+		this.path = path;
+		this.epoch = epoch;
+		this.read = read;
+		this.next = kept.at(-1)?.n ?? -1;
+		this.firstRead = kept[0]?.n ?? -1;
+		this.behind = behind;
+		this.tail = body.slice(whole);
+		this.complete = false;
+		this.state = index.state === "ended" ? "ended" : "live";
 		if (previous !== null && previous !== path) {
 			try {
 				FS.unlink(previous);
@@ -349,49 +426,67 @@ export class LiveFeed extends EventTarget {
 			}
 		}
 		player.setLive(true);
-		if (seekTick !== null) {
-			// Where the viewer was, in a file that begins earlier now: with
-			// its first segment, as the ticks the program says may still be
-			// those of the file before for a frame.
-			player.currentTime = Math.max(0, seekTick - (segments[0]?.start_tick ?? seekTick)) / (index.tick_speed ?? 50);
-			if (!paused) {
-				player.play();
-			}
+		if (at === "end") {
+			player.seek(1);
+		} else if (at === "start") {
+			player.restart();
 		} else {
-			if (atEnd) {
-				player.seek(1);
-			} else {
-				player.restart();
-			}
-			player.play();
+			// With the first segment of the file, as the ticks the program
+			// says may still be those of the file before for a frame.
+			player.currentTime = Math.max(0, tick - (kept[0]?.start_tick ?? tick)) / tickSpeed;
 		}
-		// The stream may have ended or gone on with another map meanwhile.
+		if (play) {
+			player.play();
+		} else {
+			player.pause();
+		}
+		// The program goes there with its next frame, and says the ticks of
+		// before until then: nothing is made of those.
+		this.openTick = tick;
+		const deadline = Date.now() + LIVE_ARRIVE_MS;
+		for (let ticks = player.ticks(); tick !== null && Math.abs(ticks.current - tick) > LIVE_EDGE_SECONDS * tickSpeed && Date.now() < deadline; ticks = player.ticks()) {
+			if (this.signal.aborted || player.exited) {
+				return;
+			}
+			await sleep(50, this.signal);
+		}
+		this.openTick = null;
+		// The stream may have ended or gone on with another part meanwhile.
 		this.finishWhenDone();
 	}
 
-	// Appends what the segments of the map grew by since the last poll.
+	// Appends what the segments of the part grew by since the last poll, and
+	// the next ones as far ahead of where it plays as the file reaches, some
+	// with every poll.
 	async append() {
+		if (this.complete) {
+			return;
+		}
 		const index = this.index;
-		const segments = index.segments.filter(segment => segment.epoch === this.epoch && segment.n >= this.next);
+		const current = this.player.ticks().current;
+		const to = current < 0 ? Infinity : current + LiveFeed.aheadSeconds * (index.tick_speed ?? 50);
+		const segments = index.segments
+			.filter(segment => segment.epoch === this.epoch && segment.n >= this.next && (segment.n === this.next || segment.start_tick <= to))
+			.slice(0, 1 + LiveFeed.fetches);
 		if (this.next >= 0 && segments[0]?.n !== this.next) {
 			// The limits deleted what was still to read: the rest cannot
 			// follow what is in the file.
 			this.epoch = null;
 			throw new Error("the stream went on faster than it could be read");
 		}
-		const parts = [this.tail];
-		for (const segment of segments) {
+		const fetched = await Promise.all(segments.map(segment => {
 			const had = this.read.get(segment.n) ?? 0;
-			if (segment.complete && had >= segment.bytes) {
-				continue;
-			}
-			const bytes = await this.fetchBytes(segment.file, had);
+			return segment.complete && had >= segment.bytes ? new Uint8Array(0) : this.fetchBytes(segment.file, had);
+		}));
+		const parts = [this.tail];
+		for (const [i, bytes] of fetched.entries()) {
+			const segment = segments[i];
 			if (bytes === null) {
 				this.epoch = null;
 				throw new Error(`${segment.file} is gone`);
 			}
 			parts.push(bytes);
-			this.read.set(segment.n, had + bytes.length);
+			this.read.set(segment.n, (this.read.get(segment.n) ?? 0) + bytes.length);
 			this.next = segment.n;
 		}
 		const body = concatBytes(parts);
@@ -406,9 +501,9 @@ export class LiveFeed extends EventTarget {
 		this.finishWhenDone();
 	}
 
-	// The map is all there once its last segment is complete and read, and
-	// the stream went on with another map or ended. The program then plays
-	// it to its end like any demo.
+	// The part is there up to its end once its last segment is complete and
+	// read, and the stream went on with another part or ended. The program
+	// then plays it to its end like any demo.
 	finishWhenDone() {
 		const index = this.index;
 		const last = index.segments.filter(segment => segment.epoch === this.epoch).at(-1);
@@ -418,17 +513,20 @@ export class LiveFeed extends EventTarget {
 			this.complete = true;
 			this.player.setLive(false);
 		}
-		if (index.state === "ended" && (done || last === undefined)) {
+		if (index.state === "ended") {
 			this.state = "ended";
 		}
 	}
 
-	// Goes to the end of the newest map.
+	// Goes to the end of the newest part.
 	goLive() {
 		return this.serial(async () => {
 			const newest = this.index?.segments.at(-1);
-			if (newest !== undefined && newest.epoch !== this.epoch) {
-				await this.open(newest.epoch, true, LiveFeed.backlogSeconds);
+			if (newest === undefined) {
+				return;
+			}
+			if (newest.epoch !== this.epoch || this.later) {
+				await this.open(newest.epoch, "end");
 				this.changed();
 			} else {
 				this.player.seek(1);
@@ -437,11 +535,66 @@ export class LiveFeed extends EventTarget {
 		});
 	}
 
-	// Whether the program plays at the end of the newest map.
+	// Plays another part of the stream from its beginning.
+	openPart(epoch) {
+		return this.serial(async () => {
+			if (this.index?.segments.some(segment => segment.epoch === epoch)) {
+				await this.open(epoch, "start");
+				this.changed();
+			}
+		});
+	}
+
+	// Goes to `fraction` of the part that plays. What the file does not hold
+	// of it is read first, which a seek that is still going on (`settled`
+	// false) does not wait for. `play` is whether the demo plays there, as
+	// it does now if it is not said. Returns whether the demo is there.
+	seekTo(fraction, settled = true, play = null) {
+		const range = this.range;
+		if (range === null) {
+			return false;
+		}
+		const tick = Math.round(range.first + Math.min(Math.max(fraction, 0), 1) * (range.last - range.first));
+		const ticks = this.player.ticks();
+		// Where the file ends is where the part does, unless the stream has
+		// more of it.
+		if ((tick >= ticks.first || !this.earlier) && (tick <= ticks.last || !this.later)) {
+			this.seekTick = null;
+			this.player.currentTime = Math.max(0, Math.min(tick, ticks.last) - ticks.first) / (this.index?.tick_speed ?? 50);
+			return true;
+		}
+		if (settled) {
+			if (play === null) {
+				play = !this.player.paused;
+			}
+			this.seekTick = tick;
+			this.changed();
+			this.serial(async () => {
+				// A seek that followed this one goes in its place.
+				if (this.seekTick !== tick || this.epoch === null) {
+					return;
+				}
+				try {
+					await this.open(this.epoch, tick, LiveFeed.backlogSeconds, play);
+				} finally {
+					if (this.seekTick === tick) {
+						this.seekTick = null;
+					}
+					this.changed();
+				}
+			}).catch(error => {
+				this.error = error?.message ?? String(error);
+				this.player.output(`Live stream: ${this.error}`, { error: true });
+			});
+		}
+		return false;
+	}
+
+	// Whether the program plays at the end of the newest part.
 	atLiveEdge() {
 		const ticks = this.player.ticks();
 		const tickSpeed = this.index?.tick_speed ?? 50;
-		return this.state === "live" && !this.complete && !this.newerMap && ticks.live &&
+		return this.state === "live" && !this.complete && !this.newerMap && !this.later && ticks.live &&
 			ticks.last - ticks.current <= LIVE_EDGE_SECONDS * tickSpeed;
 	}
 }
@@ -1104,12 +1257,13 @@ export class DemoControls {
 				this.pausedBeforeSeeking = player.paused;
 				player.pause();
 			}
-			player.seek(part("seek").valueAsNumber / 1000);
+			this.seekTo(part("seek").valueAsNumber / 1000, false);
 		});
 		on(part("seek"), "change", () => {
-			player.seek(part("seek").valueAsNumber / 1000);
+			const there = this.seekTo(part("seek").valueAsNumber / 1000, true);
 			this.seeking = false;
-			if (!this.pausedBeforeSeeking) {
+			// A live stream that reads what is there first plays then.
+			if (!this.pausedBeforeSeeking && there) {
 				player.play();
 			}
 		});
@@ -1121,6 +1275,36 @@ export class DemoControls {
 		on(part("export-start"), "click", () => this.startExport());
 		on(part("live"), "click", () => player.goLive());
 		this.noEncoder = typeof VideoEncoder === "undefined";
+	}
+
+	// What the seek bar spans, in seconds: the demo, or the part of a live
+	// stream that plays, of which the demo is a piece that begins at `offset`.
+	timeline() {
+		const player = this.player;
+		const live = player.live;
+		const range = live?.range ?? null;
+		if (range === null || !(range.last > range.first)) {
+			return { time: player.currentTime, length: player.duration, offset: 0 };
+		}
+		const ticks = player.ticks();
+		const tickSpeed = live.index?.tick_speed ?? 50;
+		const length = (range.last - range.first) / tickSpeed;
+		return {
+			time: Math.min(Math.max(((live.pendingTick ?? ticks.current) - range.first) / tickSpeed, 0), length),
+			length,
+			offset: (ticks.first - range.first) / tickSpeed,
+		};
+	}
+
+	// Returns whether the demo is there: a live stream may have to read that
+	// piece of the part first.
+	seekTo(fraction, settled) {
+		const live = this.player.live;
+		if (live === null || live.range === null) {
+			this.player.seek(fraction);
+			return true;
+		}
+		return live.seekTo(fraction, settled, !this.pausedBeforeSeeking);
 	}
 
 	async startExport() {
@@ -1200,6 +1384,15 @@ export class DemoControls {
 			for (const speed of SPEEDS) {
 				items.push(row(speed === 1 ? "Normal" : `${speed}×`, fromKeyboard => { player.playbackRate = speed; this.openMenu(true, null, fromKeyboard); }, { checked: Math.abs(rate - speed) < 0.01 }));
 			}
+		} else if (this.submenu === "part") {
+			items.push(back("Part"));
+			const live = player.live;
+			const tickSpeed = live?.index?.tick_speed ?? 50;
+			for (const [number, one] of (live?.parts ?? []).entries()) {
+				const began = new Date(one.time).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
+				const label = `${number + 1} · ${one.map} · ${began} · ${formatTime((one.last - one.first) / tickSpeed)}`;
+				items.push(row(label, () => { live.openPart(one.epoch); this.openMenu(false); }, { checked: one.epoch === live.epoch }));
+			}
 		} else if (this.submenu === "watch") {
 			items.push(back("Watch"));
 			const choices = player.serverDemo()
@@ -1212,6 +1405,13 @@ export class DemoControls {
 		} else {
 			items.push(row("Speed", fromKeyboard => this.openMenu(true, "speed", fromKeyboard), { value: player.playbackRate === 1 ? "Normal" : `${+player.playbackRate.toFixed(2)}×` }));
 			items.push(row("Watch", fromKeyboard => this.openMenu(true, "watch", fromKeyboard), { value: watchName, shortcut: "N" }));
+			// The parts of a live stream: its maps, and the visits to a server
+			// that was empty between them.
+			const parts = player.live?.parts ?? [];
+			if (parts.length > 1) {
+				const playing = parts.findIndex(one => one.epoch === player.live.epoch);
+				items.push(row("Part", fromKeyboard => this.openMenu(true, "part", fromKeyboard), { value: `${playing + 1} of ${parts.length}` }));
+			}
 			if (player.recordedCameraAvailable()) {
 				items.push(toggle("Demo camera", player.recordedCamera(), on => player.recordedCamera(on)));
 			}
@@ -1250,21 +1450,21 @@ export class DemoControls {
 		if (!(length > 0)) {
 			return;
 		}
-		const time = player.currentTime;
+		const view = this.timeline();
 		const seek = part("seek");
 		if (!this.seeking) {
-			seek.value = Math.round(time / length * 1000);
+			seek.value = Math.round(view.time / view.length * 1000);
 		}
-		seek.setAttribute("aria-valuetext", `${formatTime(time)} of ${formatTime(length)}`);
+		seek.setAttribute("aria-valuetext", `${formatTime(view.time)} of ${formatTime(view.length)}`);
 		seek.style.setProperty("--viewer-progress", `${seek.value / 10}%`);
 		const clip = player.clip();
-		seek.style.setProperty("--viewer-clip-start", `${clip === null ? 0 : clip.start / length * 100}%`);
-		seek.style.setProperty("--viewer-clip-end", `${clip === null ? 0 : clip.end / length * 100}%`);
+		seek.style.setProperty("--viewer-clip-start", `${clip === null ? 0 : (view.offset + clip.start) / view.length * 100}%`);
+		seek.style.setProperty("--viewer-clip-end", `${clip === null ? 0 : (view.offset + clip.end) / view.length * 100}%`);
 		seek.classList.toggle("viewer-seek-clipped", clip !== null);
 		const clipTime = part("clip-time");
 		clipTime.hidden = clip === null;
-		clipTime.textContent = clip === null ? "" : `${formatTime(clip.start)}–${formatTime(clip.end)}`;
-		part("time").textContent = `${formatTime(time)} / ${formatTime(length)}`;
+		clipTime.textContent = clip === null ? "" : `${formatTime(view.offset + clip.start)}–${formatTime(view.offset + clip.end)}`;
+		part("time").textContent = `${formatTime(view.time)} / ${formatTime(view.length)}`;
 		this.updateLive();
 
 		const paused = player.paused;
@@ -1287,7 +1487,8 @@ export class DemoControls {
 		paintIcons(part("bar"));
 	}
 
-	// A live stream: where its end is, and its markers on the seek bar.
+	// A live stream: where its end is, and the markers of the part that plays
+	// on the seek bar.
 	updateLive() {
 		const live = this.player.live;
 		const button = this.part("live");
@@ -1306,10 +1507,11 @@ export class DemoControls {
 		button.title = ended ? "The stream has ended" : edge ? "Live" : "Go to the live end";
 		button.setAttribute("aria-label", button.title);
 
-		const ticks = this.player.ticks();
-		const span = ticks.last - ticks.first;
-		const shown = span > 0 ? live.markers.filter(marker => marker.tick >= ticks.first && marker.tick <= ticks.last) : [];
-		const key = `${ticks.first}-${ticks.last}-${shown.map(marker => marker.tick).join(",")}`;
+		// The seek bar is the part that plays, see `timeline`.
+		const range = live.range;
+		const span = range === null ? 0 : range.last - range.first;
+		const shown = span > 0 ? live.markers.filter(marker => marker.tick >= range.first && marker.tick <= range.last) : [];
+		const key = `${range?.first}-${range?.last}-${shown.map(marker => marker.tick).join(",")}`;
 		if (key === this.markerKey) {
 			return;
 		}
@@ -1318,7 +1520,7 @@ export class DemoControls {
 			const mark = Object.assign(document.createElement("span"), { className: "viewer-marker" });
 			mark.dataset.kind = marker.kind;
 			mark.dataset.tick = String(marker.tick);
-			mark.style.left = `${(marker.tick - ticks.first) / span * 100}%`;
+			mark.style.left = `${(marker.tick - range.first) / span * 100}%`;
 			mark.title = marker.kind === "match_end" ? "End of the match" : marker.label || "Marker";
 			return mark;
 		}));

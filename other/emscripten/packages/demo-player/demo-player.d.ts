@@ -30,37 +30,72 @@ export interface LiveMarker {
 }
 
 /**
+ * A part of a live stream: a map it went through, or a visit to a server the
+ * stream rested on while it was empty.
+ */
+export interface LivePart {
+	epoch: number;
+	map: string;
+	/** The ticks it begins and ends at. */
+	first: number;
+	last: number;
+	/** When it began, in milliseconds since 1970. */
+	time: number;
+}
+
+/**
  * Follows a live stream a server writes with `live_start`: it reads its
  * `index.json` every second and appends what the segments grew by to the
  * demo that plays, with range requests. Any static web server does.
- * `livechange` says that something of it changed. Joining at the live end
- * reads the last two minutes of the map, seeking back to where they begin
- * reads older ones, and at the live end more than half an hour is dropped.
+ * `livechange` says that something of it changed. The demo is a piece of
+ * the part of the stream that plays: joining at the live end reads its last
+ * two minutes, `seekTo` reads the piece around where it goes, what follows
+ * is read as the playback gets near it, and what lies more than half an
+ * hour behind is dropped. An ended stream plays from its first part on.
  */
 export declare class LiveFeed extends EventTarget {
-	/** Seconds of the map read when joining at the live end, 120. */
+	/** Seconds of a part read before where it opens, 120. */
 	static backlogSeconds: number;
-	/** Seconds of the map kept while playing at the live end, 1800. */
+	/** Seconds of a part kept behind where it plays, 1800. */
 	static maxBacklogSeconds: number;
+	/** Seconds of a part read ahead of where it plays, 600. */
+	static aheadSeconds: number;
 	/** The URL of the `index.json`. */
 	readonly url: URL;
 	/** The index as last read. */
 	readonly index: object | null;
-	/** The map of the stream that plays, counted from 0. */
+	/** The part of the stream that plays, counted from 0. */
 	readonly epoch: number | null;
 	/** `loading`, `waiting` (for the first segment), `live` or `ended`. */
 	readonly state: string;
 	/** What went wrong the last time, `""` if nothing. */
 	readonly error: string;
-	/** The markers of the map that plays. */
+	/** The parts of the stream. */
+	readonly parts: LivePart[];
+	/** The ticks the part that plays begins and ends at; `null` while nothing plays. */
+	readonly range: { first: number; last: number } | null;
+	/** The markers of the part that plays. */
 	readonly markers: LiveMarker[];
-	/** Whether a newer map began than the one that plays. */
+	/** Whether a newer part began than the one that plays. */
 	readonly newerMap: boolean;
-	/** Whether the stream has older parts of the map that plays than were read. */
+	/** Whether the stream has older segments of the part that plays than the demo. */
 	readonly earlier: boolean;
-	/** Goes to the end of the newest map. */
+	/** Whether the stream has newer segments of the part that plays than the demo. */
+	readonly later: boolean;
+	/** The tick the playback is on its way to after a seek or to another part, `null` once it is there. */
+	readonly pendingTick: number | null;
+	/** Goes to the end of the newest part. */
 	goLive(): Promise<void>;
-	/** Whether it plays at the end of the newest map. */
+	/** Plays another part from its beginning. */
+	openPart(epoch: number): Promise<void>;
+	/**
+	 * Goes to `fraction` (0 to 1) of the part that plays and returns whether
+	 * the demo is there: what it does not hold of the part is read first,
+	 * unless the seek is still going on (`settled` false). `play` is whether
+	 * the demo plays there, as it does now if it is not said.
+	 */
+	seekTo(fraction: number, settled?: boolean, play?: boolean | null): boolean;
+	/** Whether it plays at the end of the newest part. */
 	atLiveEdge(): boolean;
 	stop(): void;
 }

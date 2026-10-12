@@ -5,7 +5,9 @@ A server streams into a directory that a static web server with range
 requests hands out beside the web site (`web-site` target). The page follows
 the stream: it plays at the live end, shows the markers on its seek bar, goes
 back and to the live end again, goes on with the next map and ends with the
-stream. It measures how long an event takes from the server to the viewer.
+stream. The seek bar is the whole part of the stream that plays, of which the
+page reads the piece the viewer goes to, and the menu has the other parts. It
+measures how long an event takes from the server to the viewer.
 """
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -77,6 +79,11 @@ TEST_PAGE = """<!DOCTYPE html>
 						duration: player.duration,
 						edge: live?.atLiveEdge() ?? false,
 						earlier: live?.earlier ?? false,
+						later: live?.later ?? false,
+						range: live?.range ?? null,
+						pending: live?.pendingTick ?? null,
+						parts: (live?.parts ?? []).map(part => part.epoch),
+						seek: bar?.part("seek")?.valueAsNumber ?? null,
 						button: button && !button.hidden ? { text: button.textContent, edge: button.dataset.edge, disabled: button.disabled } : null,
 						drawnMarkers: [...(bar?.part("markers")?.children ?? [])].map(mark => ({ tick: Number(mark.dataset.tick), kind: mark.dataset.kind })),
 					});
@@ -86,6 +93,20 @@ TEST_PAGE = """<!DOCTYPE html>
 						player.play();
 					} else if (command === "live-button") {
 						bar.part("live").click();
+					} else if (command.startsWith("bar ")) {
+						// As a viewer drags the seek bar there and lets go.
+						const seek = bar.part("seek");
+						seek.value = String(Math.round(parseFloat(command.slice(4)) * 1000));
+						seek.dispatchEvent(new Event("input"));
+						seek.dispatchEvent(new Event("change"));
+					} else if (command.startsWith("part ")) {
+						// By the menu of the bar.
+						const menu = bar.part("menu");
+						bar.part("settings").click();
+						[...menu.children].find(item => item.textContent.startsWith("Part")).click();
+						menu.querySelectorAll('[role="menuitemradio"]')[parseInt(command.slice(5), 10)].click();
+					} else if (command === "reload") {
+						location.reload();
 					}
 				}, 200);
 			}, error => post("/test-event", { event: "error", message: String(error) }));
@@ -297,7 +318,7 @@ def main():
 		shutil.copytree(args.web_root, web_root, copy_function=link_or_copy)
 		(web_root / "live-test.html").write_text(TEST_PAGE, encoding="utf-8")
 		try:
-			server = GameServer(args.server.resolve(), game_directory, [f"sv_port {free_port()}", "sv_map dm1", f"sv_live_delay {args.delay}", "sv_live_segment 2", "sv_live_max_duration 30", "sv_live_empty 1"])
+			server = GameServer(args.server.resolve(), game_directory, [f"sv_port {free_port()}", "sv_map dm1", f"sv_live_delay {args.delay}", "sv_live_segment 2", "sv_live_max_duration 300", "sv_live_empty 1"])
 			server.command("live_start test")
 			server.wait_for_log("live: started name=test", 5)
 
@@ -327,6 +348,9 @@ def main():
 			assert state["button"] == {"text": "Live", "edge": "true", "disabled": False}, state["button"]
 			# Only the newest seconds were read, and the program's script once for all its threads.
 			assert state["earlier"] and state["ticks"]["last"] - state["ticks"]["first"] <= 14 * 50, state
+			# The seek bar is the whole part all the same, and stands at its end.
+			assert state["range"]["first"] <= state["ticks"]["first"] - 8 * 50 and state["range"]["last"] >= state["ticks"]["last"], state
+			assert abs(state["seek"] - 1000 * (state["ticks"]["current"] - state["range"]["first"]) / (state["range"]["last"] - state["range"]["first"])) <= 60, state
 			assert http_server.program_requests == 1, http_server.program_requests
 			sleep(3)
 			before = page.http.state["ticks"]
@@ -378,9 +402,43 @@ def main():
 			http_server.commands.put("live-button")
 			page.wait(lambda s: s["edge"] and s["ticks"]["first"] > first and s["ticks"]["last"] - s["ticks"]["first"] <= 14 * 50, "the file cut back at the live end", 30)
 
-			# The next map is the next demo, which the viewer at the end goes on with.
+			# The seek bar goes to where the file does not reach: that piece
+			# of the part is read, and the playback goes on from there.
+			state = page.http.state
+			first = state["ticks"]["first"]
+			target = state["range"]["first"] + 0.2 * (state["range"]["last"] - state["range"]["first"])
+			assert target < first - 4 * 50, state
+			http_server.commands.put("bar 0.2")
+			state = page.wait(lambda s: s["ticks"]["first"] < first and s["pending"] is None and not s["paused"], "the piece of the part the seek bar went to", 15)
+			state = page.wait(lambda s: target - 2 * 50 <= s["ticks"]["current"] <= target + 8 * 50, f"the playback near tick {target}", 3)
+			assert state["ticks"]["first"] <= target and not state["edge"] and state["button"]["edge"] == "false", state
+			# What follows the piece is read with the polls after it, up to
+			# the live end; within the file a seek goes there at once.
+			state = page.wait(lambda s: not s["later"] and s["ticks"]["last"] >= s["range"]["last"] - 4 * 50, "the file reading ahead to the live end", 10)
+			first = state["ticks"]["first"]
+			target = state["range"]["first"] + 0.6 * (state["range"]["last"] - state["range"]["first"])
+			assert first <= target <= state["ticks"]["last"], state
+			http_server.commands.put("bar 0.6")
+			state = page.wait(lambda s: target - 2 * 50 <= s["ticks"]["current"] <= target + 6 * 50 and not s["paused"], f"the playback near tick {target}", 5)
+			assert state["ticks"]["first"] == first, state
+			http_server.commands.put("live-button")
+			page.wait(lambda s: s["edge"] and s["button"]["edge"] == "true" and not s["paused"], "the live end after the seek bar", 10)
+
+			# The next map is the next part, which the viewer at the end goes on with.
 			server.command("change_map dm2")
-			page.wait(lambda s: s["epoch"] == 1 and s["state"] == "live" and s["ticks"]["live"] and not s["paused"], "the next map", args.delay + 30)
+			state = page.wait(lambda s: s["epoch"] == 1 and s["state"] == "live" and s["ticks"]["live"] and not s["paused"], "the next map", args.delay + 30)
+			assert state["parts"] == [0, 1], state
+
+			# The menu has the part before, which plays from its beginning and
+			# is all there; at its end the next part follows, from its beginning.
+			http_server.commands.put("part 0")
+			state = page.wait(lambda s: s["epoch"] == 0 and not s["ticks"]["live"] and not s["paused"] and s["ticks"]["current"] >= 0, "the part before", 15)
+			assert state["ticks"]["current"] <= state["range"]["first"] + 8 * 50 and not state["edge"] and state["button"]["text"] == "Live", state
+			http_server.commands.put("bar 0.99")
+			state = page.wait(lambda s: s["epoch"] == 1 and not s["paused"] and s["ticks"]["current"] >= 0, "the next part after the end of the one before", 20)
+			assert state["ticks"]["current"] <= state["range"]["first"] + 8 * 50, state
+			http_server.commands.put("live-button")
+			page.wait(lambda s: s["epoch"] == 1 and s["edge"] and s["button"]["edge"] == "true" and not s["paused"], "the live end of the next part", 10)
 
 			# The end of the stream.
 			server.command("live_stop")
@@ -389,6 +447,15 @@ def main():
 			page.wait(lambda s: s["paused"] and s["ticks"]["current"] >= s["ticks"]["last"] - 1, "playing to the end", 10)
 			http_server.commands.put("seek 0")
 			page.wait(lambda s: not s["paused"] and s["ticks"]["current"] < s["ticks"]["first"] + 100, "playing the ended stream again", 10)
+
+			# Who comes to an ended stream watches it from its first part on.
+			http_server.state = None
+			http_server.commands.put("reload")
+			page.event("ready", 60)
+			state = page.wait(lambda s: s["state"] == "ended" and s["epoch"] == 0 and not s["paused"] and s["ticks"]["current"] >= 0, "the first part of the ended stream", 90)
+			assert state["button"] == {"text": "Ended", "edge": "false", "disabled": True} and state["parts"] == [0, 1], state
+			http_server.commands.put("bar 0.99")
+			page.wait(lambda s: s["state"] == "ended" and s["epoch"] == 1 and not s["paused"], "the second part of the ended stream", 20)
 			print(json.dumps(measurements))
 			if args.keep is not None:
 				args.keep.mkdir(parents=True, exist_ok=True)

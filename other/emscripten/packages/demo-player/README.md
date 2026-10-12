@@ -24,11 +24,18 @@ A live stream that a server writes (`live_start`, `sv_live_dir`) plays with
 ```
 
 It is read every second and what it grew by is fetched with range requests,
-so any static web server that answers them will do. A viewer who joins gets
-the last two minutes of the map; seeking back to where they begin fetches
-older ones, and at the live end more than half an hour is dropped again. The bar then has a button
-to the live end and the markers of the stream (the ends of matches, and
-`live_marker`) on its seek bar; a new map goes on in a demo of its own.
+so any static web server that answers them will do. A stream is a row of
+parts: a new map goes on in a demo of its own, and so does the next visit to
+a server the stream rested on while it was empty. A viewer who joins watches
+the newest part at its live end, an ended stream plays from its first part
+on, and the menu of the bar has the other parts.
+
+The seek bar is the whole part that plays, with the markers of the stream on
+it (the ends of matches, and `live_marker`), and a button goes to the live
+end. Only a piece of the part is fetched: the last two minutes for a viewer
+who joins, and as much around where the viewer seeks. What follows is
+fetched as the playback gets near it, and what lies more than half an hour
+behind is dropped again.
 
 `DemoPlayer` runs on a canvas of the page's own, `DemoControls` is the bar for
 it. The canvas is the program's once it runs, see `@ddnet/base`: its size goes

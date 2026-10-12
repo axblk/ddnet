@@ -212,6 +212,10 @@ private:
 		CHUNKHEADER_EOF,
 	};
 	EReadChunkHeaderResult ReadChunkHeader(int *pType, int *pSize, int *pTick);
+	// The same from what `Read` hands out, called as `io_read` without the
+	// file.
+	template<typename TRead>
+	EReadChunkHeaderResult ReadChunkHeader(TRead &&Read, int *pType, int *pSize, int *pTick);
 	void DoTick();
 	enum class EScanFileResult
 	{

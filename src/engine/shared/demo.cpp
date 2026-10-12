@@ -22,6 +22,9 @@
 #include "huffman.h"
 #include "snapshot.h"
 
+#include <algorithm>
+#include <vector>
+
 const CUuid SHA256_EXTENSION =
 	{{0x6b, 0xe6, 0xda, 0x4a, 0xce, 0xbd, 0x38, 0x0c,
 		0x9b, 0x5b, 0x12, 0x89, 0xc8, 0x42, 0xd7, 0x80}};
@@ -535,13 +538,83 @@ void CDemoPlayer::SetVideo(IVideo *pVideo)
 }
 #endif
 
+namespace
+{
+	// Reads a file front to back in blocks. A scan that asks the file for every
+	// chunk header and skips every chunk is three calls into the system for
+	// each. Where another thread answers those, as the page's thread does for
+	// a program in a browser, they take a second or two for each megabyte of
+	// a demo.
+	class CBlockReader
+	{
+		IOHANDLE m_File;
+		std::vector<unsigned char> m_vBlock;
+		// Where in the file the block begins, and how much of it is filled
+		// and read.
+		int64_t m_BlockPos;
+		size_t m_Filled = 0;
+		size_t m_Offset = 0;
+
+		bool Fill()
+		{
+			m_BlockPos += m_Filled;
+			m_Offset = 0;
+			m_Filled = io_read(m_File, m_vBlock.data(), m_vBlock.size());
+			return m_Filled != 0;
+		}
+
+	public:
+		// The file stands at `Pos`.
+		CBlockReader(IOHANDLE File, int64_t Pos) :
+			m_File(File), m_vBlock(64 * 1024), m_BlockPos(Pos)
+		{
+		}
+
+		int64_t Tell() const
+		{
+			return m_BlockPos + m_Offset;
+		}
+
+		unsigned Read(void *pData, unsigned Size)
+		{
+			unsigned Done = 0;
+			while(Done < Size && (m_Offset < m_Filled || Fill()))
+			{
+				const unsigned Part = std::min<size_t>(Size - Done, m_Filled - m_Offset);
+				mem_copy(static_cast<unsigned char *>(pData) + Done, m_vBlock.data() + m_Offset, Part);
+				m_Offset += Part;
+				Done += Part;
+			}
+			return Done;
+		}
+
+		// Past the end of the file there is nothing left to read, as after
+		// `io_skip`.
+		void Skip(unsigned Size)
+		{
+			while(Size > 0 && (m_Offset < m_Filled || Fill()))
+			{
+				const unsigned Part = std::min<size_t>(Size, m_Filled - m_Offset);
+				m_Offset += Part;
+				Size -= Part;
+			}
+		}
+	};
+}
+
 CDemoPlayer::EReadChunkHeaderResult CDemoPlayer::ReadChunkHeader(int *pType, int *pSize, int *pTick)
+{
+	return ReadChunkHeader([this](void *pData, unsigned Size) { return io_read(m_File, pData, Size); }, pType, pSize, pTick);
+}
+
+template<typename TRead>
+CDemoPlayer::EReadChunkHeaderResult CDemoPlayer::ReadChunkHeader(TRead &&Read, int *pType, int *pSize, int *pTick)
 {
 	*pSize = 0;
 	*pType = 0;
 
 	unsigned char Chunk = 0;
-	if(io_read(m_File, &Chunk, sizeof(Chunk)) != sizeof(Chunk))
+	if(Read(&Chunk, sizeof(Chunk)) != sizeof(Chunk))
 		return CHUNKHEADER_EOF;
 
 	if(Chunk & CHUNKTYPEFLAG_TICKMARKER)
@@ -567,7 +640,7 @@ CDemoPlayer::EReadChunkHeaderResult CDemoPlayer::ReadChunkHeader(int *pType, int
 		else
 		{
 			unsigned char aTickdata[sizeof(int32_t)];
-			if(io_read(m_File, aTickdata, sizeof(aTickdata)) != sizeof(aTickdata))
+			if(Read(aTickdata, sizeof(aTickdata)) != sizeof(aTickdata))
 				return CHUNKHEADER_ERROR;
 			NewTick = bytes_be_to_uint(aTickdata);
 		}
@@ -584,14 +657,14 @@ CDemoPlayer::EReadChunkHeaderResult CDemoPlayer::ReadChunkHeader(int *pType, int
 		if(*pSize == 30)
 		{
 			unsigned char aSizedata[1];
-			if(io_read(m_File, aSizedata, sizeof(aSizedata)) != sizeof(aSizedata))
+			if(Read(aSizedata, sizeof(aSizedata)) != sizeof(aSizedata))
 				return CHUNKHEADER_ERROR;
 			*pSize = aSizedata[0];
 		}
 		else if(*pSize == 31)
 		{
 			unsigned char aSizedata[2];
-			if(io_read(m_File, aSizedata, sizeof(aSizedata)) != sizeof(aSizedata))
+			if(Read(aSizedata, sizeof(aSizedata)) != sizeof(aSizedata))
 				return CHUNKHEADER_ERROR;
 			*pSize = (aSizedata[1] << 8) | aSizedata[0];
 		}
@@ -619,31 +692,33 @@ CDemoPlayer::EScanFileResult CDemoPlayer::ScanFile()
 	};
 
 	int ChunkTick = -1;
+	int64_t ScanPos = StartPos;
 	if(!m_vKeyFrames.empty())
 	{
-		if(io_seek(m_File, m_vKeyFrames.back().m_Filepos, EIoSeekOrigin::START) != 0)
-		{
-			return ResetToStartPosition(EScanFileResult::ERROR_RECOVERABLE);
-		}
-		int ChunkType, ChunkSize;
-		const EReadChunkHeaderResult Result = ReadChunkHeader(&ChunkType, &ChunkSize, &ChunkTick);
-		if(Result != CHUNKHEADER_SUCCESS ||
-			(ChunkSize > 0 && io_skip(m_File, ChunkSize) != 0))
+		ScanPos = m_vKeyFrames.back().m_Filepos;
+		if(io_seek(m_File, ScanPos, EIoSeekOrigin::START) != 0)
 		{
 			return ResetToStartPosition(EScanFileResult::ERROR_RECOVERABLE);
 		}
 	}
-
-	while(true)
+	CBlockReader Reader(m_File, ScanPos);
+	const auto Read = [&Reader](void *pData, unsigned Size) { return Reader.Read(pData, Size); };
+	if(!m_vKeyFrames.empty())
 	{
-		const int64_t CurrentPos = io_tell(m_File);
-		if(CurrentPos < 0)
+		int ChunkType, ChunkSize;
+		if(ReadChunkHeader(Read, &ChunkType, &ChunkSize, &ChunkTick) != CHUNKHEADER_SUCCESS)
 		{
 			return ResetToStartPosition(EScanFileResult::ERROR_RECOVERABLE);
 		}
+		Reader.Skip(ChunkSize);
+	}
+
+	while(true)
+	{
+		const int64_t CurrentPos = Reader.Tell();
 
 		int ChunkType, ChunkSize;
-		const EReadChunkHeaderResult Result = ReadChunkHeader(&ChunkType, &ChunkSize, &ChunkTick);
+		const EReadChunkHeaderResult Result = ReadChunkHeader(Read, &ChunkType, &ChunkSize, &ChunkTick);
 		if(Result == CHUNKHEADER_EOF)
 		{
 			break;
@@ -667,10 +742,7 @@ CDemoPlayer::EScanFileResult CDemoPlayer::ScanFile()
 		}
 		else if(ChunkSize)
 		{
-			if(io_skip(m_File, ChunkSize) != 0)
-			{
-				return ResetToStartPosition(EScanFileResult::ERROR_RECOVERABLE);
-			}
+			Reader.Skip(ChunkSize);
 		}
 	}
 
